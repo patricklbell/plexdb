@@ -1,10 +1,9 @@
 module;
-
-#include "common/macros.h"
+#include "macros.h"
 
 export module plexdb.arena;
 
-import plexdb.common;
+import plexdb.base;
 
 namespace plexdb::arena {
     export U64 default_page_size = 1000u;
@@ -20,7 +19,7 @@ namespace plexdb::arena {
         U64 page_size;
         U64 base_offset;
     };
-    // @todo assert header size
+    static_assert(sizeof(Arena) <= HEADER_SIZE);
     
     export struct Temp
     {
@@ -48,9 +47,9 @@ namespace plexdb::arena {
     export template<typename El>
     inline El* push_array_aligned        (Arena* arena, U64 count, U64 align) { return (El*)memset(push_array_no_zero_aligned<El>(arena, count, align), 0u, sizeof(El)*count); }
     export template<typename El>
-    inline El* push_array_no_zero        (Arena* arena, U64 count)            { return (El*)push_array_no_zero_aligned<El>(arena, count, max(8ul, AlignOf(El))); }
+    inline El* push_array_no_zero        (Arena* arena, U64 count)            { return (El*)push_array_no_zero_aligned<El>(arena, count, max(8ul, PLEXDB_ALIGNOF(El))); }
     export template<typename El>
-    inline El* push_array                (Arena* arena, U64 count)            { return (El*)push_array_aligned<El>(arena, count, max(8ul, AlignOf(El))); }
+    inline El* push_array                (Arena* arena, U64 count)            { return (El*)push_array_aligned<El>(arena, count, max(8ul, PLEXDB_ALIGNOF(El))); }
     export template<typename El>
     inline El* push_array                (Arena* arena)                       { return push_array<El>(arena); }
 }

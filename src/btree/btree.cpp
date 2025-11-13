@@ -1,227 +1,319 @@
+module;
+// @todo
+#include <stack>
+
 module plexdb.btree;
 
 import plexdb.os;
 
 namespace plexdb::btree {
-    // @todo assert key counts
-    BTreeSettings::BTreeSettings(CountType keys_per_internal_node, CountType keys_per_leaf_node, U64 value_stride):
-        keys_per_internal_node(keys_per_internal_node), keys_per_leaf_node(keys_per_leaf_node), value_stride(value_stride) {}
+    BTreeInMemory::BTreeInMemory(CountType max_keys_per_internal, CountType max_keys_per_leaf, U64 value_stride):
+        settings(max_keys_per_internal, max_keys_per_leaf, value_stride) {
+        assert_true(max_keys_per_internal >= 3, "positive min keys.");
+        assert_true(max_keys_per_leaf >= 3, "positive min keys.");
 
-    BTreeInMemory::BTreeInMemory(CountType keys_per_internal_node, CountType keys_per_leaf_node, U64 value_stride):
-        settings(keys_per_internal_node, keys_per_leaf_node, value_stride) {
         leaves = make_leaf(settings);
+        root = leaves;
+    }
+
+    void deallocate_tree(Node* node, CountType depth, CountType max_depth, const BTreeSettings& s) {
+        if (depth == max_depth) {
+            os::deallocate(node);
+        } else {
+            for (const auto& child : children(node, s))
+                deallocate_tree(child, depth + 1, max_depth, s);
+            os::deallocate(node);
+        }
     }
 
     BTreeInMemory::~BTreeInMemory() {
-        // @todo
+        deallocate_tree(root, 0, depth, settings);
+    }
+
+    CountType max_keys(const BTreeSettings& s, bool is_leaf) {
+        return is_leaf ? s.max_keys_per_leaf : s.max_keys_per_internal;
+    }
+    CountType min_keys(const BTreeSettings& s, bool is_leaf) {
+        return (max_keys(s, is_leaf) + 1)/2 - 1;
     }
 
     // 
-    // helpers
-    // 
-    InternalNode* make_internal(const BTreeSettings& settings) {
-        InternalNode* result;
-        U8* block = os::allocate(
-            sizeof(*result) + 
-            settings.keys_per_internal_node*sizeof(*result->keys) + 
-            (settings.keys_per_internal_node+1)*sizeof(*result->children)
-        );
+    // insert
+    //
 
-        result = reinterpret_cast<InternalNode*>(block);
-        result->keys = reinterpret_cast<KeyType*>(
-            result + 
-            sizeof(*result)
-        );
-        result->children = reinterpret_cast<InternalNodeChildPtr*>(
-            result + 
-            sizeof(*result) + 
-            settings.keys_per_internal_node*sizeof(*result->keys)
-        );
-        return result;
-    }
-
-    LeafNode* make_leaf(const BTreeSettings& settings) {
-        LeafNode* result;
-        U8* block = os::allocate(
-            sizeof(*result) + 
-            settings.keys_per_leaf_node*(sizeof(*result->keys) + settings.value_stride)
-        );
-
-        result = reinterpret_cast<LeafNode*>(block);
-        result->keys = reinterpret_cast<KeyType*>(
-            block + 
-            sizeof(*result)
-        );
-        result->values = block + 
-                         sizeof(*result) + 
-                         settings.keys_per_leaf_node*sizeof(*result->keys);
-        return result;
-    }
-
-    void shift_internal_children(InternalNode* parent, CountType child_idx) {
-        for (CountType j = parent->key_count; j > child_idx; j++)
-            parent->children[j+1] = parent->children[j];
-        for (CountType j = parent->key_count-1; j >= child_idx; j++)
-            parent->keys[j+1] = parent->keys[j];
+    // inserts a child to the right of the provided key index and add a new key
+    void insert_child_to_right(Node* parent, CountType idx, KeyType key, Node* child, const BTreeSettings& s) {
+        if (idx < parent->key_count) {
+            os::memory_shift_right(view_shift_left(keys(parent), idx));
+            os::memory_shift_right(view_shift_left(children(parent, s), static_cast<CountType>(idx+1)));
+        }
+        children(parent, s)[idx+1] = child;
+        keys(parent)[idx] = key;
         parent->key_count++;
-    }
-
-    // @precondition child is full (2t-1 keys)
-    // @precondition parent is not full or null
-    void split_child_internal(InternalNode* parent, CountType child_idx, const BTreeSettings& settings) {
-        // copy right half of child's keys+children to new sibling
-        InternalNode* full_child = parent->children[child_idx].internal;
-        CountType t = (full_child->key_count+1)/2;
-
-        InternalNode* new_child = make_internal(settings);
-        new_child->key_count = t-1;
-        memcpy(new_child->keys, full_child->keys+t, (t-1)*sizeof(*new_child->keys));
-        memcpy(new_child->children, full_child->children+t, t*sizeof(*new_child->children));
-        full_child->key_count = t-1;
-
-        // shift siblings down and insert new child
-        shift_internal_children(parent, child_idx);
-        parent->children[child_idx+1].internal = new_child;
-        parent->keys[child_idx] = full_child->keys[t+1];
-    }
-
-    void split_child_leaf(InternalNode* parent, CountType child_idx, const BTreeSettings& settings) {
-        // copy right half of child's keys+children to new sibling
-        LeafNode* full_child = parent->children[child_idx].leaf;
-        CountType t = full_child->key_count/2;
-
-        LeafNode* new_child = make_leaf(settings);
-        new_child->key_count = t;
-        CountType offset = full_child->key_count-t;
-        memcpy(new_child->keys, full_child->keys+offset, t*sizeof(*new_child->keys));
-        memcpy(new_child->values, full_child->values+offset*settings.value_stride, t*settings.value_stride);
-        full_child->key_count -= t;
-
-        // shift siblings down and insert new child
-        shift_internal_children(parent, child_idx);
-        parent->children[child_idx+1].leaf = new_child;
-        parent->keys[child_idx] = full_child->keys[offset+1];
 
         // insert into doubly linked list
-        new_child->next = full_child->next;
-        new_child->prev = full_child;
-        full_child->next = new_child;
+        Node* prev = children(parent, s)[idx];
+        child->next = prev->next;
+        child->prev = prev;
+        prev->next = child;
     }
 
-    // @note returns first key index >= key
-    CountType search_keys(const KeyType* keys, CountType count, KeyType key) {
-        CountType L = 0, R = count;
-        while (L < R) {
-            CountType M = L + (R - L)/2;
+    // @precondition parent is not full
+    void split_child(Node* parent, CountType child_idx, const BTreeSettings& s, bool is_child_leaf) {
+        assert_true(parent->key_count < max_keys(s, false), "parent is not full");
 
-            if (keys[M] < key) {
-                L = M+1;
+        Node* left = children(parent, s)[child_idx];
+        Node* right = is_child_leaf ? make_leaf(s) : make_internal(s);
+
+        // copy right half of LEFT's keys+children to RIGHT
+        CountType t = (left->key_count+1)/2; // ceil(middle)
+        right->key_count = left->key_count - t;
+        os::memory_copy(keys(right), view_shift_left(keys(left), t));
+        if (is_child_leaf)
+            os::memory_copy(values(right, s), view_shift_left(values(left, s), t));
+        else
+            os::memory_copy(children(right, s), view_shift_left(children(left, s), t));
+        // @note for internal nodes we drop the separating key
+        left->key_count = is_child_leaf ? t : (t-1);
+
+        // insert RIGHT into PARENT with separating key
+        insert_child_to_right(parent, child_idx, is_child_leaf ? keys(right)[0] : keys(left)[t-1], right, s);
+    }
+
+    // @precondition leaf is not full
+    template<bool avoid_duplicates=true>
+    U8* insert_in_leaf(Node* leaf, KeyType key, const BTreeSettings& s, CountType& size) {
+        assert_true(leaf->key_count < max_keys(s, true), "leaf is not full");
+
+        auto ks = keys(leaf);
+        CountType idx = 0;
+        if (likely(leaf->key_count > 0)) {
+            if constexpr (avoid_duplicates) {
+                idx = binary_search_first_geq(keys(leaf), key);
+                if (idx < leaf->key_count && keys(leaf)[idx] == key)
+                    return values(leaf, s)[idx];
+                os::memory_shift_right(view_shift_left(keys(leaf), idx));
             } else {
-                R = M;
+                idx = leaf->key_count - 1;
+                for (; idx >= 0 && key < ks[idx]; idx--)
+                    ks[idx+1] = ks[idx];    
+                idx++;
             }
+            os::memory_shift_right(view_shift_left(values(leaf, s), idx));
         }
 
-        return L;
-    }
-
-    U8* insert_view_leaf_nonfull(LeafNode* leaf, KeyType key, const BTreeSettings& settings) {
-        auto& s = settings.value_stride;
-
-        CountType j = 0;
-        if (leaf->key_count > 0) {
-            j = leaf->key_count-1;
-            for (; j >= 0 && key < leaf->keys[j]; j--)
-                leaf->keys[j+1] = leaf->keys[j];    
-            j++;
-            memmove(leaf->values + (j+1)*s, leaf->values + j*s, (leaf->key_count-j)*s);
-        }
-
-        leaf->keys[j] = key;
+        ks[idx] = key;
         leaf->key_count++;
-        return leaf->values+j*s;
+        size++;
+        return values(leaf, s)[idx];
     }
 
-    U8* insert_view_nonfull(BTreeInMemory& btree, void* node, CountType depth, KeyType key) {
-        if (depth == btree.depth) {
-            return insert_view_leaf_nonfull(reinterpret_cast<LeafNode*>(node), key, btree.settings);
-        } else {
-            InternalNode* n = reinterpret_cast<InternalNode*>(node);
-            CountType child_idx = search_keys(n->keys, n->key_count, key);
-            child_idx++;
+    // @invariant n is not full
+    U8* insert_recursive(Node* n, CountType depth, CountType max_depth, KeyType key, const BTreeSettings& s, CountType& size) {
+        if (depth == max_depth)
+            return insert_in_leaf(n, key, s, size);
 
-            if (depth + 1 == btree.depth) {
-                LeafNode* c = n->children[child_idx].leaf;
-                if (c->key_count == btree.settings.keys_per_leaf_node) {
-                    split_child_leaf(n, child_idx, btree.settings);
-
-                    // which child to recurse into
-                    child_idx = (key > n->keys[child_idx]) ? (child_idx+1) : child_idx;
-                }
-            } else {
-                InternalNode* c = n->children[child_idx].internal;
-                if (c->key_count == btree.settings.keys_per_internal_node) {
-                    split_child_internal(n, child_idx, btree.settings);
-
-                    // which child to recurse into
-                    child_idx = (key > n->keys[child_idx]) ? (child_idx+1) : child_idx;
-                }
-            }
-
-            return insert_view_nonfull(btree, n->children[child_idx].any, depth+1, key);
+        CountType child_idx = binary_search_first_gt(keys(n), key);
+        bool is_child_leaf = depth + 1 == max_depth;
+        Node* child = children(n, s)[child_idx];
+        
+        if (child->key_count == max_keys(s, is_child_leaf)) {
+            split_child(n, child_idx, s, is_child_leaf);
+            child_idx = (key > keys(n)[child_idx]) ? (child_idx+1) : child_idx;
         }
+        assert_true(child->key_count < max_keys(s, is_child_leaf), "insert maintains max invariant.");
+
+        return insert_recursive(children(n, s)[child_idx], depth+1, max_depth, key, s, size);
     }
 
-    Search search_recursive(const BTreeInMemory& btree, KeyType key) {
-        const LeafNode* leaf = btree.leaves;
+    U8* insert(BTreeInMemory& btree, KeyType key) {
+        const auto& s = btree.settings;
 
-        if (leaf == nullptr)
-            return Search{};
-        if (btree.depth > 0) {
-            const InternalNode* curr = btree.root;
-            for (CountType depth = 0; depth <= btree.depth; depth++) {
-                CountType idx = search_keys(curr->keys, curr->key_count, key);
-                curr = curr->children[idx].internal;
-            }
-            leaf = reinterpret_cast<const LeafNode*>(curr);
+        // ensure root is not full
+        bool is_root_leaf = btree.depth == 0;
+        if (btree.root->key_count == max_keys(s, is_root_leaf)) {
+            Node* new_root = make_internal(s);
+            children(new_root, s)[0] = btree.root;
+            split_child(new_root, 0, s, is_root_leaf);
+            btree.root = new_root;
+            btree.depth++;
+        }
+
+        return insert_recursive(btree.root, 0, btree.depth, key, btree.settings, btree.size);
+    }
+
+    void insert(BTreeInMemory& btree, KeyType key, U8* value) {
+        U8* view = insert(btree, key);
+        os::memory_copy(view, value, btree.settings.value_stride);
+    }
+
+    // 
+    // search
+    // 
+    Search search(const BTreeInMemory& btree, KeyType key) {
+        Node* node = btree.root;
+        for (CountType depth = 0; depth < btree.depth; depth++) {
+            CountType idx = binary_search_first_gt(keys(node), key);
+            node = children(node, btree.settings)[idx];
         }
         
-        CountType idx = search_keys(leaf->keys, leaf->key_count, key);
-
-        if (leaf->keys[idx] == key) {
-            return Search{leaf, idx, leaf->values+idx*btree.settings.value_stride};
-        }
+        CountType idx = binary_search_first_geq(keys(node), key);
+        if (idx < node->key_count && keys(node)[idx] == key)
+            return Search{node, idx, values(node, btree.settings)[idx]};
         return Search{};
     }
 
     // 
-    // api
+    // remove
     // 
-    U8* insert_view(BTreeInMemory& btree, KeyType key) {
-        void* root = reinterpret_cast<void*>(btree.root);
+    
+    // @todo remove unnecessary memory shift left -> right when removing then moving
+    void move_from_left(Node* parent, Node* left, Node* node, CountType node_idx, const BTreeSettings& s, bool is_leaf) {
+        assert_true(node_idx > 0, "has left sibling");
+        assert_true(left->key_count > 0, "left sibling has keys");
+        assert_true(left == children(parent,s)[node_idx-1] && node == children(parent,s)[node_idx], "valid argument");
+        assert_true(node->key_count < max_keys(s, is_leaf), "enough space");
 
-        if (btree.depth == 0) {
-            root = reinterpret_cast<void*>(btree.leaves);
+        left->key_count--;
+        os::memory_shift_right(keys(node));
+        if (is_leaf) {
+            os::memory_shift_right(values(node,s));
 
-            // split root leaf if needed
-            if (btree.leaves->key_count == btree.settings.keys_per_leaf_node) {
-                btree.root = make_internal(btree.settings);
-                btree.root->children[0].leaf = btree.leaves;
-                split_child_leaf(btree.root, 0, btree.settings);
+            // move last key & value in LEFT to start of NODE
+            os::memory_copy(values(node,s)[0], values(left,s)[left->key_count], s.value_stride);
+            keys(node)[0] = keys(left)[left->key_count];
+            keys(parent)[node_idx-1] = keys(node)[0];
+        } else {
+            os::memory_shift_right(children(node,s));
 
-                btree.depth++;
-                root = reinterpret_cast<void*>(btree.root);
-            }
+            // rotate last key in LEFT through parent to NODE
+            children(node,s)[0] = children(left,s)[left->key_count+1];
+            keys(node)[0] = keys(parent)[node_idx-1];
+            keys(parent)[node_idx-1] = keys(left)[left->key_count];
         }
+        node->key_count++;
+    }
+
+    void move_from_right(Node* parent, Node* right, Node* node, CountType node_idx, const BTreeSettings& s, bool is_leaf) {
+        assert_true(node_idx < parent->key_count, "has right sibling");
+        assert_true(right->key_count > 0, "right sibling has keys");
+        assert_true(right == children(parent,s)[node_idx+1] && node == children(parent,s)[node_idx], "valid argument");
+        assert_true(node->key_count < max_keys(s, is_leaf), "enough space");
         
-        return insert_view_nonfull(btree, root, 0, key);
+        if (is_leaf) {
+            // move first key & value in RIGHT to end of NODE
+            os::memory_copy(values(node,s)[node->key_count], values(right,s)[0], s.value_stride);
+            keys(node)[node->key_count] = keys(right)[0];
+            keys(parent)[node_idx] = keys(right)[1];
+
+            os::memory_shift_left(view_shift_left(values(right,s)));
+        } else {
+            // rotate first key in RIGHT through parent to NODE
+            children(node,s)[node->key_count+1] = children(right,s)[0];
+            keys(node)[node->key_count] = keys(parent)[node_idx];
+            keys(parent)[node_idx] = keys(right)[0];
+
+            os::memory_shift_left(view_shift_left(children(right,s)));
+        }
+        os::memory_shift_left(view_shift_left(keys(right)));
+        right->key_count--;
+        node->key_count++;
     }
 
-    void insert(BTreeInMemory& btree, KeyType key, U8* value) {
-        U8* view = insert_view(btree, key);
-        memcpy(view, value, btree.settings.value_stride);
+    void merge(Node* a, Node* b, Node* parent, CountType a_idx, const BTreeSettings& s, bool is_leaf) {
+        assert_true(a_idx < parent->key_count, "valid argument");
+        assert_true(children(parent,s)[a_idx] == a, "valid argument");
+        assert_true(children(parent,s)[a_idx+1] == b, "valid argument");
+        assert_true(a->key_count + b->key_count <= max_keys(s, is_leaf), "enough space");
+
+        if (!is_leaf) {
+            keys(a)[a->key_count] = keys(parent)[a_idx];
+            os::memory_copy</*check_length*/false>(view_shift_left(children(a,s), static_cast<CountType>(a->key_count+1)), children(b,s));
+            a->key_count++;
+        } else {
+            os::memory_copy</*check_length*/false>(view_shift_left(values(a,s), a->key_count), values(b,s));
+        }
+        os::memory_copy</*check_length*/false>(view_shift_left(keys(a), a->key_count), keys(b));
+        a->key_count += b->key_count;
+        a->next = b->next;
+        os::deallocate(b);
+        
+        // delete key from parent
+        CountType b_idx = a_idx+1;
+        os::memory_shift_left(view_shift_left(keys(parent), b_idx));
+        os::memory_shift_left(view_shift_left(children(parent,s), static_cast<CountType>(b_idx+1)));
+        parent->key_count--;
     }
 
-    Search search(const BTreeInMemory& btree, KeyType key) {
-        return search_recursive(btree, key);
+    struct RemoveStackItem {
+        Node* node;
+        CountType idx;
+    };
+
+    bool remove(BTreeInMemory& btree, KeyType key) {
+        const auto& s = btree.settings;
+
+        // traverse to leaf and store path
+        std::stack<RemoveStackItem> stack{};
+        Node* node = btree.root;
+        for (CountType depth = 0; depth < btree.depth; depth++) {
+            CountType idx = binary_search_first_gt(keys(node), key);
+            stack.push(RemoveStackItem{node, idx});
+            node = children(node,s)[idx];
+        }
+
+        // find and delete key
+        CountType idx = binary_search_first_geq(keys(node), key);
+        if (idx >= node->key_count || keys(node)[idx] != key)
+            return false;
+        os::memory_shift_left(view_shift_left(keys(node), static_cast<CountType>(idx+1)));
+        os::memory_shift_left(view_shift_left(values(node, s), static_cast<CountType>(idx+1)));
+        node->key_count--;
+
+        // fix underflow, propagating upwards as needed
+        bool is_leaf = true;
+        while (node->key_count < min_keys(s, is_leaf)) {
+            if (stack.empty()) {
+                if (node->key_count != 0 || btree.depth == 0)
+                    break;
+
+                btree.root = children(node,s)[0];
+                os::deallocate(node);
+                btree.depth--;
+                break;
+            }
+
+            RemoveStackItem item = stack.top(); stack.pop();
+            Node* parent = item.node;
+            CountType idx = item.idx;
+
+            Node* left = (idx > 0) ? children(parent,s)[idx-1] : nullptr;
+            Node* right = (idx < parent->key_count) ? children(parent,s)[idx+1] : nullptr;
+            assert_true(left || right, "node must have at least one sibling.");
+
+            // borrow from left or right sibling if it does not break invariant
+            if (left && left->key_count > min_keys(s, is_leaf)) {
+                move_from_left(parent, left, node, idx, s, is_leaf);
+                break;
+            }
+            else if (right && right->key_count > min_keys(s, is_leaf)) {
+                move_from_right(parent, right, node, idx, s, is_leaf);
+                break;
+            }
+
+            // otherwise we need to merge, this causes a delete in the parent 
+            // which needs to be propagated
+            if (left) {
+                merge(left, node, parent, idx-1, s, is_leaf);
+            } else {
+                merge(node, right, parent, idx, s, is_leaf);
+            }
+
+            node = parent;
+            is_leaf = false;
+        }
+
+        btree.size--;
+        return true;
     }
 }
