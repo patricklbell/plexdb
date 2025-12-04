@@ -3,6 +3,11 @@ export module plexdb.os;
 import plexdb.base;
 
 export namespace plexdb::os {
+    union Handle {
+        U64 u64[1];
+        U32 u32[2];
+    };
+
     // ========================================================================
     // memory
     // ========================================================================
@@ -55,4 +60,23 @@ export namespace plexdb::os {
     void memory_shift_left(const TArrayView<T,Length>& src, Length offset=1) {
         memory_move(src.ptr - offset, src.ptr, sizeof(T)*src.length);
     }
+
+    // ========================================================================
+    // file
+    // ========================================================================
+    enum AccessFlags {
+        Read        = (1<<0),
+        Write       = (1<<1),
+        Execute     = (1<<2),
+        Append      = (1<<3),
+        ShareRead   = (1<<4),
+        ShareWrite  = (1<<5),
+        Inherited   = (1<<6),
+    };
+    Handle file_open(String8 path, AccessFlags flags=AccessFlags::Read|AccessFlags::Write);
+    void   file_close(Handle file);
+    U64    file_read(Handle file, Rng1U64 rng, U8* out);
+    U64    file_write(Handle file, Rng1U64 rng, U8* in);
+    B32    file_reserve_size(Handle file, U64 size);
+    void   file_sync();
 }
