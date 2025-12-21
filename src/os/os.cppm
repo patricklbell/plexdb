@@ -77,6 +77,4 @@ export namespace plexdb::os {
     void   file_close(Handle file);
     U64    file_read(Handle file, Rng1U64 rng, U8* out);
     U64    file_write(Handle file, Rng1U64 rng, U8* in);
-    B32    file_reserve_size(Handle file, U64 size);
-    void   file_sync();
 }

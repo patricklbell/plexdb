@@ -22,6 +22,7 @@ target_sources(plexdb_modules
             src/btree/btree.cppm
             src/btree/btree.detail.cppm
             src/os/os.cppm
+            src/pager/pager.cppm
 )
 
 add_library(plexdb STATIC)
@@ -33,6 +34,7 @@ target_sources(plexdb
         src/btree/btree.cpp
         src/btree/btree.detail.cpp
         src/os/os.cpp
+        src/pager/pager.cpp
 )
 target_link_libraries(plexdb PRIVATE plexdb_modules)
 
