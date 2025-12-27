@@ -1,6 +1,6 @@
 #pragma once
 
-// Clang OS/Arch Cracking
+// clang OS/arch cracking
 
 #if defined(__clang__)
 
@@ -30,7 +30,7 @@
         #error Architecture not supported.
     #endif
 
-// MSVC OS/Arch Cracking
+// MSVC OS/arch cracking
 
 #elif defined(_MSC_VER)
 
@@ -74,7 +74,7 @@
         #error Architecture not supported.
     #endif
 
-// GCC OS/Arch Cracking
+// GCC OS/arch cracking
 
 #elif defined(__GNUC__) || defined(__GNUG__)
 
@@ -102,11 +102,11 @@
     #error Compiler not supported.
 #endif
 
-// Arch Cracking
+// arch cracking
 
-#if defined(PLEXDB_ARCH_X64)
+#if defined(PLEXDB_ARCH_X64) || defined(PLEXDB_ARCH_ARM64)
     #define PLEXDB_ARCH_64BIT 1
-#elif defined(PLEXDB_ARCH_X86)
+#elif defined(PLEXDB_ARCH_X86) || defined(PLEXDB_ARCH_ARM32)
     #define PLEXDB_ARCH_32BIT 1
 #endif
 
@@ -116,7 +116,7 @@
     #error Endianness of this architecture could not be deduced.
 #endif
 
-// Language Cracking
+// language cracking
 
 #if defined(__cplusplus)
     #define PLEXDB_LANG_CPP 1
@@ -124,8 +124,38 @@
     #define PLEXDB_LANG_C 1
 #endif
 
-// Zero All Undefined Options
+// utilities
 
+#if !defined(PLEXDB_DEBUG)
+    #define PLEXDB_DEBUG 1
+    #define PLEXDB_DEBUG_X(x) x
+#else
+    #define PLEXDB_DEBUG_X(x)
+#endif
+
+#if PLEXDB_COMPILER_GCC || PLEXDB_COMPILER_CLANG
+    #define PLEXDB_LIKELY(x)   __builtin_expect(!!(x), 1)
+    #define PLEXDB_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+    #error Likely/unlikely not implemented.
+#endif
+
+#if PLEXDB_COMPILER_MSVC
+    #define PLEXDB_TRAP __debugbreak();
+#elif PLEXDB_COMPILER_GCC || PLEXDB_COMPILER_CLANG
+    #define PLEXDB_TRAP __builtin_trap();
+#else
+    #error Trap not implemented.
+#endif
+
+// zero undefined options
+
+#if !defined(PLEXDB_ARCH_LITTLE_ENDIAN)
+    #define PLEXDB_ARCH_LITTLE_ENDIAN 0
+#endif
+#if !defined(PLEXDB_ARCH_BIG_ENDIAN)
+    #define PLEXDB_ARCH_BIG_ENDIAN 0
+#endif
 #if !defined(PLEXDB_ARCH_32BIT)
     #define PLEXDB_ARCH_32BIT 0
 #endif
@@ -170,39 +200,4 @@
 #endif
 #if !defined(LANG_C)
     #define LANG_C 0
-#endif
-
-#if PLEXDB_OS_LINUX
-    #define PLEXDB_OS_UNIX 1
-#else
-    #define PLEXDB_OS_UNIX 0
-#endif
-
-#if !defined(PLEXDB_BUILD_DEBUG)
-    #define PLEXDB_BUILD_DEBUG 1
-#endif
-
-#if PLEXDB_COMPILER_MSVC
-    #define PLEXDB_ALIGNOF(T) __alignof(T)
-#elif PLEXDB_COMPILER_CLANG
-    #define PLEXDB_ALIGNOF(T) __alignof(T)
-#elif PLEXDB_COMPILER_GCC
-    #define PLEXDB_ALIGNOF(T) __alignof__(T)
-#else
-    #error Alignof not implemented.
-#endif
-
-#if PLEXDB_COMPILER_GCC || PLEXDB_COMPILER_CLANG
-    #define PLEXDB_LIKELY(x)   __builtin_expect(!!(x), 1)
-    #define PLEXDB_UNLIKELY(x) __builtin_expect(!!(x), 0)
-#else
-    #error Likely/unlikely not implemented.
-#endif
-
-#if PLEXDB_COMPILER_MSVC
-    #define PLEXDB_TRAP __debugbreak();
-#elif PLEXDB_COMPILER_GCC || PLEXDB_COMPILER_CLANG
-    #define PLEXDB_TRAP __builtin_trap();
-#else
-    #error Trap not implemented.
 #endif

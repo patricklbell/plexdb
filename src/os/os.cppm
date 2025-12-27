@@ -3,10 +3,15 @@ export module plexdb.os;
 import plexdb.base;
 
 export namespace plexdb::os {
+    // ========================================================================
+    // handle
+    // ========================================================================
     union Handle {
         U64 u64[1];
         U32 u32[2];
     };
+    constexpr inline Handle zero_handle() { return {.u64 = {0} }; }
+    constexpr inline bool is_zero_handle(Handle h) { return h.u64[0] == 0; }
 
     // ========================================================================
     // memory
@@ -65,16 +70,17 @@ export namespace plexdb::os {
     // file
     // ========================================================================
     enum AccessFlags {
-        Read        = (1<<0),
-        Write       = (1<<1),
-        Execute     = (1<<2),
-        Append      = (1<<3),
-        ShareRead   = (1<<4),
-        ShareWrite  = (1<<5),
-        Inherited   = (1<<6),
+        READ        = (1<<0),
+        WRITE       = (1<<1),
+        EXECUTE     = (1<<2),
+        APPEND      = (1<<3),
+        // @todo
+        // SHAREREAD   = (1<<4),
+        // SHAREWRITE  = (1<<5),
     };
-    Handle file_open(String8 path, AccessFlags flags=AccessFlags::Read|AccessFlags::Write);
+    Handle file_open(String8 path, AccessFlags flags=AccessFlags(READ|WRITE));
     void   file_close(Handle file);
-    U64    file_read(Handle file, Rng1U64 rng, U8* out);
-    U64    file_write(Handle file, Rng1U64 rng, U8* in);
+    void   file_read(Handle file, Rng1U64 rng, U8* out);
+    void   file_write(Handle file, Rng1U64 rng, U8* in);
+    void   file_sync(Handle file);
 }

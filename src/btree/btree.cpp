@@ -1,10 +1,7 @@
-module;
-// @todo
-#include <stack>
-
 module plexdb.btree;
 
 import plexdb.os;
+import plexdb.arena;
 
 namespace plexdb::btree {
     BTreeInMemory::BTreeInMemory(CountType max_keys_per_internal, CountType max_keys_per_leaf, U64 value_stride):
@@ -254,11 +251,13 @@ namespace plexdb::btree {
         const auto& s = btree.settings;
 
         // traverse to leaf and store path
-        std::stack<RemoveStackItem> stack{};
+        Stack<RemoveStackItem> stack{};
+        // @todo @perf temp arena
+        Arena stack_arena{/*page_size*/ sizeof(decltype(stack)::Node)*btree.depth};
         Node* node = btree.root;
         for (CountType depth = 0; depth < btree.depth; depth++) {
             CountType idx = binary_search_first_gt(keys(node), key);
-            stack.push(RemoveStackItem{node, idx});
+            push_front(stack_arena, stack, RemoveStackItem{node, idx});
             node = children(node,s)[idx];
         }
 
@@ -273,7 +272,7 @@ namespace plexdb::btree {
         // fix underflow, propagating upwards as needed
         bool is_leaf = true;
         while (node->key_count < min_keys(s, is_leaf)) {
-            if (stack.empty()) {
+            if (stack.length == 0) {
                 if (node->key_count != 0 || btree.depth == 0)
                     break;
 
@@ -283,9 +282,9 @@ namespace plexdb::btree {
                 break;
             }
 
-            RemoveStackItem item = stack.top(); stack.pop();
-            Node* parent = item.node;
-            CountType idx = item.idx;
+            RemoveStackItem* item = front(stack); pop_front(stack);
+            Node* parent = item->node;
+            CountType idx = item->idx;
 
             Node* left = (idx > 0) ? children(parent,s)[idx-1] : nullptr;
             Node* right = (idx < parent->key_count) ? children(parent,s)[idx+1] : nullptr;

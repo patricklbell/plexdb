@@ -19,6 +19,10 @@ target_sources(plexdb_modules
         FILE_SET CXX_MODULES FILES
             src/arena/arena.cppm
             src/base/base.cppm
+            src/base/containers.cppm
+            src/base/math.cppm
+            src/base/string.cppm
+            src/base/types.cppm
             src/btree/btree.cppm
             src/btree/btree.detail.cppm
             src/os/os.cppm
@@ -30,7 +34,7 @@ target_include_directories(plexdb PRIVATE src)
 target_sources(plexdb
     PRIVATE
         src/arena/arena.cpp
-        src/base/base.cpp
+        src/base/types.cpp
         src/btree/btree.cpp
         src/btree/btree.detail.cpp
         src/os/os.cpp
@@ -45,23 +49,22 @@ if(BUILD_TESTS)
     Include(FetchContent)
 
     FetchContent_Declare(
-    Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG        v3.11.0
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG        v3.11.0
     )
-
     FetchContent_MakeAvailable(Catch2)
 
-    add_executable(tests)
-    file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
+    add_executable(plexdb_tests)
+    file(GLOB_RECURSE PLEXDB_TEST_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_SOURCE_DIR}/src/**/*.test.cpp"
     )
-    target_sources(tests
+    target_sources(plexdb_tests
         PRIVATE
-            ${TEST_SOURCES}
+            ${PLEXDB_TEST_SOURCES}
     )
 
-    target_link_libraries(tests
+    target_link_libraries(plexdb_tests
         PRIVATE
             plexdb
             Catch2::Catch2WithMain

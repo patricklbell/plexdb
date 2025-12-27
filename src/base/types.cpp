@@ -1,4 +1,4 @@
-module plexdb.base;
+module plexdb.base.types;
 
 namespace plexdb {
     void set_assert_handler(AssertHandler h) noexcept {
