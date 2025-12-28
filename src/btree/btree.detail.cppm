@@ -17,7 +17,8 @@ export namespace plexdb::btree {
     CountType min_keys(const Settings& s, bool is_leaf);
     void move_from_left(Node* parent, Node* left, Node* node, CountType node_idx, const Settings& s, bool is_leaf);
     void move_from_right(Node* parent, Node* right, Node* node, CountType node_idx, const Settings& s, bool is_leaf);
-    void merge(Node* a, Node* b, Node* parent, CountType a_idx, const Settings& s, bool is_leaf);
+    void merge(const Settings& s, Node* a, Node* b, Node* parent, CountType a_idx, bool is_leaf);
+    void delete_from_leaf(const Settings& s, Node* node, CountType idx);
 
     template<typename BTree>
     void insert_child_to_right(BTree& btree, Node* parent, CountType idx, KeyType key, NodeRef child_ref, Node* child, const Settings& s) {
@@ -169,31 +170,9 @@ export namespace plexdb::btree {
     // remove
     // ========================================================================
     template<typename BTree>
-    void merge(BTree btree, Node* a, NodeRef b_ref, Node* b, Node* parent, CountType a_idx, bool is_leaf) {
-        const auto& s = get_settings(btree);
-
-        assert_true(a_idx < parent->key_count, "valid argument");
-        // assert_true(children(parent,s)[a_idx] == a, "valid argument");
-        // assert_true(children(parent,s)[a_idx+1] == b, "valid argument");
-        assert_true(a->key_count + b->key_count <= max_keys(s, is_leaf), "enough space");
-
-        if (!is_leaf) {
-            keys(a)[a->key_count] = keys(parent)[a_idx];
-            os::memory_copy</*check_length*/false>(view_shift_left(children(a,s), static_cast<CountType>(a->key_count+1)), children(b,s));
-            a->key_count++;
-        } else {
-            os::memory_copy</*check_length*/false>(view_shift_left(values(a,s), a->key_count), values(b,s));
-        }
-        os::memory_copy</*check_length*/false>(view_shift_left(keys(a), a->key_count), keys(b));
-        a->key_count += b->key_count;
-        a->next = b->next;
+    void merge_and_delete(BTree& btree, Node* a, NodeRef b_ref, Node* b, Node* parent, CountType a_idx, bool is_leaf) {
+        merge(get_settings(btree), a, b, parent, a_idx, is_leaf);
         delete_node(btree, b_ref);
-        
-        // delete key from parent
-        CountType b_idx = a_idx+1;
-        os::memory_shift_left(view_shift_left(keys(parent), b_idx));
-        os::memory_shift_left(view_shift_left(children(parent,s), static_cast<CountType>(b_idx+1)));
-        parent->key_count--;
     }
 
     struct RemoveStackItem {
@@ -227,9 +206,7 @@ export namespace plexdb::btree {
             return false;
 
         node = rwnode(btree, node_ref);
-        os::memory_shift_left(view_shift_left(keys(node), static_cast<CountType>(idx+1)));
-        os::memory_shift_left(view_shift_left(values(node, s), static_cast<CountType>(idx+1)));
-        node->key_count--;
+        delete_from_leaf(s, node, idx);
 
         // fix underflow, propagating upwards as needed
         bool is_leaf = true;
@@ -245,9 +222,9 @@ export namespace plexdb::btree {
             }
 
             RemoveStackItem* item = front(stack); pop_front(stack);
-            NodeRef parent_ref = item->node;
+            NodeRef& parent_ref = item->node;
+            CountType& idx = item->idx;
             Node* parent = rwnode(btree, parent_ref);
-            CountType idx = item->idx;
 
             // borrow from left or right sibling if it does not break invariant
             NodeRef left_ref = (idx > 0) ? children(parent,s)[idx-1] : ~0u;
@@ -268,9 +245,9 @@ export namespace plexdb::btree {
             // otherwise we need to merge, this causes a delete in the parent 
             // which needs to be propagated
             if (left) {
-                merge(btree, left, node_ref, node, parent, idx-1, is_leaf);
+                merge_and_delete(btree, left, node_ref, node, parent, idx-1, is_leaf);
             } else {
-                merge(btree, node, right_ref, right, parent, idx, is_leaf);
+                merge_and_delete(btree, node, right_ref, right, parent, idx, is_leaf);
             }
 
             node_ref = parent_ref;

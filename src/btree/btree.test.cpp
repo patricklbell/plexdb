@@ -1,6 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/benchmark/catch_benchmark.hpp>
-#include <iostream>
 #include <algorithm>
 #include <vector>
 #include <numeric>
@@ -10,48 +9,7 @@ import plexdb.os;
 import plexdb.arena;
 import plexdb.btree;
 import plexdb.btree.detail;
-
-namespace plexdb::btree {
-    template<typename T>
-    std::string node_to_string(Node* node, const Settings& s, bool is_leaf) {
-        std::string result = "[";
-        for (int i = 0; i < node->key_count; i++) {
-            result += std::to_string(keys(node)[i]);
-
-            if (is_leaf) {
-                T value = os::memory_cast<T>(values(node, s)[i]);
-                result += ": " + std::to_string(value);
-            }
-
-            result += ((i == node->key_count-1) ? "" : ", ");
-        }
-        return result + "]";
-    }
-
-    template<typename T, typename BTree>
-    std::string btree_to_string_recursive(BTree& t, Node* node, int depth, std::string prepend, bool end) {
-        const auto& s = get_settings(t);
-
-        std::string result = prepend + (end ? " └" : " ├");
-        result += node_to_string<T>(node, s, depth == s.depth) + "\n";
-        if (depth < s.depth) {
-            auto chldrn = children(node, s);
-            for (auto& child_ref : chldrn) {
-                Node* child = rnode(t, child_ref);
-                result += btree_to_string_recursive<T>(t, child, depth+1, prepend + (end ? "   " : " | "), &child_ref == chldrn.end()-1);
-            }
-        }
-        return result;
-    }
-    
-    template<typename T, typename BTree>
-    std::string btree_to_string(BTree& t) {
-        std::string result = "";
-        result += "[tree, depth=" + std::to_string(get_settings(t).depth) + "]\n";
-        result += btree_to_string_recursive<T>(t, rnode(t, get_root(t)), 0, "", true);
-        return result;
-    }
-}
+import plexdb.btree.print;
 
 using namespace plexdb;
 using namespace plexdb::btree;
@@ -127,7 +85,7 @@ TEST_CASE("insert", "[btree]" ) {
             insert(t, key, reinterpret_cast<U8*>(&value));
         }
 
-        INFO(btree_to_string<int>(t));
+        INFO(print::to_string8<int>(t));
 
         for (int key = 0; key < 32; key++) {
             REQUIRE(get<int>(t, key) == 10*key);

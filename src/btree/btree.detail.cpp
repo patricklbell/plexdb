@@ -64,4 +64,32 @@ namespace plexdb::btree {
         right->key_count--;
         node->key_count++;
     }
+
+    void merge(const Settings& s, Node* a, Node* b, Node* parent, CountType a_idx, bool is_leaf) {
+        assert_true(a_idx < parent->key_count, "valid argument");
+        assert_true(a->key_count + b->key_count <= max_keys(s, is_leaf), "enough space");
+
+        if (!is_leaf) {
+            keys(a)[a->key_count] = keys(parent)[a_idx];
+            os::memory_copy</*check_length*/false>(view_shift_left(children(a,s), static_cast<CountType>(a->key_count+1)), children(b,s));
+            a->key_count++;
+        } else {
+            os::memory_copy</*check_length*/false>(view_shift_left(values(a,s), a->key_count), values(b,s));
+        }
+        os::memory_copy</*check_length*/false>(view_shift_left(keys(a), a->key_count), keys(b));
+        a->key_count += b->key_count;
+        a->next = b->next;
+        
+        // delete key from parent
+        CountType b_idx = a_idx+1;
+        os::memory_shift_left(view_shift_left(keys(parent), b_idx));
+        os::memory_shift_left(view_shift_left(children(parent,s), static_cast<CountType>(b_idx+1)));
+        parent->key_count--;
+    }
+    
+    void delete_from_leaf(const Settings& s, Node* node, CountType idx) {
+        os::memory_shift_left(view_shift_left(keys(node), static_cast<CountType>(idx+1)));
+        os::memory_shift_left(view_shift_left(values(node, s), static_cast<CountType>(idx+1)));
+        node->key_count--;
+    }
 }

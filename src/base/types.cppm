@@ -8,7 +8,7 @@ export module plexdb.base.types;
 
 namespace plexdb {
     // ========================================================================
-    // concepts
+    // helper traits
     // ========================================================================
     template<typename T> struct remove_cv                   { using type = T; };
     template<typename T> struct remove_cv<const T>          { using type = T; };
@@ -132,15 +132,33 @@ export namespace plexdb {
     // ========================================================================
     // casts
     // ========================================================================
+    template<typename T>
+    T&& declval() noexcept; // @note declaration only
+
     template <typename T>
     constexpr T&& move(T& value) noexcept {
         return static_cast<T&&>(value);
     }
 
-    template <typename T>
-    constexpr T&& forward(T& value) noexcept {
-        return static_cast<T&&>(value);
+    template<typename T>
+    using RemoveCV = typename remove_cv<T>::type;
+    
+    template<typename T>
+    using RemoveReference = typename remove_reference<T>::type;
+
+    template<typename T>
+    constexpr T&& forward(RemoveReference<T>& t) noexcept {
+        return static_cast<T&&>(t);
     }
+
+    template<typename T>
+    constexpr T&& forward(RemoveReference<T>&& t) noexcept {
+        static_assert(!__is_lvalue_reference(T), "forward<T>(T&&) called with T as lvalue reference");
+        return static_cast<T&&>(t);
+    }
+
+    template<typename It>
+    using IterValue = RemoveCV<RemoveReference<decltype(*declval<It>())>>;
 
     // ========================================================================
     // concepts
@@ -160,24 +178,63 @@ export namespace plexdb {
     };
 
     template<typename T>
-    using RemoveCV = typename remove_cv<T>::type;
-    
-    template<typename T>
-    using RemoveReference = typename remove_reference<T>::type;
-
-    template<typename T>
-    T&& declval() noexcept; // @note declaration only
-
-    template<typename It>
-    using IterValue = RemoveCV<RemoveReference<decltype(*declval<It>())>>;
-
-    template<typename T>
     concept CopyAssignable = requires(T& lhs, const T& rhs) {
         { lhs = rhs } -> SameAs<T&>;
     };
 
+    template<typename T>
+    concept NoThrowMoveConstructible = __is_nothrow_constructible(T, T&&);
+
+    template<typename T, typename U>
+    concept NoThrowAssignable = __is_nothrow_assignable(T, U);
+
     template<typename T, typename ... U>
     concept Either = (SameAs<T, U> || ...);
+
+    // ========================================================================
+    // pair
+    // ========================================================================
+    template<typename A, typename B>
+    struct Pair {
+        union {
+            A key;
+            A first;
+        };
+        union {
+            B value;
+            B second;
+        };
+
+        Pair(A first, B second) : first(first), second(second) {}
+    };
+
+    // ========================================================================
+    // exchange and swap
+    // ========================================================================
+    template<class T, class U = T>
+    constexpr T exchange(T& obj, U&& new_value)
+        noexcept(
+            NoThrowMoveConstructible<T> &&
+            NoThrowAssignable<T&, U>
+        )
+    {
+        T old_value = move(obj);
+        obj = forward<U>(new_value);
+        return old_value;
+    }
+
+    template<typename T>
+    constexpr void swap(T& a, T& b) 
+        noexcept(
+            noexcept(T(move(a)))  &&
+            noexcept(a = move(b)) &&
+            noexcept(b = move(a))
+        )
+    {
+        T tmp = move(a);
+        a = move(b);
+        b = move(tmp);
+    }
 
     // ========================================================================
     // array
@@ -443,22 +500,5 @@ export namespace plexdb {
         constexpr const T& operator*() const & noexcept { return *ptr(); }
         constexpr T* operator->() noexcept { return ptr(); }
         constexpr const T* operator->() const noexcept { return ptr(); }
-    };
-
-    // ========================================================================
-    // pair
-    // ========================================================================
-    template<typename A, typename B>
-    struct Pair {
-        union {
-            A key;
-            A first;
-        };
-        union {
-            B value;
-            B second;
-        };
-
-        Pair(A first, B second) : first(first), second(second) {}
     };
 }

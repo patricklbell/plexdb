@@ -9,6 +9,17 @@ option(BUILD_TESTS "Build unit tests" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 
+# disable exceptions and RTTI
+if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHs-c-")
+    string(REPLACE "/GR" "/GR-" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    string(REPLACE "/GR" "/GR-" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    string(REPLACE "/GR" "/GR-" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+    string(REPLACE "/GR" "/GR-" CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELEASE}")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions -fno-rtti")
+endif()
+
 # =============================================================================
 # library
 # =============================================================================
@@ -30,6 +41,7 @@ target_sources(plexdb_modules
             src/btree/btree.detail.cppm
             src/btree/btree.cppm
             src/btree/btree.node.cppm
+            src/btree/btree.print.cppm
             src/btree/btree.types.cppm
             src/os/os.cppm
             src/pager/pager.cppm
@@ -40,6 +52,7 @@ target_include_directories(plexdb PRIVATE src)
 target_sources(plexdb
     PRIVATE
         src/arena/arena.cpp
+        src/base/string.cpp
         src/base/types.cpp
         src/btree/btree.node.cpp
         src/btree/implementations/btree.paged.cpp
@@ -50,6 +63,7 @@ target_sources(plexdb
         src/os/os.cpp
         src/pager/pager.cpp
 )
+
 target_link_libraries(plexdb PRIVATE plexdb_modules)
 
 # =============================================================================
