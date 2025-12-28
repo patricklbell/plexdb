@@ -7,12 +7,13 @@
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.arena;
 import plexdb.btree;
 import plexdb.btree.detail;
 
 namespace plexdb::btree {
     template<typename T>
-    std::string node_to_string(Node* node, const BTreeSettings& s, bool is_leaf) {
+    std::string node_to_string(Node* node, const Settings& s, bool is_leaf) {
         std::string result = "[";
         for (int i = 0; i < node->key_count; i++) {
             result += std::to_string(keys(node)[i]);
@@ -27,25 +28,27 @@ namespace plexdb::btree {
         return result + "]";
     }
 
-    template<typename T>
-    std::string btree_to_string_recursive(BTreeInMemory& t, Node* node, int depth, std::string prepend, bool end) {
-        std::string result = prepend + (end ? " └" : " ├");
+    template<typename T, typename BTree>
+    std::string btree_to_string_recursive(BTree& t, Node* node, int depth, std::string prepend, bool end) {
+        const auto& s = get_settings(t);
 
-        result += node_to_string<T>(node, t.settings, depth == t.depth) + "\n";
-        if (depth < t.depth) {
-            auto chldrn = children(node, t.settings);
-            for (auto& child : chldrn) {
-                result += btree_to_string_recursive<T>(t, child, depth+1, prepend + (end ? "   " : " | "), &child == chldrn.end()-1);
+        std::string result = prepend + (end ? " └" : " ├");
+        result += node_to_string<T>(node, s, depth == s.depth) + "\n";
+        if (depth < s.depth) {
+            auto chldrn = children(node, s);
+            for (auto& child_ref : chldrn) {
+                Node* child = rnode(t, child_ref);
+                result += btree_to_string_recursive<T>(t, child, depth+1, prepend + (end ? "   " : " | "), &child_ref == chldrn.end()-1);
             }
         }
         return result;
     }
     
-    template<typename T>
-    std::string btree_to_string(BTreeInMemory& t) {
+    template<typename T, typename BTree>
+    std::string btree_to_string(BTree& t) {
         std::string result = "";
-        result += "[tree, depth=" + std::to_string(t.depth) + "]\n";
-        result += btree_to_string_recursive<T>(t, t.root, 0, "", true);
+        result += "[tree, depth=" + std::to_string(get_settings(t).depth) + "]\n";
+        result += btree_to_string_recursive<T>(t, rnode(t, get_root(t)), 0, "", true);
         return result;
     }
 }
@@ -258,7 +261,7 @@ TEST_CASE("remove", "[btree]" ) {
                 }
 
                 CAPTURE(max_key);
-                REQUIRE(size(t) == kept);
+                REQUIRE(get_settings(t).size == kept);
             } while (std::next_permutation(elements.begin(), elements.end()));
         }
     }

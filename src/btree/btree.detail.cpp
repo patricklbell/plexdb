@@ -1,37 +1,67 @@
 module plexdb.btree.detail;
 
-import plexdb.os;
-
 namespace plexdb::btree {
-    KeyType* keys_raw(Node* node) { return reinterpret_cast<KeyType*>(reinterpret_cast<U8*>(node)+sizeof(*node)); }
-    Node** children_raw(Node* node, const BTreeSettings& s) { return reinterpret_cast<Node**>(reinterpret_cast<U8*>(node)+sizeof(*node)+s.max_keys_per_internal*sizeof(KeyType)); }
-    U8* values_raw(Node* node, const BTreeSettings& s) { return reinterpret_cast<U8*>(node)+sizeof(*node)+s.max_keys_per_leaf*sizeof(KeyType); }
-
-    TArrayView<KeyType, CountType> keys(Node* node) { return TArrayView{keys_raw(node), node->key_count}; }
-    TArrayView<Node*, CountType> children(Node* node, const BTreeSettings& s) { return TArrayView{children_raw(node, s), static_cast<CountType>(node->key_count+1)}; }
-    ArrayView<U64, CountType> values(Node* node, const BTreeSettings& s) { return ArrayView{values_raw(node, s), s.value_stride, node->key_count}; }
-
-    Node* make_internal(const BTreeSettings& s) {
-        Node* node = reinterpret_cast<Node*>(os::allocate(
-            sizeof(*node) + 
-            s.max_keys_per_internal*sizeof(KeyType) + 
-            (s.max_keys_per_internal+1)*sizeof(Node*)
-        ));
-        node->key_count = 0;
-        node->prev = nullptr;
-        node->next = nullptr;
-        return node;
+    // ========================================================================
+    // helpers
+    // ========================================================================
+    CountType max_keys(const Settings& s, bool is_leaf) {
+        return is_leaf ? s.max_keys_per_leaf : s.max_keys_per_internal;
     }
 
-    Node* make_leaf(const BTreeSettings& s) {
-        Node* node = reinterpret_cast<Node*>(os::allocate(
-            sizeof(*node) + 
-            s.max_keys_per_leaf*sizeof(KeyType) + 
-            s.max_keys_per_leaf*s.value_stride
-        ));
-        node->key_count = 0;
-        node->prev = nullptr;
-        node->next = nullptr;
-        return node;
+    CountType min_keys(const Settings& s, bool is_leaf) {
+        return (max_keys(s, is_leaf) + 1)/2 - 1;
+    }
+
+    // @todo remove unnecessary memory shift left -> right when removing then moving
+    void move_from_left(Node* parent, Node* left, Node* node, CountType node_idx, const Settings& s, bool is_leaf) {
+        assert_true(node_idx > 0, "has left sibling");
+        assert_true(left->key_count > 0, "left sibling has keys");
+        // assert_true(left == children(parent,s)[node_idx-1] && node == children(parent,s)[node_idx], "valid argument");
+        assert_true(node->key_count < max_keys(s, is_leaf), "enough space");
+
+        left->key_count--;
+        os::memory_shift_right(keys(node));
+        if (is_leaf) {
+            os::memory_shift_right(values(node,s));
+
+            // move last key & value in LEFT to start of NODE
+            os::memory_copy(values(node,s)[0], values(left,s)[left->key_count], s.value_stride);
+            keys(node)[0] = keys(left)[left->key_count];
+            keys(parent)[node_idx-1] = keys(node)[0];
+        } else {
+            os::memory_shift_right(children(node,s));
+
+            // rotate last key in LEFT through parent to NODE
+            children(node,s)[0] = children(left,s)[left->key_count+1];
+            keys(node)[0] = keys(parent)[node_idx-1];
+            keys(parent)[node_idx-1] = keys(left)[left->key_count];
+        }
+        node->key_count++;
+    }
+
+    void move_from_right(Node* parent, Node* right, Node* node, CountType node_idx, const Settings& s, bool is_leaf) {
+        assert_true(node_idx < parent->key_count, "has right sibling");
+        assert_true(right->key_count > 0, "right sibling has keys");
+        // assert_true(right == children(parent,s)[node_idx+1] && node == children(parent,s)[node_idx], "valid argument");
+        assert_true(node->key_count < max_keys(s, is_leaf), "enough space");
+        
+        if (is_leaf) {
+            // move first key & value in RIGHT to end of NODE
+            os::memory_copy(values(node,s)[node->key_count], values(right,s)[0], s.value_stride);
+            keys(node)[node->key_count] = keys(right)[0];
+            keys(parent)[node_idx] = keys(right)[1];
+
+            os::memory_shift_left(view_shift_left(values(right,s)));
+        } else {
+            // rotate first key in RIGHT through parent to NODE
+            children(node,s)[node->key_count+1] = children(right,s)[0];
+            keys(node)[node->key_count] = keys(parent)[node_idx];
+            keys(parent)[node_idx] = keys(right)[0];
+
+            os::memory_shift_left(view_shift_left(children(right,s)));
+        }
+        os::memory_shift_left(view_shift_left(keys(right)));
+        right->key_count--;
+        node->key_count++;
     }
 }

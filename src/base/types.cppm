@@ -176,6 +176,9 @@ export namespace plexdb {
         { lhs = rhs } -> SameAs<T&>;
     };
 
+    template<typename T, typename ... U>
+    concept Either = (SameAs<T, U> || ...);
+
     // ========================================================================
     // array
     // ========================================================================
@@ -216,7 +219,7 @@ export namespace plexdb {
         return TArrayView<T,Length>{in.ptr - offset, static_cast<Length>(in.length + offset)};
     }
 
-    template<typename Size, typename Length>
+    template<typename Length, typename Size = U64>
     struct ArrayView {
         U8* ptr;
         Length length;
@@ -265,15 +268,15 @@ export namespace plexdb {
         U8* operator[](Length i) noexcept { return ptr + i*el_size; }
         const U8* operator[](Length i) const noexcept { return ptr + i*el_size; }
     };
-    template<typename Size, typename Length>
-    ArrayView<Size,Length> view_shift_left(const ArrayView<Size,Length>& in, Length offset=static_cast<Length>(1)) {
+    template<typename Length, typename Size>
+    ArrayView<Length,Size> view_shift_left(const ArrayView<Length,Size>& in, Length offset=static_cast<Length>(1)) {
         assert_true(in.length > 0 || offset == 0, "avoid underflow in view shift.");
-        return ArrayView<Size,Length>{in.ptr + offset*in.el_size, in.el_size, static_cast<Length>(in.length - offset)};
+        return ArrayView<Length,Size>{in.ptr + offset*in.el_size, in.el_size, static_cast<Length>(in.length - offset)};
     }
-    template<typename Size, typename Length>
-    ArrayView<Size,Length> view_shift_right(const ArrayView<Size,Length>& in, Length offset=static_cast<Length>(1)) {
+    template<typename Length, typename Size>
+    ArrayView<Length,Size> view_shift_right(const ArrayView<Length,Size>& in, Length offset=static_cast<Length>(1)) {
         // @todo overflow assert
-        return ArrayView<Size,Length>{in.ptr - offset*in.el_size, in.el_size, static_cast<Length>(in.length + offset)};
+        return ArrayView<Length,Size>{in.ptr - offset*in.el_size, in.el_size, static_cast<Length>(in.length + offset)};
     }
 
     // ========================================================================

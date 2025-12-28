@@ -63,21 +63,21 @@ export namespace plexdb {
     // fixed slot map
     // ========================================================================
     template<typename K, typename V>
-    struct FixedSlotMap {
+    struct MapFixedSlots {
         using Node = Stack<Pair<K,V>>::Node;
 
         Stack<Pair<K, V>>* slots;
         U64 slot_count;
         U64 length = 0;
 
-        FixedSlotMap(Stack<Pair<K, V>>* slots, U64 slot_count) : slots(slots), slot_count(slot_count) {}
+        MapFixedSlots(Stack<Pair<K, V>>* slots, U64 slot_count) : slots(slots), slot_count(slot_count) {}
 
         struct Iterator {
-            FixedSlotMap<K,V>* map;
+            MapFixedSlots<K,V>* map;
             U64 slot_idx;
             Node* node;
 
-            Iterator(FixedSlotMap<K,V>* map, U64 slot_idx, Node* node) : map(map), slot_idx(slot_idx), node(node) {}
+            Iterator(MapFixedSlots<K,V>* map, U64 slot_idx, Node* node) : map(map), slot_idx(slot_idx), node(node) {}
 
             Iterator& operator++() {
                 if (node->next == nullptr) {
@@ -103,7 +103,7 @@ export namespace plexdb {
     };
 
     template<typename K, typename V>
-    V* find(FixedSlotMap<K, V>& map, const K& key) {
+    V* find(MapFixedSlots<K, V>& map, const K& key) {
         U64 slot_idx = hash(key)%map.slot_count;
 
         for(auto& pair : map.slots[slot_idx]) {
@@ -113,13 +113,13 @@ export namespace plexdb {
         return nullptr;
     }
     template<typename K, typename V>
-    void insert(FixedSlotMap<K,V>& map, typename FixedSlotMap<K,V>::Node* node) {
+    void insert(MapFixedSlots<K,V>& map, typename MapFixedSlots<K,V>::Node* node) {
         U64 slot_idx = hash(node->key)%map.slot_count;
         push_front(map.slots[slot_idx], node);
         map.length++;
     }
     template<typename K, typename V>
-    void clear(FixedSlotMap<K,V>& map) {
+    void clear(MapFixedSlots<K,V>& map) {
         for(U64 slot_idx = 0; slot_idx < map.slot_count; slot_idx++) {
             clear(map.slots[slot_idx]);
         }

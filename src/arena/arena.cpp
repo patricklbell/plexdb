@@ -72,18 +72,18 @@ namespace plexdb::arena {
                 new_page->page_offset = HEADER_SIZE;
             } else {
                 U64 new_page_size = current->page_size;
-                if(size + HEADER_SIZE > new_page_size) {
-                    new_page_size = align_pow2(size + HEADER_SIZE, align);
+                if(size > new_page_size) {
+                    new_page_size = align_pow2(size, align);
                 }
         
                 new_page = allocate(new_page_size, nullptr);
             }
 
-            new_page->base_offset = current->base_offset + current->page_size;
-            (arena.page->current)->prev = new_page;
-            new_page = arena.page->current;
-
+            new_page->base_offset = current->base_offset + HEADER_SIZE + current->page_size;
+            new_page->prev = current;
+            arena.page->current = new_page;
             current = new_page;
+
             page_offset_before = align_pow2(current->page_offset, align);
             page_offset_after = page_offset_before + size;
             assert_true(page_offset_after <= HEADER_SIZE + current->page_size, "page not large enough"); // @todo reserve across pages
@@ -106,8 +106,6 @@ namespace plexdb::arena {
             arena.page->current = arena.page->current->prev;
             os::deallocate(current);
             current = arena.page->current;
-
-            assert_true(!(offset > current->base_offset && offset < current->base_offset + HEADER_SIZE), "offset is in header portion");
         }
         assert_true(!(offset > current->base_offset && offset < current->base_offset + HEADER_SIZE), "offset is in header portion");
 

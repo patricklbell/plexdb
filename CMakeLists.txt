@@ -23,8 +23,14 @@ target_sources(plexdb_modules
             src/base/math.cppm
             src/base/string.cppm
             src/base/types.cppm
-            src/btree/btree.cppm
+            src/btree/implementations/btree.in_memory.cppm
+            src/btree/implementations/btree.paged.cppm
+            src/btree/implementations/btree.in_memory.detail.cppm
+            src/btree/implementations/btree.paged.detail.cppm
             src/btree/btree.detail.cppm
+            src/btree/btree.cppm
+            src/btree/btree.node.cppm
+            src/btree/btree.types.cppm
             src/os/os.cppm
             src/pager/pager.cppm
 )
@@ -35,7 +41,11 @@ target_sources(plexdb
     PRIVATE
         src/arena/arena.cpp
         src/base/types.cpp
-        src/btree/btree.cpp
+        src/btree/btree.node.cpp
+        src/btree/implementations/btree.paged.cpp
+        src/btree/implementations/btree.in_memory.detail.cpp
+        src/btree/implementations/btree.in_memory.cpp
+        src/btree/implementations/btree.paged.detail.cpp
         src/btree/btree.detail.cpp
         src/os/os.cpp
         src/pager/pager.cpp

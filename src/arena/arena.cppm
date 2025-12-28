@@ -36,7 +36,7 @@ namespace plexdb::arena {
         Arena& operator=(Arena&&) noexcept;
     };
 
-    export void* push(Arena& arena, U64 size, U64 align);
+    export void* push(Arena& arena, U64 size, U64 align = 8ul);
     export U64   offset(Arena& arena);
     export void  pop_to(Arena& arena, U64 offset);
     export void  clear(Arena& arena);

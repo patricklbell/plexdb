@@ -31,23 +31,23 @@ export namespace plexdb::os {
         return dst;
     }
 
-    template<bool check_length=true, typename Size, typename Length>
-    void memory_copy(const ArrayView<Size,Length>& dst, const ArrayView<Size,Length>& src) {
+    template<bool check_length=true, typename Length, typename Size>
+    void memory_copy(const ArrayView<Length,Size>& dst, const ArrayView<Length,Size>& src) {
         if constexpr (check_length)
             assert_true(dst.length == src.length, "matching view lengths");
         assert_true(dst.el_size == src.el_size, "matching element sizes");
         memory_copy(dst.ptr, src.ptr, src.el_size*src.length);
     }
-    template<typename Size, typename Length>
-    void memory_copy(U8* dst, const ArrayView<Size,Length>& src) {
+    template<typename Length, typename Size>
+    void memory_copy(U8* dst, const ArrayView<Length,Size>& src) {
         memory_copy(dst, src.ptr, src.el_size*src.length);
     }
-    template<typename Size, typename Length>
-    void memory_shift_right(const ArrayView<Size,Length>& src, Length offset=1) {
+    template<typename Length, typename Size>
+    void memory_shift_right(const ArrayView<Length,Size>& src, Length offset=1) {
         memory_move(src.ptr + src.el_size*offset, src.ptr, src.el_size*src.length);
     }
-    template<typename Size, typename Length>
-    void memory_shift_left(const ArrayView<Size,Length>& src, Length offset=1) {
+    template<typename Length, typename Size>
+    void memory_shift_left(const ArrayView<Length,Size>& src, Length offset=1) {
         memory_move(src.ptr - src.el_size*offset, src.ptr, src.el_size*src.length);
     }
 

@@ -10,7 +10,7 @@ export namespace plexdb::pager {
     struct Pager {
         os::Handle file;
 
-        U64 page_size;
+        const U64 page_size;
 
         // pager flushes writes to disk when cache read collision occurs. @profile
         // a collision requires that the page is in the write set, otherwise the
@@ -39,4 +39,8 @@ export namespace plexdb::pager {
     U8* rwpage(Pager& pager, U64 idx);
     void fflush(Pager& pager);
 
+}
+
+export namespace plexdb {
+    using pager::Pager;
 }
