@@ -25,29 +25,29 @@ export namespace plexdb::os {
 
     template<class To>
         requires (TriviallyCopyable<To> && TriviallyConstructible<To>)
-    To memory_cast(void* src) noexcept {
+    To memory_cast(const void* src) noexcept {
         To dst;
         memory_copy(&dst, src, sizeof(To));
         return dst;
     }
 
-    template<bool check_length=true, typename Length, typename Size>
-    void memory_copy(const ArrayView<Length,Size>& dst, const ArrayView<Length,Size>& src) {
+    template<bool check_length=true, typename Length, typename Size, typename Byte>
+    void memory_copy(const ArrayView<Length,Size,Byte>& dst, const ArrayView<Length,Size,Byte>& src) {
         if constexpr (check_length)
             assert_true(dst.length == src.length, "matching view lengths");
         assert_true(dst.el_size == src.el_size, "matching element sizes");
         memory_copy(dst.ptr, src.ptr, src.el_size*src.length);
     }
-    template<typename Length, typename Size>
-    void memory_copy(U8* dst, const ArrayView<Length,Size>& src) {
+    template<typename Length, typename Size, typename Byte>
+    void memory_copy(U8* dst, const ArrayView<Length,Size,Byte>& src) {
         memory_copy(dst, src.ptr, src.el_size*src.length);
     }
-    template<typename Length, typename Size>
-    void memory_shift_right(const ArrayView<Length,Size>& src, Length offset=1) {
+    template<typename Length, typename Size, typename Byte>
+    void memory_shift_right(const ArrayView<Length,Size,Byte>& src, Length offset=1) {
         memory_move(src.ptr + src.el_size*offset, src.ptr, src.el_size*src.length);
     }
-    template<typename Length, typename Size>
-    void memory_shift_left(const ArrayView<Length,Size>& src, Length offset=1) {
+    template<typename Length, typename Size, typename Byte>
+    void memory_shift_left(const ArrayView<Length,Size, Byte>& src, Length offset=1) {
         memory_move(src.ptr - src.el_size*offset, src.ptr, src.el_size*src.length);
     }
 
@@ -80,7 +80,9 @@ export namespace plexdb::os {
     };
     Handle file_open(String8 path, AccessFlags flags=AccessFlags(READ|WRITE));
     void   file_close(Handle file);
-    void   file_read(Handle file, Rng1U64 rng, U8* out);
-    void   file_write(Handle file, Rng1U64 rng, U8* in);
+    void   file_read(Handle file, Rng1U64 rng, void* out);
+    void   file_write(Handle file, Rng1U64 rng, const void* in);
     void   file_sync(Handle file);
+    U64    file_get_offset(Handle file);
+    void   file_seek(Handle file, U64 offset);
 }

@@ -5,12 +5,19 @@ import plexdb.btree.types;
 
 export namespace plexdb::btree {
     struct BTreeInMemory {
-        Node* root = nullptr;
-        Node* leaves = nullptr;
-
-        Settings settings;
+        Header header;
 
         explicit BTreeInMemory(CountType max_keys_per_internal, CountType max_keys_per_leaf, U64 value_stride);
         ~BTreeInMemory();
+
+        struct Transaction {
+            Transaction(BTreeInMemory* t);
+            Transaction(const Transaction& other) = delete;
+            Transaction& operator=(const Transaction& other) = delete;
+
+            BTreeInMemory* t;
+        };
     };
+
+    BTreeInMemory::Transaction scope(const BTreeInMemory::Transaction& t);
 }

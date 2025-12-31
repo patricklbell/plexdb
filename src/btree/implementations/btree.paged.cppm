@@ -8,11 +8,21 @@ import plexdb.pager;
 export namespace plexdb::btree {
     struct BTreePaged {
         Pager* pager;
-        U64 root = ~0u;
-        U64 leaves = ~0u;
+        U64 header_page;
 
-        Settings settings;
+        explicit BTreePaged(Pager* pager, U64 header_page);
 
-        explicit BTreePaged(Pager* pager, U64 base_page);
+        // @todo proper transactions because this just relies on no collision occurring
+        // while transaction is holding a page (which may overwrite page buffer)
+        struct Transaction {
+            explicit Transaction(BTreePaged* btree);
+            ~Transaction();
+            Transaction(const Transaction& other) = delete;
+            Transaction& operator=(const Transaction& other) = delete;
+
+            BTreePaged* t;
+        };
     };
+
+    BTreePaged::Transaction scope(const BTreePaged::Transaction& t);
 }

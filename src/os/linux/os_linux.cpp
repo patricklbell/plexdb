@@ -55,14 +55,14 @@ namespace plexdb::os {
         int err = close(fd);
         assert_true(err == 0, "file close error"); // @todo
     }
-    void file_read(Handle file, Rng1U64 rng, U8* out) {
+    void file_read(Handle file, Rng1U64 rng, void* out) {
         int fd = handle_to_fd(file);
         off_t res_off = lseek(fd, rng.start, SEEK_SET);
         assert_true(static_cast<U64>(res_off) == rng.start, "file seek error");
         ssize_t bytes_read = read(fd, out, rng.end - rng.start);
         assert_true(static_cast<U64>(bytes_read) == rng.end - rng.start, "file read error");
     }
-    void file_write(Handle file, Rng1U64 rng, U8* in) {
+    void file_write(Handle file, Rng1U64 rng, const void* in) {
         int fd = handle_to_fd(file);
         off_t res_off = lseek(fd, rng.start, SEEK_SET);
         assert_true(static_cast<U64>(res_off) == rng.start, "file seek error");
@@ -73,5 +73,14 @@ namespace plexdb::os {
         int fd = handle_to_fd(file);
         int err = fsync(fd);
         assert_true(err == 0, "file sync error"); // @todo
+    }
+    U64 file_get_offset(Handle file) {
+        int fd = handle_to_fd(file);
+        return static_cast<U64>(lseek(fd, 0, SEEK_CUR));
+    }
+    void file_seek(Handle file, U64 offset) {
+        int fd = handle_to_fd(file);
+        off_t res_off = lseek(fd, offset, SEEK_SET);
+        assert_true(static_cast<U64>(res_off) == offset, "file seek error");
     }
 }

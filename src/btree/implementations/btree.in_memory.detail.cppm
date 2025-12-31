@@ -6,12 +6,13 @@ import plexdb.btree.node;
 import plexdb.btree.in_memory;
 
 export namespace plexdb::btree {
-    Settings& get_settings(BTreeInMemory& btree);
-    NodeRef   get_root(BTreeInMemory& btree);
-    void      set_root(BTreeInMemory& btree, const NodeRef& new_root);
-    NodeRef   create_internal(BTreeInMemory& btree);
-    NodeRef   create_leaf(BTreeInMemory& btree);
-    void      delete_node(BTreeInMemory& btree, const NodeRef& ref);
-    Node*     rnode(BTreeInMemory& btree, const NodeRef& ref);
-    Node*     rwnode(BTreeInMemory& btree, const NodeRef& ref);
+    using Transaction = BTreeInMemory::Transaction;
+    const Header* rheader(Transaction& transaction);
+    Header*       rwheader(Transaction& transaction);
+    const Node*   rnode(Transaction& transaction, const NodeRef& ref);
+    Node*         rwnode(Transaction& transaction, const NodeRef& ref);
+
+    NodeRef       new_internal(Transaction& transaction);
+    NodeRef       new_leaf(Transaction& transaction);
+    void          delete_node(Transaction& transaction, const NodeRef& ref);
 }

@@ -8,16 +8,22 @@ export module plexdb.base.types;
 
 namespace plexdb {
     // ========================================================================
-    // helper traits
+    // helper types
     // ========================================================================
-    template<typename T> struct remove_cv                   { using type = T; };
-    template<typename T> struct remove_cv<const T>          { using type = T; };
-    template<typename T> struct remove_cv<volatile T>       { using type = T; };
-    template<typename T> struct remove_cv<const volatile T> { using type = T; };
+    template<typename T> struct CV                   { using Removed = T; static constexpr bool is = false; };
+    template<typename T> struct CV<const T>          { using Removed = T; static constexpr bool is = false; };
+    template<typename T> struct CV<volatile T>       { using Removed = T; static constexpr bool is = false; };
+    template<typename T> struct CV<const volatile T> { using Removed = T; static constexpr bool is = true;  };
 
-    template<typename T> struct remove_reference      { using type = T; };
-    template<typename T> struct remove_reference<T&>  { using type = T; };
-    template<typename T> struct remove_reference<T&&> { using type = T; };
+    template<typename T> struct Const                   { using Removed = T; static constexpr bool is = false; };
+    template<typename T> struct Const<const T>          { using Removed = T; static constexpr bool is = true;  };
+
+    template<typename T> struct Volatile                { using Removed = T; static constexpr bool is = false; };
+    template<typename T> struct Volatile<volatile T>    { using Removed = T; static constexpr bool is = true;  };
+
+    template<typename T> struct Ref      { using Removed = T; static constexpr bool is = false; };
+    template<typename T> struct Ref<T&>  { using Removed = T; static constexpr bool is = true;  };
+    template<typename T> struct Ref<T&&> { using Removed = T; static constexpr bool is = true;  };
 }
 
 export namespace plexdb {
@@ -101,7 +107,6 @@ export namespace plexdb {
     // ========================================================================
     // asserts
     // ========================================================================
-
     #ifdef PLEXDB_DEBUG
         constexpr bool k_assert_enabled = true;
     #else
@@ -128,6 +133,9 @@ export namespace plexdb {
     }
     void set_assert_handler(AssertHandler h) noexcept;
 
+    // ========================================================================
+    // traits
+    // ========================================================================
 
     // ========================================================================
     // casts
@@ -141,28 +149,48 @@ export namespace plexdb {
     }
 
     template<typename T>
-    using RemoveCV = typename remove_cv<T>::type;
-    
-    template<typename T>
-    using RemoveReference = typename remove_reference<T>::type;
+    using RemoveCV = typename CV<T>::Removed;
 
     template<typename T>
-    constexpr T&& forward(RemoveReference<T>& t) noexcept {
+    using RemoveConst = typename Const<T>::Removed;
+
+    template<typename T>
+    using RemoveVolatile = typename Volatile<T>::Removed;
+    
+    template<typename T>
+    using RemoveRef = typename Ref<T>::Removed;
+
+    template<typename T>
+    constexpr T&& forward(RemoveRef<T>& t) noexcept {
         return static_cast<T&&>(t);
     }
 
     template<typename T>
-    constexpr T&& forward(RemoveReference<T>&& t) noexcept {
+    constexpr T&& forward(RemoveRef<T>&& t) noexcept {
         static_assert(!__is_lvalue_reference(T), "forward<T>(T&&) called with T as lvalue reference");
         return static_cast<T&&>(t);
     }
 
+    template<bool b, typename T, typename F>
+    struct Conditional { using type = T; };
+    template<typename T, typename F>
+    struct Conditional<false, T, F> { using type = F; };
+
     template<typename It>
-    using IterValue = RemoveCV<RemoveReference<decltype(*declval<It>())>>;
+    using IterValue = RemoveCV<RemoveRef<decltype(*declval<It>())>>;
 
     // ========================================================================
     // concepts
     // ========================================================================
+    template<typename T>
+    concept IsCV = CV<T>::is;
+
+    template<typename T>
+    concept IsConst = Const<T>::is;
+
+    template<typename T>
+    concept IsVolatile = Volatile<T>::is;
+
     template<class T>
     concept TriviallyCopyable = __is_trivially_copyable(T);
 
@@ -244,26 +272,26 @@ export namespace plexdb {
         T* ptr;
         Length length;
 
-        explicit TArrayView(T* ptr, Length length) : ptr(ptr), length(length) {}
-        explicit TArrayView(U8* ptr, Length length) : ptr(reinterpret_cast<T*>(ptr)), length(length) {}
+        explicit TArrayView(T* ptr, Length length): ptr(ptr), length(length) {}
+        explicit TArrayView(U8* ptr, Length length): ptr(reinterpret_cast<T*>(ptr)), length(length) {}
+        explicit TArrayView(const U8* ptr, Length length): ptr(reinterpret_cast<const T*>(ptr)), length(length) {}
 
-        using iterator = T*;
-        using const_iterator = const T*;
-        using value_type = T;
-        using reference = T&;
-        using const_reference = const T&;
-        using size_type = Length;
+        template<typename U = T>
+        TArrayView(const TArrayView<RemoveCV<T>, Length>& other) requires (IsConst<U>): ptr(other.ptr), length(other.length) {}
 
-        iterator begin() noexcept { return ptr; }
-        const_iterator begin() const noexcept { return ptr; }
-        const_iterator cbegin() const noexcept { return ptr; }
+        using Iterator = T*;
+        using ConstIterator = const T*;
 
-        iterator end() noexcept { return ptr + length; }
-        const_iterator end() const noexcept { return ptr + length; }
-        const_iterator cend() const noexcept { return ptr + length; }
+        Iterator begin() noexcept { return ptr; }
+        ConstIterator begin() const noexcept { return ptr; }
+        ConstIterator cbegin() const noexcept { return ptr; }
 
-        reference operator[](size_type i) noexcept { return ptr[i]; }
-        const_reference operator[](size_type i) const noexcept { return ptr[i]; }
+        Iterator end() noexcept { return ptr + length; }
+        ConstIterator end() const noexcept { return ptr + length; }
+        ConstIterator cend() const noexcept { return ptr + length; }
+
+        T& operator[](Length i) noexcept { return ptr[i]; }
+        const T& operator[](Length i) const noexcept { return ptr[i]; }
     };
     template<typename T, typename Length>
     TArrayView<T,Length> view_shift_left(const TArrayView<T,Length>& in, Length offset=static_cast<Length>(1)) {
@@ -276,64 +304,68 @@ export namespace plexdb {
         return TArrayView<T,Length>{in.ptr - offset, static_cast<Length>(in.length + offset)};
     }
 
-    template<typename Length, typename Size = U64>
+    template<typename Length, typename Size = U64, typename Byte = U8>
+        requires Either<Byte, U8, const U8>
     struct ArrayView {
-        U8* ptr;
+        Byte* ptr;
         Length length;
         Size el_size;
 
-        explicit ArrayView(U8* ptr, Size el_size, Length length) : ptr(ptr), el_size(el_size), length(length) {}
+        explicit ArrayView(Byte* ptr, Size el_size, Length length) : ptr(ptr), el_size(el_size), length(length) {}
 
-        struct iterator {
-            U8* current;
+        template<typename B = Byte>
+        ArrayView(const ArrayView<Length, Size, RemoveConst<B>>& other) requires (IsConst<B>): ptr(other.ptr), length(other.length), el_size(other.el_size) {}
+
+        struct Iterator {
+            Byte* current;
             Size el_size;
 
-            iterator(U8* p, Size s) : current(p), el_size(s) {}
+            Iterator(Byte* p, Size s) : current(p), el_size(s) {}
 
-            iterator& operator++() { current += el_size; return *this; }
-            iterator operator++(int) { iterator tmp = *this; ++(*this); return tmp; }
+            Iterator& operator++() { current += el_size; return *this; }
+            Iterator operator++(int) { Iterator tmp = *this; ++(*this); return tmp; }
 
-            U8* operator*() const { return current; }
+            Byte* operator*() const { return current; }
 
-            bool operator==(const iterator& other) const { return current == other.current; }
-            bool operator!=(const iterator& other) const { return !(*this == other); }
+            bool operator==(const Iterator& other) const { return current == other.current; }
+            bool operator!=(const Iterator& other) const { return !(*this == other); }
         };
 
-        struct const_iterator {
-            const U8* current;
+        struct ConstIterator {
+            const Byte* current;
             Size el_size;
 
-            const_iterator(const U8* p, Size s) : current(p), el_size(s) {}
+            ConstIterator(const Byte* p, Size s) : current(p), el_size(s) {}
 
-            const_iterator& operator++() { current += el_size; return *this; }
-            const_iterator operator++(int) { const_iterator tmp = *this; ++(*this); return tmp; }
+            ConstIterator& operator++() { current += el_size; return *this; }
+            ConstIterator operator++(int) { ConstIterator tmp = *this; ++(*this); return tmp; }
 
-            const U8* operator*() const { return current; }
+            const Byte* operator*() const { return current; }
 
-            bool operator==(const const_iterator& other) const { return current == other.current; }
-            bool operator!=(const const_iterator& other) const { return !(*this == other); }
+            bool operator==(const ConstIterator& other) const { return current == other.current; }
+            bool operator!=(const ConstIterator& other) const { return !(*this == other); }
         };
 
-        iterator begin() noexcept { return iterator{ptr, el_size}; }
-        const_iterator begin() const noexcept { return const_iterator{ptr, el_size}; }
-        const_iterator cbegin() const noexcept { return const_iterator{ptr, el_size}; }
+        Iterator begin() noexcept { return Iterator{ptr, el_size}; }
+        ConstIterator begin() const noexcept { return ConstIterator{ptr, el_size}; }
+        ConstIterator cbegin() const noexcept { return ConstIterator{ptr, el_size}; }
 
-        iterator end() noexcept { return iterator{ptr + length * el_size, el_size}; }
-        const_iterator end() const noexcept { return const_iterator{ptr + length * el_size, el_size}; }
-        const_iterator cend() const noexcept { return const_iterator{ptr + length * el_size, el_size}; }
+        Iterator end() noexcept { return Iterator{ptr + length * el_size, el_size}; }
+        ConstIterator end() const noexcept { return ConstIterator{ptr + length * el_size, el_size}; }
+        ConstIterator cend() const noexcept { return ConstIterator{ptr + length * el_size, el_size}; }
 
-        U8* operator[](Length i) noexcept { return ptr + i*el_size; }
-        const U8* operator[](Length i) const noexcept { return ptr + i*el_size; }
+        Byte* operator[](Length i) noexcept { return ptr + i*el_size; }
+        const Byte* operator[](Length i) const noexcept { return ptr + i*el_size; }
     };
-    template<typename Length, typename Size>
-    ArrayView<Length,Size> view_shift_left(const ArrayView<Length,Size>& in, Length offset=static_cast<Length>(1)) {
+    template<typename Length, typename Size, typename Byte>
+    ArrayView<Length,Size,Byte> view_shift_left(const ArrayView<Length,Size,Byte>& in, Length offset=static_cast<Length>(1)) {
         assert_true(in.length > 0 || offset == 0, "avoid underflow in view shift.");
-        return ArrayView<Length,Size>{in.ptr + offset*in.el_size, in.el_size, static_cast<Length>(in.length - offset)};
+        return ArrayView<Length,Size,Byte>{in.ptr + offset*in.el_size, in.el_size, static_cast<Length>(in.length - offset)};
     }
-    template<typename Length, typename Size>
-    ArrayView<Length,Size> view_shift_right(const ArrayView<Length,Size>& in, Length offset=static_cast<Length>(1)) {
+    template<typename Length, typename Size, typename Byte>
+    ArrayView<Length,Size,Byte> view_shift_right(const ArrayView<Length,Size,Byte>& in, Length offset=static_cast<Length>(1)) {
         // @todo overflow assert
-        return ArrayView<Length,Size>{in.ptr - offset*in.el_size, in.el_size, static_cast<Length>(in.length + offset)};
+        return ArrayView<Length,Size,Byte>{in.ptr - offset*in.el_size, in.el_size, static_cast<Length>(in.length + offset)};
     }
 
     // ========================================================================
@@ -378,12 +410,12 @@ export namespace plexdb {
     }
 
     template<typename T, typename Length>
-    constexpr Length binary_search_first_geq(const TArrayView<T,Length>& view, const T& key) noexcept {
+    constexpr Length binary_search_first_geq(const TArrayView<T,Length>& view, const RemoveCV<T>& key) noexcept {
         return binary_search<BinarySearchPolicy::GreaterEqual>(view.cbegin(), view.length, key);
     }
 
     template<typename T, typename Length>
-    constexpr Length binary_search_first_gt(const TArrayView<T,Length>& view, const T& key) noexcept {
+    constexpr Length binary_search_first_gt(const TArrayView<T,Length>& view, const RemoveCV<T>& key) noexcept {
         return binary_search<BinarySearchPolicy::Greater>(view.cbegin(), view.length, key);
     }
 
@@ -397,10 +429,12 @@ export namespace plexdb {
         bool engaged = false;
 
         T* ptr() noexcept {
+            assert_true(engaged, "accessed data on empty optional");
             return reinterpret_cast<T*>(&storage);
         }
 
         const T* ptr() const noexcept {
+            assert_true(engaged, "accessed data on empty optional");
             return reinterpret_cast<const T*>(&storage);
         }
 
@@ -408,26 +442,26 @@ export namespace plexdb {
         constexpr Optional() noexcept = default;
 
         constexpr Optional(const T& value) {
-            new (ptr()) T(value);
             engaged = true;
+            new (ptr()) T(value);
         }
 
         constexpr Optional(T&& value) noexcept {
-            new (ptr()) T(move(value));
             engaged = true;
+            new (ptr()) T(move(value));
         }
 
         constexpr Optional(const Optional& other) {
             if (other.engaged) {
-                new (ptr()) T(*other.ptr());
                 engaged = true;
+                new (ptr()) T(*other.ptr());
             }
         }
 
         constexpr Optional(Optional&& other) noexcept {
             if (other.engaged) {
-                new (ptr()) T(move(*other.ptr()));
                 engaged = true;
+                new (ptr()) T(move(*other.ptr()));
             }
         }
 
@@ -464,8 +498,8 @@ export namespace plexdb {
         template <typename... Args>
         T& emplace(Args&&... args) {
             reset();
-            new (ptr()) T(forward<Args>(args)...);
             engaged = true;
+            new (ptr()) T(forward<Args>(args)...);
             return *ptr();
         }
 

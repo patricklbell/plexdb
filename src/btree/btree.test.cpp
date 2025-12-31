@@ -8,7 +8,6 @@ import plexdb.base;
 import plexdb.os;
 import plexdb.arena;
 import plexdb.btree;
-import plexdb.btree.detail;
 import plexdb.btree.print;
 
 using namespace plexdb;
@@ -20,10 +19,10 @@ TEST_CASE("insert", "[btree]" ) {
 
         for (int key = 0; key < 32; key++) {
             int value = 10*key;
-            insert(t, key, reinterpret_cast<U8*>(&value));
+            tinsert(t, key, value);
 
             for (int i = 0; i <= key; i++) {
-                REQUIRE(get<int>(t, i) == 10*i);
+                REQUIRE(*tfind<int>(t, i) == 10*i);
             }
         }
     }
@@ -33,10 +32,10 @@ TEST_CASE("insert", "[btree]" ) {
 
         for (int key = 0; key < 32; key++) {
             int value = 10*key;
-            insert(t, key, reinterpret_cast<U8*>(&value));
+            tinsert(t, key, value);
 
             for (int i = 0; i <= key; i++) {
-                REQUIRE(get<int>(t, i) == 10*i);
+                REQUIRE(*tfind<int>(t, i) == 10*i);
             }
         }
     }
@@ -49,10 +48,10 @@ TEST_CASE("insert", "[btree]" ) {
         
                 for (int key = 0; key < max_leaf*max_internal+1; key++) {    
                     int value = 10*key;
-                    insert(t, key, reinterpret_cast<U8*>(&value));
+                    tinsert(t, key, value);
     
                     for (int i = 0; i <= key; i++) {
-                        REQUIRE(get<int>(t, i) == 10*i);
+                        REQUIRE(*tfind<int>(t, i) == 10*i);
                     }
                 }
             }
@@ -64,16 +63,16 @@ TEST_CASE("insert", "[btree]" ) {
 
         for (int key = 0; key < 5; key++) {
             int value = 10*key;
-            insert(t, key, reinterpret_cast<U8*>(&value));
+            tinsert(t, key, value);
         }
 
         for (int key = 0; key < 5; key++) {
             int new_value = 100 * key;
-            insert(t, key, reinterpret_cast<U8*>(&new_value));
+            tinsert(t, key, new_value);
         }
 
         for (int key = 0; key < 5; key++) {
-            REQUIRE(get<int>(t, key) == 100 * key);
+            REQUIRE(*tfind<int>(t, key) == 100 * key);
         }
     }
 
@@ -82,13 +81,13 @@ TEST_CASE("insert", "[btree]" ) {
 
         for (int key = 31; key >= 0; key--) {
             int value = 10*key;
-            insert(t, key, reinterpret_cast<U8*>(&value));
+            tinsert(t, key, value);
         }
 
-        INFO(print::to_string8<int>(t));
+        // INFO(print::to_string8<int>(t));
 
         for (int key = 0; key < 32; key++) {
-            REQUIRE(get<int>(t, key) == 10*key);
+            REQUIRE(*tfind<int>(t, key) == 10*key);
         }
     }
 
@@ -106,23 +105,28 @@ TEST_CASE("insert", "[btree]" ) {
 
         BTreeInMemory t(3, 3, 9);
 
+        U64 max_value_length = 0;
         for (auto& e : entries) {
-            insert(t, e.key, e.value.data());
+            insert(t, e.key, e.value.data(), e.value.size());
+            max_value_length = max(max_value_length, e.value.size());
         }
+        
+        std::vector<U8> tmp;
+        tmp.reserve(max_value_length);
 
         for (auto& e : entries) {
-            auto s = search(t, e.key);
-            REQUIRE(s);
-            REQUIRE(std::equal(s.value, s.value + e.value.size(), e.value.begin(), e.value.end()));
+            tmp.resize(e.value.size());
+            REQUIRE(find(t, e.key, tmp.data(), tmp.size()));
+            REQUIRE(tmp == e.value);
         }
 
         for (auto& e : entries) {
             remove(t, e.key);
             for (auto& f : entries) {
                 if (f.key != e.key && f.key > e.key) {
-                    auto s = search(t, f.key);
-                    REQUIRE(s);
-                    REQUIRE(std::equal(s.value, s.value + f.value.size(), f.value.begin(), f.value.end()));
+                    tmp.resize(f.value.size());
+                    REQUIRE(find(t, f.key, tmp.data(), tmp.size()));
+                    REQUIRE(tmp == f.value);
                 }
             }
         }
@@ -132,7 +136,7 @@ TEST_CASE("insert", "[btree]" ) {
         BTreeInMemory t(5, 7, sizeof(int));
 
         meter.measure([&t] (int i) {
-            insert(t, i, reinterpret_cast<U8*>(&i));
+            tinsert(t, i, i);
         });
     };
 }
@@ -143,13 +147,15 @@ TEST_CASE("remove", "[btree]" ) {
 
         for (int key = 0; key < 32; key++) {
             int value = 10*key;
-            insert(t, key, reinterpret_cast<U8*>(&value));
+            tinsert(t, key, value);
+            // INFO(print::to_string8<int>(t));
         }
 
         for (int key = 0; key < 32; key++) {
             remove(t, key);
+            // INFO(print::to_string8<int>(t));
             for (int i = key+1; i < 32; i++) {
-                REQUIRE(get<int>(t, i) == 10*i);
+                REQUIRE(*tfind<int>(t, i) == 10*i);
             }
         }
     }
@@ -159,13 +165,15 @@ TEST_CASE("remove", "[btree]" ) {
 
         for (int key = 0; key < 16; key++) {
             int value = 10*key;
-            insert(t, key, reinterpret_cast<U8*>(&value));
+            tinsert(t, key, value);
+            // INFO(print::to_string8<int>(t));
         }
 
         for (int key = 15; key >= 0; key--) {
             remove(t, key);
+            // INFO(print::to_string8<int>(t));
             for (int i = 0; i < key; i++) {
-                REQUIRE(get<int>(t, i) == 10*i);
+                REQUIRE(*tfind<int>(t, i) == 10*i);
             }
         }
     }
@@ -177,13 +185,15 @@ TEST_CASE("remove", "[btree]" ) {
         
                 for (int key = 0; key < max_leaf*max_internal*max_internal; key++) {
                     int value = 10*key;
-                    insert(t, key, reinterpret_cast<U8*>(&value));
+                    tinsert(t, key, value);
+                    // INFO(print::to_string8<int>(t));
                 }
 
                 for (int key = 0; key < max_leaf*max_internal*max_internal; key++) {
                     remove(t, key);
+                    // INFO(print::to_string8<int>(t));
                     for (int i = key+1; i < max_leaf*max_internal*max_internal; i++) {
-                        REQUIRE(get<int>(t, i) == 10*i);
+                        REQUIRE(*tfind<int>(t, i) == 10*i);
                     }
                 }
             }
@@ -196,7 +206,8 @@ TEST_CASE("remove", "[btree]" ) {
         int kept = 3;
         for (int key = 0; key < kept; key++) {
             int value = 10*key;
-            insert(t, key, reinterpret_cast<U8*>(&value));
+            tinsert(t, key, value);
+            // INFO(print::to_string8<int>(t));
         }
 
         for (int max_key = kept; max_key <= 9; max_key++) {
@@ -207,19 +218,21 @@ TEST_CASE("remove", "[btree]" ) {
                 // insert in consecutive order
                 for (int key = kept; key <= max_key; key++) {
                     int value = 10*key;
-                    insert(t, key, reinterpret_cast<U8*>(&value));
+                    tinsert(t, key, value);
+                    // INFO(print::to_string8<int>(t));
                 }
                 
                 // remove in permutation order
                 for (int i = 0; i < elements.size(); i++) {
                     remove(t, elements[i]);
+                    // INFO(print::to_string8<int>(t));
                     for (int j = i+1; j < elements.size(); j++) {
-                        REQUIRE(get<int>(t, elements[j]) == 10*elements[j]);
+                        REQUIRE(*tfind<int>(t, elements[j]) == 10*elements[j]);
                     }
                 }
 
                 CAPTURE(max_key);
-                REQUIRE(get_settings(t).size == kept);
+                REQUIRE(t.header.size == kept);
             } while (std::next_permutation(elements.begin(), elements.end()));
         }
     }
@@ -229,20 +242,23 @@ TEST_CASE("remove", "[btree]" ) {
 
         for (int key = 0; key < 8; key++) {
             int value = 10*key;
-            insert(t, key, reinterpret_cast<U8*>(&value));
+            tinsert(t, key, value);
+            // INFO(print::to_string8<int>(t));
         }
 
         for (int key = 0; key < 8; key++) {
             remove(t, key);
+            // INFO(print::to_string8<int>(t));
         }
 
         for (int key = 0; key < 8; key++) {
             int value = 100 * key;
-            insert(t, key, reinterpret_cast<U8*>(&value));
+            tinsert(t, key, value);
+            // INFO(print::to_string8<int>(t));
         }
 
         for (int key = 0; key < 8; key++) {
-            REQUIRE(get<int>(t, key) == 100 * key);
+            REQUIRE(*tfind<int>(t, key) == 100 * key);
         }
     }
 }

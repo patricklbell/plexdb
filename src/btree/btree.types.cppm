@@ -7,16 +7,20 @@ export namespace plexdb::btree {
     using CountType = U16;
     using NodeRef = U64;
 
+    // @padding
     struct Node {
         CountType key_count;
         NodeRef prev, next;
     };
 
-    struct Settings {
-        CountType max_keys_per_internal;
-        CountType max_keys_per_leaf;
+    // @padding
+    struct Header {
         U64 value_stride;
         U64 depth;
         U64 size;
+        NodeRef root;
+        NodeRef leaves;
+        CountType max_keys_per_internal;
+        CountType max_keys_per_leaf;
     };
 }

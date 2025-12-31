@@ -5,14 +5,24 @@ import plexdb.arena;
 import plexdb.btree.types;
 
 export namespace plexdb::btree {
-    KeyType* keys_raw(Node* node);
-    NodeRef* children_raw(Node* internal, const Settings& s);
-    U8*      values_raw(Node* leaf, const Settings& s);
+    KeyType*       keys_raw(Node* node);
+    NodeRef*       children_raw(Node* node, const Header& h);
+    U8*            values_raw(Node* node, const Header& h);
 
-    TArrayView<KeyType, CountType> keys(Node* node);
-    TArrayView<NodeRef, CountType> children(Node* internal, const Settings& s);
-    ArrayView<CountType>           values(Node* leaf, const Settings& s);
+    const KeyType* keys_raw(const Node* node);
+    const NodeRef* children_raw(const Node* node, const Header& h);
+    const U8*      values_raw(const Node* node, const Header& h);
 
-    Node* push_internal_node(const Settings& s);
-    Node* push_leaf_node(const Settings& s);
+    TArrayView<KeyType, CountType>       keys(Node* node);
+    TArrayView<NodeRef, CountType>       children(Node* node, const Header& h);
+    ArrayView<CountType, U64, U8>        values(Node* node, const Header& h);
+
+    TArrayView<const KeyType, CountType> keys(const Node* node);
+    TArrayView<const NodeRef, CountType> children(const Node* node, const Header& h);
+    ArrayView<CountType, U64, const U8>  values(const Node* node, const Header& h);
+
+    void init_node(Node* node);
+
+    Node* push_internal_node(const Header& h);
+    Node* push_leaf_node(const Header& h);
 }

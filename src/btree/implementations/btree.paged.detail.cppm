@@ -6,12 +6,13 @@ import plexdb.btree.types;
 import plexdb.btree.paged;
 
 export namespace plexdb::btree {
-    Settings& get_settings(BTreePaged& btree);
-    NodeRef   get_root(BTreePaged& btree);
-    void      set_root(BTreePaged& btree, const NodeRef& new_root);
-    NodeRef   create_internal(BTreePaged& btree);
-    NodeRef   create_leaf(BTreePaged& btree);
-    void      delete_node(BTreePaged& btree, const NodeRef& ref);
-    Node*     rnode(BTreePaged& btree, const NodeRef& ref);
-    Node*     rwnode(BTreePaged& btree, const NodeRef& ref);
+    using Transaction = BTreePaged::Transaction;
+    const Header* rheader(Transaction& transaction);
+    Header*       rwheader(Transaction& transaction);
+    const Node*   rnode(Transaction& transaction, const NodeRef& ref);
+    Node*         rwnode(Transaction& transaction, const NodeRef& ref);
+
+    NodeRef       new_internal(Transaction& transaction);
+    NodeRef       new_leaf(Transaction& transaction);
+    void          delete_node(Transaction& transaction, const NodeRef& ref);
 }

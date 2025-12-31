@@ -13,64 +13,63 @@ export namespace plexdb::btree {
     // ========================================================================
     // helpers
     // ========================================================================
-    CountType max_keys(const Settings& s, bool is_leaf);
-    CountType min_keys(const Settings& s, bool is_leaf);
-    void move_from_left(Node* parent, Node* left, Node* node, CountType node_idx, const Settings& s, bool is_leaf);
-    void move_from_right(Node* parent, Node* right, Node* node, CountType node_idx, const Settings& s, bool is_leaf);
-    void merge(const Settings& s, Node* a, Node* b, Node* parent, CountType a_idx, bool is_leaf);
-    void delete_from_leaf(const Settings& s, Node* node, CountType idx);
+    CountType max_keys(const Header& h, bool is_leaf);
+    CountType min_keys(const Header& h, bool is_leaf);
+    void move_from_left(Node* parent, Node* left, Node* node, CountType node_idx, const Header& h, bool is_leaf);
+    void move_from_right(Node* parent, Node* right, Node* node, CountType node_idx, const Header& h, bool is_leaf);
+    void merge(const Header& h, Node* a, Node* b, Node* parent, CountType a_idx, bool is_leaf);
+    void delete_from_leaf(const Header& h, Node* node, CountType idx);
 
-    template<typename BTree>
-    void insert_child_to_right(BTree& btree, Node* parent, CountType idx, KeyType key, NodeRef child_ref, Node* child, const Settings& s) {
+    // ========================================================================
+    // insert
+    // ========================================================================
+    template<typename Transaction>
+    void insert_child_to_right(Transaction& t, const Header& h, Node* parent, CountType idx, KeyType key, NodeRef child_ref, Node* child) {
         if (idx < parent->key_count) {
             os::memory_shift_right(view_shift_left(keys(parent), idx));
-            os::memory_shift_right(view_shift_left(children(parent, s), static_cast<CountType>(idx+1)));
+            os::memory_shift_right(view_shift_left(children(parent, h), static_cast<CountType>(idx+1)));
         }
-        children(parent, s)[idx+1] = child_ref;
+        children(parent, h)[idx+1] = child_ref;
         keys(parent)[idx] = key;
         parent->key_count++;
 
         // insert into doubly linked list
-        NodeRef prev_ref = children(parent, s)[idx];
-        Node* prev = rwnode(btree, prev_ref);
+        NodeRef prev_ref = children(parent, h)[idx];
+        Node* prev = rwnode(t, prev_ref);
         child->next = prev->next;
         child->prev = prev_ref;
         prev->next = child_ref;
     }
 
-    // ========================================================================
-    // insert
-    // ========================================================================
     // @precondition parent is not full
-    template<typename BTree>
-    void split_child(BTree& btree, Node* parent, CountType child_idx, bool is_child_leaf) {
-        auto& s = get_settings(btree);
-        assert_true(parent->key_count < max_keys(s, false), "parent is not full");
+    template<typename Transaction>
+    void split_child(Transaction& t, const Header& h, Node* parent, CountType child_idx, bool is_child_leaf) {
+        assert_true(parent->key_count < max_keys(h, false), "parent is not full");
 
-        Node* left = rwnode(btree, children(parent, s)[child_idx]);
-        NodeRef right_ref = is_child_leaf ? create_leaf(btree) : create_internal(btree);
-        Node* right = rwnode(btree, right_ref);
+        Node* left = rwnode(t, children(parent, h)[child_idx]);
+        NodeRef right_ref = is_child_leaf ? new_leaf(t) : new_internal(t);
+        Node* right = rwnode(t, right_ref);
 
         // copy right half of LEFT's keys+children to RIGHT
-        CountType t = (left->key_count+1)/2; // ceil(middle)
-        right->key_count = left->key_count - t;
-        os::memory_copy(keys(right), view_shift_left(keys(left), t));
+        CountType m = (left->key_count+1)/2; // ceil(middle)
+        right->key_count = left->key_count - m;
+        os::memory_copy(keys(right), view_shift_left(keys(left), m));
         if (is_child_leaf)
-            os::memory_copy(values(right, s), view_shift_left(values(left, s), t));
+            os::memory_copy(values(right, h), view_shift_left(values(left, h), m));
         else
-            os::memory_copy(children(right, s), view_shift_left(children(left, s), t));
+            os::memory_copy(children(right, h), view_shift_left(children(left, h), m));
         // @note for internal nodes we drop the separating key
-        left->key_count = is_child_leaf ? t : (t-1);
+        left->key_count = is_child_leaf ? m : (m-1);
 
         // insert RIGHT into PARENT with separating key
-        KeyType sep_key = is_child_leaf ? keys(right)[0] : keys(left)[t-1];
-        insert_child_to_right(btree, parent, child_idx, sep_key, right_ref, right, s);
+        KeyType sep_key = is_child_leaf ? keys(right)[0] : keys(left)[m-1];
+        insert_child_to_right(t, h, parent, child_idx, sep_key, right_ref, right);
     }
 
     // @precondition leaf is not full
     template<bool avoid_duplicates=true>
-    U8* insert_in_leaf(Node* leaf, KeyType key, Settings& s) {
-        assert_true(leaf->key_count < max_keys(s, true), "leaf is not full");
+    U8* insert_in_leaf(Header& h, Node* leaf, KeyType key) {
+        assert_true(leaf->key_count < max_keys(h, true), "leaf is not full");
 
         auto ks = keys(leaf);
         CountType idx = 0;
@@ -78,7 +77,7 @@ export namespace plexdb::btree {
             if constexpr (avoid_duplicates) {
                 idx = binary_search_first_geq(keys(leaf), key);
                 if (idx < leaf->key_count && keys(leaf)[idx] == key)
-                    return values(leaf, s)[idx];
+                    return values(leaf, h)[idx];
                 os::memory_shift_right(view_shift_left(keys(leaf), idx));
             } else {
                 idx = leaf->key_count - 1;
@@ -86,57 +85,77 @@ export namespace plexdb::btree {
                     ks[idx+1] = ks[idx];    
                 idx++;
             }
-            os::memory_shift_right(view_shift_left(values(leaf, s), idx));
+            os::memory_shift_right(view_shift_left(values(leaf, h), idx));
         }
 
         ks[idx] = key;
         leaf->key_count++;
-        s.size++;
-        return values(leaf, s)[idx];
+        h.size++;
+        return values(leaf, h)[idx];
     }
 
     // @invariant n is not full
-    template<typename BTree>
-    U8* insert_recursive(BTree& btree, Node* n, CountType depth, KeyType key) {
-        auto& s = get_settings(btree);
-        if (depth == s.depth)
-            return insert_in_leaf(n, key, s);
+    template<typename Transaction>
+    U8* insert_recursive(Transaction& t, const Header& h, NodeRef n_ref, CountType depth, KeyType key) {
+        // leaf
+        if (depth == h.depth) {
+            // acquire lock on returned memory
+            Node* n = rwnode(t, n_ref);
 
-        CountType child_idx = binary_search_first_gt(keys(n), key);
-        bool is_child_leaf = (depth + 1) == s.depth;
-        Node* child = rwnode(btree, children(n, s)[child_idx]);
-        
-        if (child->key_count == max_keys(s, is_child_leaf)) {
-            split_child(btree, n, child_idx, is_child_leaf);
-
-            child_idx = (key > keys(n)[child_idx]) ? (child_idx+1) : child_idx;
-            child = rwnode(btree, children(n, s)[child_idx]);
+            auto t_leaf = scope(t);
+            Header& h = *rwheader(t_leaf);
+            return insert_in_leaf(h, n, key);
         }
-        
-        assert_true(child->key_count < max_keys(s, is_child_leaf), "insert maintains max invariant.");
-        return insert_recursive(btree, child, depth+1, key);
+
+        NodeRef child_ref;
+        bool is_child_leaf = (depth + 1) == h.depth;
+
+        // internal overflow
+        {
+            auto t_int = scope(t);
+
+            const Node* n = rnode(t_int, n_ref);
+            CountType child_idx = binary_search_first_gt(keys(n), key);
+            child_ref = children(n, h)[child_idx];
+            const Node* child = rnode(t_int, child_ref);
+            
+            if (child->key_count == max_keys(h, is_child_leaf)) {
+                split_child(t_int, h, rwnode(t_int, n_ref), child_idx, is_child_leaf);
+    
+                child_idx = (key > keys(n)[child_idx]) ? (child_idx+1) : child_idx;
+                child_ref = children(n, h)[child_idx];
+            }
+            
+            assert_true(child->key_count < max_keys(h, is_child_leaf), "insert maintains max invariant.");
+        }
+        return insert_recursive(t, h, child_ref, depth+1, key);
     }
 
-    template<typename BTree>
-    U8* insert_impl(BTree& btree, KeyType key) {
-        auto& s = get_settings(btree);
+    template<typename Transaction>
+    U8* insert_impl(Transaction& t, KeyType key) {
+        // acquire read on header for duration of insertion
+        auto t_header = scope(t);
+        const auto& h = *rheader(t_header);
         
         // ensure root is not full
-        Node* root = rwnode(btree, get_root(btree));
+        bool is_root_leaf = h.depth == 0;
+        {
+            auto t_root = scope(t);
+            const Node* root = rnode(t_root, h.root);
 
-        bool is_root_leaf = s.depth == 0;
-        if (root->key_count == max_keys(s, is_root_leaf)) {
-            NodeRef new_root_ref = create_internal(btree);
-            Node* new_root = rwnode(btree, new_root_ref);
-            children(new_root, s)[0] = get_root(btree);
-            split_child(btree, new_root, 0, is_root_leaf);
-            
-            set_root(btree, new_root_ref);
-            root = new_root;
-            s.depth++;
+            if (root->key_count == max_keys(h, is_root_leaf)) {
+                NodeRef new_root_ref = new_internal(t_root);
+                Node* new_root = rwnode(t_root, new_root_ref);
+                children(new_root, h)[0] = h.root;
+                split_child(t_root, h, new_root, 0, is_root_leaf);
+                
+                auto& h_write = *rwheader(t_root);
+                h_write.root = new_root_ref;
+                h_write.depth++;
+            }
         }
 
-        return insert_recursive(btree, root, 0, key);
+        return insert_recursive(t, h, h.root, 0, key);
     }
 
     // ========================================================================
@@ -150,93 +169,111 @@ export namespace plexdb::btree {
         [[nodiscard]] constexpr explicit operator bool() const noexcept { return leaf != nullptr; }
     };
 
-    template<typename BTree>
-    Search search_impl(BTree& btree, KeyType key) {
-        const auto& s = get_settings(btree);
+    template<typename Transaction>
+    Search search_impl(Transaction& t, KeyType key) {
+        // acquire read on header for duration of search
+        // @todo check necessary for duration since depth changing may not break search
+        auto t_header = scope(t);
+        const auto& h = *rheader(t_header);
 
-        Node* node = rnode(btree, get_root(btree));
-        for (CountType depth = 0; depth < s.depth; depth++) {
-            CountType idx = binary_search_first_gt(keys(node), key);
-            node = rnode(btree, children(node, s)[idx]);
+        NodeRef n_ref = h.root;
+        for (CountType depth = 0; depth < h.depth; depth++) {
+            auto t_node = scope(t);
+            const Node* n = rnode(t_node, n_ref);
+            CountType idx = binary_search_first_gt(keys(n), key);
+            n_ref = children(n, h)[idx];
         }
         
-        CountType idx = binary_search_first_geq(keys(node), key);
-        if (idx < node->key_count && keys(node)[idx] == key)
-            return Search{node, idx, values(node, s)[idx]};
+        // acquire lock on returned memory
+        // @note still acquires lock if search fails, assuming transaction will 
+        // be ended
+        Node* n = rwnode(t, n_ref);
+        CountType idx = binary_search_first_geq(keys(n), key);
+        if (idx < n->key_count && keys(n)[idx] == key)
+            return Search{n, idx, values(n, h)[idx]};
         return Search{};
     }
 
     // ========================================================================
     // remove
     // ========================================================================
-    template<typename BTree>
-    void merge_and_delete(BTree& btree, Node* a, NodeRef b_ref, Node* b, Node* parent, CountType a_idx, bool is_leaf) {
-        merge(get_settings(btree), a, b, parent, a_idx, is_leaf);
-        delete_node(btree, b_ref);
-    }
-
     struct RemoveStackItem {
         NodeRef node;
         CountType idx;
     };
 
-    template<typename BTree>
-    bool remove_impl(BTree& btree, KeyType key) {
-        auto& s = get_settings(btree);
+    template<typename Transaction>
+    bool remove_impl(Transaction& t, KeyType key) {
+        auto t_remove = scope(t);
 
+        // acquire read on header for duration of remove
+        const auto& h = *rheader(t_remove);
+        
+        // @todo check. strategy is to release read locks acquired during
+        // down traversal and acquire rw as needed when flowing up on the 
+        // assumption being that flowing up is rare
+        
         // traverse to leaf and store path
         Stack<RemoveStackItem> stack{};
         // @todo @perf temp arena
-        // @todo hold pages in transaction
-        Arena stack_arena{/*page_size*/ sizeof(decltype(stack)::Node)*s.depth};
-        NodeRef node_ref = get_root(btree);
-        Node* node = rnode(btree, node_ref);
-        for (CountType depth = 0; depth < s.depth; depth++) {
-            CountType idx = binary_search_first_gt(keys(node), key);
+        Arena stack_arena{/*page_size*/ sizeof(decltype(stack)::Node)*h.depth};
+        NodeRef node_ref = h.root;
+        for (CountType depth = 0; depth < h.depth; depth++) {
+            auto t_down = scope(t_remove);
 
+            const Node* node = rnode(t_down, node_ref);
+            CountType idx = binary_search_first_gt(keys(node), key);
             push_front(stack_arena, stack, RemoveStackItem{node_ref, idx});
-            
-            node_ref = children(node,s)[idx];
-            node = rnode(btree, node_ref);
+            node_ref = children(node, h)[idx];
         }
 
+        // r/w lifetimes are somewhat complicated so for now everything is in one
+        // transaction, again on the assumption that propogation is not deep
+
         // find and delete key
-        CountType idx = binary_search_first_geq(keys(node), key);
-        if (idx >= node->key_count || keys(node)[idx] != key)
-            return false;
+        CountType idx;
+        {
+            const Node* node = rnode(t_remove, node_ref);
+            idx = binary_search_first_geq(keys(node), key);
+            if (idx >= node->key_count || keys(node)[idx] != key)
+                return false;
+        }
 
-        node = rwnode(btree, node_ref);
-        delete_from_leaf(s, node, idx);
-
+        Node* node = rwnode(t_remove, node_ref);
+        delete_from_leaf(h, node, idx);
+        
         // fix underflow, propagating upwards as needed
         bool is_leaf = true;
-        while (node->key_count < min_keys(s, is_leaf)) {
+        while (node->key_count < min_keys(h, is_leaf)) {
             if (stack.length == 0) {
-                if (node->key_count != 0 || s.depth == 0)
+                if (node->key_count != 0 || h.depth == 0)
                     break;
 
-                set_root(btree, children(node,s)[0]);
-                delete_node(btree, node_ref);
-                s.depth--;
-                break;
+                delete_node(t_remove, node_ref);
+
+                Header& h_write = *rwheader(t_remove);
+                h_write.root = children(node, h)[0];
+                h_write.depth--;
+                h_write.size--;
+                return true; // @note, avoids reacquiring header, may not be necessary
             }
 
             RemoveStackItem* item = front(stack); pop_front(stack);
             NodeRef& parent_ref = item->node;
             CountType& idx = item->idx;
-            Node* parent = rwnode(btree, parent_ref);
+            Node* parent = rwnode(t_remove, parent_ref);
 
             // borrow from left or right sibling if it does not break invariant
-            NodeRef left_ref = (idx > 0) ? children(parent,s)[idx-1] : ~0u;
-            Node* left = (left_ref != ~0u) ? rwnode(btree, left_ref) : nullptr;
-            if (left && left->key_count > min_keys(s, is_leaf)) {
-                move_from_left(parent, left, node, idx, s, is_leaf);
+            NodeRef left_ref = (idx > 0) ? children(parent,h)[idx-1] : ~0u;
+            Node* left = (left_ref != ~0u) ? rwnode(t_remove, left_ref) : nullptr;
+            if (left && left->key_count > min_keys(h, is_leaf)) {
+                move_from_left(parent, left, node, idx, h, is_leaf);
                 break;
             }
-            NodeRef right_ref = (idx < parent->key_count) ? children(parent,s)[idx+1] : ~0u;
-            Node* right = (right_ref != ~0u) ? rwnode(btree, right_ref) : nullptr;
-            if (right && right->key_count > min_keys(s, is_leaf)) {
-                move_from_right(parent, right, node, idx, s, is_leaf);
+            NodeRef right_ref = (idx < parent->key_count) ? children(parent,h)[idx+1] : ~0u;
+            Node* right = (right_ref != ~0u) ? rwnode(t_remove, right_ref) : nullptr;
+            if (right && right->key_count > min_keys(h, is_leaf)) {
+                move_from_right(parent, right, node, idx, h, is_leaf);
                 break;
             }
 
@@ -245,17 +282,20 @@ export namespace plexdb::btree {
             // otherwise we need to merge, this causes a delete in the parent 
             // which needs to be propagated
             if (left) {
-                merge_and_delete(btree, left, node_ref, node, parent, idx-1, is_leaf);
+                merge(h, left, node, parent, idx-1, is_leaf);
+                delete_node(t, node_ref);
             } else {
-                merge_and_delete(btree, node, right_ref, right, parent, idx, is_leaf);
+                merge(h, node, right, parent, idx, is_leaf);
+                delete_node(t, right_ref);
             }
 
             node_ref = parent_ref;
             node = parent;
             is_leaf = false;
         }
+        // @note loop contains a return
 
-        s.size--;
+        rwheader(t_remove)->size--;
         return true;
     }
 }
