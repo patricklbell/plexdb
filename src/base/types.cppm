@@ -89,6 +89,9 @@ export namespace plexdb {
     constexpr B32 MIN_B32 = std::numeric_limits<B32>::min();
     constexpr B64 MIN_B64 = std::numeric_limits<B64>::min();
 
+    template<typename T>
+    using NumericLimits = std::numeric_limits<T>;
+
     constexpr U16 operator""_u16(unsigned long long value) {
         return static_cast<U16>(value);
     }
@@ -123,15 +126,14 @@ export namespace plexdb {
         constexpr bool k_assert_enabled = false;
     #endif
 
-    using AssertHandler = void(*)(const char*, const char*, const char*, unsigned);
+    using AssertHandler = void(*)(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
     inline AssertHandler g_assert_handler = nullptr;
 
     inline void assert_true_always(bool expr, const char* msg, std::source_location loc = std::source_location::current()) noexcept {
         if (unlikely(!expr)) {
             if (g_assert_handler != nullptr)
                 g_assert_handler(msg, loc.file_name(), loc.function_name(), loc.line());
-            else
-                PLEXDB_TRAP;
+            PLEXDB_TRAP;
         }
     }
     inline void assert_true(bool expr, const char* msg, std::source_location loc = std::source_location::current()) noexcept {

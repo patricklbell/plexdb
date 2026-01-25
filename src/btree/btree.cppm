@@ -15,7 +15,7 @@ export namespace plexdb::btree {
     //      updating with offsets
     // ========================================================================
     template<typename BTree>
-    void insert(BTree& btree, KeyType key, U8* in_value, U64 size, U64 offset=0) {
+    void insert(BTree& btree, KeyType key, const U8* in_value, U64 size, U64 offset=0) {
         using Transaction = typename BTree::Transaction;
         Transaction t{&btree};
 
@@ -26,7 +26,7 @@ export namespace plexdb::btree {
     }
 
     template<typename BTree>
-    bool update(BTree& btree, KeyType key, U8* in_value, U64 size, U64 offset=0) {
+    bool update(BTree& btree, KeyType key, const U8* in_value, U64 size, U64 offset=0) {
         using Transaction = typename BTree::Transaction;
         Transaction t{&btree};
 
@@ -64,14 +64,14 @@ export namespace plexdb::btree {
     // ========================================================================
     template<typename T, typename BTree>
         requires TriviallyCopyable<T>
-    void tinsert(BTree& btree, KeyType key, T& in_value) {
-        insert(btree, key, reinterpret_cast<U8*>(&in_value), sizeof(T));
+    void tinsert(BTree& btree, KeyType key, const T& in_value) {
+        insert(btree, key, reinterpret_cast<const U8*>(&in_value), sizeof(T));
     }
 
     template<typename T, typename BTree>
         requires TriviallyCopyable<T>
-    bool tupdate(BTree& btree, KeyType key, T value) {
-        return update(btree, key, reinterpret_cast<U8*>(&value), sizeof(T));
+    bool tupdate(BTree& btree, KeyType key, const T& value) {
+        return update(btree, key, reinterpret_cast<const U8*>(&value), sizeof(T));
     }
 
     template<typename T, typename BTree>

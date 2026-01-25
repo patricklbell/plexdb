@@ -25,8 +25,26 @@ namespace plexdb::btree {
         node->next = ~0u;
     }
 
+    CountType get_max_internal_nodes_in_bytes(U64 bytes) {
+        assert_true(bytes >= sizeof(Node) + sizeof(KeyType) + 2*sizeof(NodeRef), "enough bytes for at least one key in internal node");
+        U64 count = min(
+            (bytes - sizeof(Node) - sizeof(NodeRef))/(sizeof(KeyType) + sizeof(NodeRef)),
+            static_cast<U64>(NumericLimits<CountType>::max())
+        );
+        return static_cast<CountType>(count);
+    }
+
+    CountType get_max_leaf_nodes_in_bytes(U64 bytes, U64 value_stride) {
+        assert_true(bytes >= sizeof(Node) + sizeof(KeyType) + value_stride, "enough bytes for at least one key in leaf node");
+        U64 count = min(
+            (bytes - sizeof(Node))/(sizeof(KeyType) + value_stride),
+            static_cast<U64>(NumericLimits<CountType>::max())
+        );
+        return static_cast<CountType>(count);
+    }
+
     Node* push_internal_node(const Header& h) {
-        U64 node_size = sizeof(Node) + h.max_keys_per_internal*sizeof(KeyType) + (h.max_keys_per_internal+1)*sizeof(Node*);
+        U64 node_size = sizeof(Node) + h.max_keys_per_internal*sizeof(KeyType) + (h.max_keys_per_internal+1)*sizeof(NodeRef);
         Node* node = reinterpret_cast<Node*>(os::allocate(node_size));
         init_node(node);
         return node;

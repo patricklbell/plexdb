@@ -23,6 +23,9 @@ export namespace plexdb::btree {
 
     void init_node(Node* node);
 
+    CountType get_max_internal_nodes_in_bytes(U64 bytes);
+    CountType get_max_leaf_nodes_in_bytes(U64 bytes, U64 value_stride);
+
     Node* push_internal_node(const Header& h);
     Node* push_leaf_node(const Header& h);
 }

@@ -13,7 +13,7 @@ import plexdb.btree.print;
 using namespace plexdb;
 using namespace plexdb::btree;
 
-TEST_CASE("insert", "[btree]" ) {
+TEST_CASE("insert", "[plexdb.btree.in-memory]" ) {
     SECTION("(internal=3,leaf=4) consecutive insertion") {
         BTreeInMemory t(3, 4, sizeof(int));
 
@@ -141,7 +141,7 @@ TEST_CASE("insert", "[btree]" ) {
     };
 }
 
-TEST_CASE("remove", "[btree]" ) {
+TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
     SECTION("(internal=3,leaf=4) consecutive deletion in order") {
         BTreeInMemory t(3, 4, sizeof(int));
 

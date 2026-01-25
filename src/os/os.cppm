@@ -32,6 +32,10 @@ export namespace plexdb::os {
         return dst;
     }
 
+    template<typename T>
+    void memory_copy(U8* dst, const T* src) {
+        memory_copy(dst, src, sizeof(T));
+    }
     template<bool check_length=true, typename Length, typename Size, typename Byte>
     void memory_copy(const ArrayView<Length,Size,Byte>& dst, const ArrayView<Length,Size,Byte>& src) {
         if constexpr (check_length)
