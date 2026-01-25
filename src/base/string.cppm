@@ -3,18 +3,19 @@ export module plexdb.base.string;
 import plexdb.base.types;
 
 export namespace plexdb {
+    struct AutoString8;
+
     struct String8 {
         union {
             U8* data;
             const char* c_str;
         };
         U64 length;
-    };
 
-    template<U64 N>
-    constexpr String8 string8(const char (&str)[N]) {
-        return String8{.c_str=str, .length=N-1};
-    }
+        template<U64 N>
+        String8(const char (&lit)[N]) : c_str(lit), length(N) {}
+        String8(const AutoString8& str);
+    };
 
     struct AutoString8 {
         union {
@@ -35,6 +36,8 @@ export namespace plexdb {
         AutoString8& operator+=(const AutoString8& rhs);
         friend AutoString8 operator+(const AutoString8& lhs, const AutoString8& rhs);
         operator const char*() const; 
+        bool operator==(const AutoString8& b) const;
+        bool operator==(const char* b) const;
     };
 
     AutoString8 to_string8(S64 x);
@@ -45,4 +48,21 @@ export namespace plexdb {
     AutoString8 to_string8(U16 x);
     AutoString8 to_string8(S8 x);
     AutoString8 to_string8(U8 x);
+
+    void print(const String8& str);
+
+    template <typename... Args>
+    void print(const String8& first, const Args&... rest)
+    {
+        print(first);
+        (print(rest), ...);
+    }
+
+    template <typename... Args>
+    void println(const Args&... args)
+    {
+        print(args...);
+        print("\n");
+    }
+
 }

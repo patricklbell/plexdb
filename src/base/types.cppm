@@ -89,6 +89,16 @@ export namespace plexdb {
     constexpr B32 MIN_B32 = std::numeric_limits<B32>::min();
     constexpr B64 MIN_B64 = std::numeric_limits<B64>::min();
 
+    constexpr U16 operator""_u16(unsigned long long value) {
+        return static_cast<U16>(value);
+    }
+    constexpr U32 operator""_u32(unsigned long long value) {
+        return static_cast<U32>(value);
+    }
+    constexpr U64 operator""_u64(unsigned long long value) {
+        return static_cast<U64>(value);
+    }
+
     // ========================================================================
     // branch prediction
     // ========================================================================
@@ -120,7 +130,8 @@ export namespace plexdb {
         if (unlikely(!expr)) {
             if (g_assert_handler != nullptr)
                 g_assert_handler(msg, loc.file_name(), loc.function_name(), loc.line());
-            PLEXDB_TRAP;
+            else
+                PLEXDB_TRAP;
         }
     }
     inline void assert_true(bool expr, const char* msg, std::source_location loc = std::source_location::current()) noexcept {
@@ -271,10 +282,13 @@ export namespace plexdb {
     struct TArrayView {
         T* ptr;
         Length length;
-
+        
         explicit TArrayView(T* ptr, Length length): ptr(ptr), length(length) {}
         explicit TArrayView(U8* ptr, Length length): ptr(reinterpret_cast<T*>(ptr)), length(length) {}
         explicit TArrayView(const U8* ptr, Length length): ptr(reinterpret_cast<const T*>(ptr)), length(length) {}
+
+        template<U64 N>
+        explicit TArrayView(T arr[N]) : ptr(arr), length(N) {}
 
         template<typename U = T>
         TArrayView(const TArrayView<RemoveCV<T>, Length>& other) requires (IsConst<U>): ptr(other.ptr), length(other.length) {}
@@ -292,6 +306,17 @@ export namespace plexdb {
 
         T& operator[](Length i) noexcept { return ptr[i]; }
         const T& operator[](Length i) const noexcept { return ptr[i]; }
+
+        template<typename U = T>
+        bool operator==(const TArrayView<U,Length>& b) const {
+            if (b.length != this->length)
+                return false;
+            for (Length idx = 0; idx < this->length; idx++) {
+                if (this->ptr[idx] != b->ptr[idx])
+                    return false;
+            }
+            return true;
+        }
     };
     template<typename T, typename Length>
     TArrayView<T,Length> view_shift_left(const TArrayView<T,Length>& in, Length offset=static_cast<Length>(1)) {
@@ -304,14 +329,17 @@ export namespace plexdb {
         return TArrayView<T,Length>{in.ptr - offset, static_cast<Length>(in.length + offset)};
     }
 
-    template<typename Length, typename Size = U64, typename Byte = U8>
-        requires Either<Byte, U8, const U8>
+    template<typename Length = U64, typename Size = U64, typename Byte = U8>
+        requires Either<Byte, U8, const U8, S8, const S8>
     struct ArrayView {
         Byte* ptr;
         Length length;
         Size el_size;
 
         explicit ArrayView(Byte* ptr, Size el_size, Length length) : ptr(ptr), el_size(el_size), length(length) {}
+
+        template<U64 N>
+        explicit ArrayView(Byte (&arr)[N]) : ptr(arr), el_size(1), length(N) {}
 
         template<typename B = Byte>
         ArrayView(const ArrayView<Length, Size, RemoveConst<B>>& other) requires (IsConst<B>): ptr(other.ptr), length(other.length), el_size(other.el_size) {}
@@ -356,6 +384,27 @@ export namespace plexdb {
 
         Byte* operator[](Length i) noexcept { return ptr + i*el_size; }
         const Byte* operator[](Length i) const noexcept { return ptr + i*el_size; }
+
+        using Idx = decltype(length*el_size);
+
+        template<typename L = Length, typename S = Size, typename B = Byte>
+        bool operator==(const ArrayView<L,S,B>& b) const {
+            if (b.length*b.el_size != this->length*this->el_size)
+                return false;
+            for (Idx idx = 0; idx < this->length*this->el_size; idx++) {
+                if (this->ptr[idx] != b->ptr[idx])
+                    return false;
+            }
+            return true;
+        }
+
+        bool operator==(const U8* b) const { // @note obviously
+            for (Idx idx = 0; idx < this->length*this->el_size; idx++) {
+                if (this->ptr[idx] != b[idx])
+                    return false;
+            }
+            return true;
+        }
     };
     template<typename Length, typename Size, typename Byte>
     ArrayView<Length,Size,Byte> view_shift_left(const ArrayView<Length,Size,Byte>& in, Length offset=static_cast<Length>(1)) {

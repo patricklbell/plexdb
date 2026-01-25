@@ -19,8 +19,8 @@ export namespace plexdb::pager {
             U8 version[sizeof(HEADER_CURRENT_VERSION)];
             U64 page_size;
             U64 page_count;
-            U64 free_list_count;
         } header;
+        bool header_in_write_set = false;
 
         // pager flushes writes to disk when cache read collision occurs. @profile
         // a collision requires that the page is in the write set, otherwise the
@@ -28,15 +28,15 @@ export namespace plexdb::pager {
         U64 read_cache_count;
         U8* read_cache;
         struct ReadCacheEntry {
-            bool flushed;
+            bool in_write_set;
             U64 idx;
         };
 
         Arena write_arena;
         Stack<U64> write_set;
 
-        Pager(os::Handle file);
-        Pager(os::Handle file, Pager::Header header, U64 base_offset);
+        Pager(os::Handle file, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
+        Pager(os::Handle file, const Pager::Header& header, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
         ~Pager();
 
         Pager() = delete;
@@ -44,10 +44,9 @@ export namespace plexdb::pager {
         Pager& operator=(const Pager&) = delete;
     };
 
-    Pager::Header create(os::Handle file, U64 page_size);
+    Pager::Header create(os::Handle file, U64 page_size, U64 base_offset=0);
 
     const U8* rpage(Pager& pager, U64 idx);
-    U8* wpage(Pager& pager, U64 idx);
     U8* rwpage(Pager& pager, U64 idx);
     void fflush(Pager& pager);
 

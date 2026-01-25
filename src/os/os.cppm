@@ -16,7 +16,8 @@ export namespace plexdb::os {
     // ========================================================================
     // memory
     // ========================================================================
-    U8* allocate(U64 size);
+    U8* allocate(U64 bytes);
+    U8* allocate_zero(U64 bytes);
     void deallocate(void* ptr);
 
     void memory_copy(void* dst, const void* src, U64 bytes) noexcept;
@@ -78,11 +79,27 @@ export namespace plexdb::os {
         // SHAREREAD   = (1<<4),
         // SHAREWRITE  = (1<<5),
     };
-    Handle file_open(String8 path, AccessFlags flags=AccessFlags(READ|WRITE));
-    void   file_close(Handle file);
-    void   file_read(Handle file, Rng1U64 rng, void* out);
-    void   file_write(Handle file, Rng1U64 rng, const void* in);
-    void   file_sync(Handle file);
-    U64    file_get_offset(Handle file);
-    void   file_seek(Handle file, U64 offset);
+
+    struct FileStats {
+        U64 byte_count;
+    };
+
+    Handle    file_open(String8 path, AccessFlags flags=AccessFlags(READ|WRITE));
+    Handle    file_tmp(bool delete_on_close=true);
+    void      file_close(Handle file);
+    void      file_delete(String8 path);
+    void      file_read(Handle file, Rng1U64 rng, void* out);
+    void      file_write(Handle file, Rng1U64 rng, const void* in);
+    void      file_sync(Handle file);
+    void      file_seek(Handle file, U64 offset);
+    void      file_resize_zero(Handle file, U64 new_byte_count);
+    U64       file_get_offset(Handle file);
+    FileStats file_get_stats(Handle file);
+
+    struct File {
+        Handle handle;
+
+        ~File();
+        operator Handle() const;
+    };
 }

@@ -8,6 +8,8 @@ module plexdb.base.string;
 import plexdb.os;
 
 namespace plexdb {
+    String8::String8(const AutoString8& str) : data(str.data), length(str.length) {}
+
     AutoString8::AutoString8()
         : data(nullptr), length(0) {}
     AutoString8::AutoString8(const U8* in, U64 length)
@@ -62,6 +64,12 @@ namespace plexdb {
     }
     AutoString8::operator const char*() const {
         return this->c_str;
+    }
+    bool AutoString8::operator==(const AutoString8& b) const {
+        return strcmp(this->c_str, b.c_str) == 0;
+    }
+    bool AutoString8::operator==(const char* b) const {
+        return strcmp(this->c_str, b) == 0;
     }
 
     AutoString8 to_string8(S64 x) {
@@ -119,5 +127,11 @@ namespace plexdb {
         res.data = os::allocate(res.length+1);
         res.length = snprintf((char*)res.data, res.length+1, "%" PRIu8, x);
         return res;
+    }
+
+    void print(const String8& str) {
+        if (str.length == 0)
+            return;
+        printf("%s", str.c_str);
     }
 }

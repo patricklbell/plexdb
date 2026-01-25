@@ -28,4 +28,8 @@ export namespace plexdb {
     constexpr T align_pow2(T x, T b) { return (x + b - 1)&(~(b - 1)); }
 
     inline U64 hash(U64 x) { return x; }
+
+    U64 bit_count(U64 x);
+    U64 bit_count_trailing_zeros(U64 x);
+    U64 bit_count_leading_zeros(U64 x);
 }
