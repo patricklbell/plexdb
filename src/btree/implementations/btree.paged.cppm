@@ -23,10 +23,7 @@ export namespace plexdb::btree {
             BTreePaged* t;
         };
     };
+    U64 create_paged(Pager& pager, U64 value_stride);
 
     BTreePaged::Transaction scope(const BTreePaged::Transaction& t);
-
-    namespace paged {
-        U64 create(Pager* pager, U64 value_stride);
-    }
 }

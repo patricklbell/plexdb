@@ -122,10 +122,4 @@ namespace plexdb::arena {
             arena.page->current = arena.page;
         }
     }
-
-    // temporary arena scope
-    Scope::Scope(Arena* arena) : arena(arena), off(offset(*arena)) {}
-    Scope::~Scope() {
-        pop_to(*this->arena, this->off);
-    }
 }

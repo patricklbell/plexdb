@@ -19,13 +19,31 @@ export namespace plexdb {
     // helpers
     // ========================================================================
     template<typename T>
-    constexpr T max(const T& a, const T& b) { return (a >= b) ? a : b; }
+    inline constexpr T max(const T& a, const T& b) { return (a >= b) ? a : b; }
 
     template<typename T>
-    constexpr T min(const T& a, const T& b) { return (a <= b) ? a : b; }
+    inline constexpr T min(const T& a, const T& b) { return (a <= b) ? a : b; }
 
     template<typename T>
-    constexpr T align_pow2(T x, T b) { return (x + b - 1)&(~(b - 1)); }
+        requires Unsigned<T> && Integer<T>
+    inline constexpr T ceil_div(const T& a, const T& b) { return (a  + b - 1) / b; }
+
+    template<typename T>
+        requires Signed<T> && Integer<T>
+    inline constexpr T ceil_div(const T& a, const T& b) { return 1 + (a - 1) / b; }
+
+    template<typename T>
+    inline constexpr T align_pow2(T x, T b) { return (x + b - 1)&(~(b - 1)); }
+
+    template<typename T>
+        requires Integer<T>
+    inline constexpr T align_down(const T& x, const T& align) { return (x / align) * align; }
+
+    template<typename T>
+        requires Integer<T>
+    inline constexpr T align_up(const T& x, const T& align) { return ceil_div(x, align)*align; }
+
+    F64 round_to_infinity(F64 x);
 
     inline U64 hash(U64 x) { return x; }
 

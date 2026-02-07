@@ -20,9 +20,9 @@ export namespace plexdb::os {
     U8* allocate_zero(U64 bytes);
     void deallocate(void* ptr);
 
-    void memory_copy(void* dst, const void* src, U64 bytes) noexcept;
-    void memory_move(void* dst, const void* src, U64 bytes) noexcept;
-    void memory_zero(void* dst, U64 bytes) noexcept;
+    void* memory_copy(void* dst, const void* src, U64 bytes) noexcept;
+    void* memory_move(void* dst, const void* src, U64 bytes) noexcept;
+    void* memory_zero(void* dst, U64 bytes) noexcept;
 
     template<class To>
         requires (TriviallyCopyable<To> && TriviallyConstructible<To>)
@@ -70,6 +70,17 @@ export namespace plexdb::os {
     void memory_shift_left(const TArrayView<T,Length>& src, Length offset=1) {
         memory_move(src.ptr - offset, src.ptr, sizeof(T)*src.length);
     }
+
+    template<typename U, typename V, typename L1, typename L2>
+        requires TriviallyCopyable<V> && SameAs<RemoveCV<U>,RemoveCV<V>>
+    void memory_append_copy(TArrayView<U,L1>& in, const TArrayView<V,L2>& suffix) {
+        static_assert(sizeof(U) == sizeof(V));
+        assert_true(in.ptr != nullptr, "cannot append to empty view");
+        assert_true(suffix.length > 0 && suffix.ptr != nullptr, "cannot append empty view");
+        memory_copy(in.ptr + in.length, suffix.ptr, sizeof(U)*suffix.length);
+        in.length += suffix.length;
+    }
+    
 
     // ========================================================================
     // file

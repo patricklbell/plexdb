@@ -1,4 +1,5 @@
 module;
+#include <cstddef>
 #include <limits>
 #include <cstdint>
 #include <source_location>
@@ -30,6 +31,8 @@ export namespace plexdb {
     // ========================================================================
     // numerical types
     // ========================================================================
+    using size_t = std::size_t;
+
     using U8  = std::uint8_t;
     using U16 = std::uint16_t;
     using U32 = std::uint32_t;
@@ -232,6 +235,24 @@ export namespace plexdb {
     template<typename T, typename ... U>
     concept Either = (SameAs<T, U> || ...);
 
+    template<typename T>
+    concept Unsigned = requires { T(0); T(-1); } && (T(-1) > T(0));
+
+    template<typename T>
+    concept Signed = !Unsigned<T>;
+
+    template<typename T>
+    concept Integer = requires(T a, T b) {
+        T(0);
+        T(1);
+        a + b;
+        a - b;
+        a * b;
+        a / b;
+        a % b;
+        a & b;
+    };
+
     // ========================================================================
     // pair
     // ========================================================================
@@ -280,17 +301,16 @@ export namespace plexdb {
     // ========================================================================
     // array
     // ========================================================================
-    template<typename T, typename Length>
+    template<typename T, typename Length = size_t>
     struct TArrayView {
         T* ptr;
         Length length;
         
         explicit TArrayView(T* ptr, Length length): ptr(ptr), length(length) {}
-        explicit TArrayView(U8* ptr, Length length): ptr(reinterpret_cast<T*>(ptr)), length(length) {}
-        explicit TArrayView(const U8* ptr, Length length): ptr(reinterpret_cast<const T*>(ptr)), length(length) {}
+        explicit TArrayView(): ptr(nullptr), length(0) {}
 
-        template<U64 N>
-        explicit TArrayView(T arr[N]) : ptr(arr), length(N) {}
+        template<size_t N>
+        TArrayView(T (&arr)[N]) : ptr(arr), length(N) {}
 
         template<typename U = T>
         TArrayView(const TArrayView<RemoveCV<T>, Length>& other) requires (IsConst<U>): ptr(other.ptr), length(other.length) {}
@@ -302,9 +322,10 @@ export namespace plexdb {
         ConstIterator begin() const noexcept { return ptr; }
         ConstIterator cbegin() const noexcept { return ptr; }
 
-        Iterator end() noexcept { return ptr + length; }
-        ConstIterator end() const noexcept { return ptr + length; }
-        ConstIterator cend() const noexcept { return ptr + length; }
+        // @note allows iterator for zero length views
+        Iterator end() noexcept { return length > 0 ? ptr + length : ptr; }
+        ConstIterator end() const noexcept { return length > 0 ? ptr + length : ptr; }
+        ConstIterator cend() const noexcept { return length > 0 ? ptr + length : ptr; }
 
         T& operator[](Length i) noexcept { return ptr[i]; }
         const T& operator[](Length i) const noexcept { return ptr[i]; }
@@ -314,7 +335,7 @@ export namespace plexdb {
             if (b.length != this->length)
                 return false;
             for (Length idx = 0; idx < this->length; idx++) {
-                if (this->ptr[idx] != b->ptr[idx])
+                if (this->ptr[idx] != b.ptr[idx])
                     return false;
             }
             return true;
@@ -331,7 +352,14 @@ export namespace plexdb {
         return TArrayView<T,Length>{in.ptr - offset, static_cast<Length>(in.length + offset)};
     }
 
-    template<typename Length = U64, typename Size = U64, typename Byte = U8>
+    template<typename T, typename Length>
+    void append_in_place(TArrayView<T,Length>& in, T value) {
+        assert_true(in.ptr != nullptr, "cannot append to empty view");
+        in.length++;
+        in[in.length - 1] = value;
+    }
+    
+    template<typename Length = size_t, typename Size = size_t, typename Byte = U8>
         requires Either<Byte, U8, const U8, S8, const S8>
     struct ArrayView {
         Byte* ptr;
@@ -340,7 +368,7 @@ export namespace plexdb {
 
         explicit ArrayView(Byte* ptr, Size el_size, Length length) : ptr(ptr), el_size(el_size), length(length) {}
 
-        template<U64 N>
+        template<size_t N>
         explicit ArrayView(Byte (&arr)[N]) : ptr(arr), el_size(1), length(N) {}
 
         template<typename B = Byte>

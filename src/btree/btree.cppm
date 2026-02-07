@@ -10,7 +10,7 @@ import plexdb.btree.detail;
 
 export namespace plexdb::btree {
     // ========================================================================
-    // untyped helpers
+    // untyped interface
     //      basic interface, @todo dont rw lock for all searches and allow
     //      updating with offsets
     // ========================================================================
@@ -60,7 +60,7 @@ export namespace plexdb::btree {
     }
 
     // ========================================================================
-    // typed helpers
+    // typed interface
     // ========================================================================
     template<typename T, typename BTree>
         requires TriviallyCopyable<T>
@@ -85,6 +85,6 @@ export namespace plexdb::btree {
 }
 
 export namespace plexdb {
-    using btree::BTreeInMemory;
-    using btree::BTreePaged;
+    using BTreeInMemory = btree::BTreeInMemory;
+    using BTreePaged = btree::BTreePaged;
 }

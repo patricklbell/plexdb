@@ -201,3 +201,17 @@
 #if !defined(LANG_C)
     #define LANG_C 0
 #endif
+
+#if PLEXDB_COMPILER_MSVC
+    #define thread_static __declspec(thread)
+#elif PLEXDB_COMPILER_CLANG
+    #define thread_static __thread
+#elif PLEXDB_COMPILER_GCC
+    #define thread_static __thread
+#else
+    #error Thread static not defined for this compiler.
+#endif
+#if PLEXDB_DISABLE_THREADS
+    #undef thread_static
+    #define thread_static
+#endif

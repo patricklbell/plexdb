@@ -4,6 +4,7 @@ module;
 export module plexdb.arena;
 
 import plexdb.base;
+import plexdb.os;
 
 namespace plexdb::arena {
     export constexpr U64 default_page_size = 1000u;
@@ -30,8 +31,10 @@ namespace plexdb::arena {
         Arena(U64 page_size = default_page_size, void* optional_backing_buffer = nullptr);
         Arena(ArenaPage* page);
         ~Arena();
+
         Arena(const Arena&) = delete;
         Arena(Arena&& other) noexcept;
+
         Arena& operator=(const Arena&) = delete;
         Arena& operator=(Arena&&) noexcept;
     };
@@ -44,24 +47,13 @@ namespace plexdb::arena {
     export template<typename El>
     inline El* push_array_no_zero_aligned(Arena& arena, U64 count, U64 align) { return (El*)push(arena, sizeof(El)*count, align); }
     export template<typename El>
-    inline El* push_array_aligned        (Arena& arena, U64 count, U64 align) { return (El*)memset(push_array_no_zero_aligned<El>(arena, count, align), 0u, sizeof(El)*count); }
+    inline El* push_array_aligned        (Arena& arena, U64 count, U64 align) { return (El*)os::memory_zero(push_array_no_zero_aligned<El>(arena, count, align), sizeof(El)*count); }
     export template<typename El>
     inline El* push_array_no_zero        (Arena& arena, U64 count)            { return (El*)push_array_no_zero_aligned<El>(arena, count, max(8ul, alignof(El))); }
     export template<typename El>
     inline El* push_array                (Arena& arena, U64 count)            { return (El*)push_array_aligned<El>(arena, count, max(8ul, alignof(El))); }
     export template<typename El>
     inline El* push_array                (Arena& arena)                       { return push_array<El>(arena); }
-
-
-    export struct Scope {
-        Arena* arena;
-        U64 off;
-
-        Scope(Arena* arena);
-        ~Scope();
-        Scope(const Scope&) = delete;
-        Scope& operator=(const Scope&) = delete;
-    };
 }
 
 export namespace plexdb {

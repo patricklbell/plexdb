@@ -2,7 +2,6 @@
 #include <catch2/benchmark/catch_benchmark.hpp>
 #include <algorithm>
 #include <vector>
-#include <numeric>
 
 import plexdb.base;
 import plexdb.os;
@@ -14,8 +13,6 @@ import plexdb.pager;
 using namespace plexdb;
 using namespace plexdb::btree;
 
-namespace paged = plexdb::btree::paged;
-
 TEST_CASE("insert", "[plexdb.btree.paged]") {
     SECTION("(page_size=128) consecutive insertion") {
         os::File pfile(os::file_tmp());
@@ -23,7 +20,7 @@ TEST_CASE("insert", "[plexdb.btree.paged]") {
 
         {
             Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = paged::create(&pager, sizeof(int));
+            header_page = create_paged(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
             for (int key = 0; key < 32; key++) {
@@ -49,7 +46,7 @@ TEST_CASE("insert", "[plexdb.btree.paged]") {
 
         {
             Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = paged::create(&pager, sizeof(int));
+            header_page = create_paged(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
             for (int key = 0; key < 5; key++) tinsert(t, key, 10*key);
@@ -71,7 +68,7 @@ TEST_CASE("insert", "[plexdb.btree.paged]") {
 
         {
             Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = paged::create(&pager, sizeof(int));
+            header_page = create_paged(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
             for (int key = 31; key >= 0; key--) tinsert(t, key, 10*key);
@@ -105,7 +102,7 @@ TEST_CASE("insert", "[plexdb.btree.paged]") {
 
         {
             Pager pager(pfile, pager::create(pfile, 256_u64));
-            header_page = paged::create(&pager, 9);
+            header_page = create_paged(pager, 9);
             BTreePaged t(&pager, header_page);
 
             U64 max_value_length = 0;
@@ -138,7 +135,7 @@ TEST_CASE("remove", "[plexdb.btree.paged]") {
 
         {
             Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = paged::create(&pager, sizeof(int));
+            header_page = create_paged(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
             for (int key = 0; key < 32; key++) tinsert(t, key, 10*key);
@@ -159,7 +156,7 @@ TEST_CASE("remove", "[plexdb.btree.paged]") {
 
         {
             Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = paged::create(&pager, sizeof(int));
+            header_page = create_paged(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
             for (int key = 0; key < 16; key++) tinsert(t, key, 10*key);
@@ -180,7 +177,7 @@ TEST_CASE("remove", "[plexdb.btree.paged]") {
 
         {
             Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = paged::create(&pager, sizeof(int));
+            header_page = create_paged(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
             for (int key = 0; key < 8; key++) tinsert(t, key, 10*key);

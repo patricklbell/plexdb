@@ -4,6 +4,9 @@ module;
 #if PLEXDB_COMPILER_MSVC
     #include <intrin.h>
 #endif
+#if PLEXDB_ARCH_X86
+    #include <immintrin.h>
+#endif
 
 module plexdb.base.math;
 
@@ -43,4 +46,8 @@ namespace plexdb {
     #else
         #error Compiler instrinsics not implemented.
     #endif
+
+    F64 round_to_infinity(F64 x) {
+        return __builtin_ceil(x);
+    }
 }

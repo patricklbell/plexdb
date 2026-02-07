@@ -31,22 +31,32 @@ target_sources(plexdb_modules
     PUBLIC
         FILE_SET CXX_MODULES FILES
             src/arena/arena.cppm
+
             src/base/base.cppm
             src/base/containers.cppm
             src/base/math.cppm
             src/base/string.cppm
             src/base/types.cppm
-            src/btree/implementations/btree.in_memory.cppm
+
+            src/blob/implementations/blob.paged.cppm
+            src/blob/implementations/blob.paged.detail.cppm
+            src/blob/blob.cppm
+
             src/btree/implementations/btree.paged.cppm
-            src/btree/implementations/btree.in_memory.detail.cppm
             src/btree/implementations/btree.paged.detail.cppm
+            src/btree/implementations/btree.in_memory.cppm
+            src/btree/implementations/btree.in_memory.detail.cppm
             src/btree/btree.detail.cppm
             src/btree/btree.cppm
             src/btree/btree.node.cppm
             src/btree/btree.print.cppm
             src/btree/btree.types.cppm
+
             src/os/os.cppm
+
             src/pager/pager.cppm
+
+            src/threads/threads.cppm
 )
 
 add_library(plexdb STATIC)
@@ -54,17 +64,26 @@ target_include_directories(plexdb PRIVATE src)
 target_sources(plexdb
     PRIVATE
         src/arena/arena.cpp
+
         src/base/math.cpp
         src/base/string.cpp
         src/base/types.cpp
-        src/btree/btree.node.cpp
+
+        src/blob/implementations/blob.paged.cpp
+        src/blob/implementations/blob.paged.detail.cpp
+
         src/btree/implementations/btree.paged.cpp
         src/btree/implementations/btree.in_memory.detail.cpp
         src/btree/implementations/btree.in_memory.cpp
         src/btree/implementations/btree.paged.detail.cpp
         src/btree/btree.detail.cpp
+        src/btree/btree.node.cpp
+
         src/os/os.cpp
+
         src/pager/pager.cpp
+
+        src/threads/threads.cpp
 )
 
 target_link_libraries(plexdb PRIVATE plexdb_modules)
