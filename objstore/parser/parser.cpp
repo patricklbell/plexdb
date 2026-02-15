@@ -130,7 +130,7 @@ namespace objstore::parser {
         };
     
         // keywords (case-insensitive)
-        constexpr auto kw_create = LEXY_LIT("create");
+        constexpr auto kw_create = LEXY_LIT_CI("create");
         constexpr auto kw_keyspace = LEXY_LIT_CI("keyspace");
         constexpr auto kw_table = LEXY_LIT_CI("table");
         constexpr auto kw_if = LEXY_LIT_CI("if");
@@ -201,7 +201,10 @@ namespace objstore::parser {
 
         // IF NOT EXISTS clause
         struct if_not_exists {
-            static constexpr auto rule = dsl::opt(dsl::peek(kw_if + dsl::p<ws> + kw_not + dsl::p<ws> + kw_exists) >> dsl::return_);
+            static constexpr auto rule = []() {
+                auto key = kw_if + dsl::p<ws> + kw_not + dsl::p<ws> + kw_exists;
+                return dsl::opt(dsl::peek(key) >> key);
+            }();
 
             static constexpr auto value = lexy::callback<bool>(
                 [](lexy::nullopt) { return false; },
@@ -214,9 +217,9 @@ namespace objstore::parser {
             static constexpr auto rule = [] {
                 auto key = (dsl::member<&CreateKeyspaceRequestOption::key> = dsl::p<identifier>);
                 auto eq = dsl::lit_c<'='>;
-                auto value = (dsl::member<&CreateKeyspaceRequestOption::value> = dsl::p<integer_literal> | dsl::p<string_literal>);
+                auto value = (dsl::member<&CreateKeyspaceRequestOption::value> = (dsl::p<integer_literal> | dsl::p<string_literal>));
                 
-                return key + dsl::p<ws> + eq + dsl::p<ws> + value;
+                return key + dsl::p<ws> + eq + dsl::p<ws> + value + dsl::p<ws>;
             }();
             
             static constexpr auto value = lexy::as_aggregate<CreateKeyspaceRequestOption>;
@@ -230,197 +233,152 @@ namespace objstore::parser {
             static constexpr auto rule = []() {
                 auto options = dsl::list(
                     dsl::recurse<keyspace_option> + dsl::p<ws>,
-                    dsl::sep(kw_and >> dsl::p<ws>
-                ).trailing_error<unexpected_trailing_and>);
-                return kw_with >> dsl::p<ws> + options;
+                    dsl::sep(kw_and >> dsl::p<ws>).trailing_error<unexpected_trailing_and>
+                );
+                return dsl::opt(kw_with >> dsl::p<ws> + options);
             }();
             
-            static constexpr auto value = lexy::callback<STLArray<CreateKeyspaceRequestOption, MAX_KEYSPACE_OPTIONS>>(
-                [](lexy::nullopt) { return STLArray<CreateKeyspaceRequestOption, MAX_KEYSPACE_OPTIONS>(); },
-                lexy::as_list<STLArray<CreateKeyspaceRequestOption, MAX_KEYSPACE_OPTIONS>>
-            );
+            static constexpr auto value = lexy::as_list<STLArray<CreateKeyspaceRequestOption, MAX_KEYSPACE_OPTIONS>>;
         };
     
         // CREATE KEYSPACE statement
         struct create_keyspace_stmt {
             static constexpr auto rule = [] {
-                return kw_create + dsl::p<ws> + 
-                    kw_keyspace + dsl::p<ws> +
+                auto key = kw_create + dsl::p<ws> + kw_keyspace;
+                return dsl::peek(key) >> key + dsl::p<ws> +
                     (dsl::member<&CreateKeyspaceRequest::if_not_exists> = dsl::p<if_not_exists>) + dsl::p<ws> +
                     (dsl::member<&CreateKeyspaceRequest::keyspace_name> = dsl::p<identifier>) + dsl::p<ws> +
-                    (dsl::member<&CreateKeyspaceRequest::options> = dsl::p<with_options>);
+                    (dsl::member<&CreateKeyspaceRequest::options> = dsl::p<with_options>) + dsl::eof;
             }();
             
             static constexpr auto value = lexy::as_aggregate<CreateKeyspaceRequest>;
         };
+
+        struct primary_key {
+            static constexpr auto rule = [] {
+                auto key = kw_primary + dsl::p<ws> + kw_key;
+                return dsl::opt(dsl::peek(key) >> key);
+            }();
+
+            static constexpr auto value = lexy::callback<bool>(
+                [](lexy::nullopt) { return false; },
+                []() { return true; }
+            );
+        };
     
-        // // column definition for CREATE TABLE
-        // struct column_def {
-        //     static constexpr auto rule = [] {
-        //         auto name = dsl::p<identifier>;
-        //         auto dtype = dsl::p<ws> + dsl::p<data_type>;
-        //         auto primary_part = dsl::p<ws> + dsl::p<kw_primary> + dsl::p<ws> + dsl::p<kw_key>;
-        //         auto primary = dsl::opt(dsl::peek(primary_part) >> primary_part);
+        // column definition for CREATE TABLE
+        struct column_def {
+            static constexpr auto rule = [] {
+                return (dsl::member<&CreateTableRequestColumn::name> = dsl::p<identifier>) + dsl::p<ws> + 
+                       (dsl::member<&CreateTableRequestColumn::dtype> = dsl::p<data_type>) + dsl::p<ws> + 
+                       (dsl::member<&CreateTableRequestColumn::is_primary_key> = dsl::p<primary_key>) + dsl::p<ws>;
+            }();
+            
+            static constexpr auto value = lexy::as_aggregate<CreateTableRequestColumn>;
+        };
+
+        struct column_list {
+            static constexpr auto rule = [] {
+                return dsl::parenthesized(
+                    dsl::list(dsl::p<column_def>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>))
+                );
+            }();
+
+            static constexpr auto value = lexy::as_list<STLDynamicArray<CreateTableRequestColumn>>;
+        };
+
+        // CREATE TABLE statement
+        struct create_table_stmt {
+            static constexpr auto rule = [] {                
+                auto key = kw_create + dsl::p<ws> + kw_table;
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                    (dsl::member<&CreateTableRequest::if_not_exists> = dsl::p<if_not_exists>) + dsl::p<ws> +
+                    (dsl::member<&CreateTableRequest::table_name> = dsl::p<identifier>) + dsl::p<ws> +
+                    (dsl::member<&CreateTableRequest::columns> = dsl::p<column_list>);
+            }();
+            
+            static constexpr auto value = lexy::as_aggregate<CreateTableRequest>;
+        };
+    
+        // value for INSERT statement
+        struct insert_value {
+            static constexpr auto rule = dsl::p<string_literal> | dsl::p<integer_literal>;
+            
+            static constexpr auto value = lexy::callback<InsertValue>(
+                [](STLString str) {
+                    InsertValue val;
+                    val.dtype = DType::Text;
+                    val.value = str;
+                    return val;
+                },
+                [](S64 num) {
+                    InsertValue val;
+                    val.dtype = DType::Int;
+                    val.value = num;
+                    return val;
+                }
+            );
+        };
+
+        struct values_list {
+            static constexpr auto rule = [] {
+                return dsl::parenthesized(
+                    dsl::list(dsl::p<insert_value>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>))
+                );
+            }();
+
+            static constexpr auto value = lexy::as_list<STLDynamicArray<InsertValue>>;
+        };
+    
+        // INSERT INTO statement
+        struct insert_into_stmt {
+            static constexpr auto rule = [] {
+                auto key = kw_insert + dsl::p<ws> + kw_into;
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                    (dsl::member<&InsertIntoRequest::keyspace_name> = dsl::p<identifier>) + dsl::p<ws> + dsl::lit_c<'.'> +
+                    (dsl::member<&InsertIntoRequest::table_name> = dsl::p<identifier>) + dsl::p<ws> + kw_values + dsl::p<ws> +
+                    (dsl::member<&InsertIntoRequest::values> = dsl::p<values_list>);
+            }();
+            
+            static constexpr auto value = lexy::as_aggregate<InsertIntoRequest>;
+        };
+    
+        // SELECT FROM statement
+        struct select_from_stmt {
+            static constexpr auto rule = [] {
+                // @todo
+                auto key = kw_select;
+                return dsl::peek(key) >> key + dsl::lit_c<'*'> + dsl::p<ws> + kw_from + dsl::p<ws> +
+                    (dsl::member<&SelectFromRequest::keyspace_name> = dsl::p<identifier>) + dsl::p<ws> + dsl::lit_c<'.'> + 
+                    (dsl::member<&SelectFromRequest::table_name> = dsl::p<identifier>);
+            }();
+            
+            static constexpr auto value = lexy::as_aggregate<SelectFromRequest>;
+        };
+    
+        struct cql_statement {
+            static constexpr auto rule = [] {
+                auto create_ks = dsl::p<create_keyspace_stmt>;
+                auto create_tbl = dsl::p<create_table_stmt>;
+                auto insert = dsl::p<insert_into_stmt>;
+                auto select = dsl::p<select_from_stmt>;
                 
-        //         return name + dtype + primary;
-        //     }();
+                return dsl::p<ws> + (create_ks | create_tbl | insert | select) + dsl::p<ws> + (dsl::lit_c<';'> | dsl::eof);
+            }();
             
-        //     static constexpr auto value = lexy::callback<CreateTableRequestColumn>(
-        //         [](String8 name, DType dtype, lexy::nullopt) {
-        //             return CreateTableRequestColumn{name, dtype, false};
-        //         },
-        //         [](String8 name, DType dtype, auto) {
-        //             return CreateTableRequestColumn{name, dtype, true};
-        //         }
-        //     );
-        // };
-    
-        // // CREATE TABLE statement
-        // struct create_table_stmt {
-        //     static constexpr auto rule = [] {
-        //         auto columns = dsl::parenthesized(
-        //             dsl::list(dsl::p<column_def>, dsl::sep(dsl::p<ws> + dsl::lit_c<','> + dsl::p<ws>))
-        //         );
-                
-        //         return dsl::p<kw_create> + dsl::p<ws> + 
-        //             dsl::p<kw_table> + dsl::p<ws> +
-        //             dsl::p<if_not_exists> + dsl::p<ws> +
-        //             dsl::p<identifier> + dsl::p<ws> +
-        //             columns;
-        //     }();
-            
-        //     static constexpr auto value = lexy::callback<CreateTableRequest>(
-        //         [](bool if_not_exists, String8 name, STLDynamicArray<CreateTableRequestColumn> cols) {
-        //             CreateTableRequest req;
-        //             req.table_name = name;
-        //             req.if_not_exists = if_not_exists;
-        //             req.columns = move(cols);
-        //             return req;
-        //         }
-        //     );
-        // };
-    
-        // // value for INSERT statement
-        // struct insert_value {
-        //     static constexpr auto rule = dsl::p<string_literal> | dsl::p<integer_literal>;
-            
-        //     static constexpr auto value = lexy::callback<InsertIntoRequestValue>(
-        //         [](String8 str) {
-        //             InsertIntoRequestValue val;
-        //             val.dtype = DType::TEXT;
-        //             val.text = str;
-        //             return val;
-        //         },
-        //         [](S64 num) {
-        //             InsertIntoRequestValue val;
-        //             val.dtype = DType::INT;
-        //             val._int = num;
-        //             return val;
-        //         }
-        //     );
-        // };
-    
-        // // INSERT INTO statement
-        // struct insert_into_stmt {
-        //     static constexpr auto rule = [] {
-        //         auto values = dsl::p<kw_values> + dsl::p<ws> +
-        //                     dsl::parenthesized(
-        //                         dsl::list(dsl::p<insert_value>, 
-        //                                 dsl::sep(dsl::p<ws> + dsl::lit_c<','> + sl::p<ws>))
-        //                     );
-                
-        //         return dsl::p<kw_insert> + dsl::p<ws> + 
-        //             dsl::p<kw_into> + dsl::p<ws> +
-        //             dsl::p<identifier> + dsl::p<ws> +
-        //             dsl::lit_c<'.'> + sl::p<identifier> + dsl::p<ws> +
-        //             values;
-        //     }();
-            
-        //     static constexpr auto value = lexy::callback<InsertIntoRequest>(
-        //         [](String8 keyspace, String8 table, STLDynamicArray<InsertIntoRequestValue> vals) {
-        //             InsertIntoRequest req;
-        //             req.keyspace_name = keyspace;
-        //             req.table_name = table;
-        //             req.values = move(vals);
-        //             return req;
-        //         }
-        //     );
-        // };
-    
-        // // SELECT FROM statement
-        // struct select_from_stmt {
-        //     static constexpr auto rule = [] {
-        //         return dsl::p<kw_select> + dsl::p<ws> + 
-        //             dsl::lit_c<'*'> + sl::p<ws> +
-        //             dsl::p<kw_from> + dsl::p<ws> +
-        //             dsl::p<identifier> + dsl::p<ws> +
-        //             dsl::lit_c<'.'> + sl::p<identifier>;
-        //     }();
-            
-        //     static constexpr auto value = lexy::callback<SelectFromRequest>(
-        //         [](String8 keyspace, String8 table) {
-        //             SelectFromRequest req;
-        //             req.keyspace_name = keyspace;
-        //             req.table_name = table;
-        //             return req;
-        //         }
-        //     );
-        // };
-    
-        // struct cql_statement {
-        //     static constexpr auto rule = [] {
-        //         auto create_ks = dsl::p<create_keyspace_stmt> >> dsl::value_c<CqlQueryType::CREATE_KEYSPACE>;
-        //         auto create_tbl = dsl::p<create_table_stmt> >> dsl::value_c<CqlQueryType::CREATE_TABLE>;
-        //         auto insert = dsl::p<insert_into_stmt> >> dsl::value_c<CqlQueryType::INSERT_INTO>;
-        //         auto select = dsl::p<select_from_stmt> >> dsl::value_c<CqlQueryType::SELECT_FROM>;
-                
-        //         return dsl::p<ws> + (create_ks | create_tbl | insert | select) + 
-        //             dsl::p<ws> + (dsl::lit_c<(';'>) | dsl::eof);
-        //     }();
-            
-        //     static constexpr auto value = lexy::callback<CqlRequest>(
-        //         [](CqlQueryType type, CreateKeyspaceRequest req) {
-        //             CqlRequest cql;
-        //             cql.query_type = type;
-        //             cql.create_keyspace = req;
-        //             return cql;
-        //         },
-        //         [](CqlQueryType type, CreateTableRequest req) {
-        //             CqlRequest cql;
-        //             cql.query_type = type;
-        //             cql.create_table = req;
-        //             return cql;
-        //         },
-        //         [](CqlQueryType type, InsertIntoRequest req) {
-        //             CqlRequest cql;
-        //             cql.query_type = type;
-        //             cql.insert_into = req;
-        //             return cql;
-        //         },
-        //         [](CqlQueryType type, SelectFromRequest req) {
-        //             CqlRequest cql;
-        //             cql.query_type = type;
-        //             cql.select_from = req;
-        //             return cql;
-        //         }
-        //     );
-        // };
+            static constexpr auto value = lexy::construct<CqlRequest>;
+        };
     }
 
     // @todo return error message
     Optional<CqlRequest> parse_cql(String8 bytes) {
         auto input = lexy::string_input<lexy::ascii_encoding>(bytes.data, bytes.length);
         
-        auto result = lexy::parse<grammar::string_literal>(input, lexy_ext::report_error.path("cql"));
+        auto result = lexy::parse<grammar::cql_statement>(input, lexy_ext::report_error.path("cql"));
 
         if (result.has_value()) {
-            println("success");
-            println(result.value());
+            return result.value();
         }
-        println("fail");
-        // if (result.has_value()) {
-        //     return result.value();
-        // }
         return {};
     }
 }

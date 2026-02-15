@@ -1,4 +1,4 @@
-export module plexdb.variant;
+export module plexdb.tagged_union;
 
 import plexdb.base;
 
@@ -189,18 +189,20 @@ export namespace plexdb {
         }
     };
 
-    template<typename... Types, typename T>
+    template<typename T, typename... Types>
     constexpr bool type_matches_tag(const TaggedUnion<Types...>& u) noexcept {
         return u.index == TypeIndex<T, Types...>;
     }
 
-    template<typename... Types, typename T>
+    template<typename T, typename... Types>
     T& get(TaggedUnion<Types...>& u) noexcept {
+        assert_true(type_matches_tag<T>(u), "reading wrong type from tagged union");
         return *reinterpret_cast<T*>(&u.storage);
     }
     
-    template<typename... Types, typename T>
+    template<typename T, typename... Types>
     const T& get(const TaggedUnion<Types...>& u) noexcept {
+        assert_true(type_matches_tag<T>(u), "reading wrong type from tagged union");
         return *reinterpret_cast<const T*>(&u.storage);
     }
 }

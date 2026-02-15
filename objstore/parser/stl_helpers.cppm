@@ -1,3 +1,6 @@
+module;
+#include <string.h>
+
 export module objstore.parser.stl_helpers;
 
 import plexdb.base;
@@ -41,7 +44,7 @@ export namespace objstore::parser {
         }
 
         void append(const char* first, const char* last) {
-            assert_true(first && last && first >= last, "invalid string append arguments");
+            assert_true(first && last && last >= first, "invalid string append arguments");
 
             U64 append_len = last - first;
             char* new_c_str = reinterpret_cast<char*>(os::allocate(this->length + append_len + 1));

@@ -185,9 +185,9 @@ export namespace plexdb {
             PLEXDB_CONSTEVAL_TRAP(expr);
         } else {
             if (unlikely(!expr)) {
+                PLEXDB_TRAP;
                 if (g_assert_handler != nullptr)
                     g_assert_handler(msg, loc.file_name(), loc.function_name(), loc.line());
-                PLEXDB_TRAP;
             }
         }
     }

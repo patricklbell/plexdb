@@ -1,7 +1,7 @@
 export module objstore.parser;
 
 import plexdb.base;
-import plexdb.variant;
+import plexdb.tagged_union;
 import objstore.dtypes;
 import objstore.parser.stl_helpers;
 
@@ -33,13 +33,6 @@ export namespace objstore::parser {
     // ========================================================================
     // cassandra query language (CQL)
     // ========================================================================
-    enum class CqlQueryType : U8 {
-        CreateKeyspace,
-        CreateTable,
-        InsertInto,
-        SelectFrom,
-    };
-
     constexpr U64 MAX_KEYSPACE_OPTIONS = 32;
 
     struct CreateKeyspaceRequestOption {
@@ -62,11 +55,11 @@ export namespace objstore::parser {
     struct CreateTableRequest {
         String8 table_name;
         bool if_not_exists;
-        STLDynamicArray<CreateKeyspaceRequestOption> columns;
+        STLDynamicArray<CreateTableRequestColumn> columns;
     };
 
     // @todo support auto increment etc.
-    struct InsertIntoRequestValue {
+    struct InsertValue {
         DType dtype;
         TaggedUnion<STLString, S64> value;
     };
@@ -74,7 +67,7 @@ export namespace objstore::parser {
     struct InsertIntoRequest {
         String8 keyspace_name;
         String8 table_name;
-        STLDynamicArray<InsertIntoRequestValue> values;
+        STLDynamicArray<InsertValue> values;
     };
 
     struct SelectFromRequest {
@@ -84,31 +77,12 @@ export namespace objstore::parser {
     };
 
     struct CqlRequest {
-        CqlQueryType query_type;
-
-        union {
-            CreateKeyspaceRequest create_keyspace;
-            CreateTableRequest create_table;
-            InsertIntoRequest insert_into;
-            SelectFromRequest select_from;
-        };
-
-        ~CqlRequest() {
-            switch(query_type) {
-                case CqlQueryType::CreateKeyspace:{
-                    create_keyspace.~CreateKeyspaceRequest();
-                }break;
-                case CqlQueryType::CreateTable:{
-                    create_table.~CreateTableRequest();
-                }break;
-                case CqlQueryType::InsertInto:{
-                    insert_into.~InsertIntoRequest();
-                }break;
-                case CqlQueryType::SelectFrom:{
-                    select_from.~SelectFromRequest();
-                }break;
-            }
-        }
+        TaggedUnion<
+            CreateKeyspaceRequest,
+            CreateTableRequest,
+            InsertIntoRequest,
+            SelectFromRequest
+        > value;
     };
 
     // Parses a CQL request
