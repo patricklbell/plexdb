@@ -59,10 +59,7 @@ export namespace objstore::parser {
     };
 
     // @todo support auto increment etc.
-    struct InsertValue {
-        DType dtype;
-        TaggedUnion<STLString, S64> value;
-    };
+    using InsertValue = TaggedUnion<STLString, S64>;
 
     struct InsertIntoRequest {
         String8 keyspace_name;
@@ -86,5 +83,5 @@ export namespace objstore::parser {
     };
 
     // Parses a CQL request
-    Optional<CqlRequest> parse_cql(String8 bytes);
+    Optional<CqlRequest> parse_cql(String8 bytes, bool stderr=false);
 }

@@ -17,10 +17,21 @@ namespace plexdb {
     }
 
     bool operator==(const String8& a, const String8& b) {
-        return strcmp(a.c_str(), b.c_str()) == 0;
+        if (a.length != b.length)
+            return false;
+        for (U64 i = 0; i < b.length; i++) {
+            if (a.data[i] != b.data[i])
+                return false;
+        }
+        return true;
     }
     bool operator==(const char* a, const String8& b) {
-        return strcmp(a, b.c_str()) == 0;
+        U64 i = 0;
+        for (; a[i] != '\0' && i < b.length; i++) {
+            if (a[i] != b.data[i])
+                return false;
+        }
+        return i == b.length;
     }
 
     AutoString8::AutoString8()

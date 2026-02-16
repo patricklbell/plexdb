@@ -39,6 +39,7 @@ export namespace objstore::parser {
             os::deallocate(this->c_str);
 
             this->c_str = new_c_str;
+            this->c_str[this->length] = c;
             this->length++;
             this->c_str[this->length] = '\0';
         }

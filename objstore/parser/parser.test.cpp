@@ -23,7 +23,7 @@ TEST_CASE("CREATE KEYSPACE statements", "[objstore.parser]") {
         const auto& ks = get<CreateKeyspaceRequest>(result->value);
         REQUIRE(ks.keyspace_name == "my_keyspace");
         REQUIRE(ks.if_not_exists == false);
-        REQUIRE(ks.options.length == 1);
+        REQUIRE(ks.options.count == 1);
         REQUIRE(ks.options[0].key == "replication");
         REQUIRE(type_matches_tag<STLString>(ks.options[0].value));
         REQUIRE(get<STLString>(ks.options[0].value) == "SimpleStrategy");
@@ -39,7 +39,7 @@ TEST_CASE("CREATE KEYSPACE statements", "[objstore.parser]") {
         const auto& ks = get<CreateKeyspaceRequest>(result->value);
         REQUIRE(ks.keyspace_name == "test_ks");
         REQUIRE(ks.if_not_exists == true);
-        REQUIRE(ks.options.length == 1);
+        REQUIRE(ks.options.count == 1);
         REQUIRE(ks.options[0].key == "replication");
         REQUIRE(type_matches_tag<STLString>(ks.options[0].value));
         REQUIRE(get<STLString>(ks.options[0].value) == "NetworkTopologyStrategy");
@@ -55,7 +55,7 @@ TEST_CASE("CREATE KEYSPACE statements", "[objstore.parser]") {
         const auto& ks = get<CreateKeyspaceRequest>(result->value);
         REQUIRE(ks.keyspace_name == "prod");
         REQUIRE(ks.if_not_exists == false);
-        REQUIRE(ks.options.length == 2);
+        REQUIRE(ks.options.count == 2);
         REQUIRE(ks.options[0].key == "replication");
         REQUIRE(type_matches_tag<STLString>(ks.options[0].value));
         REQUIRE(get<STLString>(ks.options[0].value) == "SimpleStrategy");
@@ -72,7 +72,7 @@ TEST_CASE("CREATE KEYSPACE statements", "[objstore.parser]") {
         REQUIRE(type_matches_tag<CreateKeyspaceRequest>(result->value));
         
         const auto& ks = get<CreateKeyspaceRequest>(result->value);
-        REQUIRE(ks.options.length == 3);
+        REQUIRE(ks.options.count == 3);
         REQUIRE(ks.options[0].key == "replication");
         REQUIRE(ks.options[1].key == "durable_writes");
         REQUIRE(ks.options[2].key == "strategy_class");
@@ -125,7 +125,7 @@ TEST_CASE("CREATE KEYSPACE statements", "[objstore.parser]") {
         
         REQUIRE(result.has_value());
         const auto& ks = get<CreateKeyspaceRequest>(result->value);
-        REQUIRE(ks.options.length == 1);
+        REQUIRE(ks.options.count == 1);
     }
 }
 
@@ -142,7 +142,7 @@ TEST_CASE("CREATE TABLE statements", "[objstore.parser]") {
         REQUIRE(tbl.if_not_exists == false);
         REQUIRE(tbl.columns.length == 1);
         REQUIRE(tbl.columns[0].name == "id");
-        REQUIRE(tbl.columns[0].dtype == DType::Int);
+        REQUIRE(tbl.columns[0].dtype == DType::int_);
         REQUIRE(tbl.columns[0].is_primary_key == true);
     }
     
@@ -158,20 +158,20 @@ TEST_CASE("CREATE TABLE statements", "[objstore.parser]") {
         REQUIRE(tbl.columns.length == 3);
         
         REQUIRE(tbl.columns[0].name == "id");
-        REQUIRE(tbl.columns[0].dtype == DType::Int);
+        REQUIRE(tbl.columns[0].dtype == DType::int_);
         REQUIRE(tbl.columns[0].is_primary_key == true);
         
         REQUIRE(tbl.columns[1].name == "name");
-        REQUIRE(tbl.columns[1].dtype == DType::Text);
+        REQUIRE(tbl.columns[1].dtype == DType::text);
         REQUIRE(tbl.columns[1].is_primary_key == false);
         
         REQUIRE(tbl.columns[2].name == "age");
-        REQUIRE(tbl.columns[2].dtype == DType::Int);
+        REQUIRE(tbl.columns[2].dtype == DType::int_);
         REQUIRE(tbl.columns[2].is_primary_key == false);
     }
     
     SECTION("CREATE TABLE IF NOT EXISTS") {
-        auto query = "CREATE TABLE IF NOT EXISTS products (sku bigint PRIMARY KEY, name text, price int);";
+        auto query = "CREATE TABLE IF NOT EXISTS products (sku int PRIMARY KEY, name text, price int);";
         auto result = parse_cql(query);
         
         REQUIRE(result.has_value());
@@ -183,41 +183,41 @@ TEST_CASE("CREATE TABLE statements", "[objstore.parser]") {
         REQUIRE(tbl.columns.length == 3);
     }
     
-    // SECTION("CREATE TABLE with various data types") {
-    //     auto query = "CREATE TABLE data (id int PRIMARY KEY, name text, count bigint, created timestamp, active boolean);";
-    //     auto result = parse_cql(query);
+    SECTION("CREATE TABLE with various data types") {
+        auto query = "CREATE TABLE data (id int PRIMARY KEY, name text, count bigint, created timestamp, active boolean);";
+        auto result = parse_cql(query);
         
-    //     REQUIRE(result.has_value());
-    //     const auto& tbl = get<CreateTableRequest>(result->value);
-    //     REQUIRE(tbl.columns.length == 5);
-    //     REQUIRE(tbl.columns[0].dtype == DType::Int);
-    //     REQUIRE(tbl.columns[1].dtype == DType::Text);
-    //     REQUIRE(tbl.columns[2].dtype == DType::BIGINT);
-    //     REQUIRE(tbl.columns[3].dtype == DType::TIMESTAMP);
-    //     REQUIRE(tbl.columns[4].dtype == DType::BOOLEAN);
-    // }
+        REQUIRE(result.has_value());
+        const auto& tbl = get<CreateTableRequest>(result->value);
+        REQUIRE(tbl.columns.length == 5);
+        REQUIRE(tbl.columns[0].dtype == DType::int_);
+        REQUIRE(tbl.columns[1].dtype == DType::text);
+        REQUIRE(tbl.columns[2].dtype == DType::bigint);
+        REQUIRE(tbl.columns[3].dtype == DType::timestamp);
+        REQUIRE(tbl.columns[4].dtype == DType::boolean);
+    }
     
-    // SECTION("CREATE TABLE with FLOAT and DOUBLE types") {
-    //     auto query = "CREATE TABLE metrics (id int PRIMARY KEY, temperature float, precision_value double);";
-    //     auto result = parse_cql(query);
+    SECTION("CREATE TABLE with FLOAT and DOUBLE types") {
+        auto query = "CREATE TABLE metrics (id int PRIMARY KEY, temperature float, precision_value double);";
+        auto result = parse_cql(query);
         
-    //     REQUIRE(result.has_value());
-    //     const auto& tbl = get<CreateTableRequest>(result->value);
-    //     REQUIRE(tbl.columns.length == 3);
-    //     REQUIRE(tbl.columns[1].dtype == DType::FLOAT);
-    //     REQUIRE(tbl.columns[2].dtype == DType::DOUBLE);
-    // }
+        REQUIRE(result.has_value());
+        const auto& tbl = get<CreateTableRequest>(result->value);
+        REQUIRE(tbl.columns.length == 3);
+        REQUIRE(tbl.columns[1].dtype == DType::float_);
+        REQUIRE(tbl.columns[2].dtype == DType::double_);
+    }
     
-    // SECTION("CREATE TABLE with UUID type") {
-    //     auto query = "CREATE TABLE sessions (session_id uuid PRIMARY KEY, user_id int);";
-    //     auto result = parse_cql(query);
+    SECTION("CREATE TABLE with UUID type") {
+        auto query = "CREATE TABLE sessions (session_id uuid PRIMARY KEY, user_id int);";
+        auto result = parse_cql(query);
         
-    //     REQUIRE(result.has_value());
-    //     const auto& tbl = get<CreateTableRequest>(result->value);
-    //     REQUIRE(tbl.columns.length == 2);
-    //     REQUIRE(tbl.columns[0].dtype == DType::UUID);
-    //     REQUIRE(tbl.columns[0].is_primary_key == true);
-    // }
+        REQUIRE(result.has_value());
+        const auto& tbl = get<CreateTableRequest>(result->value);
+        REQUIRE(tbl.columns.length == 2);
+        REQUIRE(tbl.columns[0].dtype == DType::uuid);
+        REQUIRE(tbl.columns[0].is_primary_key == true);
+    }
     
     SECTION("CREATE TABLE case insensitive") {
         auto query = "create table TestTable (Id INT primary key, Name TEXT);";
@@ -285,15 +285,12 @@ TEST_CASE("INSERT INTO statements", "[objstore.parser]") {
         REQUIRE(ins.keyspace_name == "ks");
         REQUIRE(ins.table_name == "users");
         REQUIRE(ins.values.length == 3);
-        REQUIRE(ins.values[0].dtype == DType::Int);
-        REQUIRE(type_matches_tag<S64>(ins.values[0].value));
-        REQUIRE(get<S64>(ins.values[0].value) == 1);
-        REQUIRE(ins.values[1].dtype == DType::Int);
-        REQUIRE(type_matches_tag<S64>(ins.values[1].value));
-        REQUIRE(get<S64>(ins.values[1].value) == 2);
-        REQUIRE(ins.values[2].dtype == DType::Int);
-        REQUIRE(type_matches_tag<S64>(ins.values[2].value));
-        REQUIRE(get<S64>(ins.values[2].value) == 3);
+        REQUIRE(type_matches_tag<S64>(ins.values[0]));
+        REQUIRE(get<S64>(ins.values[0]) == 1);
+        REQUIRE(type_matches_tag<S64>(ins.values[1]));
+        REQUIRE(get<S64>(ins.values[1]) == 2);
+        REQUIRE(type_matches_tag<S64>(ins.values[2]));
+        REQUIRE(get<S64>(ins.values[2]) == 3);
     }
     
     SECTION("INSERT INTO with string values") {
@@ -305,12 +302,10 @@ TEST_CASE("INSERT INTO statements", "[objstore.parser]") {
         
         const auto& ins = get<InsertIntoRequest>(result->value);
         REQUIRE(ins.values.length == 2);
-        REQUIRE(ins.values[0].dtype == DType::Text);
-        REQUIRE(type_matches_tag<STLString>(ins.values[0].value));
-        REQUIRE(get<STLString>(ins.values[0].value) == "text1");
-        REQUIRE(ins.values[1].dtype == DType::Text);
-        REQUIRE(type_matches_tag<STLString>(ins.values[1].value));
-        REQUIRE(get<STLString>(ins.values[1].value) == "text2");
+        REQUIRE(type_matches_tag<STLString>(ins.values[0]));
+        REQUIRE(get<STLString>(ins.values[0]) == "text1");
+        REQUIRE(type_matches_tag<STLString>(ins.values[1]));
+        REQUIRE(get<STLString>(ins.values[1]) == "text2");
     }
     
     SECTION("INSERT INTO with mixed values") {
@@ -322,15 +317,12 @@ TEST_CASE("INSERT INTO statements", "[objstore.parser]") {
         REQUIRE(ins.keyspace_name == "app");
         REQUIRE(ins.table_name == "users");
         REQUIRE(ins.values.length == 3);
-        REQUIRE(ins.values[0].dtype == DType::Int);
-        REQUIRE(type_matches_tag<S64>(ins.values[0].value));
-        REQUIRE(get<S64>(ins.values[0].value) == 123);
-        REQUIRE(ins.values[1].dtype == DType::Text);
-        REQUIRE(type_matches_tag<STLString>(ins.values[1].value));
-        REQUIRE(get<STLString>(ins.values[1].value) == "John Doe");
-        REQUIRE(ins.values[2].dtype == DType::Text);
-        REQUIRE(type_matches_tag<STLString>(ins.values[2].value));
-        REQUIRE(get<STLString>(ins.values[2].value) == "john@example.com");
+        REQUIRE(type_matches_tag<S64>(ins.values[0]));
+        REQUIRE(get<S64>(ins.values[0]) == 123);
+        REQUIRE(type_matches_tag<STLString>(ins.values[1]));
+        REQUIRE(get<STLString>(ins.values[1]) == "John Doe");
+        REQUIRE(type_matches_tag<STLString>(ins.values[2]));
+        REQUIRE(get<STLString>(ins.values[2]) == "john@example.com");
     }
     
     SECTION("INSERT INTO with single value") {
@@ -340,9 +332,8 @@ TEST_CASE("INSERT INTO statements", "[objstore.parser]") {
         REQUIRE(result.has_value());
         const auto& ins = get<InsertIntoRequest>(result->value);
         REQUIRE(ins.values.length == 1);
-        REQUIRE(ins.values[0].dtype == DType::Int);
-        REQUIRE(type_matches_tag<S64>(ins.values[0].value));
-        REQUIRE(get<S64>(ins.values[0].value) == 42);
+        REQUIRE(type_matches_tag<S64>(ins.values[0]));
+        REQUIRE(get<S64>(ins.values[0]) == 42);
     }
     
     SECTION("INSERT INTO with negative integers") {
@@ -352,9 +343,9 @@ TEST_CASE("INSERT INTO statements", "[objstore.parser]") {
         REQUIRE(result.has_value());
         const auto& ins = get<InsertIntoRequest>(result->value);
         REQUIRE(ins.values.length == 3);
-        REQUIRE(get<S64>(ins.values[0].value) == -100);
-        REQUIRE(get<S64>(ins.values[1].value) == -50);
-        REQUIRE(get<S64>(ins.values[2].value) == -1);
+        REQUIRE(get<S64>(ins.values[0]) == -100);
+        REQUIRE(get<S64>(ins.values[1]) == -50);
+        REQUIRE(get<S64>(ins.values[2]) == -1);
     }
     
     SECTION("INSERT INTO with large integer") {
@@ -364,7 +355,7 @@ TEST_CASE("INSERT INTO statements", "[objstore.parser]") {
         REQUIRE(result.has_value());
         const auto& ins = get<InsertIntoRequest>(result->value);
         REQUIRE(ins.values.length == 1);
-        REQUIRE(get<S64>(ins.values[0].value) == 9223372036854775807LL);
+        REQUIRE(get<S64>(ins.values[0]) == 9223372036854775807LL);
     }
     
     SECTION("INSERT INTO case insensitive") {
@@ -382,7 +373,7 @@ TEST_CASE("INSERT INTO statements", "[objstore.parser]") {
         REQUIRE(result.has_value());
         const auto& ins = get<InsertIntoRequest>(result->value);
         REQUIRE(ins.values.length == 1);
-        REQUIRE(get<STLString>(ins.values[0].value) == "");
+        REQUIRE(get<STLString>(ins.values[0]) == "");
     }
     
     SECTION("INSERT INTO with string containing spaces") {
@@ -392,8 +383,8 @@ TEST_CASE("INSERT INTO statements", "[objstore.parser]") {
         REQUIRE(result.has_value());
         const auto& ins = get<InsertIntoRequest>(result->value);
         REQUIRE(ins.values.length == 2);
-        REQUIRE(get<STLString>(ins.values[0].value) == "hello world");
-        REQUIRE(get<STLString>(ins.values[1].value) == "foo bar baz");
+        REQUIRE(get<STLString>(ins.values[0]) == "hello world");
+        REQUIRE(get<STLString>(ins.values[1]) == "foo bar baz");
     }
     
     SECTION("INSERT INTO with escaped quotes") {
@@ -403,7 +394,7 @@ TEST_CASE("INSERT INTO statements", "[objstore.parser]") {
         REQUIRE(result.has_value());
         const auto& ins = get<InsertIntoRequest>(result->value);
         REQUIRE(ins.values.length == 1);
-        REQUIRE(get<STLString>(ins.values[0].value) == "'quoted'");
+        REQUIRE(get<STLString>(ins.values[0]) == "'quoted'");
     }
     
     SECTION("INSERT INTO with zero value") {
@@ -412,7 +403,7 @@ TEST_CASE("INSERT INTO statements", "[objstore.parser]") {
         
         REQUIRE(result.has_value());
         const auto& ins = get<InsertIntoRequest>(result->value);
-        REQUIRE(get<S64>(ins.values[0].value) == 0);
+        REQUIRE(get<S64>(ins.values[0]) == 0);
     }
     
     SECTION("INSERT INTO with multiple string values") {
@@ -423,7 +414,7 @@ TEST_CASE("INSERT INTO statements", "[objstore.parser]") {
         const auto& ins = get<InsertIntoRequest>(result->value);
         REQUIRE(ins.values.length == 5);
         for (size_t i = 0; i < 5; ++i) {
-            REQUIRE(ins.values[i].dtype == DType::Text);
+            REQUIRE(type_matches_tag<STLString>(ins.values[i]));
         }
     }
 }

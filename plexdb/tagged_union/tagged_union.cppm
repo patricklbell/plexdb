@@ -191,7 +191,9 @@ export namespace plexdb {
 
     template<typename T, typename... Types>
     constexpr bool type_matches_tag(const TaggedUnion<Types...>& u) noexcept {
-        return u.index == TypeIndex<T, Types...>;
+        using DecayedT = Decay<T>;
+        size_t idx = TypeIndex<DecayedT, Types...>;
+        return u.index == idx;
     }
 
     template<typename T, typename... Types>

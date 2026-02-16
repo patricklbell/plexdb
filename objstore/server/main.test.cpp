@@ -4,7 +4,3 @@
 #include <catch2/generators/catch_generators_random.hpp>
 
 import plexdb.base;
-
-TEST_CASE("create", "[objstore.server]" ) {
-    plexdb::assert_not_implemented();
-}

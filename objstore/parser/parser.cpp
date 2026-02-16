@@ -154,25 +154,58 @@ namespace objstore::parser {
         };
 
         struct data_type {
-            struct text : lexy::transparent_production
-            {
+            struct text : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("text");
-                static constexpr auto value = lexy::constant(DType::Text);
+                static constexpr auto value = lexy::constant(DType::text);
             };
-            struct int_ : lexy::transparent_production
-            {
+            struct int_ : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("int");
-                static constexpr auto value = lexy::constant(DType::Int);
+                static constexpr auto value = lexy::constant(DType::int_);
+            };
+            struct bigint : lexy::transparent_production {
+                static constexpr auto rule  = LEXY_LIT_CI("bigint");
+                static constexpr auto value = lexy::constant(DType::bigint);
+            };
+            struct smallint : lexy::transparent_production {
+                static constexpr auto rule  = LEXY_LIT_CI("smallint");
+                static constexpr auto value = lexy::constant(DType::smallint);
+            };
+            struct counter : lexy::transparent_production {
+                static constexpr auto rule  = LEXY_LIT_CI("counter");
+                static constexpr auto value = lexy::constant(DType::counter);
+            };
+            struct timestamp : lexy::transparent_production {
+                static constexpr auto rule  = LEXY_LIT_CI("timestamp");
+                static constexpr auto value = lexy::constant(DType::timestamp);
+            };
+            struct boolean : lexy::transparent_production {
+                static constexpr auto rule  = LEXY_LIT_CI("boolean");
+                static constexpr auto value = lexy::constant(DType::boolean);
+            };
+            struct float_ : lexy::transparent_production {
+                static constexpr auto rule  = LEXY_LIT_CI("float");
+                static constexpr auto value = lexy::constant(DType::float_);
+            };
+            struct double_ : lexy::transparent_production {
+                static constexpr auto rule  = LEXY_LIT_CI("double");
+                static constexpr auto value = lexy::constant(DType::double_);
+            };
+            struct uuid : lexy::transparent_production {
+                static constexpr auto rule  = LEXY_LIT_CI("uuid");
+                static constexpr auto value = lexy::constant(DType::uuid);
             };
 
-            static constexpr auto rule  = dsl::p<text> | dsl::p<int_>;
+            static constexpr auto rule  = dsl::p<text> | dsl::p<int_> | dsl::p<bigint> | dsl::p<smallint> | dsl::p<counter> | dsl::p<timestamp> | dsl::p<boolean> | dsl::p<float_> | dsl::p<double_> | dsl::p<uuid>;
             static constexpr auto value = lexy::forward<DType>;
         };
     
         // string literal
+        // @todo compliance
+        // https://cassandra.apache.org/doc/latest/cassandra/developing/cql/cql_singlefile.html#statements
+        // https://docs.datastax.com/en/cql-oss/3.3/cql/cql_reference/escape_char_r.html
         struct string_literal {
             static constexpr auto escaped_symbols = lexy::symbol_table<char>
-                                                        .map<'"'>('"')
+                                                        .map<'\''>('\'')
                                                         .map<'\\'>('\\')
                                                         .map<'/'>('/')
                                                         .map<'b'>('\b')
@@ -183,7 +216,7 @@ namespace objstore::parser {
                                                         
             static constexpr auto rule = [] {
                 auto escape = dsl::backslash_escape.symbol<escaped_symbols>();    
-                return dsl::single_quoted(-dsl::ascii::control, escape);
+                return dsl::delimited(LEXY_LIT("'") | LEXY_LIT("$$"))(-dsl::ascii::control, escape);
             }();
             
             // @todo arena allocator, this needs allocation because to resolve escape characters
@@ -248,7 +281,7 @@ namespace objstore::parser {
                 return dsl::peek(key) >> key + dsl::p<ws> +
                     (dsl::member<&CreateKeyspaceRequest::if_not_exists> = dsl::p<if_not_exists>) + dsl::p<ws> +
                     (dsl::member<&CreateKeyspaceRequest::keyspace_name> = dsl::p<identifier>) + dsl::p<ws> +
-                    (dsl::member<&CreateKeyspaceRequest::options> = dsl::p<with_options>) + dsl::eof;
+                    (dsl::member<&CreateKeyspaceRequest::options> = dsl::p<with_options>);
             }();
             
             static constexpr auto value = lexy::as_aggregate<CreateKeyspaceRequest>;
@@ -304,20 +337,7 @@ namespace objstore::parser {
         struct insert_value {
             static constexpr auto rule = dsl::p<string_literal> | dsl::p<integer_literal>;
             
-            static constexpr auto value = lexy::callback<InsertValue>(
-                [](STLString str) {
-                    InsertValue val;
-                    val.dtype = DType::Text;
-                    val.value = str;
-                    return val;
-                },
-                [](S64 num) {
-                    InsertValue val;
-                    val.dtype = DType::Int;
-                    val.value = num;
-                    return val;
-                }
-            );
+            static constexpr auto value = lexy::construct<InsertValue>;
         };
 
         struct values_list {
@@ -348,7 +368,7 @@ namespace objstore::parser {
             static constexpr auto rule = [] {
                 // @todo
                 auto key = kw_select;
-                return dsl::peek(key) >> key + dsl::lit_c<'*'> + dsl::p<ws> + kw_from + dsl::p<ws> +
+                return dsl::peek(key) >> key + dsl::p<ws> + dsl::lit_c<'*'> + dsl::p<ws> + kw_from + dsl::p<ws> +
                     (dsl::member<&SelectFromRequest::keyspace_name> = dsl::p<identifier>) + dsl::p<ws> + dsl::lit_c<'.'> + 
                     (dsl::member<&SelectFromRequest::table_name> = dsl::p<identifier>);
             }();
@@ -371,10 +391,12 @@ namespace objstore::parser {
     }
 
     // @todo return error message
-    Optional<CqlRequest> parse_cql(String8 bytes) {
+    Optional<CqlRequest> parse_cql(String8 bytes, bool report_errors) {
         auto input = lexy::string_input<lexy::ascii_encoding>(bytes.data, bytes.length);
-        
-        auto result = lexy::parse<grammar::cql_statement>(input, lexy_ext::report_error.path("cql"));
+
+        // auto reporter = lexy_ext::report_error.path("cql");
+        auto reporter = lexy::noop;
+        auto result = lexy::parse<grammar::cql_statement>(input, reporter);
 
         if (result.has_value()) {
             return result.value();
