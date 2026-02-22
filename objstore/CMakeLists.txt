@@ -77,6 +77,7 @@ target_sources(objstore_modules
             engine/statements.cppm
             parser/parser.cppm
             tcp/tcp.cppm
+            server/server.cppm
 )
 
 target_link_libraries(objstore_modules
@@ -103,6 +104,7 @@ target_sources(objstore
         engine/schema.cpp
         parser/parser.cpp
         tcp/tcp.cpp
+        server/server.cpp
 )
 
 target_link_libraries(objstore
