@@ -102,15 +102,14 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
             engine::create_database(pager);
             engine::Engine engine{&pager};
 
-            // @todo
-            server_ready = true;
-            server::run(port, signal_pipe.read_fd, exit_signal, engine);
+            server::run(port, signal_pipe.read_fd, exit_signal, engine, [&server_ready]() {
+                server_ready = true;
+            });
         });
 
         while (!server_ready) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
         Socket client{socket_create_tcp()};
         socket_set_timeout(client, 2000);
@@ -144,15 +143,14 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
             Pager pager{db_file};
             engine::Engine engine{&pager};
 
-            // @todo
-            server_ready = true;
-            server::run(port2, signal_pipe.read_fd, exit_signal, engine);
+            server::run(port2, signal_pipe.read_fd, exit_signal, engine, [&server_ready]() {
+                server_ready = true;
+            });
         });
 
         while (!server_ready) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
         Socket client{socket_create_tcp()};
         socket_set_timeout(client, 2000);
