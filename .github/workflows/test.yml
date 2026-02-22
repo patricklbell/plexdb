@@ -1,0 +1,31 @@
+name: Test
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build liburing-dev
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: ninja -C build
+
+      - name: Run plexdb tests
+        run: ./build/plexdb/plexdb_tests --skip-benchmarks
+
+      - name: Run objstore tests
+        run: ./build/objstore/objstore_tests --skip-benchmarks

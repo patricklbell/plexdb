@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build liburing-dev
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: ninja -C build
+
+      - name: Upload objstore_server
+        uses: actions/upload-artifact@v4
+        with:
+          name: objstore_server-linux-x64
+          path: build/objstore/objstore_server
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: objstore_server-linux-x64
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: objstore_server
