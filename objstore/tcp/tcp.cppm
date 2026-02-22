@@ -17,7 +17,7 @@ namespace objstore::tcp {
     constexpr int QUEUE_DEPTH = 4096;
     constexpr int BUFFER_SIZE = 4096;
     // constexpr int NUM_BUFFERS = 8192;
-    constexpr int NUM_BUFFERS = 2; // @todo
+    constexpr int NUM_BUFFERS = 1000; // @todo
     constexpr int MAX_CQE_BATCH = 256;
     export constexpr int MAX_CONNECTIONS = 10000;
     constexpr int INITAL_ACCEPTS = min(32, MAX_CONNECTIONS);

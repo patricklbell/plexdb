@@ -153,9 +153,7 @@ if(BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
     )
     target_sources(objstore_tests PRIVATE ${OBJSTORE_TEST_SOURCES})
-    target_include_directories(objstore_tests PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
-    )
+
     target_link_libraries(objstore_tests
         PRIVATE
             plexdb::objstore
