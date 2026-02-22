@@ -21,8 +21,8 @@ namespace plexdb::btree {
 
     void init_node(Node* node) {
         node->key_count = 0;
-        node->prev = ~0u;
-        node->next = ~0u;
+        node->prev = 0;
+        node->next = 0;
     }
 
     CountType get_max_internal_nodes_in_bytes(U64 bytes) {

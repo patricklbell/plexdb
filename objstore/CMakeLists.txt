@@ -60,6 +60,7 @@ add_library(objstore_modules)
 add_library(plexdb::objstore_modules ALIAS objstore_modules)
 
 target_compile_features(objstore_modules PUBLIC cxx_std_20)
+set_target_properties(objstore_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(objstore_modules PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../macros
@@ -70,9 +71,11 @@ target_sources(objstore_modules
         FILE_SET CXX_MODULES 
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
-            dtypes/dtypes.cppm
+            engine/dtype.cppm
+            engine/engine.cppm
+            engine/schema.cppm
+            engine/statements.cppm
             parser/parser.cppm
-            parser/stl_helpers.cppm
             tcp/tcp.cppm
 )
 
@@ -88,6 +91,7 @@ add_library(objstore STATIC)
 add_library(plexdb::objstore ALIAS objstore)
 
 target_compile_features(objstore PUBLIC cxx_std_20)
+set_target_properties(objstore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(objstore PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../macros
@@ -95,6 +99,8 @@ target_include_directories(objstore PRIVATE
 
 target_sources(objstore
     PRIVATE
+        engine/engine.cpp
+        engine/schema.cpp
         parser/parser.cpp
         tcp/tcp.cpp
 )
@@ -147,6 +153,9 @@ if(BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
     )
     target_sources(objstore_tests PRIVATE ${OBJSTORE_TEST_SOURCES})
+    target_include_directories(objstore_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+    )
     target_link_libraries(objstore_tests
         PRIVATE
             plexdb::objstore

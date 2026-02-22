@@ -36,11 +36,14 @@ namespace plexdb {
 
     AutoString8::AutoString8()
         : c_str(nullptr), length(0) {}
-    AutoString8::AutoString8(const U8* in, U64 length)
+    AutoString8::AutoString8(U64 length)
         : length(length) {
         this->c_str = reinterpret_cast<char*>(os::allocate(this->length+1));
-        os::memory_copy(this->c_str, in, this->length);
         this->c_str[this->length] = '\0';
+    }
+    AutoString8::AutoString8(const U8* in, U64 length)
+        : AutoString8(length) {
+        os::memory_copy(this->c_str, in, this->length);
     }
     AutoString8::AutoString8(const char* str)
         : AutoString8(reinterpret_cast<const U8*>(str), strlen(str)) {}
@@ -91,6 +94,52 @@ namespace plexdb {
     }
     bool AutoString8::operator==(const char* b) const {
         return strcmp(this->c_str, b) == 0;
+    }
+
+    void AutoString8::push_back(const char& c) {
+        plexdb::push_back(*this, c);
+    }
+    void AutoString8::append(const char* first, const char* last) {
+        plexdb::append(*this, first, last);
+    }
+
+    void resize(AutoString8& str, U64 length) {
+        if (str.length >= length) {
+            return;
+        }
+        
+        os::deallocate(str.c_str);
+        
+        str.length = length;
+        str.c_str = reinterpret_cast<char*>(os::allocate(str.length+1));
+        str.c_str[str.length] = '\0';
+    }
+
+    void push_back(AutoString8& str, const char& c) {
+        char* new_c_str = reinterpret_cast<char*>(os::allocate(str.length + 2));
+        os::memory_copy(new_c_str, str.c_str, str.length);
+        os::deallocate(str.c_str);
+
+        str.c_str = new_c_str;
+        str.c_str[str.length] = c;
+        str.length++;
+        str.c_str[str.length] = '\0';
+    }
+
+    void append(AutoString8& str, const char* first, const char* last) {
+        assert_true(first && last && last >= first, "invalid string append arguments");
+
+        U64 append_len = last - first;
+        char* new_c_str = reinterpret_cast<char*>(os::allocate(str.length + append_len + 1));
+
+        os::memory_copy(new_c_str, str.c_str, str.length);
+        os::memory_copy(new_c_str + str.length, first, append_len);
+
+        new_c_str[str.length + append_len] = '\0';
+
+        os::deallocate(str.c_str);
+        str.c_str = new_c_str;
+        str.length += append_len;
     }
 
     AutoString8 operator+(const String8& lhs, const String8& rhs) {

@@ -53,6 +53,32 @@ namespace plexdb::blob {
         }
     }
 
+    BlobStaticPaged::BlobStaticPaged(BlobStaticPaged&& other):
+        header_bytes(other.header_bytes),
+        size_bytes(other.size_bytes),
+        pager(other.pager),
+        pages(other.pages)
+    {
+        other.pages.ptr = nullptr;
+    }
+
+    BlobStaticPaged& BlobStaticPaged::operator=(BlobStaticPaged&& other) {
+        if (this != &other) {
+            os::deallocate(this->pages.ptr);
+
+            this->header_bytes = other.header_bytes;
+            this->size_bytes   = other.size_bytes;
+            this->pager        = other.pager;
+            this->pages        = other.pages;
+
+            other.pages.ptr = nullptr;
+            other.header_bytes = 0;
+            other.size_bytes = 0;
+        }
+
+        return *this;
+    }
+
     BlobStaticPaged::~BlobStaticPaged() {
         os::deallocate(this->pages.ptr);
     }
@@ -157,6 +183,30 @@ namespace plexdb::blob {
         assert_true(this->data_pages.length == data_page_count, "data page view matches calculation");
     }
 
+    BlobDynamicPaged::BlobDynamicPaged(BlobDynamicPaged&& other):
+        size_bytes(other.size_bytes),
+        pager(other.pager),
+        header_pages(other.header_pages),
+        data_pages(other.data_pages)
+    {
+        other.data_pages.ptr = nullptr;
+    }
+
+    BlobDynamicPaged& BlobDynamicPaged::operator=(BlobDynamicPaged&& other) {
+        if (this != &other) {
+            os::deallocate(this->data_pages.ptr);
+
+            this->size_bytes   = other.size_bytes;
+            this->pager        = other.pager;
+            this->header_pages = other.header_pages;
+            this->data_pages   = other.data_pages;
+
+            other.data_pages.ptr = nullptr;
+        }
+
+        return *this;
+    }
+
     BlobDynamicPaged::~BlobDynamicPaged() {
         os::deallocate(this->data_pages.ptr);
     }
@@ -170,7 +220,7 @@ namespace plexdb::blob {
         *size_ptr = 0;
 
         // @todo @perf avoid allocations and unnecessary reads
-        {
+        if (initial_size != 0) {
             BlobDynamicPaged blob{&pager, page};
             resize_impl(blob, initial_size);
         }

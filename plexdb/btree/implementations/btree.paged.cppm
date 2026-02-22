@@ -10,13 +10,17 @@ export namespace plexdb::btree {
         Pager* pager;
         U64 header_page;
 
+        explicit BTreePaged();
         explicit BTreePaged(Pager* pager, U64 header_page);
 
         // @todo proper transactions because this just relies on no collision occurring
         // while transaction is holding a page (which may overwrite page buffer)
         struct Transaction {
-            explicit Transaction(BTreePaged* btree);
+            Transaction();
+            Transaction(BTreePaged* btree);
+            Transaction(Transaction&& t);
             ~Transaction();
+
             Transaction(const Transaction& other) = delete;
             Transaction& operator=(const Transaction& other) = delete;
 

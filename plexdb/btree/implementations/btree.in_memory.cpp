@@ -34,7 +34,9 @@ namespace plexdb::btree {
         deallocate_tree(*this, reinterpret_cast<Node*>(this->header.root), 0);
     }
 
+    BTreeInMemory::Transaction::Transaction(): t(nullptr) {}
     BTreeInMemory::Transaction::Transaction(BTreeInMemory* t): t(t) {}
+    BTreeInMemory::Transaction::Transaction(Transaction&& other): t(other.t)  {}
     BTreeInMemory::Transaction scope(const BTreeInMemory::Transaction& t) {
         return BTreeInMemory::Transaction(t.t);
     }

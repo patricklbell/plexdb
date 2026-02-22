@@ -139,6 +139,74 @@ export namespace plexdb {
         }
     };
 
+
+    template<typename T, U64 N>
+    struct CappedArray;
+
+    template<typename T, U64 N>
+    T& push_back(CappedArray<T, N>& array, const T& value);
+
+    template<typename T, U64 N>
+    struct CappedArray : Array<T,N> {
+        using Base = Array<T,N>;
+        U64 cap = 0;
+
+        // ====================================================================
+        // Iteration
+        // ====================================================================
+        constexpr Base::Iterator end() noexcept { return typename Base::Iterator{this->values + cap}; }
+        constexpr Base::ConstIterator end() const noexcept { return typename Base::ConstIterator{this->values + cap}; }
+        constexpr Base::ConstIterator cend() const noexcept { return typename Base::ConstIterator{this->values + cap}; }
+
+        // ====================================================================
+        // Element access
+        // ====================================================================
+        template<typename I>
+        constexpr T& operator[](I i) noexcept {
+            assert_true(i < cap, "out of range");
+            return Base::operator[](i);
+        }
+
+        template<typename I>
+        constexpr const T& operator[](I i) const noexcept {
+            assert_true(i < cap, "out of range");
+            return Base::operator[](i);
+        }
+
+        // ====================================================================
+        // Comparison
+        // ====================================================================
+        // @todo
+        constexpr bool operator==(const CappedArray& other) const = delete;
+        constexpr bool operator!=(const CappedArray& other) const = delete;
+
+        // stl helpers
+        T& push_back(const T& value) { return plexdb::push_back(*this, value); }
+    };
+
+    template<typename T, U64 N>
+    T& push_back(CappedArray<T, N>& array, const T& value) {
+        assert_true(array.cap < N, "array is full");
+        
+        array.values[array.cap] = value;
+        array.cap++;
+        return array.values[array.cap - 1];
+    }
+
+    template<typename T, U64 N, typename... Args>
+    T& emplace_back(CappedArray<T, N>& array, Args&&... args) {
+        assert_true(array.cap < N, "array is full");
+
+        array.values[array.cap] = T(forward<Args>(args)...);
+        array.cap++;
+        return array.values[array.cap - 1];
+    }
+
+    template<typename T, U64 N>
+    bool full(CappedArray<T, N>& array) {
+        return array.cap >= N;
+    }
+
     // ========================================================================
     // stack
     // ========================================================================
@@ -193,6 +261,114 @@ export namespace plexdb {
     void clear(Stack<T>& stack) {
         stack.top = nullptr;
         stack.length = 0;
+    }
+
+    // ========================================================================
+    // deque (doubly-linked list)
+    // ========================================================================
+    template<typename T>
+    struct Deque {
+        struct Node {
+            T value;
+            Node* next = nullptr;
+            Node* prev = nullptr;
+        };
+
+        Node* head = nullptr;
+        Node* tail = nullptr;
+        U64 length = 0;
+
+        struct Iterator {
+            Node* curr;
+
+            Iterator(Node* curr) : curr(curr) {}
+
+            Iterator& operator++() { curr = curr->next; return *this; }
+            Iterator operator++(int) { Iterator tmp = *this; ++(*this); return tmp; }
+            Iterator& operator--() { curr = curr->prev; return *this; }
+            Iterator operator--(int) { Iterator tmp = *this; --(*this); return tmp; }
+
+            T& operator*() const { return curr->value; }
+
+            bool operator==(const Iterator& other) const { return curr == other.curr; }
+            bool operator!=(const Iterator& other) const { return !(*this == other); }
+        };
+
+        Iterator begin() noexcept { return Iterator{head}; }
+        Iterator end() noexcept { return Iterator{nullptr}; }
+
+        // @todo const iterator
+    };
+
+    template<typename T>
+    T* front(Deque<T>& deque) {
+        return deque.head == nullptr ? nullptr : &deque.head->value;
+    }
+
+    template<typename T>
+    T* back(Deque<T>& deque) {
+        return deque.tail == nullptr ? nullptr : &deque.tail->value;
+    }
+
+    template<typename T>
+    void push_front(Deque<T>& deque, typename Deque<T>::Node* node) {
+        assert_true(node != nullptr, "valid node");
+        node->next = deque.head;
+        node->prev = nullptr;
+        if (deque.head != nullptr) {
+            deque.head->prev = node;
+        }
+        deque.head = node;
+        if (deque.tail == nullptr) {
+            deque.tail = node;
+        }
+        deque.length++;
+    }
+
+    template<typename T>
+    void push_back(Deque<T>& deque, typename Deque<T>::Node* node) {
+        assert_true(node != nullptr, "valid node");
+        node->next = nullptr;
+        node->prev = deque.tail;
+        if (deque.tail != nullptr) {
+            deque.tail->next = node;
+        }
+        deque.tail = node;
+        if (deque.head == nullptr) {
+            deque.head = node;
+        }
+        deque.length++;
+    }
+
+    template<typename T>
+    void pop_front(Deque<T>& deque) {
+        assert_true(deque.head != nullptr, "non-empty");
+        deque.head = deque.head->next;
+        if (deque.head != nullptr) {
+            deque.head->prev = nullptr;
+        } else {
+            deque.tail = nullptr;
+        }
+        deque.length--;
+    }
+
+    template<typename T>
+    void pop_back(Deque<T>& deque) {
+        assert_true(deque.tail != nullptr, "non-empty");
+        deque.tail = deque.tail->prev;
+        if (deque.tail != nullptr) {
+            deque.tail->next = nullptr;
+        } else {
+            deque.head = nullptr;
+        }
+        deque.length--;
+    }
+
+    template<typename T>
+    void clear(Deque<T>& deque) {
+        deque.head = nullptr;
+        deque.tail = nullptr;
+        deque.length = 0;
     }
 
     // ========================================================================
@@ -343,16 +519,16 @@ export namespace plexdb {
             MapFixedSentinel<K,V,C>* map;
             U64 slot_idx;
 
-            Iterator(MapFixedSentinel<K,V,C>* map, U64 slot_idx) : map(map), slot_idx(slot_idx) {
-                while (this->slot_idx < C && this->map->key_values[slot_idx].key == sentinel) {
-                    slot_idx++;
+            Iterator(MapFixedSentinel<K,V,C>* map, U64 idx) : map(map), slot_idx(idx) {
+                while (this->slot_idx < C && this->map->key_values[this->slot_idx].first == sentinel) {
+                    this->slot_idx++;
                 }
             }
 
             Iterator& operator++() {
                 this->slot_idx++;
-                while (this->slot_idx < C && this->map->key_values[slot_idx].key == sentinel) {
-                    slot_idx++;
+                while (this->slot_idx < C && this->map->key_values[this->slot_idx].first == sentinel) {
+                    this->slot_idx++;
                 }
                 return *this; 
             }
@@ -379,9 +555,9 @@ export namespace plexdb {
 
         while (slot_idx != end_slot_idx) {
             auto& kv = map.key_values[slot_idx];
-            if (kv.key == key) {
-                return &kv.value;
-            } else if (kv.key == map.sentinel) {
+            if (kv.first == key) {
+                return &kv.second;
+            } else if (kv.first == map.sentinel) {
                 return nullptr;
             }
             
@@ -400,16 +576,24 @@ export namespace plexdb {
 
         while (slot_idx != end_slot_idx) {
             auto& kv = map.key_values[slot_idx];
-            if (kv.key == map.sentinel) {
-                kv.key = key;
-                return kv.value;
+            if (kv.first == map.sentinel) {
+                kv.first = key;
+                return kv.second;
             }
 
             slot_idx = (slot_idx + 1) % C;
         }
 
         assert_true(false, "fixed sentinel map is full");
-        return map.key_values[0].value;
+        return map.key_values[0].second;
+    }
+    template<typename K, typename V, U64 C>
+    V& find_or_insert(MapFixedSentinel<K,V,C>& map, const K& key) {
+        if (V* value = find(map, key); value != nullptr) {
+            return *value;
+        } else {
+            return insert(map, key);
+        }
     }
     template<typename K, typename V, U64 C>
     bool try_remove(MapFixedSentinel<K,V,C>& map, const K& key) {
@@ -420,10 +604,10 @@ export namespace plexdb {
 
         while (slot_idx != end_slot_idx) {
             auto& kv = map.key_values[slot_idx];
-            if (kv.key == key) {
-                kv.key = map.sentinel;
+            if (kv.first == key) {
+                kv.first = map.sentinel;
                 return true;
-            } else if (kv.key == map.sentinel) {
+            } else if (kv.first == map.sentinel) {
                 return false;
             }
 

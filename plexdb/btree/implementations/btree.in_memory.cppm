@@ -11,7 +11,10 @@ export namespace plexdb::btree {
         ~BTreeInMemory();
 
         struct Transaction {
+            Transaction();
             Transaction(BTreeInMemory* t);
+            Transaction(Transaction&& t);
+
             Transaction(const Transaction& other) = delete;
             Transaction& operator=(const Transaction& other) = delete;
 

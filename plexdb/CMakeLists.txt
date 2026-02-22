@@ -23,6 +23,7 @@ add_library(plexdb_modules)
 add_library(plexdb::plexdb_modules ALIAS plexdb_modules)
 
 target_compile_features(plexdb_modules PUBLIC cxx_std_20)
+set_target_properties(plexdb_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(plexdb_modules PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../macros
@@ -54,6 +55,7 @@ target_sources(plexdb_modules
             os/containers.cppm
             os/core.cppm
             os/os.cppm
+            os/socket.cppm
             pager/pager.cppm
             threads/threads.cppm
             tagged_union/tagged_union.cppm
@@ -64,6 +66,7 @@ add_library(plexdb STATIC)
 add_library(plexdb::plexdb ALIAS plexdb)
 
 target_compile_features(plexdb PUBLIC cxx_std_20)
+set_target_properties(plexdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(plexdb PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../macros
@@ -84,6 +87,7 @@ target_sources(plexdb
         btree/btree.detail.cpp
         btree/btree.node.cpp
         os/core.cpp
+        os/socket.cpp
         pager/pager.cpp
         threads/threads.cpp
 )

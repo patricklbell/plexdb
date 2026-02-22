@@ -26,11 +26,10 @@ export namespace plexdb {
         constexpr String8(const TArrayView<char,Length>& view) : data(view.ptr), length(static_cast<U64>(view.length)) {}
 
         template<typename Length>
-        constexpr String8(const TArrayViewPrefix<char,Length>& view) : data(view.ptr), length(static_cast<U64>(view.prefix)) {}
+        constexpr String8(const CappedTArrayView<char,Length>& view) : data(view.ptr), length(static_cast<U64>(view.cap)) {}
 
         String8(const char* in_c_str);
         String8(const AutoString8& str);
-
 
         constexpr operator const char*() const { return this->data; }
 
@@ -44,7 +43,8 @@ export namespace plexdb {
         char* c_str;
         U64 length;
 
-        explicit AutoString8();
+        AutoString8();
+        explicit AutoString8(U64 length);
         explicit AutoString8(const U8* in, U64 length);
         explicit AutoString8(const char* str);
         explicit AutoString8(const String8& str);
@@ -64,7 +64,15 @@ export namespace plexdb {
 
         bool operator==(const String8& b) const;
         bool operator==(const char* b) const;
+
+        // stl helpers
+        void push_back(const char& c);
+        void append(const char* first, const char* last);
     };
+
+    void resize(AutoString8& str, U64 size);
+    void push_back(AutoString8& str, const char& c);
+    void append(AutoString8& str, const char* first, const char* last);
     
     AutoString8 operator+(const String8& lhs, const String8& rhs);   
     AutoString8 operator""_as(const char* str, size_t len);

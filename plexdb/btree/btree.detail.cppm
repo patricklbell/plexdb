@@ -264,14 +264,14 @@ export namespace plexdb::btree {
             Node* parent = update_node(t_remove, parent_ref);
 
             // borrow from left or right sibling if it does not break invariant
-            NodeRef left_ref = (idx > 0) ? children(parent,h)[idx-1] : ~0u;
-            Node* left = (left_ref != ~0u) ? update_node(t_remove, left_ref) : nullptr;
+            NodeRef left_ref = (idx > 0) ? children(parent,h)[idx-1] : 0;
+            Node* left = (left_ref != 0) ? update_node(t_remove, left_ref) : nullptr;
             if (left && left->key_count > min_keys(h, is_leaf)) {
                 move_from_left(parent, left, node, idx, h, is_leaf);
                 break;
             }
-            NodeRef right_ref = (idx < parent->key_count) ? children(parent,h)[idx+1] : ~0u;
-            Node* right = (right_ref != ~0u) ? update_node(t_remove, right_ref) : nullptr;
+            NodeRef right_ref = (idx < parent->key_count) ? children(parent,h)[idx+1] : 0;
+            Node* right = (right_ref != 0) ? update_node(t_remove, right_ref) : nullptr;
             if (right && right->key_count > min_keys(h, is_leaf)) {
                 move_from_right(parent, right, node, idx, h, is_leaf);
                 break;
@@ -297,5 +297,71 @@ export namespace plexdb::btree {
 
         update_header(t_remove)->size--;
         return true;
+    }
+
+    // ========================================================================
+    // iterators
+    // ========================================================================
+    struct IteratorImpl {
+        const Node* leaf = nullptr;
+        NodeRef ref = 0;
+        CountType idx = 0;
+
+        bool operator==(const IteratorImpl& other) const { return ref == other.ref && idx == other.idx; }
+        bool operator!=(const IteratorImpl& other) const { return !(*this == other); }
+    };
+
+    template<Transaction Tx>
+    IteratorImpl begin_iterator_impl(Tx& t) {
+        // acquire read on header for duration of search
+        // @todo check necessary for duration since depth changing may not break search
+        auto t_header = scope(t);
+        const auto& h = *read_header(t_header);
+
+        NodeRef n_ref = h.root;
+        for (CountType depth = 0; depth < h.depth; depth++) {
+            auto t_node = scope(t);
+            const Node* n = read_node(t_node, n_ref);
+
+            assert_true(keys(n).length > 0, "internal node must have at least one key");
+            n_ref = children(n, h)[0];
+        }
+        
+        const Node* n = read_node(t, n_ref);
+        assert_true(keys(n).length > 0, "leaf node must have at least one value ");
+        return IteratorImpl{
+            .leaf = n,
+            .ref = n_ref,
+            .idx = 0_u16,
+        };
+    }
+
+    inline IteratorImpl end_iterator_impl() {
+        return IteratorImpl{};
+    }
+
+    template<Transaction Tx>
+    IteratorImpl next_iterator_impl(Tx& t, const IteratorImpl& it) {
+        assert_true(it.leaf != nullptr, "cannot get next iterator after end");
+
+        if (it.idx == it.leaf->key_count - 1) {
+            // @todo release previous node from transaction
+
+            if (it.leaf->next != 0) {
+                return {
+                    .leaf = read_node(t, it.leaf->next),
+                    .ref = it.leaf->next,
+                    .idx = 0_u16,
+                };
+            } else {
+                return end_iterator_impl();
+            }
+        }
+
+        return {
+            .leaf = it.leaf,
+            .ref = it.ref,
+            .idx = static_cast<CountType>(it.idx + 1_u16),
+        };
     }
 }

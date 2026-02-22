@@ -115,6 +115,11 @@ namespace plexdb::os {
         int err = fsync(fd);
         assert_true(err == 0, "file sync error");
     }
+    bool file_exists(String8 path) {
+        struct stat st;
+        int err = stat(path.c_str(), &st);
+        return err == 0;
+    }
     void file_seek(Handle file, U64 offset) {
         assert_true(static_cast<U64>((S64)offset) == offset, "range overflow");
         

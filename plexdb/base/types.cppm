@@ -35,8 +35,8 @@ namespace plexdb {
     template<typename T, size_t N> struct ArrayHelper<T[N]> { using removed = T; static constexpr bool is = true; };
 
     template<typename T>                       struct FunctionHelper                    { static constexpr bool is = false; };
-    template<typename Ret, typename... Args>   struct FunctionHelper<Ret(Args...)>      { static constexpr bool is = true; };
-    template<typename Ret, typename... Args>   struct FunctionHelper<Ret(Args..., ...)> { static constexpr bool is = true; };
+    template<typename Ret, typename... Args>   struct FunctionHelper<Ret(Args...)>      { using ret = Ret; static constexpr bool is = true; };
+    template<typename Ret, typename... Args>   struct FunctionHelper<Ret(Args..., ...)> { using ret = Ret; static constexpr bool is = true; };
 
 
     template<bool b, typename T, typename F> struct ConditionalHelper               { using type = T; };
@@ -143,6 +143,13 @@ export namespace plexdb {
         return static_cast<F64>(value);
     }
 
+    constexpr F32 operator""_f32(unsigned long long value) {
+        return static_cast<F32>(value);
+    }
+    constexpr F64 operator""_f64(unsigned long long value) {
+        return static_cast<F64>(value);
+    }
+
     constexpr U64 operator""_kb(unsigned long long value) {
         return static_cast<U64>(1024_u64*value);
     }
@@ -226,6 +233,9 @@ export namespace plexdb {
     using RemoveRef = typename RefHelper<T>::removed;
 
     template<typename T>
+    using RemoveCVRef = RemoveCV<RemoveRef<T>>;
+
+    template<typename T>
     using RemoveExtent = typename ArrayHelper<T>::removed;
 
     template<typename T>
@@ -241,7 +251,6 @@ export namespace plexdb {
 
     template<bool b, typename T, typename F>
     using Conditional = typename ConditionalHelper<b, T, F>::type;
-
 
     template<typename It>
     using IterValue = RemoveCV<RemoveRef<decltype(*declval<It>())>>;
@@ -324,14 +333,8 @@ export namespace plexdb {
     // ========================================================================
     template<typename A, typename B>
     struct Pair {
-        union {
-            A first{};
-            A key;
-        };
-        union {
-            B second{};
-            B value;
-        };
+        A first{};
+        B second{};
 
         Pair() = default;
         Pair(A first, B second) : first(first), second(second) {}
@@ -427,20 +430,20 @@ export namespace plexdb {
     }
 
     template<typename T, typename Length = size_t>
-    struct TArrayViewPrefix : TArrayView<T, Length> {
+    struct CappedTArrayView : TArrayView<T, Length> {
         using Base = TArrayView<T, Length>;
 
-        Length prefix;
+        Length cap;
         
-        TArrayViewPrefix(T* ptr, Length length, Length prefix): Base(ptr, length), prefix(prefix) {}
+        CappedTArrayView(T* ptr, Length length, Length prefix): Base(ptr, length), cap(prefix) {}
 
-        explicit TArrayViewPrefix(): Base(), prefix(0) {}
+        explicit CappedTArrayView(): Base(), cap(0) {}
 
         template<size_t N>
-        TArrayViewPrefix(T (&arr)[N]): Base(arr), prefix(sizeof(T) * N) {}
+        CappedTArrayView(T (&arr)[N]): Base(arr), cap(sizeof(T) * N) {}
 
         template<typename U = T>
-        TArrayViewPrefix(const TArrayViewPrefix<RemoveCV<T>, Length>& other) requires (IsConst<U>): Base(other.ptr, other.length), prefix(other.prefix) {}
+        CappedTArrayView(const CappedTArrayView<RemoveCV<T>, Length>& other) requires (IsConst<U>): Base(other.ptr, other.length), cap(other.cap) {}
     };
     
     template<typename Length = size_t, typename Size = size_t, typename Byte = U8>

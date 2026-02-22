@@ -56,12 +56,12 @@ export namespace plexdb::os {
         memory_move(src.ptr - src.el_size*offset, src.ptr, src.el_size*src.length);
     }
 
-    template<bool check_length=true, typename T, typename Length>
-        requires TriviallyCopyable<T>
-    void memory_copy(const TArrayView<T,Length>& dst, const TArrayView<T,Length>& src) {
+    template<bool check_length=true, typename U, typename V, typename Length>
+        requires TriviallyCopyable<V> && SameAs<RemoveCV<U>,RemoveCV<V>>
+    void memory_copy(const TArrayView<U,Length>& dst, const TArrayView<V,Length>& src) {
         if constexpr (check_length)
             assert_true(dst.length == src.length, "matching view lengths");
-        memory_copy(dst.ptr, src.ptr, sizeof(T)*src.length);
+        memory_copy(dst.ptr, src.ptr, sizeof(V)*src.length);
     }
     template<typename T, typename Length>
     void memory_shift_right(const TArrayView<T,Length>& src, Length offset=1) {
@@ -106,6 +106,7 @@ export namespace plexdb::os {
     void      file_read(Handle file, Rng1U64 rng, void* out);
     void      file_write(Handle file, Rng1U64 rng, const void* in);
     void      file_sync(Handle file);
+    bool      file_exists(String8 path);
     void      file_seek(Handle file, U64 offset);
     void      file_resize_zero(Handle file, U64 new_byte_count);
     U64       file_get_offset(Handle file);

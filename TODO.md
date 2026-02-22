@@ -11,3 +11,4 @@
     - Maximum concurrent io operations in flight
     - Split file? partition? shard key per request?
         - Is sharding necessary at process level?
+- Avoid storing pager pointer per btree/blob

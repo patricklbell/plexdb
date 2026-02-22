@@ -45,18 +45,59 @@ export namespace plexdb::blob {
         resize_impl(blob, new_size);
     }
 
+    template<typename Blob>
+    void append(Blob& blob, const U8* in_value, U64 size) {
+        U64 offset = blob.size_bytes;
+        resize(blob, blob.size_bytes + size);
+        update(blob, in_value, size, offset);
+    }
+
+    template<typename Blob>
+    void insert(Blob& blob, const U8* in_value, U64 size, U64 offset=0) {
+        if (offset + size > blob.size_bytes) {
+            resize(blob, offset + size);
+        }
+        update(blob, in_value, size, offset);
+    }
+
     // ========================================================================
     // typed interface
     // ========================================================================
     template<typename T, typename Blob>
         requires TriviallyCopyable<T>
-    void tupdate(Blob& blob, const T* in_value, U64 offset=0) {
-        update(blob, reinterpret_cast<U8*>(in_value), sizeof(T), offset);
+    void tupdate(Blob& blob, const T* in_value) {
+        update(blob, reinterpret_cast<const U8*>(in_value), sizeof(T), 0);
     }
 
     template<typename T, typename Blob>
         requires TriviallyCopyable<T>
-    void tget(Blob& blob, T* out_value, U64 offset=0) {
-        get(blob, reinterpret_cast<T*>(out_value), sizeof(T), offset);
+    void tupdate(Blob& blob, const T* in_value, U64* inout_offset) {
+        update(blob, reinterpret_cast<const U8*>(in_value), sizeof(T), *inout_offset);
+        *inout_offset += sizeof(T);
+    }
+
+    template<typename T, typename Blob>
+        requires TriviallyCopyable<T>
+    void tget(Blob& blob, T* out_value) {
+        get(blob, reinterpret_cast<U8*>(out_value), sizeof(T), 0);
+    }
+
+    template<typename T, typename Blob>
+        requires TriviallyCopyable<T>
+    void tget(Blob& blob, T* out_value, U64* inout_offset) {
+        get(blob, reinterpret_cast<U8*>(out_value), sizeof(T), *inout_offset);
+        *inout_offset += sizeof(T);
+    }
+
+    template<typename T, typename Blob>
+        requires TriviallyCopyable<T>
+    void tappend(Blob& blob, const T* in_value) {
+        append(blob, reinterpret_cast<const U8*>(in_value), sizeof(T));
+    }
+
+    template<typename T, typename Blob>
+        requires TriviallyCopyable<T>
+    void tinsert(Blob& blob, const T* in_value) {
+        insert(blob, reinterpret_cast<const U8*>(in_value), sizeof(T));
     }
 }

@@ -65,7 +65,7 @@ namespace plexdb::pager {
     }
 
     Pager::Header create(os::Handle file, U64 page_size, U64 base_offset) {
-        assert_true(sizeof(Pager::Header) < page_size, "header does not fit in root page");
+        assert_true(sizeof(Pager::Header) <= page_size, "header does not fit in root page");
         assert_true(page_size % sizeof(U64) == 0, "invalid page size alignment");
 
         Pager::Header header{
@@ -91,10 +91,58 @@ namespace plexdb::pager {
        : header(header), file(file), base_offset(base_offset), read_cache_count(read_cache) {
         this->read_cache = os::allocate_zero(get_cache_size(*this)*this->read_cache_count);
     }
+    Pager::Pager(Pager&& other):
+        file(other.file),
+        base_offset(other.base_offset),
+        header(other.header),
+        header_in_write_set(other.header_in_write_set),
+        read_cache_count(other.read_cache_count),
+        read_cache(other.read_cache),
+        write_arena(move(other.write_arena)),
+        write_set(move(other.write_set))
+    {
+        other.file = os::zero_handle();
+        other.read_cache = nullptr;
+    }
     Pager::~Pager() {
-        fflush(*this);
-        os::file_sync(this->file);
+        if (!os::is_zero_handle(this->file)) {
+            fflush(*this);
+            os::file_sync(this->file);
+        }
+
         os::deallocate(this->read_cache);
+    }
+
+    Pager& Pager::operator=(Pager&& other) {
+        if (this == &other) {
+            return *this;
+        }
+
+        if (!os::is_zero_handle(this->file)) {
+            fflush(*this);
+            os::file_sync(this->file);
+        }
+
+        os::deallocate(this->read_cache);
+
+        file = other.file;
+        base_offset = other.base_offset;
+        header = other.header;
+        header_in_write_set = other.header_in_write_set;
+        read_cache_count = other.read_cache_count;
+        read_cache = other.read_cache;
+        write_arena = move(other.write_arena);
+        write_set = move(other.write_set);
+
+        other.file = os::zero_handle();
+        other.read_cache = nullptr;
+        
+        return *this;
+    }
+
+    void set_root(Pager& pager, U64 page) {
+        pager.header.root_page = page;
+        pager.header_in_write_set = true;
     }
 
     const U8* rpage(Pager& pager, U64 idx) {

@@ -5,6 +5,8 @@ import plexdb.base;
 export namespace plexdb {
     template<typename... Types>
     struct TaggedUnion {
+        static constexpr IndexSequenceFor<Types...> is{};
+
         static constexpr size_t invalid_index = static_cast<size_t>(-1);
 
         size_t index = invalid_index;
@@ -206,5 +208,41 @@ export namespace plexdb {
     const T& get(const TaggedUnion<Types...>& u) noexcept {
         assert_true(type_matches_tag<T>(u), "reading wrong type from tagged union");
         return *reinterpret_cast<const T*>(&u.storage);
+    }
+}
+
+namespace plexdb {
+    template<size_t I, typename V, typename Return, typename TU, typename... Types>
+    struct Case {
+        static Return apply(TU& u, V& vis) {
+            using T = TypeAtIndex<I, Types...>;
+            return vis(get<T>(u));
+        }
+    };
+
+    template<typename Visitor, typename... Types, size_t... Is>
+    decltype(auto) visit_impl(auto& u, Visitor&& vis, IndexSequence<Is...>) {
+        using TU = RemoveRef<decltype(u)>;
+        using V = RemoveRef<Visitor>;
+        
+        using ElemRef = Conditional<IsConst<TU>, const TypeAtIndex<0, Types...>&, TypeAtIndex<0, Types...>&>;
+        using Return = decltype(declval<V&>()(declval<ElemRef>()));
+        using Fn = Return(*)(TU&, V&);
+
+        static constexpr Fn table[] = { &Case<Is, V, Return, TU, Types...>::apply... };
+
+        return table[u.index](u, vis);
+    }
+
+    export template<typename Visitor, typename... Types>
+    decltype(auto) visit(TaggedUnion<Types...>& u, Visitor&& vis) {
+        assert_true(u.index != TaggedUnion<Types...>::invalid_index, "visiting empty TaggedUnion");
+        return visit_impl<Visitor, Types...>(u, forward<Visitor>(vis), IndexSequenceFor<Types...>{});
+    }
+
+    export template<typename Visitor, typename... Types>
+    decltype(auto) visit(const TaggedUnion<Types...>& u, Visitor&& vis) {
+        assert_true(u.index != TaggedUnion<Types...>::invalid_index, "visiting empty TaggedUnion");
+        return visit_impl<Visitor, Types...>(u, forward<Visitor>(vis), IndexSequenceFor<Types...>{});
     }
 }

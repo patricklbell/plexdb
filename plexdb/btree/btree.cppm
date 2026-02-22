@@ -36,6 +36,17 @@ export namespace plexdb::btree {
         return false;
     }
 
+
+    template<BTree BT>
+    U8* view(BT& btree, KeyType key) {
+        typename BT::Transaction t{&btree};
+
+        if (Search s = search_impl(t, key)) {
+            return s.value;
+        }
+        return nullptr;
+    }
+
     template<BTree BT>
     bool find(BT& btree, KeyType key, U8* out_value, U64 size, U64 offset=0) {
         typename BT::Transaction t{&btree};
@@ -53,6 +64,37 @@ export namespace plexdb::btree {
         typename BT::Transaction t{&btree};
 
         return remove_impl(t, key);
+    }
+
+    template<BTree BT, typename T = U8>
+    struct Iterator {
+        typename BT::Transaction t;
+        IteratorImpl impl;
+
+        Iterator() = default;
+        explicit Iterator(BT& btree) : t(&btree) {}
+
+        Iterator& operator++() { this->impl = next_iterator_impl(this->t, impl); return *this; }
+
+        const T& operator*() { return *reinterpret_cast<const T*>(values(this->impl.leaf, *read_header(this->t))[this->impl.idx]); }
+
+        // @note does not compare transactions
+        bool operator==(const Iterator& other) const { return impl == other.impl; }
+        bool operator!=(const Iterator& other) const { return !(*this == other); }
+    };
+
+    template<BTree BT>
+    Iterator<BT> begin(BT& btree) {
+        Iterator it{btree};
+        it.impl = begin_iterator_impl(it.t);
+        return move(it);
+    }
+
+    template<BTree BT>
+    Iterator<BT> end(BT& btree) {
+        Iterator<BT> it{};
+        it.impl = end_iterator_impl();
+        return move(it);
     }
 
     // ========================================================================
@@ -78,9 +120,18 @@ export namespace plexdb::btree {
             return Optional{value};
         return {};
     }
-}
 
-export namespace plexdb {
-    using BTInMemory = btree::BTreeInMemory;
-    using BTPaged = btree::BTreePaged;
+    template<typename T, BTree BT>
+    Iterator<BT,T> tbegin(BT& btree) {
+        Iterator<BT,T> it{btree};
+        it.impl = begin_iterator_impl(it.t);
+        return move(it);
+    }
+
+    template<typename T, BTree BT>
+    Iterator<BT,T> tend(BT& btree) {
+        Iterator<BT,T> it{};
+        it.impl = end_iterator_impl();
+        return move(it);
+    }
 }

@@ -54,8 +54,8 @@ namespace plexdb::arena {
         return *this;
     }
 
-    void* push(Arena& arena, U64 size, U64 align) {
-        ArenaPage* current = arena.page->current;
+    void* push(ArenaPage** page, U64 size, U64 align) {
+        ArenaPage* current = (*page)->current;
         U64 page_offset_before = align_pow2(current->page_offset, align);
         U64 page_offset_after = page_offset_before + size;
 
@@ -64,9 +64,9 @@ namespace plexdb::arena {
             ArenaPage* new_page;
 
             // if there is a large enough page on top of the free list use it
-            if (arena.page->free_stack != nullptr && arena.page->free_stack->page_size > size) {
-                new_page = arena.page->free_stack;
-                arena.page->free_stack = (new_page->prev == arena.page) ? nullptr : new_page->prev;
+            if ((*page)->free_stack != nullptr && (*page)->free_stack->page_size > size) {
+                new_page = (*page)->free_stack;
+                (*page)->free_stack = (new_page->prev == *page) ? nullptr : new_page->prev;
 
                 new_page->current = new_page;
                 new_page->page_offset = HEADER_SIZE;
@@ -81,7 +81,7 @@ namespace plexdb::arena {
 
             new_page->base_offset = current->base_offset + HEADER_SIZE + current->page_size;
             new_page->prev = current;
-            arena.page->current = new_page;
+            (*page)->current = new_page;
             current = new_page;
 
             page_offset_before = align_pow2(current->page_offset, align);
@@ -94,32 +94,32 @@ namespace plexdb::arena {
         return reinterpret_cast<U8*>(current) + page_offset_before;
     }
 
-    U64 offset(Arena& arena) {
-        return arena.page->current->base_offset + arena.page->current->page_offset;
+    U64 offset(ArenaPage* page) {
+        return page->current->base_offset + page->current->page_offset;
     }
 
-    void pop_to(Arena& arena, U64 offset) {
-        ArenaPage* current = arena.page->current;
+    void pop_to(ArenaPage** page, U64 offset) {
+        ArenaPage* current = (*page)->current;
 
         // free pages if needed @note assumes free pages are only marked on bottom
         while (offset < current->base_offset + HEADER_SIZE) {
-            arena.page->current = arena.page->current->prev;
+            (*page)->current = (*page)->current->prev;
             os::deallocate(current);
-            current = arena.page->current;
+            current = (*page)->current;
         }
         assert_true(!(offset > current->base_offset && offset < current->base_offset + HEADER_SIZE), "offset is in header portion");
 
         current->page_offset = max(offset - current->base_offset, HEADER_SIZE);
     }
 
-    void clear(Arena& arena) {
-        arena.page->page_offset = HEADER_SIZE;
-        // os::memory_zero(reinterpret_cast<U8*>(arena) + HEADER_SIZE, arena.page->page_size - HEADER_SIZE);
+    void clear(ArenaPage* page) {
+        page->page_offset = HEADER_SIZE;
+        // os::memory_zero(reinterpret_cast<U8*>(arena) + HEADER_SIZE, page->page_size - HEADER_SIZE);
 
         // add pages to free list for use
-        if (arena.page->current != arena.page) {
-            arena.page->free_stack = arena.page->current;
-            arena.page->current = arena.page;
+        if (page->current != page) {
+            page->free_stack = page->current;
+            page->current = page;
         }
     }
 }

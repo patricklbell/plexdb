@@ -14,6 +14,9 @@ export namespace plexdb {
     template <typename T, typename Size>
     void reserve(DynamicArray<T,Size>& arr, Size new_capacity);
 
+    template <typename T, typename Size>
+    T& push_back(DynamicArray<T,Size>& arr, const T& value);
+
     // @todo move construct vs zero initialize
     template <typename T, typename Size=U64>
     struct DynamicArray {
@@ -22,6 +25,11 @@ export namespace plexdb {
         Size capacity = 0;
 
         DynamicArray() = default;
+
+        DynamicArray(Size length) {
+            reserve(*this, length);
+            this->length = length;
+        }
 
         DynamicArray(const DynamicArray& other) : ptr(nullptr), length(0), capacity(0) {
             if (other.length > 0) {
@@ -94,6 +102,9 @@ export namespace plexdb {
         const T& operator[](Size index) const noexcept {
             return ptr[index];
         }
+
+        // stl helpers
+        void push_back(const T& value) { plexdb::push_back(*this, value); }
     };
 
     template <typename T, typename Size>
@@ -117,26 +128,46 @@ export namespace plexdb {
     }
 
     template <typename T, typename Size>
-    void push_back(DynamicArray<T,Size>& arr, const T& value) {
+    void reserve_for_push(DynamicArray<T,Size>& arr) {
         if (arr.length == arr.capacity) {
             Size new_capacity = arr.capacity == 0 ? 4 : arr.capacity * 2;
             reserve(arr, new_capacity);
         }
-
-        new (arr.ptr + arr.length) T(value);
-        ++arr.length;
     }
 
     template <typename T, typename Size>
-    void push_back(DynamicArray<T,Size>& arr, T&& value) {
-        if (arr.length == arr.capacity) {
-            Size new_capacity = arr.capacity == 0 ? 4 : arr.capacity * 2;
-            reserve(arr, new_capacity);
-        }
+    T& push_back(DynamicArray<T,Size>& arr, const T& value) {
+        reserve_for_push(arr);
+        T* location = arr.ptr + arr.length;
 
-        new (arr.ptr + arr.length) T(move(value));
+        new (location) T(value);
         ++arr.length;
+
+        return *location;
     }
+
+    template <typename T, typename Size>
+    T& push_back(DynamicArray<T,Size>& arr, T&& value) {
+        reserve_for_push(arr);
+        T* location = arr.ptr + arr.length;
+
+        new (location) T(move(value));
+        ++arr.length;
+
+        return *location;
+    }
+
+    template <typename T, typename Size, typename... Args>
+    T& emplace_back(DynamicArray<T, Size>& arr, Args&&... args) {
+        reserve_for_push(arr);
+        T* location = arr.ptr + arr.length;
+
+        new (location) T(forward<Args>(args)...);
+        ++arr.length;
+
+        return *location;
+    }
+
 
     template <typename T, typename Size>
     void pop_back(DynamicArray<T,Size>& arr) {

@@ -27,10 +27,14 @@ export namespace plexdb::blob {
         U64 header_bytes;
         TArrayView<U64, U64> pages;
 
-        explicit BlobStaticPaged(Pager* in_pager, U64 in_page, U64 in_size);
+        BlobStaticPaged() = default;
+        BlobStaticPaged(Pager* in_pager, U64 in_page, U64 in_size);
+        BlobStaticPaged(BlobStaticPaged&& other);
+
+        BlobStaticPaged& operator=(BlobStaticPaged&& other);
+
         ~BlobStaticPaged();
 
-        // @todo
         BlobStaticPaged(const BlobStaticPaged& other) = delete;
         BlobStaticPaged& operator=(const BlobStaticPaged& other) = delete;
     };
@@ -56,12 +60,17 @@ export namespace plexdb::blob {
         TArrayView<U64, U64> header_pages;
         TArrayView<U64, U64> data_pages;
 
-        explicit BlobDynamicPaged(Pager* in_pager, U64 in_page);
+        BlobDynamicPaged() = default;
+        BlobDynamicPaged(Pager* in_pager, U64 in_page);
+        BlobDynamicPaged(BlobDynamicPaged&& other);
+
+        BlobDynamicPaged& operator=(BlobDynamicPaged&& other);
+
         ~BlobDynamicPaged();
 
         // @todo
         BlobDynamicPaged(const BlobDynamicPaged& other) = delete;
         BlobDynamicPaged& operator=(const BlobDynamicPaged& other) = delete;
     };
-    U64 create_paged_dynamic(Pager& pager, U64 initial_size);
+    U64 create_paged_dynamic(Pager& pager, U64 initial_size = 0);
 }

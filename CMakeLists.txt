@@ -17,7 +17,7 @@ option(OBJSTORE_BUILD_SERVER "Build objstore server" ON)
 # =============================================================================
 if(DISABLE_EXCEPTIONS)
     if(MSVC)
-        add_compile_options(/EHs-c- /GR-)
+        add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/EHs-c->" "$<$<COMPILE_LANGUAGE:CXX>:/GR->")
         # remove default exception handling flags
         string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
         string(REPLACE "/GR" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
@@ -25,7 +25,7 @@ if(DISABLE_EXCEPTIONS)
         string(REPLACE "/GR" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
         string(REPLACE "/GR" "" CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        add_compile_options(-fno-exceptions -fno-rtti)
+        add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>" "$<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>")
     endif()
 endif()
 

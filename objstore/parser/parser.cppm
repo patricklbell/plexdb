@@ -2,86 +2,80 @@ export module objstore.parser;
 
 import plexdb.base;
 import plexdb.tagged_union;
-import objstore.dtypes;
-import objstore.parser.stl_helpers;
+import objstore.engine.dtype;
+import objstore.engine.statements;
 
 using namespace plexdb;
 
-export namespace objstore::parser {
+namespace objstore::parser {
     // ========================================================================
-    // http
+    // hypertext transfer protocol (HTTP)
     // ========================================================================
-    constexpr U64 MAX_HEADERS = 32;
+    namespace http {
+        constexpr U64 MAX_HEADERS = 32;
+        constexpr U64 MAX_URL_SIZE = 2048;
+        constexpr U64 MAX_HEADER_NAME_SIZE = 256;
+        constexpr U64 MAX_HEADER_VALUE_SIZE = 4096;
+        constexpr U64 MAX_METHOD_SIZE = 16;
 
-    struct Header {
-        String8 name;
-        String8 value;
-    };
+        export struct Header {
+            String8 name;
+            String8 value;
+        };
 
-    struct HttpRequest {
-        String8 method;
-        String8 url;
-        Array<Header, MAX_HEADERS> headers;
-        U64 header_count = 0;
-        String8 body;
-    };
+        export struct Request {
+            String8 method;
+            String8 url;
+            Array<Header, MAX_HEADERS> headers;
+            U64 header_count = 0;
+            String8 body;
+        };
 
-    // Parse a raw buffer into an HTTP request.
-    // Returns Ok only if fully valid and complete.
-    Optional<HttpRequest> parse_request(String8 bytes);
+        // ====================================================================
+        // incremental parser
+        // ====================================================================
+        struct ParserState;
+
+        ParserState* parser_create();
+        void parser_reset(ParserState* state);
+        void parser_destroy(ParserState* state);
+        void parser_execute(ParserState* state, const char* data, U64 length);
+        const Request& parser_get_request(const ParserState* state);
+        bool parser_is_complete(const ParserState* state);
+        bool parser_has_error(const ParserState* state);
+
+        export struct Parser {
+            ParserState* state;
+
+            Parser() : state(parser_create()) {}
+            ~Parser() { if (state) parser_destroy(state); }
+
+            Parser(const Parser&) = delete;
+            Parser& operator=(const Parser&) = delete;
+
+            Parser(Parser&& other) noexcept : state(other.state) { other.state = nullptr; }
+            Parser& operator=(Parser&& other) noexcept {
+                if (this != &other) {
+                    if (state) parser_destroy(state);
+                    state = other.state;
+                    other.state = nullptr;
+                }
+                return *this;
+            }
+        };
+
+        export inline void reset(Parser& parser) { parser_reset(parser.state); }
+        export inline void execute(Parser& parser, const char* data, U64 length) { parser_execute(parser.state, data, length); }
+        export inline const Request& get_request(const Parser& parser) { return parser_get_request(parser.state); }
+        export inline bool is_complete(const Parser& parser) { return parser_is_complete(parser.state); }
+        export inline bool has_error(const Parser& parser) { return parser_has_error(parser.state); }
+    }
 
     // ========================================================================
     // cassandra query language (CQL)
     // ========================================================================
-    constexpr U64 MAX_KEYSPACE_OPTIONS = 32;
-
-    struct CreateKeyspaceRequestOption {
-        String8 key;
-        TaggedUnion<STLString, S64> value;
-    };
-
-    struct CreateKeyspaceRequest {
-        String8 keyspace_name;
-        bool if_not_exists;
-        STLArray<CreateKeyspaceRequestOption, MAX_KEYSPACE_OPTIONS> options;
-    };
-
-    struct CreateTableRequestColumn {
-        String8 name;
-        DType dtype;
-        bool is_primary_key;
-    };
-
-    struct CreateTableRequest {
-        String8 table_name;
-        bool if_not_exists;
-        STLDynamicArray<CreateTableRequestColumn> columns;
-    };
-
-    // @todo support auto increment etc.
-    using InsertValue = TaggedUnion<STLString, S64>;
-
-    struct InsertIntoRequest {
-        String8 keyspace_name;
-        String8 table_name;
-        STLDynamicArray<InsertValue> values;
-    };
-
-    struct SelectFromRequest {
-        String8 keyspace_name;
-        String8 table_name;
-        // @todo
-    };
-
-    struct CqlRequest {
-        TaggedUnion<
-            CreateKeyspaceRequest,
-            CreateTableRequest,
-            InsertIntoRequest,
-            SelectFromRequest
-        > value;
-    };
-
-    // Parses a CQL request
-    Optional<CqlRequest> parse_cql(String8 bytes, bool stderr=false);
+    namespace cql {
+        export Optional<Statement> parse(String8 bytes, bool stderr=false);
+        export bool is_complete(String8 bytes);
+    }
 }
