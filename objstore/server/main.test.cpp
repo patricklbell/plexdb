@@ -1,8 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <thread>
-#include <chrono>
 #include <atomic>
+#include <semaphore>
 #include <unistd.h>
 #include <string.h>
 
@@ -91,7 +91,7 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
     // First server instance: create schema and insert data
     {
         SignalPipe signal_pipe;
-        std::atomic<bool> server_ready{false};
+        std::binary_semaphore server_ready{0};
         volatile bool exit_signal = false;
 
         std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
@@ -103,13 +103,11 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
             engine::Engine engine{&pager};
 
             server::run(port, signal_pipe.read_fd, exit_signal, engine, [&server_ready]() {
-                server_ready = true;
+                server_ready.release();
             });
         });
 
-        while (!server_ready) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        server_ready.acquire();
 
         Socket client{socket_create_tcp()};
         socket_set_timeout(client, 2000);
@@ -136,7 +134,7 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
     {
         int port2 = get_unique_port();
         SignalPipe signal_pipe;
-        std::atomic<bool> server_ready{false};
+        std::binary_semaphore server_ready{0};
         volatile bool exit_signal = false;
 
         std::thread server_thread([port2, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
@@ -144,13 +142,11 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
             engine::Engine engine{&pager};
 
             server::run(port2, signal_pipe.read_fd, exit_signal, engine, [&server_ready]() {
-                server_ready = true;
+                server_ready.release();
             });
         });
 
-        while (!server_ready) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        server_ready.acquire();
 
         Socket client{socket_create_tcp()};
         socket_set_timeout(client, 2000);

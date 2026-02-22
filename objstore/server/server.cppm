@@ -17,14 +17,12 @@ export namespace objstore::server {
     template<typename F>
     concept OnReady = requires(F f) { f(); };
 
-    template<OnReady F>
-    void run(int port, int signal_fd, volatile bool& should_exit, engine::Engine& engine, const F& on_ready) {
+    void run(int port, int signal_fd, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready) {
         tcp::Pool pool{port, signal_fd};
         tcp::Stats stats{};
         
         MapFixedSentinel<int, parser::http::Parser, 2*tcp::MAX_CONNECTIONS> req_id_to_http_parser;
 
-        println("listening on port ", to_str(port));
         on_ready();
 
         const auto on_chunk = [&engine, &req_id_to_http_parser](tcp::Request& req) -> tcp::RequestStatus {
@@ -74,11 +72,5 @@ export namespace objstore::server {
         };
 
         tcp::listen(on_chunk, on_close, pool, stats, should_exit);
-
-        println("shutting down...");
-    }
-
-    inline void run(int port, int signal_fd, volatile bool& should_exit, engine::Engine& engine) {
-        run(port, signal_fd, should_exit, engine, [](){});
     }
 }

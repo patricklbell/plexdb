@@ -79,10 +79,11 @@ int main(int argc, char* argv[]) {
         }
         engine::Engine engine{&pager};
     
-        server::run(port, signal_fd, exit_signal, engine);
+        server::run(port, signal_fd, exit_signal, engine, [&port]() { println("listening on port ", to_str(port));});
+
+        println("shutting down...");
     }
 
-    
     os::file_delete(pid_file_path);
     return 0;
 }

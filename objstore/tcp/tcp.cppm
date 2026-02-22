@@ -144,7 +144,7 @@ namespace objstore::tcp {
     void handle_multishot_accept(Pool& pool, Stats& stats, io_uring_cqe* cqe);
     void submit_close(Pool& pool, int fd);
 
-    void handle_close(OnClose auto& on_close_callback, Pool& pool, Stats& stats, io_uring_cqe* cqe, int fd) {
+    void handle_close(const OnClose auto& on_close_callback, Pool& pool, Stats& stats, io_uring_cqe* cqe, int fd) {
         // close completed (or failed, but fd is closed anyway)
         if (try_remove(pool.connections, fd)) {
             stats.active_connections--;
@@ -159,7 +159,7 @@ namespace objstore::tcp {
     void submit_read(Pool& pool, int fd);
     void handle_write(Pool& pool, Stats& stats, io_uring_cqe* cqe, int buffer_idx);
 
-    void handle_read(OnChunk auto& on_chunk_callback, Pool& pool, Stats& stats, io_uring_cqe* cqe, int buffer_idx) {
+    void handle_read(const OnChunk auto& on_chunk_callback, Pool& pool, Stats& stats, io_uring_cqe* cqe, int buffer_idx) {
         PoolRequest& request = pool.request_pool[buffer_idx];
         int fd = request.fd;
         
@@ -215,7 +215,7 @@ namespace objstore::tcp {
     // ========================================================================
     // listen
     // ========================================================================
-    void handle_cqe(OnChunk auto& on_chunk_callback, OnClose auto& on_close_callback, Pool& pool, Stats& stats, io_uring_cqe* cqe) {
+    void handle_cqe(const OnChunk auto& on_chunk_callback, const OnClose auto& on_close_callback, Pool& pool, Stats& stats, io_uring_cqe* cqe) {
         U64 user_data = (U64)io_uring_cqe_get_data(cqe);
         EventType type = (EventType)(user_data & TYPE_MASK);
         int data = (int)(user_data & DATA_MASK);
@@ -242,7 +242,7 @@ namespace objstore::tcp {
         }
     }
 
-    void drain_or_block_cqes(OnChunk auto& on_chunk_callback, OnClose auto& on_close_callback, Pool& pool, Stats& stats, volatile bool& exit_signal) {
+    void drain_or_block_cqes(const OnChunk auto& on_chunk_callback, const OnClose auto& on_close_callback, Pool& pool, Stats& stats, volatile bool& exit_signal) {
         io_uring_cqe* cqe;
         unsigned head;
         unsigned count = 0;
@@ -265,7 +265,7 @@ namespace objstore::tcp {
         }
     }
 
-    export void listen(OnChunk auto& on_chunk_callback, OnClose auto& on_close_callback, Pool& pool, Stats& stats, volatile bool& exit_signal) {
+    export void listen(const OnChunk auto& on_chunk_callback, const OnClose auto& on_close_callback, Pool& pool, Stats& stats, volatile bool& exit_signal) {
         submit_multishot_accept(pool);
         
         while (!exit_signal) {
