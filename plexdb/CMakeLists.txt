@@ -56,6 +56,7 @@ target_sources(plexdb_modules
             os/core.cppm
             os/os.cppm
             os/socket.cppm
+            os/sysinfo.cppm
             pager/pager.cppm
             threads/threads.cppm
             tagged_union/tagged_union.cppm
@@ -88,6 +89,7 @@ target_sources(plexdb
         btree/btree.node.cpp
         os/core.cpp
         os/socket.cpp
+        os/sysinfo.cpp
         pager/pager.cpp
         threads/threads.cpp
 )
