@@ -502,6 +502,9 @@ TEST_CASE("CQL SELECT FROM statements", "[objstore.parser]") {
         const auto& sel = get<SelectFrom>(result->value);
         REQUIRE(sel.keyspace_name == "ks");
         REQUIRE(sel.table_name == "users");
+        REQUIRE(sel.column_names.cap == 0);
+        REQUIRE(sel.where.cap == 0);
+        REQUIRE(sel.limit == -1);
     }
     
     SECTION("SELECT FROM case insensitive") {
@@ -604,10 +607,14 @@ TEST_CASE("CQL Invalid syntax handling", "[objstore.parser]") {
         REQUIRE_FALSE(result.has_value());
     }
     
-    SECTION("Wrong SELECT syntax - column selection") {
+    SECTION("SELECT with column selection") {
         auto query = "SELECT id FROM ks.table;";
         auto result = cql::parse(query);
-        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<SelectFrom>(result->value));
+        const auto& sel = get<SelectFrom>(result->value);
+        REQUIRE(sel.column_names.cap == 1);
+        REQUIRE(sel.column_names[0] == "id");
     }
     
     SECTION("Missing parentheses in CREATE TABLE") {
@@ -687,5 +694,204 @@ TEST_CASE("CQL is_complete", "[objstore.parser]") {
     
     SECTION("Query with multiple semicolons") {
         REQUIRE(cql::is_complete("SELECT * FROM table; INSERT INTO table VALUES (1, 2);"));
+    }
+}
+
+TEST_CASE("Parse USE statement", "[objstore.parser]") {
+    SECTION("Basic USE") {
+        auto result = cql::parse("USE my_keyspace;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<UseKeyspace>(result->value));
+        const auto& stmt = get<UseKeyspace>(result->value);
+        REQUIRE(stmt.keyspace_name == "my_keyspace");
+    }
+}
+
+TEST_CASE("Parse DROP statements", "[objstore.parser]") {
+    SECTION("DROP KEYSPACE") {
+        auto result = cql::parse("DROP KEYSPACE my_keyspace;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<DropKeyspace>(result->value));
+        const auto& stmt = get<DropKeyspace>(result->value);
+        REQUIRE(stmt.keyspace_name == "my_keyspace");
+        REQUIRE_FALSE(stmt.if_exists);
+    }
+    
+    SECTION("DROP KEYSPACE IF EXISTS") {
+        auto result = cql::parse("DROP KEYSPACE IF EXISTS my_keyspace;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<DropKeyspace>(result->value));
+        const auto& stmt = get<DropKeyspace>(result->value);
+        REQUIRE(stmt.keyspace_name == "my_keyspace");
+        REQUIRE(stmt.if_exists);
+    }
+    
+    SECTION("DROP TABLE") {
+        auto result = cql::parse("DROP TABLE ks.my_table;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<DropTable>(result->value));
+        const auto& stmt = get<DropTable>(result->value);
+        REQUIRE(stmt.keyspace_name == "ks");
+        REQUIRE(stmt.table_name == "my_table");
+        REQUIRE_FALSE(stmt.if_exists);
+    }
+    
+    SECTION("DROP TABLE IF EXISTS") {
+        auto result = cql::parse("DROP TABLE IF EXISTS ks.my_table;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<DropTable>(result->value));
+        const auto& stmt = get<DropTable>(result->value);
+        REQUIRE(stmt.keyspace_name == "ks");
+        REQUIRE(stmt.table_name == "my_table");
+        REQUIRE(stmt.if_exists);
+    }
+}
+
+TEST_CASE("Parse TRUNCATE statement", "[objstore.parser]") {
+    SECTION("TRUNCATE with keyspace") {
+        auto result = cql::parse("TRUNCATE ks.my_table;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<TruncateTable>(result->value));
+        const auto& stmt = get<TruncateTable>(result->value);
+        REQUIRE(stmt.keyspace_name == "ks");
+        REQUIRE(stmt.table_name == "my_table");
+    }
+    
+    SECTION("TRUNCATE TABLE with keyspace") {
+        auto result = cql::parse("TRUNCATE TABLE ks.my_table;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<TruncateTable>(result->value));
+        const auto& stmt = get<TruncateTable>(result->value);
+        REQUIRE(stmt.keyspace_name == "ks");
+        REQUIRE(stmt.table_name == "my_table");
+    }
+}
+
+TEST_CASE("Parse UPDATE statement", "[objstore.parser]") {
+    SECTION("Basic UPDATE") {
+        auto result = cql::parse("UPDATE ks.users SET name = 'Alice' WHERE id = 1;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<Update>(result->value));
+        const auto& stmt = get<Update>(result->value);
+        REQUIRE(stmt.keyspace_name == "ks");
+        REQUIRE(stmt.table_name == "users");
+        REQUIRE(stmt.assignments.cap == 1);
+        REQUIRE(stmt.assignments[0].column_name == "name");
+        REQUIRE(stmt.where.cap == 1);
+        REQUIRE(stmt.where[0].column_name == "id");
+    }
+    
+    SECTION("UPDATE multiple assignments") {
+        auto result = cql::parse("UPDATE ks.users SET name = 'Alice', age = 30 WHERE id = 1;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<Update>(result->value));
+        const auto& stmt = get<Update>(result->value);
+        REQUIRE(stmt.assignments.cap == 2);
+        REQUIRE(stmt.assignments[0].column_name == "name");
+        REQUIRE(stmt.assignments[1].column_name == "age");
+    }
+}
+
+TEST_CASE("Parse DELETE statement", "[objstore.parser]") {
+    SECTION("DELETE all columns") {
+        auto result = cql::parse("DELETE FROM ks.users WHERE id = 1;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<Delete>(result->value));
+        const auto& stmt = get<Delete>(result->value);
+        REQUIRE(stmt.keyspace_name == "ks");
+        REQUIRE(stmt.table_name == "users");
+        REQUIRE(stmt.column_names.cap == 0);
+        REQUIRE(stmt.where.cap == 1);
+    }
+    
+    SECTION("DELETE specific columns") {
+        auto result = cql::parse("DELETE name, age FROM ks.users WHERE id = 1;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<Delete>(result->value));
+        const auto& stmt = get<Delete>(result->value);
+        REQUIRE(stmt.column_names.cap == 2);
+        REQUIRE(stmt.column_names[0] == "name");
+        REQUIRE(stmt.column_names[1] == "age");
+    }
+}
+
+TEST_CASE("Parse SELECT with WHERE and LIMIT", "[objstore.parser]") {
+    SECTION("SELECT with WHERE") {
+        auto result = cql::parse("SELECT * FROM ks.users WHERE id = 1;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<SelectFrom>(result->value));
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.keyspace_name == "ks");
+        REQUIRE(stmt.table_name == "users");
+        REQUIRE(stmt.where.cap == 1);
+        REQUIRE(stmt.where[0].column_name == "id");
+    }
+    
+    SECTION("SELECT with LIMIT") {
+        auto result = cql::parse("SELECT * FROM ks.users LIMIT 10;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<SelectFrom>(result->value));
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.limit == 10);
+    }
+    
+    SECTION("SELECT with WHERE and LIMIT") {
+        auto result = cql::parse("SELECT * FROM ks.users WHERE active = true LIMIT 5;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<SelectFrom>(result->value));
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.where.cap == 1);
+        REQUIRE(stmt.limit == 5);
+    }
+    
+    SECTION("SELECT specific columns") {
+        auto result = cql::parse("SELECT id, name, age FROM ks.users;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<SelectFrom>(result->value));
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.column_names.cap == 3);
+        REQUIRE(stmt.column_names[0] == "id");
+        REQUIRE(stmt.column_names[1] == "name");
+        REQUIRE(stmt.column_names[2] == "age");
+    }
+    
+    SECTION("SELECT multiple WHERE conditions") {
+        auto result = cql::parse("SELECT * FROM ks.users WHERE id = 1 AND name = 'Alice';");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<SelectFrom>(result->value));
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.where.cap == 2);
+    }
+}
+
+TEST_CASE("Parse INSERT with column names", "[objstore.parser]") {
+    SECTION("INSERT with column list") {
+        auto result = cql::parse("INSERT INTO ks.users (id, name) VALUES (1, 'Alice');");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<InsertInto>(result->value));
+        const auto& stmt = get<InsertInto>(result->value);
+        REQUIRE(stmt.keyspace_name == "ks");
+        REQUIRE(stmt.table_name == "users");
+        REQUIRE(stmt.column_names.length == 2);
+        REQUIRE(stmt.column_names[0] == "id");
+        REQUIRE(stmt.column_names[1] == "name");
+        REQUIRE(stmt.values.length == 2);
+    }
+    
+    SECTION("INSERT without column list") {
+        auto result = cql::parse("INSERT INTO ks.users VALUES (1, 'Alice', 30);");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<InsertInto>(result->value));
+        const auto& stmt = get<InsertInto>(result->value);
+        REQUIRE(stmt.column_names.length == 0);
+        REQUIRE(stmt.values.length == 3);
+    }
+    
+    SECTION("INSERT IF NOT EXISTS") {
+        auto result = cql::parse("INSERT INTO ks.users (id) VALUES (1) IF NOT EXISTS;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<InsertInto>(result->value));
+        const auto& stmt = get<InsertInto>(result->value);
+        REQUIRE(stmt.if_not_exists);
     }
 }

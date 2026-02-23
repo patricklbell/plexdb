@@ -239,8 +239,12 @@ namespace objstore::parser::cql {
     
         // keywords (case-insensitive)
         constexpr auto kw_create = LEXY_LIT_CI("create");
+        constexpr auto kw_alter = LEXY_LIT_CI("alter");
+        constexpr auto kw_drop = LEXY_LIT_CI("drop");
+        constexpr auto kw_truncate = LEXY_LIT_CI("truncate");
         constexpr auto kw_keyspace = LEXY_LIT_CI("keyspace");
         constexpr auto kw_table = LEXY_LIT_CI("table");
+        constexpr auto kw_columnfamily = LEXY_LIT_CI("columnfamily");
         constexpr auto kw_if = LEXY_LIT_CI("if");
         constexpr auto kw_not = LEXY_LIT_CI("not");
         constexpr auto kw_exists = LEXY_LIT_CI("exists");
@@ -253,6 +257,27 @@ namespace objstore::parser::cql {
         constexpr auto kw_primary = LEXY_LIT_CI("primary");
         constexpr auto kw_key = LEXY_LIT_CI("key");
         constexpr auto kw_and = LEXY_LIT_CI("and");
+        constexpr auto kw_use = LEXY_LIT_CI("use");
+        constexpr auto kw_update = LEXY_LIT_CI("update");
+        constexpr auto kw_set = LEXY_LIT_CI("set");
+        constexpr auto kw_where = LEXY_LIT_CI("where");
+        constexpr auto kw_delete = LEXY_LIT_CI("delete");
+        constexpr auto kw_using = LEXY_LIT_CI("using");
+        constexpr auto kw_timestamp = LEXY_LIT_CI("timestamp");
+        constexpr auto kw_ttl = LEXY_LIT_CI("ttl");
+        constexpr auto kw_begin = LEXY_LIT_CI("begin");
+        constexpr auto kw_apply = LEXY_LIT_CI("apply");
+        constexpr auto kw_batch = LEXY_LIT_CI("batch");
+        constexpr auto kw_unlogged = LEXY_LIT_CI("unlogged");
+        constexpr auto kw_counter = LEXY_LIT_CI("counter");
+        constexpr auto kw_add = LEXY_LIT_CI("add");
+        constexpr auto kw_rename = LEXY_LIT_CI("rename");
+        constexpr auto kw_to = LEXY_LIT_CI("to");
+        constexpr auto kw_limit = LEXY_LIT_CI("limit");
+        constexpr auto kw_in = LEXY_LIT_CI("in");
+        constexpr auto kw_contains = LEXY_LIT_CI("contains");
+        constexpr auto kw_true = LEXY_LIT_CI("true");
+        constexpr auto kw_false = LEXY_LIT_CI("false");
 
         // identifiers
         struct identifier {
@@ -340,6 +365,23 @@ namespace objstore::parser::cql {
             static constexpr auto value = lexy::as_integer<S64>;
         };
 
+        struct boolean_literal {
+            struct true_ : lexy::transparent_production {
+                static constexpr auto rule  = kw_true;
+                static constexpr auto value = lexy::constant(true);
+            };
+            struct false_ : lexy::transparent_production {
+                static constexpr auto rule  = kw_false;
+                static constexpr auto value = lexy::constant(false);
+            };
+            static constexpr auto rule = dsl::p<true_> | dsl::p<false_>;
+            static constexpr auto value = lexy::forward<bool>;
+        };
+
+        // ====================================================================
+        // common clauses
+        // ====================================================================
+
         // IF NOT EXISTS clause
         struct if_not_exists {
             static constexpr auto rule = []() {
@@ -352,18 +394,155 @@ namespace objstore::parser::cql {
                 []() { return true; }
             );
         };
+
+        // IF EXISTS clause
+        struct if_exists {
+            static constexpr auto rule = []() {
+                auto key = kw_if + dsl::p<ws> + kw_exists;
+                return dsl::opt(dsl::peek(key) >> key);
+            }();
+
+            static constexpr auto value = lexy::callback<bool>(
+                [](lexy::nullopt) { return false; },
+                []() { return true; }
+            );
+        };
+
+        // table name with keyspace (ks.table)
+        struct table_ref {
+            static constexpr auto rule = [] {
+                return (dsl::member<&TableRef::keyspace_name> = dsl::p<identifier>) + dsl::lit_c<'.'> +
+                       (dsl::member<&TableRef::table_name> = dsl::p<identifier>);
+            }();
+            static constexpr auto value = lexy::as_aggregate<TableRef>;
+        };
+
+        // comparison operators
+        struct comparison_op {
+            struct eq : lexy::transparent_production {
+                static constexpr auto rule = dsl::lit_c<'='>;
+                static constexpr auto value = lexy::constant(ComparisonOp::eq);
+            };
+            struct ne : lexy::transparent_production {
+                static constexpr auto rule = LEXY_LIT("!=");
+                static constexpr auto value = lexy::constant(ComparisonOp::ne);
+            };
+            struct le : lexy::transparent_production {
+                static constexpr auto rule = LEXY_LIT("<=");
+                static constexpr auto value = lexy::constant(ComparisonOp::le);
+            };
+            struct lt : lexy::transparent_production {
+                static constexpr auto rule = dsl::lit_c<'<'>;
+                static constexpr auto value = lexy::constant(ComparisonOp::lt);
+            };
+            struct ge : lexy::transparent_production {
+                static constexpr auto rule = LEXY_LIT(">=");
+                static constexpr auto value = lexy::constant(ComparisonOp::ge);
+            };
+            struct gt : lexy::transparent_production {
+                static constexpr auto rule = dsl::lit_c<'>'>;
+                static constexpr auto value = lexy::constant(ComparisonOp::gt);
+            };
+            struct in_ : lexy::transparent_production {
+                static constexpr auto rule = kw_in;
+                static constexpr auto value = lexy::constant(ComparisonOp::in_);
+            };
+
+            // @note order matters: longer matches first (ne before eq, le before lt, ge before gt)
+            static constexpr auto rule = dsl::p<ne> | dsl::p<le> | dsl::p<ge> | dsl::p<lt> | dsl::p<gt> | 
+                                        dsl::p<eq> | dsl::p<in_>;
+            static constexpr auto value = lexy::forward<ComparisonOp>;
+        };
+
+        // value for WHERE/INSERT/UPDATE
+        struct term_value {
+            static constexpr auto rule = dsl::p<string_literal> | dsl::p<integer_literal> | dsl::p<boolean_literal>;
+            static constexpr auto value = lexy::construct<dtype::WriteValue>;
+        };
+
+        // WHERE relation: column op value
+        struct where_relation {
+            static constexpr auto rule = [] {
+                return (dsl::member<&WhereRelation::column_name> = dsl::p<identifier>) + dsl::p<ws> +
+                       (dsl::member<&WhereRelation::op> = dsl::p<comparison_op>) + dsl::p<ws> +
+                       (dsl::member<&WhereRelation::value> = dsl::p<term_value>) + dsl::p<ws>;
+            }();
+            static constexpr auto value = lexy::as_aggregate<WhereRelation>;
+        };
+
+        struct unexpected_trailing_and_where {
+            static constexpr auto name = "unexpected trailing AND in WHERE clause";
+        };
+
+        // WHERE clause
+        struct where_clause {
+            static constexpr auto rule = []() {
+                auto relations = dsl::list(
+                    dsl::p<where_relation>,
+                    dsl::sep(kw_and >> dsl::p<ws>).trailing_error<unexpected_trailing_and_where>
+                );
+                return dsl::opt(kw_where >> dsl::p<ws> + relations);
+            }();
+            static constexpr auto value = lexy::as_list<CappedArray<WhereRelation, MAX_WHERE_RELATIONS>>;
+        };
+
+        // assignment: column = value
+        struct assignment {
+            static constexpr auto rule = [] {
+                return (dsl::member<&Assignment::column_name> = dsl::p<identifier>) + dsl::p<ws> +
+                       dsl::lit_c<'='> + dsl::p<ws> +
+                       (dsl::member<&Assignment::value> = dsl::p<term_value>) + dsl::p<ws>;
+            }();
+            static constexpr auto value = lexy::as_aggregate<Assignment>;
+        };
+
+        struct unexpected_trailing_comma_assignments {
+            static constexpr auto name = "unexpected trailing comma in SET clause";
+        };
+
+        // SET clause assignments
+        struct set_assignments {
+            static constexpr auto rule = [] {
+                return dsl::list(
+                    dsl::p<assignment>,
+                    dsl::sep(dsl::lit_c<','> >> dsl::p<ws>).trailing_error<unexpected_trailing_comma_assignments>
+                );
+            }();
+            static constexpr auto value = lexy::as_list<CappedArray<Assignment, MAX_ASSIGNMENTS>>;
+        };
+
+        // LIMIT clause
+        struct limit_clause {
+            static constexpr auto rule = []() {
+                return dsl::opt(kw_limit >> dsl::p<ws> + dsl::p<integer_literal>);
+            }();
+            static constexpr auto value = lexy::callback<S64>(
+                [](lexy::nullopt) { return -1; },
+                [](S64 val) { return val; }
+            );
+        };
+
+        // USING options (TIMESTAMP and/or TTL)
+        struct using_timestamp {
+            static constexpr auto rule = []() {
+                return dsl::opt(kw_using >> dsl::p<ws> + kw_timestamp + dsl::p<ws> + dsl::p<integer_literal>);
+            }();
+            static constexpr auto value = lexy::callback<S64>(
+                [](lexy::nullopt) { return -1; },
+                [](S64 val) { return val; }
+            );
+        };
     
-        // WITH options for CREATE KEYSPACE
         struct keyspace_option {
             static constexpr auto rule = [] {
-                auto key = (dsl::member<&CreateKeyspaceOption::key> = dsl::p<identifier>);
+                auto key = (dsl::member<&KeyspaceOption::key> = dsl::p<identifier>);
                 auto eq = dsl::lit_c<'='>;
-                auto value = (dsl::member<&CreateKeyspaceOption::value> = (dsl::p<integer_literal> | dsl::p<string_literal>));
+                auto value = (dsl::member<&KeyspaceOption::value> = (dsl::p<integer_literal> | dsl::p<string_literal>));
                 
                 return key + dsl::p<ws> + eq + dsl::p<ws> + value + dsl::p<ws>;
             }();
             
-            static constexpr auto value = lexy::as_aggregate<CreateKeyspaceOption>;
+            static constexpr auto value = lexy::as_aggregate<KeyspaceOption>;
         };
 
         struct unexpected_trailing_and {
@@ -379,10 +558,23 @@ namespace objstore::parser::cql {
                 return dsl::opt(kw_with >> dsl::p<ws> + options);
             }();
             
-            static constexpr auto value = lexy::as_list<CappedArray<CreateKeyspaceOption, MAX_KEYSPACE_OPTIONS>>;
+            static constexpr auto value = lexy::as_list<CappedArray<KeyspaceOption, MAX_KEYSPACE_OPTIONS>>;
+        };
+
+        // ====================================================================
+        // USE statement
+        // ====================================================================
+        struct use_stmt {
+            static constexpr auto rule = [] {
+                return dsl::peek(kw_use) >> kw_use + dsl::p<ws> +
+                    (dsl::member<&UseKeyspace::keyspace_name> = dsl::p<identifier>);
+            }();
+            static constexpr auto value = lexy::as_aggregate<UseKeyspace>;
         };
     
+        // ====================================================================
         // CREATE KEYSPACE statement
+        // ====================================================================
         struct create_keyspace_stmt {
             static constexpr auto rule = [] {
                 auto key = kw_create + dsl::p<ws> + kw_keyspace;
@@ -395,6 +587,36 @@ namespace objstore::parser::cql {
             static constexpr auto value = lexy::as_aggregate<CreateKeyspace>;
         };
 
+        // ====================================================================
+        // ALTER KEYSPACE statement
+        // ====================================================================
+        struct alter_keyspace_stmt {
+            static constexpr auto rule = [] {
+                auto key = kw_alter + dsl::p<ws> + kw_keyspace;
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                    (dsl::member<&AlterKeyspace::if_exists> = dsl::p<if_exists>) + dsl::p<ws> +
+                    (dsl::member<&AlterKeyspace::keyspace_name> = dsl::p<identifier>) + dsl::p<ws> +
+                    (dsl::member<&AlterKeyspace::options> = dsl::p<with_options>);
+            }();
+            static constexpr auto value = lexy::as_aggregate<AlterKeyspace>;
+        };
+
+        // ====================================================================
+        // DROP KEYSPACE statement
+        // ====================================================================
+        struct drop_keyspace_stmt {
+            static constexpr auto rule = [] {
+                auto key = kw_drop + dsl::p<ws> + kw_keyspace;
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                    (dsl::member<&DropKeyspace::if_exists> = dsl::p<if_exists>) + dsl::p<ws> +
+                    (dsl::member<&DropKeyspace::keyspace_name> = dsl::p<identifier>);
+            }();
+            static constexpr auto value = lexy::as_aggregate<DropKeyspace>;
+        };
+
+        // ====================================================================
+        // CREATE TABLE statement
+        // ====================================================================
         struct primary_key {
             static constexpr auto rule = [] {
                 auto key = kw_primary + dsl::p<ws> + kw_key;
@@ -407,7 +629,6 @@ namespace objstore::parser::cql {
             );
         };
     
-        // column definition for CREATE TABLE
         struct column_def {
             static constexpr auto rule = [] {
                 return (dsl::member<&CreateColumn::name> = dsl::p<identifier>) + dsl::p<ws> + 
@@ -428,10 +649,9 @@ namespace objstore::parser::cql {
             static constexpr auto value = lexy::as_list<DynamicArray<CreateColumn>>;
         };
 
-        // CREATE TABLE statement
         struct create_table_stmt {
             static constexpr auto rule = [] {                
-                auto key = kw_create + dsl::p<ws> + kw_table;
+                auto key = kw_create + dsl::p<ws> + (kw_table | kw_columnfamily);
                 return dsl::peek(key) >> key + dsl::p<ws> +
                     (dsl::member<&CreateTable::if_not_exists> = dsl::p<if_not_exists>) + dsl::p<ws> +
                     (dsl::member<&CreateTable::keyspace_name> = dsl::p<identifier>) + dsl::lit_c<'.'> +
@@ -441,11 +661,44 @@ namespace objstore::parser::cql {
             
             static constexpr auto value = lexy::as_aggregate<CreateTable>;
         };
-    
-        // value for INSERT statement
+
+        // ====================================================================
+        // DROP TABLE statement
+        // ====================================================================
+        struct drop_table_stmt {
+            static constexpr auto rule = [] {
+                auto key = kw_drop + dsl::p<ws> + (kw_table | kw_columnfamily);
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                    (dsl::member<&DropTable::if_exists> = dsl::p<if_exists>) + dsl::p<ws> +
+                    (dsl::member<&DropTable::keyspace_name> = dsl::p<identifier>) + dsl::lit_c<'.'> +
+                    (dsl::member<&DropTable::table_name> = dsl::p<identifier>);
+            }();
+            static constexpr auto value = lexy::as_aggregate<DropTable>;
+        };
+
+        // ====================================================================
+        // TRUNCATE statement
+        // ====================================================================
+        struct truncate_table_keyword {
+            static constexpr auto rule = dsl::opt(dsl::peek(kw_table | kw_columnfamily) >> (kw_table | kw_columnfamily) + dsl::p<ws>);
+            static constexpr auto value = lexy::noop;
+        };
+
+        struct truncate_stmt {
+            static constexpr auto rule = [] {
+                auto key = kw_truncate;
+                return dsl::peek(key) >> key + dsl::p<ws> + dsl::p<truncate_table_keyword> +
+                    (dsl::member<&TruncateTable::keyspace_name> = dsl::p<identifier>) + dsl::lit_c<'.'> +
+                    (dsl::member<&TruncateTable::table_name> = dsl::p<identifier>);
+            }();
+            static constexpr auto value = lexy::as_aggregate<TruncateTable>;
+        };
+
+        // ====================================================================
+        // INSERT INTO statement
+        // ====================================================================
         struct insert_value {
             static constexpr auto rule = dsl::p<string_literal> | dsl::p<integer_literal>;
-            
             static constexpr auto value = lexy::construct<dtype::WriteValue>;
         };
 
@@ -459,27 +712,104 @@ namespace objstore::parser::cql {
             static constexpr auto value = lexy::as_list<DynamicArray<dtype::WriteValue>>;
         };
     
-        // INSERT INTO statement
+        struct column_names_list {
+            static constexpr auto rule = [] {
+                auto column_list = dsl::parenthesized(
+                    dsl::p<ws> + dsl::list(dsl::p<identifier>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>)) + dsl::p<ws>
+                );
+                return dsl::opt(column_list + dsl::p<ws>);
+            }();
+            
+            static constexpr auto value = lexy::as_list<DynamicArray<String8>>;
+        };
+
         struct insert_into_stmt {
             static constexpr auto rule = [] {
                 auto key = kw_insert + dsl::p<ws> + kw_into;
                 return dsl::peek(key) >> key + dsl::p<ws> +
                     (dsl::member<&InsertInto::keyspace_name> = dsl::p<identifier>) + dsl::p<ws> + dsl::lit_c<'.'> +
-                    (dsl::member<&InsertInto::table_name> = dsl::p<identifier>) + dsl::p<ws> + kw_values + dsl::p<ws> +
-                    (dsl::member<&InsertInto::values> = dsl::p<values_list>);
+                    (dsl::member<&InsertInto::table_name> = dsl::p<identifier>) + dsl::p<ws> +
+                    (dsl::member<&InsertInto::column_names> = dsl::p<column_names_list>) + dsl::p<ws> +
+                    kw_values + dsl::p<ws> +
+                    (dsl::member<&InsertInto::values> = dsl::p<values_list>) + dsl::p<ws> +
+                    (dsl::member<&InsertInto::if_not_exists> = dsl::p<if_not_exists>) + dsl::p<ws> +
+                    (dsl::member<&InsertInto::timestamp> = dsl::p<using_timestamp>);
             }();
             
             static constexpr auto value = lexy::as_aggregate<InsertInto>;
         };
-    
+
+        // ====================================================================
+        // UPDATE statement
+        // ====================================================================
+        struct update_stmt {
+            static constexpr auto rule = [] {
+                auto key = kw_update;
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                    (dsl::member<&Update::keyspace_name> = dsl::p<identifier>) + dsl::lit_c<'.'> +
+                    (dsl::member<&Update::table_name> = dsl::p<identifier>) + dsl::p<ws> +
+                    (dsl::member<&Update::timestamp> = dsl::p<using_timestamp>) + dsl::p<ws> +
+                    kw_set + dsl::p<ws> +
+                    (dsl::member<&Update::assignments> = dsl::p<set_assignments>) + dsl::p<ws> +
+                    (dsl::member<&Update::where> = dsl::p<where_clause>) + dsl::p<ws> +
+                    (dsl::member<&Update::if_exists> = dsl::p<if_exists>);
+            }();
+            static constexpr auto value = lexy::as_aggregate<Update>;
+        };
+
+        // ====================================================================
+        // DELETE statement
+        // ====================================================================
+        struct delete_column_list {
+            static constexpr auto rule = [] {
+                auto columns = dsl::list(dsl::p<identifier>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>));
+                return dsl::opt(dsl::peek_not(kw_from) >> columns);
+            }();
+            static constexpr auto value = lexy::as_list<CappedArray<String8, MAX_COLUMN_NAMES>>;
+        };
+
+        struct delete_stmt {
+            static constexpr auto rule = [] {
+                auto key = kw_delete;
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                    (dsl::member<&Delete::column_names> = dsl::p<delete_column_list>) + dsl::p<ws> +
+                    kw_from + dsl::p<ws> +
+                    (dsl::member<&Delete::keyspace_name> = dsl::p<identifier>) + dsl::lit_c<'.'> +
+                    (dsl::member<&Delete::table_name> = dsl::p<identifier>) + dsl::p<ws> +
+                    (dsl::member<&Delete::timestamp> = dsl::p<using_timestamp>) + dsl::p<ws> +
+                    (dsl::member<&Delete::where> = dsl::p<where_clause>) + dsl::p<ws> +
+                    (dsl::member<&Delete::if_exists> = dsl::p<if_exists>);
+            }();
+            static constexpr auto value = lexy::as_aggregate<Delete>;
+        };
+
+        // ====================================================================
         // SELECT FROM statement
+        // ====================================================================
+        struct select_columns {
+            struct star : lexy::transparent_production {
+                static constexpr auto rule = dsl::lit_c<'*'>;
+                static constexpr auto value = lexy::constant(CappedArray<String8, MAX_COLUMN_NAMES>{});
+            };
+            struct column_names : lexy::transparent_production {
+                static constexpr auto rule = dsl::list(dsl::p<identifier>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>));
+                static constexpr auto value = lexy::as_list<CappedArray<String8, MAX_COLUMN_NAMES>>;
+            };
+
+            static constexpr auto rule = dsl::p<star> | dsl::p<column_names>;
+            static constexpr auto value = lexy::forward<CappedArray<String8, MAX_COLUMN_NAMES>>;
+        };
+
         struct select_from_stmt {
             static constexpr auto rule = [] {
-                // @todo
                 auto key = kw_select;
-                return dsl::peek(key) >> key + dsl::p<ws> + dsl::lit_c<'*'> + dsl::p<ws> + kw_from + dsl::p<ws> +
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                    (dsl::member<&SelectFrom::column_names> = dsl::p<select_columns>) + dsl::p<ws> + 
+                    kw_from + dsl::p<ws> +
                     (dsl::member<&SelectFrom::keyspace_name> = dsl::p<identifier>) + dsl::p<ws> + dsl::lit_c<'.'> + 
-                    (dsl::member<&SelectFrom::table_name> = dsl::p<identifier>);
+                    (dsl::member<&SelectFrom::table_name> = dsl::p<identifier>) + dsl::p<ws> +
+                    (dsl::member<&SelectFrom::where> = dsl::p<where_clause>) + dsl::p<ws> +
+                    (dsl::member<&SelectFrom::limit> = dsl::p<limit_clause>);
             }();
             
             static constexpr auto value = lexy::as_aggregate<SelectFrom>;
@@ -487,12 +817,20 @@ namespace objstore::parser::cql {
     
         struct cql_statement {
             static constexpr auto rule = [] {
+                auto use = dsl::p<use_stmt>;
                 auto create_ks = dsl::p<create_keyspace_stmt>;
+                auto alter_ks = dsl::p<alter_keyspace_stmt>;
+                auto drop_ks = dsl::p<drop_keyspace_stmt>;
                 auto create_tbl = dsl::p<create_table_stmt>;
+                auto drop_tbl = dsl::p<drop_table_stmt>;
+                auto truncate = dsl::p<truncate_stmt>;
                 auto insert = dsl::p<insert_into_stmt>;
+                auto update = dsl::p<update_stmt>;
+                auto del = dsl::p<delete_stmt>;
                 auto select = dsl::p<select_from_stmt>;
                 
-                return dsl::p<ws> + (create_ks | create_tbl | insert | select) + dsl::p<ws> + dsl::lit_c<';'>;
+                return dsl::p<ws> + (use | create_ks | alter_ks | drop_ks | create_tbl | drop_tbl | 
+                                     truncate | insert | update | del | select) + dsl::p<ws> + dsl::lit_c<';'>;
             }();
             
             static constexpr auto value = lexy::construct<Statement>;

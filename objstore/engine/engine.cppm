@@ -130,6 +130,12 @@ export namespace objstore::engine {
                     .table = stmt.table_name,
                 };
             } else if constexpr (SameAs<T, InsertInto>) {
+                // @todo implement these features
+                assert_true(stmt.column_names.length == 0, "INSERT with column names not implemented");
+                assert_true(stmt.timestamp == -1, "INSERT with USING TIMESTAMP not implemented");
+                assert_true(stmt.ttl == -1, "INSERT with USING TTL not implemented");
+                assert_true(!stmt.if_not_exists, "INSERT IF NOT EXISTS not implemented");
+
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
                 if (ks == nullptr) {
                     return {
@@ -194,6 +200,11 @@ export namespace objstore::engine {
                 
                 return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
             } else if constexpr (SameAs<T, SelectFrom>) {
+                // @todo implement these features
+                assert_true(stmt.column_names.cap == 0, "SELECT with column names not implemented");
+                assert_true(stmt.where.cap == 0, "SELECT with WHERE clause not implemented");
+                assert_true(stmt.limit == -1, "SELECT with LIMIT not implemented");
+
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
                 if (ks == nullptr) {
                     return {
@@ -236,8 +247,35 @@ export namespace objstore::engine {
                 }
 
                 return {.status = ExecutionStatus::Success, .kind = ResultKind::Rows};
+            } else if constexpr (SameAs<T, UseKeyspace>) {
+                // @todo implement USE keyspace (set current keyspace context)
+                return {.status = ExecutionStatus::NotImplemented, .message = "USE not implemented"};
+            } else if constexpr (SameAs<T, AlterKeyspace>) {
+                // @todo implement ALTER KEYSPACE
+                return {.status = ExecutionStatus::NotImplemented, .message = "ALTER KEYSPACE not implemented"};
+            } else if constexpr (SameAs<T, DropKeyspace>) {
+                // @todo implement DROP KEYSPACE
+                return {.status = ExecutionStatus::NotImplemented, .message = "DROP KEYSPACE not implemented"};
+            } else if constexpr (SameAs<T, AlterTable>) {
+                // @todo implement ALTER TABLE
+                return {.status = ExecutionStatus::NotImplemented, .message = "ALTER TABLE not implemented"};
+            } else if constexpr (SameAs<T, DropTable>) {
+                // @todo implement DROP TABLE
+                return {.status = ExecutionStatus::NotImplemented, .message = "DROP TABLE not implemented"};
+            } else if constexpr (SameAs<T, TruncateTable>) {
+                // @todo implement TRUNCATE TABLE
+                return {.status = ExecutionStatus::NotImplemented, .message = "TRUNCATE not implemented"};
+            } else if constexpr (SameAs<T, Update>) {
+                // @todo implement UPDATE
+                return {.status = ExecutionStatus::NotImplemented, .message = "UPDATE not implemented"};
+            } else if constexpr (SameAs<T, Delete>) {
+                // @todo implement DELETE
+                return {.status = ExecutionStatus::NotImplemented, .message = "DELETE not implemented"};
+            } else if constexpr (SameAs<T, Batch>) {
+                // @todo implement BATCH
+                return {.status = ExecutionStatus::NotImplemented, .message = "BATCH not implemented"};
             } else {
-                static_assert(false);
+                static_assert(false, "Unhandled statement type in engine::execute");
             }
         });
     }
