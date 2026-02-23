@@ -142,6 +142,10 @@ namespace plexdb {
         str.length += append_len;
     }
 
+    void append(AutoString8& str, String8 s) {
+        append(str, s.data, s.data + s.length);
+    }
+
     AutoString8 operator+(const String8& lhs, const String8& rhs) {
         U64 length = lhs.length + rhs.length;
         char* c_str = reinterpret_cast<char*>(os::allocate(length + 1));

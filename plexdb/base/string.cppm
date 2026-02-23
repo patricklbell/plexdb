@@ -5,6 +5,7 @@ module;
 export module plexdb.base.string;
 
 import plexdb.base.types;
+import plexdb.base.math;
 
 export namespace plexdb {
     struct AutoString8;
@@ -73,6 +74,7 @@ export namespace plexdb {
     void resize(AutoString8& str, U64 size);
     void push_back(AutoString8& str, const char& c);
     void append(AutoString8& str, const char* first, const char* last);
+    void append(AutoString8& str, String8 s);
     
     AutoString8 operator+(const String8& lhs, const String8& rhs);   
     AutoString8 operator""_as(const char* str, size_t len);
@@ -122,4 +124,117 @@ export namespace plexdb {
         print("\n");
     }
 
+    template<typename F>
+    concept BufferedString8Flush = requires(F f, const char* data, U64 len) {
+        f(data, len);
+    };
+
+    template<BufferedString8Flush F>
+    struct BufferedString8 {
+        TArrayView<char> buffer;
+        U64 length;
+        F flush;
+
+        BufferedString8(TArrayView<char> buf, F flush_fn) : buffer(buf), length(0), flush(flush_fn) {}
+    };
+    
+    template<BufferedString8Flush F>
+    void flush(BufferedString8<F>& str) {
+        if (str.length >= str.buffer.length) {
+            str.flush(str.buffer.ptr, str.length);
+            str.length = 0;
+        }
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, char c) {
+        flush(str);
+
+        assert_true(str.length < str.buffer.length, "string8 buffer is zero length");
+        str.buffer.ptr[str.length++] = c;
+    }
+    
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, String8 prefix) {
+        const char* src = prefix.data;
+        const char* end = prefix.data + prefix.length;
+
+        while (src != end) {
+            flush(str);
+            
+            U64 count = min(static_cast<U64>(end - src), str.buffer.length - str.length);
+            assert_true(count > 0, "string8 buffer is zero length");
+            
+            // @todo memory copy
+            for (U64 i = 0; i < count; i++) {
+                str.buffer.ptr[str.length++] = src[i];
+            }
+
+            src += count;
+        }
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, const char* prefix) {
+        append(str, String8(prefix));
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, S64 value) {
+        char tmp[32];
+        int len = snprintf(tmp, sizeof(tmp), "%lld", static_cast<long long>(value));
+        assert_true(len > 0 && len < 32, "format error");
+
+        append(str, String8(tmp, static_cast<U64>(len)));
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, S32 value) {
+        char tmp[16];
+        int len = snprintf(tmp, sizeof(tmp), "%d", value);
+        assert_true(len > 0 && len < 16, "format error");
+
+        append(str, String8(tmp, static_cast<U64>(len)));
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, S16 value) {
+        char tmp[8];
+        int len = snprintf(tmp, sizeof(tmp), "%d", static_cast<int>(value));
+        assert_true(len > 0 && len < 8, "format error");
+
+        append(str, String8(tmp, static_cast<U64>(len)));
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, U8 value) {
+        char tmp[4];
+        int len = snprintf(tmp, sizeof(tmp), "%u", static_cast<unsigned>(value));
+        assert_true(len > 0 && len < 4, "format error");
+
+        append(str, String8(tmp, static_cast<U64>(len)));
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, F64 value) {
+        char tmp[32];
+        int len = snprintf(tmp, sizeof(tmp), "%g", value);
+        assert_true(len > 0 && len < 32, "format error");
+
+        append(str, String8(tmp, static_cast<U64>(len)));
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, F32 value) {
+        char tmp[32];
+        int len = snprintf(tmp, sizeof(tmp), "%g", static_cast<double>(value));
+        assert_true(len > 0 && len < 32, "format error");
+
+        append(str, String8(tmp, static_cast<U64>(len)));
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, bool value) {
+        append(str, value ? String8("true") : String8("false"));
+    }
 }

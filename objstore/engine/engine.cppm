@@ -1,7 +1,7 @@
 export module objstore.engine;
 
-import objstore.engine.dtype;
-import objstore.engine.schema;
+export import objstore.engine.dtype;
+export import objstore.engine.schema;
 import objstore.engine.statements;
 
 import plexdb.base;
@@ -14,11 +14,6 @@ import plexdb.btree;
 using namespace plexdb;
 
 export namespace objstore::engine {
-    template<typename F>
-    concept Flush = requires(F f, U64 length) {
-        f(length);
-    };
-        
     struct Engine {
         Pager* pager;
         schema::Schema schema;
@@ -28,85 +23,153 @@ export namespace objstore::engine {
 
     void create_database(Pager& pager);
 
-    struct ExecutionContext {
-        const TArrayView<U8> write_buffer;
+    enum class ExecutionStatus : U16 {
+        Success         = 0x0000,
+        ServerError     = 0x0001,  // Unexpected server-side error
+        SyntaxError     = 0x2000,  // Query has syntax error
+        Unauthorized    = 0x2100,  // No permission
+        Invalid         = 0x2200,  // Syntactically correct but invalid
+        ConfigError     = 0x2300,  // Configuration issue
+        AlreadyExists   = 0x2400,  // Keyspace/table already exists
+        NotImplemented  = 0x2500,  // Feature not implemented
     };
 
-    enum ExecutionResult {
-        Success = 0,
-        BadRequest,
-        NotImplemented,
+    constexpr String8 to_str(ExecutionStatus status) {
+        switch (status) {
+            case ExecutionStatus::Success:        return "SUCCESS";
+            case ExecutionStatus::ServerError:    return "SERVER_ERROR";
+            case ExecutionStatus::SyntaxError:    return "SYNTAX_ERROR";
+            case ExecutionStatus::Unauthorized:   return "UNAUTHORIZED";
+            case ExecutionStatus::Invalid:        return "INVALID";
+            case ExecutionStatus::ConfigError:    return "CONFIG_ERROR";
+            case ExecutionStatus::AlreadyExists:  return "ALREADY_EXISTS";
+            case ExecutionStatus::NotImplemented: return "NOT_IMPLEMENTED";
+        }
+        return "UNKNOWN";
+    }
+
+    
+    enum class ResultKind : U8 {
+        Void = 0,       // No result (INSERT, UPDATE, DELETE)
+        Rows,           // SELECT result
+        SchemaChange,   // CREATE/DROP/ALTER result
+    };
+
+    struct ExecutionResult {
+        ExecutionStatus status = ExecutionStatus::Success;
+        ResultKind kind = ResultKind::Void;
+        String8 message = "";
+        String8 keyspace = "";
+        String8 table = "";
+    };
+
+    template<typename F>
+    concept OnValue = requires(F f, const schema::Table& tbl, const schema::Column& col, U64 col_count, U64 row_idx, U64 col_idx, const dtype::ReadValue& value) {
+        {f(tbl, col, col_count, row_idx, col_idx, value)} -> SameAs<void>;
     };
     
-    ExecutionResult execute(Engine& engine, const Statement& statement, const Flush auto& flush, const ExecutionContext& ctx) {
-        auto write_str8_and_flush = [&flush,&ctx](String8 str) {
-            assert_true(str.length < ctx.write_buffer.length, "string too large to fit in write buffer");
-            os::memory_copy(ctx.write_buffer, TArrayView(reinterpret_cast<const U8*>(str.data), str.length));
-        };
-        U64 write_offset = 0;
-
-        auto add_str8_and_flush_if_needed = [&flush,&ctx,&write_offset](const String8& str) {
-            for (U64 str_offset = 0; str_offset < str.length;) {
-                U64 length = min(ctx.write_buffer.length - write_offset, str.length - str_offset);
-
-                os::memory_copy(
-                    ctx.write_buffer.ptr + write_offset,
-                    reinterpret_cast<const U8*>(str.data + str_offset),
-                    length
-                );
-                write_offset += length;
-
-                if (write_offset == ctx.write_buffer.length) {
-                    flush(length);
-                    write_offset = 0;
-                }
-
-                str_offset += length;
-            }
-        };
-
-        auto finalize_flush = [&flush,&ctx,&write_offset]() {
-            if (write_offset > 0) {
-                flush(write_offset);
-            }
-        };
-
-        // @todo switch on type index
+    ExecutionResult execute(Engine& engine, const Statement& statement, const OnValue auto& on_value) {
         return visit(statement.value, [&](const auto& stmt) -> ExecutionResult {
             using T = RemoveCVRef<decltype(stmt)>;
 
             if constexpr (SameAs<T, CreateKeyspace>) {
+                if (!stmt.if_not_exists) {
+                    auto existing = schema::read_keyspace(engine.schema, stmt.keyspace_name);
+                    if (existing != nullptr) {
+                        return {
+                            .status = ExecutionStatus::AlreadyExists,
+                            .message = "Keyspace already exists",
+                            .keyspace = stmt.keyspace_name,
+                        };
+                    }
+                }
+
                 auto ks = schema::create_keyspace(engine.schema, stmt);
                 if (ks == nullptr) {
-                    return ExecutionResult::BadRequest;
+                    return {.status = ExecutionStatus::ServerError, .message = "Failed to create keyspace"};
                 }
     
-                return ExecutionResult::Success;
+                return {
+                    .status = ExecutionStatus::Success,
+                    .kind = ResultKind::SchemaChange,
+                    .message = "CREATED",
+                    .keyspace = stmt.keyspace_name,
+                };
             } else if constexpr (SameAs<T, CreateTable>) {
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
                 if (ks == nullptr) {
-                    return ExecutionResult::BadRequest;
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Keyspace does not exist",
+                        .keyspace = stmt.keyspace_name,
+                    };
+                }
+
+                if (!stmt.if_not_exists) {
+                    auto existing = schema::read_table(engine.schema, *ks, stmt.table_name);
+                    if (existing != nullptr) {
+                        return {
+                            .status = ExecutionStatus::AlreadyExists,
+                            .message = "Table already exists",
+                            .keyspace = stmt.keyspace_name,
+                            .table = stmt.table_name,
+                        };
+                    }
                 }
     
                 auto tbl = schema::create_table(engine.schema, *ks, stmt);
                 if (tbl == nullptr) {
-                    return ExecutionResult::BadRequest;
+                    return {.status = ExecutionStatus::ServerError, .message = "Failed to create table"};
                 }
                 
-                return ExecutionResult::Success;
+                return {
+                    .status = ExecutionStatus::Success,
+                    .kind = ResultKind::SchemaChange,
+                    .message = "CREATED",
+                    .keyspace = stmt.keyspace_name,
+                    .table = stmt.table_name,
+                };
             } else if constexpr (SameAs<T, InsertInto>) {
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
                 if (ks == nullptr) {
-                    return ExecutionResult::BadRequest;
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Keyspace does not exist",
+                        .keyspace = stmt.keyspace_name,
+                    };
                 }
     
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
                 if (tbl == nullptr) {
-                    return ExecutionResult::BadRequest;
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Table does not exist",
+                        .keyspace = stmt.keyspace_name,
+                        .table = stmt.table_name,
+                    };
                 }
     
                 if (tbl->cols.length != stmt.values.length) {
-                    return ExecutionResult::BadRequest;
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Column count mismatch",
+                        .keyspace = stmt.keyspace_name,
+                        .table = stmt.table_name,
+                    };
+                }
+
+                for (U64 idx = 0; idx < tbl->cols.length; idx++) {
+                    const auto& col = tbl->cols[idx];
+                    const auto& value = stmt.values[idx];
+
+                    if (!dtype::can_write(value, col.dtype)) {
+                        return {
+                            .status = ExecutionStatus::Invalid,
+                            .message = "Value does not match its column's type",
+                            .keyspace = stmt.keyspace_name,
+                            .table = stmt.table_name,
+                        };
+                    }
                 }
     
                 // @todo static blobs/in-tree for fixed column set
@@ -129,18 +192,29 @@ export namespace objstore::engine {
                 // @todo uniqueness check
                 tinsert(tbl->btree, dtype::hash(stmt.values[tbl->primary_col_idx]), row_page);
                 
-                return ExecutionResult::Success;
+                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
             } else if constexpr (SameAs<T, SelectFrom>) {
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
                 if (ks == nullptr) {
-                    return ExecutionResult::BadRequest;
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Keyspace does not exist",
+                        .keyspace = stmt.keyspace_name,
+                    };
                 }
     
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
                 if (tbl == nullptr) {
-                    return ExecutionResult::BadRequest;
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Table does not exist",
+                        .keyspace = stmt.keyspace_name,
+                        .table = stmt.table_name,
+                    };
                 }
 
+
+                U64 row_idx = 0;
                 for (auto it = btree::tbegin<U64>(tbl->btree); it != btree::tend<U64>(tbl->btree); ++it) {
                     const U64& row_page = (*it);
                     blob::BlobDynamicPaged row_blob(engine.pager, row_page);
@@ -151,27 +225,20 @@ export namespace objstore::engine {
                         row_offset_bytes += size;
                     };
 
-                    add_str8_and_flush_if_needed("{");
                     for (U64 col_idx = 0; col_idx < tbl->cols.length; col_idx++) {
                         const auto& col = tbl->cols[col_idx];
+                        const auto& value = dtype::read(read, col.dtype);
 
-                        auto value = dtype::read(read, col.dtype);
-                        AutoString8 str = dtype::to_str(value, col.dtype);
-
-                        add_str8_and_flush_if_needed(str);
-                        if (col_idx != tbl->cols.length - 1) {
-                            add_str8_and_flush_if_needed(",");
-                        }
+                        on_value(*tbl, col, tbl->cols.length, row_idx, col_idx, value);
                     }
-                    add_str8_and_flush_if_needed("}\n");
+
+                    row_idx++;
                 }
 
-                finalize_flush();
+                return {.status = ExecutionStatus::Success, .kind = ResultKind::Rows};
             } else {
                 static_assert(false);
             }
-
-            return ExecutionResult::Success;
         });
     }
 }

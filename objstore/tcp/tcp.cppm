@@ -276,6 +276,7 @@ namespace objstore::tcp {
 
     // ========================================================================
     // http
+    // @todo remove
     // ========================================================================
     export void return_http_success(Request& req, const String8& body);
     export void return_http_fail(Request& req, int status, const String8& body, bool close=false);

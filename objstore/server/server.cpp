@@ -8,17 +8,17 @@ import objstore.engine;
 using namespace plexdb;
 
 namespace objstore::server {
-    void return_execution_result(tcp::Request& req, engine::ExecutionResult result, const String8& value) {
-        switch (result) {
-            case engine::ExecutionResult::BadRequest:{
-                tcp::return_http_fail(req, 400, value);
-            }break;
-            case engine::ExecutionResult::NotImplemented:{
-                tcp::return_http_fail(req, 501, value);
-            }
-            case engine::ExecutionResult::Success:{
-                tcp::return_http_success(req, value);
-            }
+    int get_http_status_for_execution_status(engine::ExecutionStatus status) {
+        switch (status) {
+            case engine::ExecutionStatus::Success:        return 200;
+            case engine::ExecutionStatus::ServerError:    return 500;
+            case engine::ExecutionStatus::SyntaxError:    return 400;
+            case engine::ExecutionStatus::Unauthorized:   return 403;
+            case engine::ExecutionStatus::Invalid:        return 400;
+            case engine::ExecutionStatus::ConfigError:    return 400;
+            case engine::ExecutionStatus::AlreadyExists:  return 409;
+            case engine::ExecutionStatus::NotImplemented: return 501;
         }
+        return 500;
     }
 }

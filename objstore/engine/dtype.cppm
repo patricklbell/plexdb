@@ -70,6 +70,14 @@ export namespace objstore {
             
             return false;
         }
+
+        bool can_write(const WriteValue& src, DType dtype) {
+            return visit(src, [&dtype](auto& v) {
+                using T = Decay<decltype(v)>;
+                using V = Conditional<SameAs<T, AutoString8>, String8, T>;
+                return can_write<V>(dtype);
+            });
+        }
         
         template<typename F>
         concept Write = requires(F f, const U8* src, U64 size) {
@@ -182,11 +190,7 @@ export namespace objstore {
                 using T = Decay<decltype(v)>;
                 using V = Conditional<SameAs<T, AutoString8>, String8, T>;
     
-                // default initialise if invalid value
-                if (!can_write<V>(dtype)) {
-                    write_default(w, dtype);
-                    return;
-                }
+                assert_true(can_write<V>(dtype), "invalid type to write for dtype " + to_str(dtype));
     
                 if constexpr (SameAs<T, AutoString8>) {
                     write(w, String8(v), dtype);
