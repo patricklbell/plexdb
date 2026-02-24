@@ -35,6 +35,7 @@ target_sources(plexdb_modules
         FILE_SET CXX_MODULES 
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
+            argparse/argparse.cppm
             arena/arena.cppm
             base/base.cppm
             base/containers.cppm
@@ -80,6 +81,7 @@ target_include_directories(plexdb PRIVATE
 
 target_sources(plexdb
     PRIVATE
+        argparse/argparse.cpp
         arena/arena.cpp
         base/math.cpp
         base/string.cpp
