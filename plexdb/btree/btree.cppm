@@ -134,4 +134,23 @@ export namespace plexdb::btree {
         it.impl = end_iterator_impl();
         return move(it);
     }
+
+    template<BTree BT>
+    U64 size(BT& btree) {
+        typename BT::Transaction t{&btree};
+        return read_header(t)->size;
+    }
+
+    template<BTree BT>
+    void truncate(BT& btree) {
+        if (size(btree) == 0) return;
+
+        DynamicArray<KeyType> key_list{};
+        for (auto it = begin(btree); it != end(btree); ++it) {
+            push_back(key_list, keys(it.impl.leaf)[it.impl.idx]);
+        }
+        for (U64 i = 0; i < key_list.length; i++) {
+            remove(btree, key_list[i]);
+        }
+    }
 }

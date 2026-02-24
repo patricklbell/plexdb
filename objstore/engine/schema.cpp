@@ -359,4 +359,22 @@ namespace objstore::schema {
     Column* read_column(Schema& schema, Table& tbl, String8 name) {
         return read_column_impl(schema, tbl, name);
     }
+    bool delete_column(Schema& schema, Table& tbl, String8 name) {
+        if (Column* col = read_column_impl(schema, tbl, name); col != nullptr) {
+            col->tombstone = true;
+
+            for (auto& col_storage : schema.storage.columns) {
+                if (!col_storage.header.tombstone &&
+                    col_storage.header.table_idx == tbl.idx &&
+                    String8(col_storage.name.c_str, col_storage.name.length) == name) {
+                    col_storage.header.tombstone = true;
+                    U64 offset = col_storage.offset_in_blob_bytes + offsetof(ColumnHeader, tombstone);
+                    tupdate(schema.columns_blob, &col_storage.header.tombstone, &offset);
+                    break;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
 }

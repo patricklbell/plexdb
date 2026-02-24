@@ -253,6 +253,36 @@ export namespace objstore {
             }
         }
 
+        void write_from_read(const Write auto& w, const ReadValue& src, DType dtype) {
+            switch (dtype) {
+                case DType::text:
+                case DType::uuid:
+                case DType::timestamp:{
+                    const AutoString8& s = get<AutoString8>(src);
+                    write(w, String8(s.c_str, s.length), dtype);
+                }break;
+                case DType::smallint:
+                    write(w, static_cast<S64>(get<S16>(src)), dtype);
+                    break;
+                case DType::int_:
+                    write(w, static_cast<S64>(get<S32>(src)), dtype);
+                    break;
+                case DType::counter:
+                case DType::bigint:
+                    write(w, get<S64>(src), dtype);
+                    break;
+                case DType::boolean:
+                    write(w, static_cast<bool>(get<U8>(src)), dtype);
+                    break;
+                case DType::float_:
+                    write(w, static_cast<F64>(get<F32>(src)), dtype);
+                    break;
+                case DType::double_:
+                    write(w, get<F64>(src), dtype);
+                    break;
+            }
+        }
+
         AutoString8 to_str(const ReadValue& value, DType dtype) {
             switch (dtype) {
                 case DType::text:
