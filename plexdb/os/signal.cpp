@@ -26,6 +26,7 @@ namespace plexdb::os {
         pipe.write_fd = -1;
     }
 
+    // @note write result intentionally ignored - safe to call from signal handlers
     void signal_pipe_notify(SignalPipe& pipe) {
         char c = 0;
         [[maybe_unused]] auto res = write(pipe.write_fd, &c, 1);

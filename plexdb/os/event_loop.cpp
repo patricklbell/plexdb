@@ -161,37 +161,31 @@ namespace plexdb::os {
             U64 len        = 0;
             U64 user_data  = 0;
         };
+    }
 
-        // @note internal state for epoll backend, allocated alongside EventLoop
-        struct State {
-            PendingOp pending[MAX_PENDING];
-            int pending_count = 0;
+    struct EpollState {
+        epoll_backend::PendingOp pending[epoll_backend::MAX_PENDING];
+        int pending_count = 0;
 
-            CompletionEvent completions[EVENT_LOOP_MAX_DRAIN];
-            int completion_count = 0;
-            int completion_read  = 0;
-        };
+        CompletionEvent completions[EVENT_LOOP_MAX_DRAIN];
+        int completion_count = 0;
+        int completion_read  = 0;
+    };
 
-        static State* g_state = nullptr;
-
-        static State* get_state() {
-            if (!g_state) {
-                g_state = (State*)malloc(sizeof(State));
-                g_state->pending_count = 0;
-                g_state->completion_count = 0;
-                g_state->completion_read = 0;
-            }
-            return g_state;
+    namespace epoll_backend {
+        static EpollState* alloc_state() {
+            EpollState* s = (EpollState*)malloc(sizeof(EpollState));
+            s->pending_count = 0;
+            s->completion_count = 0;
+            s->completion_read = 0;
+            return s;
         }
 
-        static void free_state() {
-            if (g_state) {
-                free(g_state);
-                g_state = nullptr;
-            }
+        static void free_state(EpollState* s) {
+            if (s) free(s);
         }
 
-        static void queue_completion(State* s, int result, U64 user_data) {
+        static void queue_completion(EpollState* s, int result, U64 user_data) {
             if (s->completion_count < EVENT_LOOP_MAX_DRAIN) {
                 s->completions[s->completion_count].result = result;
                 s->completions[s->completion_count].user_data = user_data;
@@ -209,16 +203,17 @@ namespace plexdb::os {
             int res = epoll_ctl(loop.epoll_fd, EPOLL_CTL_ADD, loop.signal_fd, &ev);
             assert_true_always(res != -1, "epoll_ctl failed to add signal fd");
 
-            get_state();
+            loop.epoll_state = alloc_state();
         }
 
         static void destroy(EventLoop& loop) {
             if (loop.epoll_fd >= 0) close(loop.epoll_fd);
-            free_state();
+            free_state(loop.epoll_state);
+            loop.epoll_state = nullptr;
         }
 
-        static bool add_pending(int fd, OpType type, void* buf, U64 len, U64 user_data) {
-            State* s = get_state();
+        static bool add_pending(EventLoop& loop, int fd, OpType type, void* buf, U64 len, U64 user_data) {
+            EpollState* s = loop.epoll_state;
             if (s->pending_count >= MAX_PENDING) return false;
 
             PendingOp& op = s->pending[s->pending_count++];
@@ -230,7 +225,7 @@ namespace plexdb::os {
             return true;
         }
 
-        static void remove_pending(State* s, int idx) {
+        static void remove_pending(EpollState* s, int idx) {
             s->pending[idx] = s->pending[s->pending_count - 1];
             s->pending_count--;
         }
@@ -240,7 +235,7 @@ namespace plexdb::os {
             ev.events = EPOLLIN;
             ev.data.fd = listen_fd;
             epoll_ctl(loop.epoll_fd, EPOLL_CTL_ADD, listen_fd, &ev);
-            return add_pending(listen_fd, OpType::Accept, nullptr, 0, user_data);
+            return add_pending(loop, listen_fd, OpType::Accept, nullptr, 0, user_data);
         }
 
         static bool submit_multishot_accept(EventLoop& loop, int listen_fd, U64 user_data) {
@@ -248,7 +243,7 @@ namespace plexdb::os {
             ev.events = EPOLLIN;
             ev.data.fd = listen_fd;
             epoll_ctl(loop.epoll_fd, EPOLL_CTL_ADD, listen_fd, &ev);
-            return add_pending(listen_fd, OpType::MultishotAccept, nullptr, 0, user_data);
+            return add_pending(loop, listen_fd, OpType::MultishotAccept, nullptr, 0, user_data);
         }
 
         static bool submit_read(EventLoop& loop, int fd, void* buf, U64 len, U64 user_data) {
@@ -259,7 +254,7 @@ namespace plexdb::os {
             if (epoll_ctl(loop.epoll_fd, EPOLL_CTL_MOD, fd, &ev) != 0) {
                 epoll_ctl(loop.epoll_fd, EPOLL_CTL_ADD, fd, &ev);
             }
-            return add_pending(fd, OpType::Read, buf, len, user_data);
+            return add_pending(loop, fd, OpType::Read, buf, len, user_data);
         }
 
         static bool submit_write(EventLoop& loop, int fd, const void* buf, U64 len, U64 user_data) {
@@ -269,19 +264,19 @@ namespace plexdb::os {
             if (epoll_ctl(loop.epoll_fd, EPOLL_CTL_MOD, fd, &ev) != 0) {
                 epoll_ctl(loop.epoll_fd, EPOLL_CTL_ADD, fd, &ev);
             }
-            return add_pending(fd, OpType::Write, (void*)buf, len, user_data);
+            return add_pending(loop, fd, OpType::Write, (void*)buf, len, user_data);
         }
 
         static bool submit_close(EventLoop& loop, int fd, U64 user_data) {
             epoll_ctl(loop.epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
             int res = close(fd);
-            State* s = get_state();
+            EpollState* s = loop.epoll_state;
             queue_completion(s, res == 0 ? 0 : -errno, user_data);
             return true;
         }
 
         static void process_ready_events(EventLoop& loop, struct epoll_event* epoll_events, int n) {
-            State* s = get_state();
+            EpollState* s = loop.epoll_state;
 
             for (int e = 0; e < n; e++) {
                 int ready_fd = epoll_events[e].data.fd;
@@ -324,7 +319,7 @@ namespace plexdb::os {
         }
 
         static int drain(EventLoop& loop, CompletionEvent* events, int max_events) {
-            State* s = get_state();
+            EpollState* s = loop.epoll_state;
 
             // first return any buffered completions
             int count = 0;
@@ -368,6 +363,7 @@ namespace plexdb::os {
         EventLoop loop{};
         loop.signal_fd = signal_fd;
         loop.epoll_fd = -1;
+        loop.epoll_state = nullptr;
 
         #if PLEXDB_HAS_IO_URING
         {

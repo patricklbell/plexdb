@@ -28,6 +28,8 @@ export namespace plexdb::os {
         U64 length;
     };
 
+    struct EpollState;
+
     struct EventLoop {
         enum class Backend : U8 { IoUring, Epoll };
         Backend backend;
@@ -37,6 +39,8 @@ export namespace plexdb::os {
         #if PLEXDB_HAS_IO_URING
             io_uring ring;
         #endif
+
+        EpollState* epoll_state;
     };
 
     EventLoop event_loop_create(U32 queue_depth, int signal_fd);
