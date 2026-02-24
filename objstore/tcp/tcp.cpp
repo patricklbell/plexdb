@@ -19,10 +19,53 @@ import plexdb.arena;
 
 namespace objstore::tcp {
     Pool::Pool(int port, int signal_fd): free_buffer_idx(0), signal_fd(signal_fd)  {
+        const os::KernelFeatures* kernel  = os::get_kernel_features();
+        const os::SystemInfo*     sysinfo = os::get_system_info();
+
+        // Determine buffer_size from page size
+        buffer_size = (int)sysinfo->page_size;
+
+        // Check io_uring availability (requires registered buffers support)
+        use_io_uring = kernel->io_uring.supported && kernel->io_uring.registered_buffers;
+
+        if (use_io_uring) {
+            // queue_depth: use probed max_entries, capped, rounded down to power of 2
+            constexpr int MAX_QUEUE_DEPTH = 4096;
+            int req_depth = min((int)kernel->io_uring.max_entries, MAX_QUEUE_DEPTH);
+            queue_depth = 1;
+            while (queue_depth * 2 <= req_depth) queue_depth *= 2;
+        } else {
+            queue_depth = 0;
+        }
+
+        constexpr int DEFAULT_MAX_CQE_BATCH = 256;
+        max_cqe_batch = DEFAULT_MAX_CQE_BATCH;
+
+        // Determine num_buffers from mlock_limit when using io_uring registered buffers
+        constexpr int MIN_BUFFERS     = 64;
+        constexpr int MAX_BUFFERS     = 8192;
+        constexpr int DEFAULT_BUFFERS = 1000;
+        if (use_io_uring && sysinfo->mlock_limit > 0 && sysinfo->mlock_limit != MAX_U64) {
+            num_buffers = (int)min((U64)MAX_BUFFERS, sysinfo->mlock_limit / (U64)buffer_size);
+            num_buffers = max(num_buffers, MIN_BUFFERS);
+        } else {
+            num_buffers = DEFAULT_BUFFERS;
+        }
+
+        buffer_in_use  = (bool*)calloc((size_t)num_buffers, sizeof(bool));
+        iovecs         = (iovec*)malloc((size_t)num_buffers * sizeof(iovec));
+        request_pool   = (PoolRequest*)malloc((size_t)num_buffers * sizeof(PoolRequest));
+        assert_true_always(buffer_in_use && iovecs && request_pool, "failed to allocate tcp pool buffers");
+
         init_socket(*this, port);
-        init_uring(*this);
-        init_buffers(*this);
-        init_epoll(*this);
+        if (use_io_uring) {
+            init_uring(*this);
+            init_buffers(*this);
+            init_epoll(*this);
+        } else {
+            init_socket_buffers(*this);
+            init_socket_epoll(*this);
+        }
     }
     
     Pool::~Pool() {
@@ -30,14 +73,19 @@ namespace objstore::tcp {
         for (auto& kv : this->connections) {
             release_chain(*this, kv.second.rx_chain);
         }
-        
-        int err = io_uring_unregister_buffers(&this->ring);
-        assert_true_always(err == 0, "io_uring_unregister_buffers failed");
-        io_uring_queue_exit(&this->ring);
-        // err = munmap(this->buffer_pool, BUFFER_SIZE * NUM_BUFFERS);
-        // assert_true_always(err == 0, "munmap failed");
+
+        if (use_io_uring) {
+            int err = io_uring_unregister_buffers(&this->ring);
+            assert_true_always(err == 0, "io_uring_unregister_buffers failed");
+            io_uring_queue_exit(&this->ring);
+        }
+
         free(this->buffer_pool);
-        err = close(this->listen_fd);
+        free(this->buffer_in_use);
+        free(this->iovecs);
+        free(this->request_pool);
+
+        int err = close(this->listen_fd);
         assert_true_always(err == 0, "close failed");
     }
 
@@ -95,12 +143,12 @@ namespace objstore::tcp {
     // ========================================================================
     // finds the next free buffer in the ring
     // @todo virtual address mapping for ring buffer
-    static int alloc_buffer(Pool& pool) {
-        for (int i = 0; i < NUM_BUFFERS; i++) {
-            int idx = (pool.free_buffer_idx + i) % NUM_BUFFERS;
+    int alloc_buffer(Pool& pool) {
+        for (int i = 0; i < pool.num_buffers; i++) {
+            int idx = (int)((pool.free_buffer_idx + (size_t)i) % (size_t)pool.num_buffers);
             if (!pool.buffer_in_use[idx]) {
                 pool.buffer_in_use[idx] = true;
-                pool.free_buffer_idx = (idx + 1) % NUM_BUFFERS;
+                pool.free_buffer_idx = (size_t)((idx + 1) % pool.num_buffers);
                 return idx;
             }
         }
@@ -159,51 +207,34 @@ namespace objstore::tcp {
         // params.flags |= IORING_SETUP_SQPOLL;
         
         params.sq_thread_idle = 2000;
-        params.cq_entries = QUEUE_DEPTH * 2;
-        static_assert(has_single_bit(QUEUE_DEPTH * 2), "cq_entries must be a power of 2");
+        params.cq_entries = (unsigned)(pool.queue_depth * 2);
+        assert_true_always(has_single_bit((U64)params.cq_entries), "cq_entries must be a power of 2");
         
-        int res = io_uring_queue_init_params(QUEUE_DEPTH, &pool.ring, &params);
+        int res = io_uring_queue_init_params(pool.queue_depth, &pool.ring, &params);
         assert_true_always(res == 0, "io_uring_queue_init_params failed");
     }
     
-    void init_buffers(Pool& pool) {
-        size_t total_size = BUFFER_SIZE * NUM_BUFFERS;
-        
-        // @todo CAP_IPC_LOCK
-        // pool.buffer_pool = (char*)mmap(
-        //     NULL, total_size,
-        //     PROT_READ | PROT_WRITE,
-        //     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-        //     -1, 0
-        // );
-        
-        // if (pool.buffer_pool == MAP_FAILED) {
-        //     pool.buffer_pool = (char*)mmap(
-        //         NULL, total_size,
-        //         PROT_READ | PROT_WRITE,
-        //         MAP_PRIVATE | MAP_ANONYMOUS,
-        //         -1, 0
-        //     );
-        //     assert_true_always(pool.buffer_pool != MAP_FAILED, "mmap failed");
-        //     pool.buffer_pool_has_huge_pages = false;
-        // } else {
-        //     pool.buffer_pool_has_huge_pages = true;
-        // }
-        // madvise(pool.buffer_pool, total_size, MADV_HUGEPAGE);
+    // allocates buffer_pool and sets up iovecs to point into it
+    static void alloc_buffer_pool(Pool& pool) {
+        size_t total_size = (size_t)pool.buffer_size * (size_t)pool.num_buffers;
         pool.buffer_pool_has_huge_pages = false;
-        
-        int err = posix_memalign((void**)&pool.buffer_pool, 4096, total_size);
+        int err = posix_memalign((void**)&pool.buffer_pool, (size_t)pool.buffer_size, total_size);
         assert_true_always(err == 0 && pool.buffer_pool, "posix_memalign failed");
-        
-        madvise(pool.buffer_pool, total_size, MADV_WILLNEED);
-        
-        for (int i = 0; i < NUM_BUFFERS; i++) {
-            pool.iovecs[i].iov_base = pool.buffer_pool + (i * BUFFER_SIZE);
-            pool.iovecs[i].iov_len = BUFFER_SIZE;
+        for (int i = 0; i < pool.num_buffers; i++) {
+            pool.iovecs[i].iov_base = pool.buffer_pool + (size_t)i * (size_t)pool.buffer_size;
+            pool.iovecs[i].iov_len = (size_t)pool.buffer_size;
         }
+    }
 
-        err = io_uring_register_buffers(&pool.ring, pool.iovecs, NUM_BUFFERS);
+    void init_buffers(Pool& pool) {
+        alloc_buffer_pool(pool);
+        madvise(pool.buffer_pool, (size_t)pool.buffer_size * (size_t)pool.num_buffers, MADV_WILLNEED);
+        int err = io_uring_register_buffers(&pool.ring, pool.iovecs, (unsigned)pool.num_buffers);
         assert_true_always(err == 0, "io_uring_register_buffers failed");
+    }
+
+    void init_socket_buffers(Pool& pool) {
+        alloc_buffer_pool(pool);
     }
 
     void init_epoll(Pool& pool) {
@@ -228,6 +259,29 @@ namespace objstore::tcp {
             ev.data.fd = pool.ring.ring_fd;
             int res = epoll_ctl(pool.epoll_fd, EPOLL_CTL_ADD, pool.ring.ring_fd, &ev);
             assert_true(res != -1, "epoll_ctl failed to add ring fd");
+        }
+    }
+
+    void init_socket_epoll(Pool& pool) {
+        pool.epoll_fd = epoll_create1(0);
+        assert_true(pool.epoll_fd != -1, "failed to create epoll");
+
+        // monitor signal pipe for exit events
+        {
+            struct epoll_event ev{};
+            ev.events = EPOLLIN;
+            ev.data.fd = pool.signal_fd;
+            int res = epoll_ctl(pool.epoll_fd, EPOLL_CTL_ADD, pool.signal_fd, &ev);
+            assert_true(res != -1, "epoll_ctl failed to add signal fd");
+        }
+
+        // monitor listen_fd for incoming connections
+        {
+            struct epoll_event ev{};
+            ev.events = EPOLLIN;
+            ev.data.fd = pool.listen_fd;
+            int res = epoll_ctl(pool.epoll_fd, EPOLL_CTL_ADD, pool.listen_fd, &ev);
+            assert_true(res != -1, "epoll_ctl failed to add listen fd");
         }
     }
 
@@ -363,7 +417,7 @@ namespace objstore::tcp {
         // set sqe to read into pre-registered buffer
         io_uring_prep_read_fixed(
             sqe, fd,
-            pool.iovecs[buffer_idx].iov_base, BUFFER_SIZE, 0, buffer_idx
+            pool.iovecs[buffer_idx].iov_base, (unsigned)pool.buffer_size, 0, buffer_idx
         );
 
         {
@@ -415,18 +469,31 @@ namespace objstore::tcp {
         Pool& pool = *reinterpret_cast<Pool*>(req.context);
         int fd = req.id;
 
-        for (int offset = 0; offset < msg.length; offset += BUFFER_SIZE) {
-            int length = min((int)msg.length - offset, BUFFER_SIZE);
-            
-            int buffer_idx = alloc_buffer(pool);
-            if (buffer_idx < 0) {
-                // @todo buffer starvation
-                submit_close(pool, fd);
-                return;
+        if (pool.use_io_uring) {
+            for (int offset = 0; offset < (int)msg.length; offset += pool.buffer_size) {
+                int length = min((int)msg.length - offset, pool.buffer_size);
+                
+                int buffer_idx = alloc_buffer(pool);
+                if (buffer_idx < 0) {
+                    // @todo buffer starvation
+                    submit_close(pool, fd);
+                    return;
+                }
+                
+                os::memory_copy(pool.iovecs[buffer_idx].iov_base, &msg.data[offset], length);
+                submit_write(pool, fd, buffer_idx, length);
             }
-            
-            os::memory_copy(pool.iovecs[buffer_idx].iov_base, &msg.data[offset], length);
-            submit_write(pool, fd, buffer_idx, length);
+        } else {
+            // @note synchronous best-effort send for socket fallback
+            // @todo full async write buffering for high-throughput socket fallback
+            const char* data = msg.data;
+            ssize_t remaining = (ssize_t)msg.length;
+            while (remaining > 0) {
+                ssize_t sent = send(fd, data, (size_t)remaining, MSG_NOSIGNAL);
+                if (sent <= 0) break;
+                data += sent;
+                remaining -= sent;
+            }
         }
     }
 

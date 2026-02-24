@@ -4,6 +4,11 @@ module;
 #include <liburing.h>
 #include <netinet/in.h>
 #include <sys/epoll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <errno.h>
 
 export module objstore.tcp;
 
@@ -13,14 +18,7 @@ import plexdb.arena;
 using namespace plexdb;
 
 namespace objstore::tcp {
-    // @todo user/auto config
-    constexpr int QUEUE_DEPTH = 4096;
-    constexpr int BUFFER_SIZE = 4096;
-    // constexpr int NUM_BUFFERS = 8192;
-    constexpr int NUM_BUFFERS = 1000; // @todo
-    constexpr int MAX_CQE_BATCH = 256;
     export constexpr int MAX_CONNECTIONS = 10000;
-    constexpr int INITAL_ACCEPTS = min(32, MAX_CONNECTIONS);
     
     // the event type is encoded in the upper bits of user_data 
     enum EventType : U64 {
@@ -72,15 +70,22 @@ namespace objstore::tcp {
         int listen_fd;
         int epoll_fd;
         int signal_fd;
-        
+
+        // Runtime configuration, determined from sysinfo at construction
+        int buffer_size;
+        int num_buffers;
+        int queue_depth;
+        int max_cqe_batch;
+        bool use_io_uring;
+
         char* buffer_pool;
         bool buffer_pool_has_huge_pages;
-        bool buffer_in_use[NUM_BUFFERS];
+        bool* buffer_in_use;
         size_t free_buffer_idx;
         
         io_uring ring;
-        iovec iovecs[NUM_BUFFERS];
-        PoolRequest request_pool[NUM_BUFFERS];
+        iovec* iovecs;
+        PoolRequest* request_pool;
         
         MapFixedSentinel<int, PoolConnection, 2*MAX_CONNECTIONS> connections;
 
@@ -126,7 +131,9 @@ namespace objstore::tcp {
     void init_socket(Pool& pool, int port);
     void init_uring(Pool& pool);
     void init_buffers(Pool& pool);
+    void init_socket_buffers(Pool& pool);
     void init_epoll(Pool& pool);
+    void init_socket_epoll(Pool& pool);
 
     // ========================================================================
     // buffer chain management
@@ -134,6 +141,7 @@ namespace objstore::tcp {
     // @note returns true if the buffer_idx is in use
     bool append_to_buffer_chain(BufferChain& chain, int buffer_idx, char* buffer_data, int bytes_read);
     void release_chain(Pool& pool, BufferChain& chain);
+    int  alloc_buffer(Pool& pool);
 
     // ========================================================================
     // connection management
@@ -182,10 +190,10 @@ namespace objstore::tcp {
         BufferChain& chain = conn->rx_chain;
 
         {
-            assert_true(buffer_idx >= 0 && buffer_idx < NUM_BUFFERS, "read buffer idx out of range, this should never happen");
-            assert_true(bytes_read >= 0 && bytes_read <= BUFFER_SIZE, "buffer overflow in cqe, this should never happen");
+            assert_true(buffer_idx >= 0 && buffer_idx < pool.num_buffers, "read buffer idx out of range, this should never happen");
+            assert_true(bytes_read >= 0 && bytes_read <= pool.buffer_size, "buffer overflow in cqe, this should never happen");
             
-            char* buffer_data = &pool.buffer_pool[BUFFER_SIZE * buffer_idx];
+            char* buffer_data = &pool.buffer_pool[(size_t)pool.buffer_size * (size_t)buffer_idx];
             pool.buffer_in_use[buffer_idx] = append_to_buffer_chain(chain, buffer_idx, buffer_data, bytes_read);
             
             Request req{
@@ -252,7 +260,7 @@ namespace objstore::tcp {
             count++;
             
             // @note avoids starving the kernel of cqes if processing is slow 
-            if (count >= MAX_CQE_BATCH) {
+            if ((int)count >= pool.max_cqe_batch) {
                 break;
             }
         }
@@ -265,12 +273,123 @@ namespace objstore::tcp {
         }
     }
 
-    export void listen(const OnChunk auto& on_chunk_callback, const OnClose auto& on_close_callback, Pool& pool, Stats& stats, volatile bool& exit_signal) {
-        submit_multishot_accept(pool);
-        
+    // ========================================================================
+    // socket fallback listen loop (used when io_uring is unavailable)
+    // ========================================================================
+    void listen_sockets(const OnChunk auto& on_chunk_callback, const OnClose auto& on_close_callback, Pool& pool, Stats& stats, volatile bool& exit_signal) {
+        constexpr int MAX_EVENTS = 64;
+        struct epoll_event events[MAX_EVENTS];
+
         while (!exit_signal) {
-            io_uring_submit(&pool.ring);
-            drain_or_block_cqes(on_chunk_callback, on_close_callback, pool, stats, exit_signal);
+            int n = epoll_wait(pool.epoll_fd, events, MAX_EVENTS, -1);
+            if (n < 0) continue;
+
+            for (int i = 0; i < n; i++) {
+                int fd = events[i].data.fd;
+
+                if (fd == pool.signal_fd) {
+                    exit_signal = true;
+                    break;
+                }
+
+                if (fd == pool.listen_fd) {
+                    // Accept new connections
+                    while (true) {
+                        struct sockaddr_in addr{};
+                        socklen_t addr_len = sizeof(addr);
+                        int client_fd = accept(pool.listen_fd, (sockaddr*)&addr, &addr_len);
+                        if (client_fd < 0) break;
+
+                        int flags = fcntl(client_fd, F_GETFL, 0);
+                        fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+
+                        PoolConnection& conn = insert(pool.connections, client_fd);
+                        conn.fd = client_fd;
+                        conn.active = true;
+                        stats.total_connections++;
+                        stats.active_connections++;
+
+                        struct epoll_event ce{};
+                        ce.events = EPOLLIN | EPOLLET;
+                        ce.data.fd = client_fd;
+                        epoll_ctl(pool.epoll_fd, EPOLL_CTL_ADD, client_fd, &ce);
+                    }
+                    continue;
+                }
+
+                // Client data available
+                int client_fd = fd;
+                int buffer_idx = alloc_buffer(pool);
+                if (buffer_idx < 0) {
+                    // @todo log dropped connection due to buffer exhaustion
+                    epoll_ctl(pool.epoll_fd, EPOLL_CTL_DEL, client_fd, nullptr);
+                    ::close(client_fd);
+                    if (try_remove(pool.connections, client_fd))
+                        stats.active_connections--;
+                    on_close_callback(client_fd);
+                    continue;
+                }
+
+                char* buf = &pool.buffer_pool[(size_t)pool.buffer_size * (size_t)buffer_idx];
+                ssize_t bytes = recv(client_fd, buf, (size_t)pool.buffer_size, 0);
+
+                if (bytes <= 0) {
+                    pool.buffer_in_use[buffer_idx] = false;
+                    if (bytes == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+                        PoolConnection* conn2 = find(pool.connections, client_fd);
+                        if (conn2 != nullptr) release_chain(pool, conn2->rx_chain);
+                        epoll_ctl(pool.epoll_fd, EPOLL_CTL_DEL, client_fd, nullptr);
+                        ::close(client_fd);
+                        if (try_remove(pool.connections, client_fd))
+                            stats.active_connections--;
+                        on_close_callback(client_fd);
+                    }
+                    continue;
+                }
+
+                stats.total_bytes_read += (U64)bytes;
+
+                PoolConnection* conn = find(pool.connections, client_fd);
+                if (conn == nullptr) {
+                    pool.buffer_in_use[buffer_idx] = false;
+                    continue;
+                }
+
+                BufferChain& chain = conn->rx_chain;
+                pool.buffer_in_use[buffer_idx] = append_to_buffer_chain(chain, buffer_idx, buf, (int)bytes);
+
+                Request req{ .context = &pool, .id = client_fd, .chunks = &chain.chunks };
+                RequestStatus status = on_chunk_callback(req);
+
+                switch (status) {
+                    case RequestStatus::Handled: {
+                        release_chain(pool, chain);
+                    } break;
+                    case RequestStatus::Pending: {
+                        // keep reading
+                    } break;
+                    case RequestStatus::Close: {
+                        release_chain(pool, chain);
+                        epoll_ctl(pool.epoll_fd, EPOLL_CTL_DEL, client_fd, nullptr);
+                        ::close(client_fd);
+                        if (try_remove(pool.connections, client_fd))
+                            stats.active_connections--;
+                        on_close_callback(client_fd);
+                    } break;
+                }
+            }
+        }
+    }
+
+    export void listen(const OnChunk auto& on_chunk_callback, const OnClose auto& on_close_callback, Pool& pool, Stats& stats, volatile bool& exit_signal) {
+        if (pool.use_io_uring) {
+            submit_multishot_accept(pool);
+            while (!exit_signal) {
+                io_uring_submit(&pool.ring);
+                drain_or_block_cqes(on_chunk_callback, on_close_callback, pool, stats, exit_signal);
+            }
+        } else {
+            listen_sockets(on_chunk_callback, on_close_callback, pool, stats, exit_signal);
         }
     }
 
