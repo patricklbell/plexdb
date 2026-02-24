@@ -310,7 +310,7 @@ namespace objstore::tcp {
                         stats.active_connections++;
 
                         struct epoll_event ce{};
-                        ce.events = EPOLLIN | EPOLLET;
+                        ce.events = EPOLLIN;
                         ce.data.fd = client_fd;
                         epoll_ctl(pool.epoll_fd, EPOLL_CTL_ADD, client_fd, &ce);
                     }
