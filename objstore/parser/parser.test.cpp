@@ -192,7 +192,7 @@ TEST_CASE("CQL CREATE KEYSPACE statements", "[objstore.parser]") {
     }
     
     SECTION("CREATE KEYSPACE with quoted option value") {
-        auto query = "CREATE KEYSPACE ks WITH replication = '{\\'class\\': \\'SimpleStrategy\\'}';";
+        auto query = "CREATE KEYSPACE ks WITH replication = '{\\'class\\': \\'SimpleStrategy\\'}';"; 
         auto result = cql::parse(query);
         
         REQUIRE(result.has_value());
@@ -893,5 +893,151 @@ TEST_CASE("Parse INSERT with column names", "[objstore.parser]") {
         REQUIRE(type_matches_tag<InsertInto>(result->value));
         const auto& stmt = get<InsertInto>(result->value);
         REQUIRE(stmt.if_not_exists);
+    }
+}
+
+TEST_CASE("Parse SELECT with ORDER BY", "[objstore.parser]") {
+    SECTION("ORDER BY single column ascending") {
+        auto result = cql::parse("SELECT * FROM ks.users ORDER BY created_at ASC;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<SelectFrom>(result->value));
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.order_by.cap == 1);
+        REQUIRE(stmt.order_by[0].column_name == "created_at");
+        REQUIRE(stmt.order_by[0].order == SortOrder::asc);
+    }
+    
+    SECTION("ORDER BY single column descending") {
+        auto result = cql::parse("SELECT * FROM ks.users ORDER BY created_at DESC;");
+        REQUIRE(result.has_value());
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.order_by.cap == 1);
+        REQUIRE(stmt.order_by[0].order == SortOrder::desc);
+    }
+    
+    SECTION("ORDER BY default ascending") {
+        auto result = cql::parse("SELECT * FROM ks.users ORDER BY name;");
+        REQUIRE(result.has_value());
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.order_by.cap == 1);
+        REQUIRE(stmt.order_by[0].column_name == "name");
+        REQUIRE(stmt.order_by[0].order == SortOrder::asc);
+    }
+    
+    SECTION("ORDER BY with WHERE and LIMIT") {
+        auto result = cql::parse("SELECT * FROM ks.users WHERE id = 1 ORDER BY created_at DESC LIMIT 10;");
+        REQUIRE(result.has_value());
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.where.cap == 1);
+        REQUIRE(stmt.order_by.cap == 1);
+        REQUIRE(stmt.order_by[0].order == SortOrder::desc);
+        REQUIRE(stmt.limit == 10);
+    }
+}
+
+TEST_CASE("Parse SELECT with ALLOW FILTERING", "[objstore.parser]") {
+    SECTION("Basic ALLOW FILTERING") {
+        auto result = cql::parse("SELECT * FROM ks.users WHERE age = 25 ALLOW FILTERING;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<SelectFrom>(result->value));
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.allow_filtering == true);
+    }
+    
+    SECTION("ALLOW FILTERING with ORDER BY and LIMIT") {
+        auto result = cql::parse("SELECT * FROM ks.users WHERE age = 25 ORDER BY name LIMIT 100 ALLOW FILTERING;");
+        REQUIRE(result.has_value());
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.order_by.cap == 1);
+        REQUIRE(stmt.limit == 100);
+        REQUIRE(stmt.allow_filtering == true);
+    }
+}
+
+TEST_CASE("Parse SELECT with GROUP BY", "[objstore.parser]") {
+    SECTION("GROUP BY single column") {
+        auto result = cql::parse("SELECT user_id FROM ks.events GROUP BY user_id;");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<SelectFrom>(result->value));
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.group_by.cap == 1);
+        REQUIRE(stmt.group_by[0] == "user_id");
+    }
+    
+    SECTION("GROUP BY multiple columns") {
+        auto result = cql::parse("SELECT * FROM ks.events GROUP BY year, month, day;");
+        REQUIRE(result.has_value());
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.group_by.cap == 3);
+        REQUIRE(stmt.group_by[0] == "year");
+        REQUIRE(stmt.group_by[1] == "month");
+        REQUIRE(stmt.group_by[2] == "day");
+    }
+    
+    SECTION("GROUP BY with WHERE and ORDER BY") {
+        auto result = cql::parse("SELECT * FROM ks.events WHERE user_id = 1 GROUP BY event_type ORDER BY created_at DESC;");
+        REQUIRE(result.has_value());
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.where.cap == 1);
+        REQUIRE(stmt.group_by.cap == 1);
+        REQUIRE(stmt.group_by[0] == "event_type");
+        REQUIRE(stmt.order_by.cap == 1);
+        REQUIRE(stmt.order_by[0].order == SortOrder::desc);
+    }
+    
+    SECTION("GROUP BY with LIMIT and ALLOW FILTERING") {
+        auto result = cql::parse("SELECT * FROM ks.events GROUP BY user_id LIMIT 50 ALLOW FILTERING;");
+        REQUIRE(result.has_value());
+        const auto& stmt = get<SelectFrom>(result->value);
+        REQUIRE(stmt.group_by.cap == 1);
+        REQUIRE(stmt.limit == 50);
+        REQUIRE(stmt.allow_filtering == true);
+    }
+}
+
+TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[objstore.parser]") {
+    SECTION("Simple map replication") {
+        auto result = cql::parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy'};");
+        REQUIRE(result.has_value());
+        REQUIRE(type_matches_tag<CreateKeyspace>(result->value));
+        const auto& ks = get<CreateKeyspace>(result->value);
+        REQUIRE(ks.options.cap == 1);
+        REQUIRE(ks.options[0].key == "replication");
+        REQUIRE(type_matches_tag<MapLiteral>(ks.options[0].value));
+        const auto& map = get<MapLiteral>(ks.options[0].value);
+        REQUIRE(map.entries.cap == 1);
+        REQUIRE(map.entries[0].first == "class");
+        REQUIRE(get<AutoString8>(map.entries[0].second) == "SimpleStrategy");
+    }
+    
+    SECTION("Map with multiple entries") {
+        auto result = cql::parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 3};");
+        REQUIRE(result.has_value());
+        const auto& ks = get<CreateKeyspace>(result->value);
+        const auto& map = get<MapLiteral>(ks.options[0].value);
+        REQUIRE(map.entries.cap == 2);
+        REQUIRE(map.entries[0].first == "class");
+        REQUIRE(map.entries[1].first == "replication_factor");
+        REQUIRE(get<S64>(map.entries[1].second) == 3);
+    }
+    
+    SECTION("NetworkTopologyStrategy with datacenter configs") {
+        auto result = cql::parse("CREATE KEYSPACE ks WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3, 'dc2': 2};");
+        REQUIRE(result.has_value());
+        const auto& ks = get<CreateKeyspace>(result->value);
+        const auto& map = get<MapLiteral>(ks.options[0].value);
+        REQUIRE(map.entries.cap == 3);
+        REQUIRE(get<S64>(map.entries[1].second) == 3);
+        REQUIRE(get<S64>(map.entries[2].second) == 2);
+    }
+    
+    SECTION("Mix of map and scalar options") {
+        auto result = cql::parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy'} AND durable_writes = 'true';");
+        REQUIRE(result.has_value());
+        const auto& ks = get<CreateKeyspace>(result->value);
+        REQUIRE(ks.options.cap == 2);
+        REQUIRE(type_matches_tag<MapLiteral>(ks.options[0].value));
+        REQUIRE(type_matches_tag<AutoString8>(ks.options[1].value));
+        REQUIRE(get<AutoString8>(ks.options[1].value) == "true");
     }
 }

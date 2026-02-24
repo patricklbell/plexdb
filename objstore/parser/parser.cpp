@@ -333,9 +333,8 @@ namespace objstore::parser::cql {
         };
     
         // string literal
-        // @todo compliance
-        // https://cassandra.apache.org/doc/latest/cassandra/developing/cql/cql_singlefile.html#statements
-        // https://docs.datastax.com/en/cql-oss/3.3/cql/cql_reference/escape_char_r.html
+        // @note supports both backslash escapes (common in drivers) and $$ delimiters
+        // @todo add CQL '' escape support
         struct string_literal {
             static constexpr auto escaped_symbols = lexy::symbol_table<char>
                                                         .map<'\''>('\'')
@@ -522,7 +521,76 @@ namespace objstore::parser::cql {
             );
         };
 
-        // USING options (TIMESTAMP and/or TTL)
+        // ORDER BY clause
+        constexpr auto kw_order = LEXY_LIT_CI("order");
+        constexpr auto kw_by = LEXY_LIT_CI("by");
+        constexpr auto kw_asc = LEXY_LIT_CI("asc");
+        constexpr auto kw_desc = LEXY_LIT_CI("desc");
+
+        struct sort_order {
+            struct asc : lexy::transparent_production {
+                static constexpr auto rule = kw_asc;
+                static constexpr auto value = lexy::constant(SortOrder::asc);
+            };
+            struct desc : lexy::transparent_production {
+                static constexpr auto rule = kw_desc;
+                static constexpr auto value = lexy::constant(SortOrder::desc);
+            };
+
+            // @note defaults to ascending
+            static constexpr auto rule = dsl::opt(dsl::p<asc> | dsl::p<desc>);
+            static constexpr auto value = lexy::callback<SortOrder>(
+                [](lexy::nullopt) { return SortOrder::asc; },
+                [](SortOrder o) { return o; }
+            );
+        };
+
+        struct order_by_item {
+            static constexpr auto rule = [] {
+                return (dsl::member<&OrderByClause::column_name> = dsl::p<identifier>) + dsl::p<ws> +
+                       (dsl::member<&OrderByClause::order> = dsl::p<sort_order>) + dsl::p<ws>;
+            }();
+            static constexpr auto value = lexy::as_aggregate<OrderByClause>;
+        };
+
+        struct order_by_clause {
+            static constexpr auto rule = []() {
+                auto items = dsl::list(
+                    dsl::p<order_by_item>,
+                    dsl::sep(dsl::lit_c<','> >> dsl::p<ws>)
+                );
+                return dsl::opt(kw_order >> dsl::p<ws> + kw_by + dsl::p<ws> + items);
+            }();
+            static constexpr auto value = lexy::as_list<CappedArray<OrderByClause, MAX_ORDER_BY>>;
+        };
+
+        // ALLOW FILTERING clause
+        constexpr auto kw_allow = LEXY_LIT_CI("allow");
+        constexpr auto kw_filtering = LEXY_LIT_CI("filtering");
+
+        struct allow_filtering_clause {
+            static constexpr auto rule = []() {
+                auto key = kw_allow + dsl::p<ws> + kw_filtering;
+                return dsl::opt(dsl::peek(key) >> key);
+            }();
+            static constexpr auto value = lexy::callback<bool>(
+                [](lexy::nullopt) { return false; },
+                []() { return true; }
+            );
+        };
+
+        // GROUP BY clause
+        constexpr auto kw_group = LEXY_LIT_CI("group");
+
+        struct group_by_clause {
+            static constexpr auto rule = []() {
+                auto columns = dsl::list(dsl::p<identifier>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>));
+                return dsl::opt(kw_group >> dsl::p<ws> + kw_by + dsl::p<ws> + columns);
+            }();
+            static constexpr auto value = lexy::as_list<CappedArray<String8, MAX_GROUP_BY>>;
+        };
+
+        // USING TIMESTAMP
         struct using_timestamp {
             static constexpr auto rule = []() {
                 return dsl::opt(kw_using >> dsl::p<ws> + kw_timestamp + dsl::p<ws> + dsl::p<integer_literal>);
@@ -532,12 +600,80 @@ namespace objstore::parser::cql {
                 [](S64 val) { return val; }
             );
         };
+
+        // USING TTL
+        struct using_ttl {
+            static constexpr auto rule = []() {
+                return dsl::opt(kw_using >> dsl::p<ws> + kw_ttl + dsl::p<ws> + dsl::p<integer_literal>);
+            }();
+            static constexpr auto value = lexy::callback<S64>(
+                [](lexy::nullopt) { return -1; },
+                [](S64 val) { return val; }
+            );
+        };
+
+        // USING TIMESTAMP/TTL
+        struct using_options {
+            static constexpr auto rule = []() {
+                auto timestamp_opt = dsl::peek(kw_timestamp) >> kw_timestamp + dsl::p<ws> + dsl::p<integer_literal>;
+                auto ttl_opt = dsl::peek(kw_ttl) >> kw_ttl + dsl::p<ws> + dsl::p<integer_literal>;
+                auto first = timestamp_opt | ttl_opt;
+                auto second = dsl::opt(kw_and >> dsl::p<ws> + (timestamp_opt | ttl_opt));
+                return dsl::opt(kw_using >> dsl::p<ws> + first + dsl::p<ws> + second);
+            }();
+            // @note returns pair of (timestamp, ttl) - both -1 if not specified
+            static constexpr auto value = lexy::callback<Pair<S64, S64>>(
+                [](lexy::nullopt) { return Pair<S64, S64>{-1, -1}; },
+                [](S64 first) { return Pair<S64, S64>{first, -1}; },
+                [](S64 first, lexy::nullopt) { return Pair<S64, S64>{first, -1}; },
+                [](S64 first, S64 second) { return Pair<S64, S64>{first, second}; }
+            );
+        };
+
+        // Map literal for options like replication = {'class': 'SimpleStrategy'}
+        struct option_value {
+            static constexpr auto rule = dsl::p<string_literal> | dsl::p<integer_literal> | dsl::p<boolean_literal>;
+            static constexpr auto value = lexy::callback<OptionValue>(
+                [](AutoString8&& s) { return OptionValue{move(s)}; },
+                [](S64 val) { return OptionValue{val}; },
+                [](bool val) { return OptionValue{val}; }
+            );
+        };
+
+        struct map_entry {
+            static constexpr auto rule = [] {
+                auto key = dsl::p<string_literal>;
+                auto colon = dsl::lit_c<':'>;
+                auto val = dsl::p<option_value>;
+                return key + dsl::p<ws> + colon + dsl::p<ws> + val;
+            }();
+            static constexpr auto value = lexy::callback<Pair<AutoString8, OptionValue>>(
+                [](AutoString8&& k, OptionValue&& v) { return Pair<AutoString8, OptionValue>{move(k), move(v)}; }
+            );
+        };
+
+        struct map_literal {
+            static constexpr auto rule = [] {
+                auto entries = dsl::list(dsl::p<map_entry>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>));
+                return dsl::curly_bracketed(dsl::p<ws> + entries + dsl::p<ws>);
+            }();
+            static constexpr auto value = lexy::as_list<MapLiteral>;
+        };
+
+        struct keyspace_option_value {
+            static constexpr auto rule = dsl::p<map_literal> | dsl::p<integer_literal> | dsl::p<string_literal>;
+            static constexpr auto value = lexy::callback<KeyspaceOptionValue>(
+                [](MapLiteral&& m) { return KeyspaceOptionValue{move(m)}; },
+                [](S64 val) { return KeyspaceOptionValue{val}; },
+                [](AutoString8&& s) { return KeyspaceOptionValue{move(s)}; }
+            );
+        };
     
         struct keyspace_option {
             static constexpr auto rule = [] {
                 auto key = (dsl::member<&KeyspaceOption::key> = dsl::p<identifier>);
                 auto eq = dsl::lit_c<'='>;
-                auto value = (dsl::member<&KeyspaceOption::value> = (dsl::p<integer_literal> | dsl::p<string_literal>));
+                auto value = (dsl::member<&KeyspaceOption::value> = dsl::p<keyspace_option_value>);
                 
                 return key + dsl::p<ws> + eq + dsl::p<ws> + value + dsl::p<ws>;
             }();
@@ -809,7 +945,10 @@ namespace objstore::parser::cql {
                     (dsl::member<&SelectFrom::keyspace_name> = dsl::p<identifier>) + dsl::p<ws> + dsl::lit_c<'.'> + 
                     (dsl::member<&SelectFrom::table_name> = dsl::p<identifier>) + dsl::p<ws> +
                     (dsl::member<&SelectFrom::where> = dsl::p<where_clause>) + dsl::p<ws> +
-                    (dsl::member<&SelectFrom::limit> = dsl::p<limit_clause>);
+                    (dsl::member<&SelectFrom::group_by> = dsl::p<group_by_clause>) + dsl::p<ws> +
+                    (dsl::member<&SelectFrom::order_by> = dsl::p<order_by_clause>) + dsl::p<ws> +
+                    (dsl::member<&SelectFrom::limit> = dsl::p<limit_clause>) + dsl::p<ws> +
+                    (dsl::member<&SelectFrom::allow_filtering> = dsl::p<allow_filtering_clause>);
             }();
             
             static constexpr auto value = lexy::as_aggregate<SelectFrom>;

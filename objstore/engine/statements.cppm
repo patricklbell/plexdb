@@ -15,6 +15,8 @@ export namespace objstore {
     constexpr U64 MAX_WHERE_RELATIONS = 32;
     constexpr U64 MAX_ASSIGNMENTS = 64;
     constexpr U64 MAX_BATCH_STATEMENTS = 128;
+    constexpr U64 MAX_MAP_ENTRIES = 16;
+    constexpr U64 MAX_GROUP_BY = 8;
 
     // ========================================================================
     // common
@@ -48,11 +50,27 @@ export namespace objstore {
     };
 
     // ========================================================================
-    // OPTION
+    // map literal for CQL options like replication = {'class': 'SimpleStrategy'}
     // ========================================================================
+    using OptionValue = TaggedUnion<AutoString8, S64, bool>;
+
+    struct MapLiteral {
+        CappedArray<Pair<AutoString8, OptionValue>, MAX_MAP_ENTRIES> entries;
+
+        // STL-like interface for lexy
+        void push_back(Pair<AutoString8, OptionValue>&& kv) {
+            plexdb::push_back(entries, move(kv));
+        }
+    };
+
+    // ========================================================================
+    // option
+    // ========================================================================
+    using KeyspaceOptionValue = TaggedUnion<AutoString8, S64, MapLiteral>;
+
     struct KeyspaceOption {
-        String8 key;
-        TaggedUnion<AutoString8, S64> value;
+        AutoString8 key;
+        KeyspaceOptionValue value;
     };
 
     // ========================================================================
@@ -192,13 +210,27 @@ export namespace objstore {
     // ========================================================================
     // SELECT FROM
     // ========================================================================
+    enum class SortOrder : U8 {
+        asc,
+        desc
+    };
+
+    struct OrderByClause {
+        String8 column_name;
+        SortOrder order = SortOrder::asc;
+    };
+
+    constexpr U64 MAX_ORDER_BY = 8;
+
     struct SelectFrom {
         String8 keyspace_name;
         String8 table_name;
         CappedArray<String8, MAX_COLUMN_NAMES> column_names;  // empty = *
         CappedArray<WhereRelation, MAX_WHERE_RELATIONS> where;
+        CappedArray<String8, MAX_GROUP_BY> group_by;
+        CappedArray<OrderByClause, MAX_ORDER_BY> order_by;
         S64 limit = -1;  // -1 if not specified
-        // @todo ORDER BY, GROUP BY, ALLOW FILTERING
+        bool allow_filtering = false;
     };
 
     // ========================================================================
