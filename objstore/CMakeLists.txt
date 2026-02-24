@@ -80,6 +80,7 @@ target_sources(objstore_modules
             tcp/tcp.detail.cppm
             tcp/tcp.types.cppm
             server/server.cppm
+            repl/repl.cppm
 )
 
 target_link_libraries(objstore_modules
@@ -108,6 +109,7 @@ target_sources(objstore
         tcp/tcp.detail.cpp
         tcp/tcp.types.cpp
         server/server.cpp
+        repl/repl.cpp
 )
 
 target_link_libraries(objstore
