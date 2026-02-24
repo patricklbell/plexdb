@@ -21,8 +21,6 @@ endif()
 # =============================================================================
 # Third part dependencies
 # =============================================================================
-include(FindPkgConfig)
-pkg_check_modules(liburing REQUIRED IMPORTED_TARGET GLOBAL liburing>=2.0)
 
 FetchContent_Declare(llhttp
     URL "https://github.com/nodejs/llhttp/archive/refs/tags/release/v8.1.0.tar.gz"
@@ -41,7 +39,7 @@ target_include_directories(llhttp PUBLIC
 )
 
 include(FetchContent)
-FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
+FetchContent_Declare(lexy URL https://github.com/foonathan/lexy/archive/refs/tags/v2022.12.1.zip)
 FetchContent_MakeAvailable(lexy)
 
 set(LEXY_ENCODING_OF_CHAR lexy::ascii)
@@ -77,14 +75,21 @@ target_sources(objstore_modules
             engine/statements.cppm
             parser/parser.cppm
             tcp/tcp.cppm
-            server/server.cppm
 )
+
+if(OBJSTORE_BUILD_SERVER)
+    target_sources(objstore_modules
+        PUBLIC
+            FILE_SET CXX_MODULES 
+            BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
+            FILES
+                server/server.cppm
+    )
+endif()
 
 target_link_libraries(objstore_modules
     PUBLIC
         plexdb::plexdb
-    PRIVATE
-        PkgConfig::liburing
 )
 
 # Static library
@@ -104,14 +109,19 @@ target_sources(objstore
         engine/schema.cpp
         parser/parser.cpp
         tcp/tcp.cpp
-        server/server.cpp
 )
+
+if(OBJSTORE_BUILD_SERVER)
+    target_sources(objstore
+        PRIVATE
+            server/server.cpp
+    )
+endif()
 
 target_link_libraries(objstore
     PUBLIC
         plexdb::objstore_modules
     PRIVATE
-        PkgConfig::liburing
         llhttp
         foonathan::lexy::core
         foonathan::lexy::ext
@@ -154,6 +164,9 @@ if(BUILD_TESTS)
     file(GLOB_RECURSE OBJSTORE_TEST_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
     )
+    if(NOT OBJSTORE_BUILD_SERVER)
+        list(FILTER OBJSTORE_TEST_SOURCES EXCLUDE REGEX "server/")
+    endif()
     target_sources(objstore_tests PRIVATE ${OBJSTORE_TEST_SOURCES})
 
     target_link_libraries(objstore_tests

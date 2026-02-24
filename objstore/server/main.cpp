@@ -16,30 +16,21 @@ void assert_handler(const char* msg, const char* file_name, const char* function
     exit(1);
 }
 
-int signal_pipe[2];
+os::SignalPipe g_signal_pipe;
 volatile bool exit_signal = false;
 
 void signal_handler(int signal) {
     exit_signal = true;
-
-    // unblocks blocking calls
-    char dummy = 0;
-    write(signal_pipe[1], &dummy, 1);
+    os::signal_pipe_notify(g_signal_pipe);
 }
 
 int init_signal_handlers() {
-    int res = pipe(signal_pipe);
-    assert_true(res == 0, "failed to create pipe");
-    
-    struct sigaction sa{};
-    sa.sa_handler = signal_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    
-    res = sigaction(SIGUSR1, &sa, nullptr); assert_true(res == 0, "sigaction failed");
-    res = sigaction(SIGTERM, &sa, nullptr); assert_true(res == 0, "sigaction failed");
+    g_signal_pipe = os::signal_pipe_create();
 
-    return signal_pipe[0];
+    os::signal_register(SIGUSR1, signal_handler);
+    os::signal_register(SIGTERM, signal_handler);
+
+    return g_signal_pipe.read_fd;
 }
 
 int main(int argc, char* argv[]) {

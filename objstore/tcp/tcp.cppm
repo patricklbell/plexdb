@@ -1,14 +1,13 @@
 module;
 #include "macros.h"
 
-#include <liburing.h>
 #include <netinet/in.h>
-#include <sys/epoll.h>
 
 export module objstore.tcp;
 
 import plexdb.base;
 import plexdb.arena;
+import plexdb.os;
 
 using namespace plexdb;
 
@@ -70,16 +69,14 @@ namespace objstore::tcp {
 
     export struct Pool {
         int listen_fd;
-        int epoll_fd;
-        int signal_fd;
+        os::EventLoop event_loop;
         
         char* buffer_pool;
         bool buffer_pool_has_huge_pages;
         bool buffer_in_use[NUM_BUFFERS];
         size_t free_buffer_idx;
         
-        io_uring ring;
-        iovec iovecs[NUM_BUFFERS];
+        os::IoBuffer io_buffers[NUM_BUFFERS];
         PoolRequest request_pool[NUM_BUFFERS];
         
         MapFixedSentinel<int, PoolConnection, 2*MAX_CONNECTIONS> connections;
@@ -96,11 +93,8 @@ namespace objstore::tcp {
     };
 
     export enum class RequestStatus {
-        // The request has been processed completely
         Handled,
-        // The request is pending further data from the client, some data may have been consumed
         Pending,
-        // The connection has been processed and should be closed
         Close,
     };
 
@@ -124,14 +118,11 @@ namespace objstore::tcp {
     // init helpers
     // ========================================================================
     void init_socket(Pool& pool, int port);
-    void init_uring(Pool& pool);
     void init_buffers(Pool& pool);
-    void init_epoll(Pool& pool);
 
     // ========================================================================
     // buffer chain management
     // ========================================================================
-    // @note returns true if the buffer_idx is in use
     bool append_to_buffer_chain(BufferChain& chain, int buffer_idx, char* buffer_data, int bytes_read);
     void release_chain(Pool& pool, BufferChain& chain);
 
@@ -140,12 +131,11 @@ namespace objstore::tcp {
     // ========================================================================
     void submit_accept(Pool& pool);
     void submit_multishot_accept(Pool& pool);
-    void handle_accept(Pool& pool, Stats& stats, io_uring_cqe* cqe);
-    void handle_multishot_accept(Pool& pool, Stats& stats, io_uring_cqe* cqe);
+    void handle_accept(Pool& pool, Stats& stats, int result, U64 user_data);
+    void handle_multishot_accept(Pool& pool, Stats& stats, int result, U64 user_data);
     void submit_close(Pool& pool, int fd);
 
-    void handle_close(const OnClose auto& on_close_callback, Pool& pool, Stats& stats, io_uring_cqe* cqe, int fd) {
-        // close completed (or failed, but fd is closed anyway)
+    void handle_close(const OnClose auto& on_close_callback, Pool& pool, Stats& stats, int result, int fd) {
         if (try_remove(pool.connections, fd)) {
             stats.active_connections--;
         }
@@ -157,14 +147,13 @@ namespace objstore::tcp {
     // ========================================================================
     void submit_write(Pool& pool, int fd, int buffer_idx, size_t len);
     void submit_read(Pool& pool, int fd);
-    void handle_write(Pool& pool, Stats& stats, io_uring_cqe* cqe, int buffer_idx);
+    void handle_write(Pool& pool, Stats& stats, int result, int buffer_idx);
 
-    void handle_read(const OnChunk auto& on_chunk_callback, Pool& pool, Stats& stats, io_uring_cqe* cqe, int buffer_idx) {
+    void handle_read(const OnChunk auto& on_chunk_callback, Pool& pool, Stats& stats, int result, int buffer_idx) {
         PoolRequest& request = pool.request_pool[buffer_idx];
         int fd = request.fd;
         
-        // Connection closed or error
-        if (cqe->res <= 0) {
+        if (result <= 0) {
             pool.buffer_in_use[buffer_idx] = false;
             if (try_remove(pool.connections, fd))
                 stats.active_connections--;
@@ -172,11 +161,10 @@ namespace objstore::tcp {
             return;
         }
         
-        int bytes_read = cqe->res;
+        int bytes_read = result;
         stats.total_bytes_read += bytes_read;
         request.len += bytes_read;
 
-        // get the connection to access the buffer chain
         PoolConnection* conn = find(pool.connections, fd);
         assert_true(conn != nullptr, "connection not found for read, this should never happen");
         BufferChain& chain = conn->rx_chain;
@@ -215,26 +203,26 @@ namespace objstore::tcp {
     // ========================================================================
     // listen
     // ========================================================================
-    void handle_cqe(const OnChunk auto& on_chunk_callback, const OnClose auto& on_close_callback, Pool& pool, Stats& stats, io_uring_cqe* cqe) {
-        U64 user_data = (U64)io_uring_cqe_get_data(cqe);
+    void handle_event(const OnChunk auto& on_chunk_callback, const OnClose auto& on_close_callback, Pool& pool, Stats& stats, os::CompletionEvent& event) {
+        U64 user_data = event.user_data;
         EventType type = (EventType)(user_data & TYPE_MASK);
         int data = (int)(user_data & DATA_MASK);
         
         switch (type) {
             case TYPE_ACCEPT:{
-                handle_accept(pool, stats, cqe);
+                handle_accept(pool, stats, event.result, user_data);
             }break;
             case TYPE_READ:{
-                handle_read(on_chunk_callback, pool, stats, cqe, data);
+                handle_read(on_chunk_callback, pool, stats, event.result, data);
             }break;
             case TYPE_WRITE:{
-                handle_write(pool, stats, cqe, data);
+                handle_write(pool, stats, event.result, data);
             }break;
             case TYPE_CLOSE:{
-                handle_close(on_close_callback, pool, stats, cqe, data);
+                handle_close(on_close_callback, pool, stats, event.result, data);
             }break;
             case TYPE_MULTISHOT_ACCEPT:{
-                handle_multishot_accept(pool, stats, cqe);
+                handle_multishot_accept(pool, stats, event.result, user_data);
             }break;
 
             case TYPE_MASK:{}break;
@@ -242,26 +230,16 @@ namespace objstore::tcp {
         }
     }
 
-    void drain_or_block_cqes(const OnChunk auto& on_chunk_callback, const OnClose auto& on_close_callback, Pool& pool, Stats& stats, volatile bool& exit_signal) {
-        io_uring_cqe* cqe;
-        unsigned head;
-        unsigned count = 0;
-        
-        io_uring_for_each_cqe(&pool.ring, head, cqe) {
-            handle_cqe(on_chunk_callback, on_close_callback, pool, stats, cqe);
-            count++;
-            
-            // @note avoids starving the kernel of cqes if processing is slow 
-            if (count >= MAX_CQE_BATCH) {
-                break;
-            }
-        }
+    void drain_or_block(const OnChunk auto& on_chunk_callback, const OnClose auto& on_close_callback, Pool& pool, Stats& stats, volatile bool& exit_signal) {
+        os::CompletionEvent events[MAX_CQE_BATCH];
+        int count = os::event_loop_drain(pool.event_loop, events, MAX_CQE_BATCH);
         
         if (count > 0) {
-            io_uring_cq_advance(&pool.ring, count);
+            for (int i = 0; i < count; i++) {
+                handle_event(on_chunk_callback, on_close_callback, pool, stats, events[i]);
+            }
         } else {
-            struct epoll_event event;
-            epoll_wait(pool.epoll_fd, &event, 1, -1);
+            os::event_loop_wait(pool.event_loop);
         }
     }
 
@@ -269,8 +247,8 @@ namespace objstore::tcp {
         submit_multishot_accept(pool);
         
         while (!exit_signal) {
-            io_uring_submit(&pool.ring);
-            drain_or_block_cqes(on_chunk_callback, on_close_callback, pool, stats, exit_signal);
+            os::event_loop_flush(pool.event_loop);
+            drain_or_block(on_chunk_callback, on_close_callback, pool, stats, exit_signal);
         }
     }
 

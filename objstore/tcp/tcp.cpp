@@ -2,15 +2,14 @@ module;
 #include "macros.h"
 
 #include <stdlib.h>
+#include <errno.h>
 
-#include <liburing.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <fcntl.h>
-#include <sys/epoll.h>
 
 module objstore.tcp;
 
@@ -18,26 +17,21 @@ import plexdb.os;
 import plexdb.arena;
 
 namespace objstore::tcp {
-    Pool::Pool(int port, int signal_fd): free_buffer_idx(0), signal_fd(signal_fd)  {
+    Pool::Pool(int port, int signal_fd): free_buffer_idx(0)  {
         init_socket(*this, port);
-        init_uring(*this);
+        this->event_loop = os::event_loop_create(QUEUE_DEPTH, signal_fd);
         init_buffers(*this);
-        init_epoll(*this);
     }
     
     Pool::~Pool() {
-        // Release all buffer chains for active connections
         for (auto& kv : this->connections) {
             release_chain(*this, kv.second.rx_chain);
         }
         
-        int err = io_uring_unregister_buffers(&this->ring);
-        assert_true_always(err == 0, "io_uring_unregister_buffers failed");
-        io_uring_queue_exit(&this->ring);
-        // err = munmap(this->buffer_pool, BUFFER_SIZE * NUM_BUFFERS);
-        // assert_true_always(err == 0, "munmap failed");
+        os::event_loop_unregister_buffers(this->event_loop);
+        os::event_loop_destroy(this->event_loop);
         free(this->buffer_pool);
-        err = close(this->listen_fd);
+        int err = close(this->listen_fd);
         assert_true_always(err == 0, "close failed");
     }
 
@@ -93,8 +87,6 @@ namespace objstore::tcp {
     // ========================================================================
     // static helpers
     // ========================================================================
-    // finds the next free buffer in the ring
-    // @todo virtual address mapping for ring buffer
     static int alloc_buffer(Pool& pool) {
         for (int i = 0; i < NUM_BUFFERS; i++) {
             int idx = (pool.free_buffer_idx + i) % NUM_BUFFERS;
@@ -114,26 +106,21 @@ namespace objstore::tcp {
 
     // ========================================================================
     // init helpers
-    //  - initialise tcp socket, configure uring and acquire resources
     // ========================================================================
     void init_socket(Pool& pool, int port) {
         pool.listen_fd = socket(AF_INET, SOCK_STREAM, 0);
         assert_true_always(pool.listen_fd >= 0, "failed to open socket for pool");
         
-        // Socket options for performance
         int opt = 1;
         setsockopt(pool.listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
         setsockopt(pool.listen_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
         
-        // TCP optimizations
         set_tcp_socket_options(pool.listen_fd);
         
-        // Increase buffer sizes
         int bufsize = 16 * 1024 * 1024;
         setsockopt(pool.listen_fd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
         setsockopt(pool.listen_fd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
         
-        // Set non-blocking
         int flags = fcntl(pool.listen_fd, F_GETFL, 0);
         fcntl(pool.listen_fd, F_SETFL, flags | O_NONBLOCK);
         
@@ -149,47 +136,9 @@ namespace objstore::tcp {
         assert_true_always(res == 0, "failed to listen on address");
     }
     
-    void init_uring(Pool& pool) {
-        io_uring_params params{};
-        
-        // TigerBeetle-style flags
-        // @todo detect CAP
-        // params.flags = IORING_SETUP_COOP_TASKRUN |     // Cooperative scheduling
-        //                IORING_SETUP_DEFER_TASKRUN;     // Defer completion processing
-        // params.flags |= IORING_SETUP_SQPOLL;
-        
-        params.sq_thread_idle = 2000;
-        params.cq_entries = QUEUE_DEPTH * 2;
-        static_assert(has_single_bit(QUEUE_DEPTH * 2), "cq_entries must be a power of 2");
-        
-        int res = io_uring_queue_init_params(QUEUE_DEPTH, &pool.ring, &params);
-        assert_true_always(res == 0, "io_uring_queue_init_params failed");
-    }
-    
     void init_buffers(Pool& pool) {
         size_t total_size = BUFFER_SIZE * NUM_BUFFERS;
         
-        // @todo CAP_IPC_LOCK
-        // pool.buffer_pool = (char*)mmap(
-        //     NULL, total_size,
-        //     PROT_READ | PROT_WRITE,
-        //     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-        //     -1, 0
-        // );
-        
-        // if (pool.buffer_pool == MAP_FAILED) {
-        //     pool.buffer_pool = (char*)mmap(
-        //         NULL, total_size,
-        //         PROT_READ | PROT_WRITE,
-        //         MAP_PRIVATE | MAP_ANONYMOUS,
-        //         -1, 0
-        //     );
-        //     assert_true_always(pool.buffer_pool != MAP_FAILED, "mmap failed");
-        //     pool.buffer_pool_has_huge_pages = false;
-        // } else {
-        //     pool.buffer_pool_has_huge_pages = true;
-        // }
-        // madvise(pool.buffer_pool, total_size, MADV_HUGEPAGE);
         pool.buffer_pool_has_huge_pages = false;
         
         int err = posix_memalign((void**)&pool.buffer_pool, 4096, total_size);
@@ -198,82 +147,35 @@ namespace objstore::tcp {
         madvise(pool.buffer_pool, total_size, MADV_WILLNEED);
         
         for (int i = 0; i < NUM_BUFFERS; i++) {
-            pool.iovecs[i].iov_base = pool.buffer_pool + (i * BUFFER_SIZE);
-            pool.iovecs[i].iov_len = BUFFER_SIZE;
+            pool.io_buffers[i].base = pool.buffer_pool + (i * BUFFER_SIZE);
+            pool.io_buffers[i].length = BUFFER_SIZE;
         }
 
-        err = io_uring_register_buffers(&pool.ring, pool.iovecs, NUM_BUFFERS);
-        assert_true_always(err == 0, "io_uring_register_buffers failed");
-    }
-
-    void init_epoll(Pool& pool) {
-        pool.epoll_fd = epoll_create1(0);
-
-        assert_true(pool.epoll_fd != -1, "failed to create epoll");
-
-        // add the signal pipe to epoll to monitor for signal events
-        // @note relies on signal handler submitting write to signal pipe
-        {
-            struct epoll_event ev;
-            ev.events = EPOLLIN;
-            ev.data.fd = pool.signal_fd;
-            int res = epoll_ctl(pool.epoll_fd, EPOLL_CTL_ADD, pool.signal_fd, &ev);
-            assert_true(res != -1, "epoll_ctl failed to add signal fd");
-        }
-
-        // add the listen_fd to epoll to monitor for incoming connections
-        {
-            struct epoll_event ev;
-            ev.events = EPOLLIN;
-            ev.data.fd = pool.ring.ring_fd;
-            int res = epoll_ctl(pool.epoll_fd, EPOLL_CTL_ADD, pool.ring.ring_fd, &ev);
-            assert_true(res != -1, "epoll_ctl failed to add ring fd");
-        }
+        bool ok = os::event_loop_register_buffers(pool.event_loop, pool.io_buffers, NUM_BUFFERS);
+        assert_true_always(ok, "event_loop_register_buffers failed");
     }
 
     // ========================================================================
     // connection management
-    //  - submit our accept and close requests
-    //  - open new connection for accept events and read
-    //  - record closed connections  
     // ========================================================================
     void submit_accept(Pool& pool) {
-        io_uring_sqe* sqe = io_uring_get_sqe(&pool.ring);
-        if (sqe == nullptr) {
-            return;
-        }
-        
-        io_uring_prep_accept(sqe, pool.listen_fd, NULL, NULL, 0);
-        
-        {
-            U64 user_data = TYPE_ACCEPT;
-            io_uring_sqe_set_data(sqe, (void*)user_data);
-        }
+        U64 user_data = TYPE_ACCEPT;
+        os::event_loop_submit_accept(pool.event_loop, pool.listen_fd, user_data);
     }
 
     void submit_multishot_accept(Pool& pool) {
-        io_uring_sqe* sqe = io_uring_get_sqe(&pool.ring);
-        if (sqe == nullptr) {
-            return;
-        }
-        
-        io_uring_prep_multishot_accept(sqe, pool.listen_fd, NULL, NULL, 0);
-
-        {
-            U64 user_data = TYPE_MULTISHOT_ACCEPT;
-            io_uring_sqe_set_data(sqe, (void*)user_data);
-        }
+        U64 user_data = TYPE_MULTISHOT_ACCEPT;
+        os::event_loop_submit_multishot_accept(pool.event_loop, pool.listen_fd, user_data);
     }
 
     template<bool multishot>
-    static inline void handle_accept_or_multishot(Pool& pool, Stats& stats, io_uring_cqe* cqe) {
-        int client_fd = cqe->res;
+    static inline void handle_accept_or_multishot(Pool& pool, Stats& stats, int result, U64 user_data) {
+        int client_fd = result;
         
         // @note no client socket was created so connection does not need to be closed
         if (unlikely(client_fd < 0)) {
             int errno_ = -client_fd;
 
-            // retry
             if (errno_ == EAGAIN || errno_ == EINTR) {
                 if constexpr (!multishot) {
                     submit_accept(pool);
@@ -287,13 +189,11 @@ namespace objstore::tcp {
         }
 
         if constexpr (!multishot) {
-            // re-arm to accept future connections ASAP
             submit_accept(pool);
         }
         
         set_tcp_socket_options(client_fd);
         
-        // track connection
         {
             PoolConnection& connection = insert(pool.connections, client_fd);
             connection.fd = client_fd;
@@ -303,30 +203,21 @@ namespace objstore::tcp {
             stats.active_connections++;
         }
         
-        // read first packet from client
         submit_read(pool, client_fd);
     }
 
-    void handle_accept(Pool& pool, Stats& stats, io_uring_cqe* cqe) {
-        handle_accept_or_multishot<false>(pool, stats, cqe);
+    void handle_accept(Pool& pool, Stats& stats, int result, U64 user_data) {
+        handle_accept_or_multishot<false>(pool, stats, result, user_data);
     }
 
-    void handle_multishot_accept(Pool& pool, Stats& stats, io_uring_cqe* cqe) {
-        handle_accept_or_multishot<true>(pool, stats, cqe);
+    void handle_multishot_accept(Pool& pool, Stats& stats, int result, U64 user_data) {
+        handle_accept_or_multishot<true>(pool, stats, result, user_data);
     }
     
     void submit_close(Pool& pool, int fd) {
-        io_uring_sqe* sqe = io_uring_get_sqe(&pool.ring);
-        if (sqe == nullptr) {
+        U64 user_data = TYPE_CLOSE | (U64)fd;
+        if (!os::event_loop_submit_close(pool.event_loop, fd, user_data)) {
             close(fd);
-            return;
-        }
-        
-        io_uring_prep_close(sqe, fd);
-        
-        {
-            U64 user_data = TYPE_CLOSE | (U64)fd;
-            io_uring_sqe_set_data(sqe, (void*)user_data);
         }
     }
     
@@ -336,23 +227,11 @@ namespace objstore::tcp {
     void submit_read(Pool& pool, int fd) {
         int buffer_idx = alloc_buffer(pool);
 
-        // could not find a free buffer, close the connection
-        // @todo log dropped connection
         if (buffer_idx < 0) {
             submit_close(pool, fd);
             return;
         }
-        
-        io_uring_sqe* sqe = io_uring_get_sqe(&pool.ring);
 
-        // could not get new sqe, release the acquired buffer
-        if (sqe == nullptr) {
-            pool.buffer_in_use[buffer_idx] = false;
-            submit_close(pool, fd);
-            return;
-        }
-        
-        // track the request
         {
             PoolRequest& request = pool.request_pool[buffer_idx];
             request.buffer_idx = buffer_idx;
@@ -360,51 +239,37 @@ namespace objstore::tcp {
             request.len = 0;
         }
         
-        // set sqe to read into pre-registered buffer
-        io_uring_prep_read_fixed(
-            sqe, fd,
-            pool.iovecs[buffer_idx].iov_base, BUFFER_SIZE, 0, buffer_idx
-        );
-
-        {
-            U64 user_data = TYPE_READ | (U64)buffer_idx;
-            io_uring_sqe_set_data(sqe, (void*)user_data);
+        U64 user_data = TYPE_READ | (U64)buffer_idx;
+        if (!os::event_loop_submit_read(pool.event_loop, fd, pool.io_buffers[buffer_idx].base, BUFFER_SIZE, buffer_idx, user_data)) {
+            pool.buffer_in_use[buffer_idx] = false;
+            submit_close(pool, fd);
         }
     }
     
     void submit_write(Pool& pool, int fd, int buffer_idx, size_t len) {
-        io_uring_sqe* sqe = io_uring_get_sqe(&pool.ring);
-        if (sqe == nullptr) {
-            pool.buffer_in_use[buffer_idx] = false;
-            return;
-        }
-        
         PoolRequest& request = pool.request_pool[buffer_idx];
         request.buffer_idx = buffer_idx;
         request.fd = fd;
         request.len = len;
         
-        io_uring_prep_write_fixed(
-            sqe, fd, pool.iovecs[buffer_idx].iov_base,
-            len, 0, buffer_idx
-        );
-        
         U64 user_data = TYPE_WRITE | (U64)buffer_idx;
-        io_uring_sqe_set_data(sqe, (void*)user_data);
+        if (!os::event_loop_submit_write(pool.event_loop, fd, pool.io_buffers[buffer_idx].base, len, buffer_idx, user_data)) {
+            pool.buffer_in_use[buffer_idx] = false;
+        }
     }
 
-    void handle_write(Pool& pool, Stats& stats, io_uring_cqe* cqe, int buffer_idx) {
+    void handle_write(Pool& pool, Stats& stats, int result, int buffer_idx) {
         PoolRequest& request = pool.request_pool[buffer_idx];
         int fd = request.fd;
         
         pool.buffer_in_use[buffer_idx] = false;
         
-        if (cqe->res < 0) {
+        if (result < 0) {
             submit_close(pool, fd);
             return;
         }
         
-        int bytes_written = cqe->res;
+        int bytes_written = result;
         stats.total_bytes_written += bytes_written;
     }
 
@@ -420,12 +285,11 @@ namespace objstore::tcp {
             
             int buffer_idx = alloc_buffer(pool);
             if (buffer_idx < 0) {
-                // @todo buffer starvation
                 submit_close(pool, fd);
                 return;
             }
             
-            os::memory_copy(pool.iovecs[buffer_idx].iov_base, &msg.data[offset], length);
+            os::memory_copy(pool.io_buffers[buffer_idx].base, &msg.data[offset], length);
             submit_write(pool, fd, buffer_idx, length);
         }
     }

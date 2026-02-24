@@ -16,6 +16,20 @@ if(PLEXDB_IS_MAIN_PROJECT)
 endif()
 
 # =============================================================================
+# Optional dependencies
+# =============================================================================
+include(FindPkgConfig)
+if(PkgConfig_FOUND)
+    pkg_check_modules(liburing IMPORTED_TARGET GLOBAL liburing>=2.0)
+endif()
+
+if(liburing_FOUND)
+    set(PLEXDB_HAS_IO_URING ON)
+else()
+    set(PLEXDB_HAS_IO_URING OFF)
+endif()
+
+# =============================================================================
 # Library
 # =============================================================================
 # Modules
@@ -54,7 +68,9 @@ target_sources(plexdb_modules
             btree/btree.types.cppm
             os/containers.cppm
             os/core.cppm
+            os/event_loop.cppm
             os/os.cppm
+            os/signal.cppm
             os/socket.cppm
             os/sysinfo.cppm
             pager/pager.cppm
@@ -88,6 +104,8 @@ target_sources(plexdb
         btree/btree.detail.cpp
         btree/btree.node.cpp
         os/core.cpp
+        os/event_loop.cpp
+        os/signal.cpp
         os/socket.cpp
         os/sysinfo.cpp
         pager/pager.cpp
@@ -95,6 +113,12 @@ target_sources(plexdb
 )
 
 target_link_libraries(plexdb PUBLIC plexdb_modules)
+
+if(PLEXDB_HAS_IO_URING)
+    target_compile_definitions(plexdb_modules PUBLIC PLEXDB_HAS_IO_URING=1)
+    target_link_libraries(plexdb_modules PRIVATE PkgConfig::liburing)
+    target_link_libraries(plexdb PRIVATE PkgConfig::liburing)
+endif()
 
 # =============================================================================
 # Tests

@@ -4,8 +4,6 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
-#include <signal.h>
-#include <unistd.h>
 #include <vector>
 
 import plexdb.base;
@@ -24,31 +22,22 @@ namespace {
         return TCP_TEST_PORT_BASE + port_counter.fetch_add(1);
     }
 
-    struct SignalPipe {
-        int read_fd = -1;
-        int write_fd = -1;
+    struct TestSignalPipe {
+        os::SignalPipe pipe;
 
-        SignalPipe() {
-            int fds[2];
-            int res = pipe(fds);
-            if (res != 0) {
-                read_fd = -1;
-                write_fd = -1;
-            } else {
-                read_fd = fds[0];
-                write_fd = fds[1];
-            }
+        TestSignalPipe() {
+            pipe = os::signal_pipe_create();
         }
 
-        ~SignalPipe() {
-            if (read_fd >= 0) close(read_fd);
-            if (write_fd >= 0) close(write_fd);
+        ~TestSignalPipe() {
+            os::signal_pipe_destroy(pipe);
         }
 
         void signal() {
-            char c = 1;
-            [[maybe_unused]] auto res = write(write_fd, &c, 1);
+            os::signal_pipe_notify(pipe);
         }
+
+        int read_fd() { return pipe.read_fd; }
     };
 
     U64 total_chunk_bytes(const Request& req) {
@@ -72,18 +61,17 @@ namespace {
 
 TEST_CASE("pool handles signal from pipe", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestSignalPipe signal_pipe;
 
-    Pool pool(port, signal_pipe.read_fd);
+    Pool pool(port, signal_pipe.read_fd());
     
     REQUIRE(pool.listen_fd >= 0);
-    REQUIRE(pool.epoll_fd >= 0);
     REQUIRE(pool.buffer_pool != nullptr);
 }
 
 TEST_CASE("pool receives simple request", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestSignalPipe signal_pipe;
 
     std::atomic<bool> server_ready{false};
     volatile bool exit_signal = false;
@@ -91,7 +79,7 @@ TEST_CASE("pool receives simple request", "[objstore.tcp]") {
     std::atomic<bool> data_received{false};
 
     std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &received_data, &data_received]() {
-        Pool pool(port, signal_pipe.read_fd);
+        Pool pool(port, signal_pipe.read_fd());
         Stats stats;
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
@@ -139,7 +127,7 @@ TEST_CASE("pool receives simple request", "[objstore.tcp]") {
 
 TEST_CASE("pool receives large request", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestSignalPipe signal_pipe;
 
     std::atomic<bool> server_ready{false};
     volatile bool exit_signal = false;
@@ -150,7 +138,7 @@ TEST_CASE("pool receives large request", "[objstore.tcp]") {
     constexpr U64 DATA_SIZE = 32 * 1024;
 
     std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &total_received, &data_received]() {
-        Pool pool(port, signal_pipe.read_fd);
+        Pool pool(port, signal_pipe.read_fd());
         Stats stats;
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
@@ -208,7 +196,7 @@ TEST_CASE("pool receives large request", "[objstore.tcp]") {
 
 TEST_CASE("pool handles multiple sequential connections", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestSignalPipe signal_pipe;
 
     std::atomic<bool> server_ready{false};
     volatile bool exit_signal = false;
@@ -217,7 +205,7 @@ TEST_CASE("pool handles multiple sequential connections", "[objstore.tcp]") {
     constexpr int NUM_CONNECTIONS = 5;
 
     std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &connection_count]() {
-        Pool pool(port, signal_pipe.read_fd);
+        Pool pool(port, signal_pipe.read_fd());
         Stats stats;
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
@@ -264,7 +252,7 @@ TEST_CASE("pool handles multiple sequential connections", "[objstore.tcp]") {
 
 TEST_CASE("pool handles concurrent connections", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestSignalPipe signal_pipe;
 
     std::atomic<bool> server_ready{false};
     volatile bool exit_signal = false;
@@ -273,7 +261,7 @@ TEST_CASE("pool handles concurrent connections", "[objstore.tcp]") {
     constexpr int NUM_CLIENTS = 4;
 
     std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &request_count]() {
-        Pool pool(port, signal_pipe.read_fd);
+        Pool pool(port, signal_pipe.read_fd());
         Stats stats;
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
@@ -328,14 +316,14 @@ TEST_CASE("pool handles concurrent connections", "[objstore.tcp]") {
 
 TEST_CASE("pool handles client disconnect", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestSignalPipe signal_pipe;
 
     std::atomic<bool> server_ready{false};
     volatile bool exit_signal = false;
     std::atomic<int> close_count{0};
 
     std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &close_count]() {
-        Pool pool(port, signal_pipe.read_fd);
+        Pool pool(port, signal_pipe.read_fd());
         Stats stats;
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
@@ -379,7 +367,7 @@ TEST_CASE("pool handles client disconnect", "[objstore.tcp]") {
 
 TEST_CASE("pool tracks statistics correctly", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestSignalPipe signal_pipe;
 
     std::atomic<bool> server_ready{false};
     volatile bool exit_signal = false;
@@ -387,7 +375,7 @@ TEST_CASE("pool tracks statistics correctly", "[objstore.tcp]") {
     std::atomic<bool> done{false};
 
     std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &final_stats, &done]() {
-        Pool pool(port, signal_pipe.read_fd);
+        Pool pool(port, signal_pipe.read_fd());
         Stats stats;
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
@@ -433,7 +421,7 @@ TEST_CASE("pool tracks statistics correctly", "[objstore.tcp]") {
 
 TEST_CASE("binary data with null bytes", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestSignalPipe signal_pipe;
 
     std::atomic<bool> server_ready{false};
     volatile bool exit_signal = false;
@@ -441,7 +429,7 @@ TEST_CASE("binary data with null bytes", "[objstore.tcp]") {
     std::atomic<bool> data_received{false};
 
     std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &received_data, &data_received]() {
-        Pool pool(port, signal_pipe.read_fd);
+        Pool pool(port, signal_pipe.read_fd());
         Stats stats;
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
@@ -496,7 +484,7 @@ TEST_CASE("binary data with null bytes", "[objstore.tcp]") {
 
 TEST_CASE("pending response accumulates data", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestSignalPipe signal_pipe;
 
     std::atomic<bool> server_ready{false};
     volatile bool exit_signal = false;
@@ -507,7 +495,7 @@ TEST_CASE("pending response accumulates data", "[objstore.tcp]") {
     constexpr U64 TARGET_SIZE = 20;
 
     std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &chunk_count, &final_size, &done]() {
-        Pool pool(port, signal_pipe.read_fd);
+        Pool pool(port, signal_pipe.read_fd());
         Stats stats;
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
@@ -565,7 +553,7 @@ TEST_CASE("pending response accumulates data", "[objstore.tcp]") {
 
 TEST_CASE("close response terminates connection", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestSignalPipe signal_pipe;
 
     std::atomic<bool> server_ready{false};
     volatile bool exit_signal = false;
@@ -573,7 +561,7 @@ TEST_CASE("close response terminates connection", "[objstore.tcp]") {
     std::atomic<int> close_count{0};
 
     std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &request_count, &close_count]() {
-        Pool pool(port, signal_pipe.read_fd);
+        Pool pool(port, signal_pipe.read_fd());
         Stats stats;
 
         auto on_chunk = [&](Request& req) -> RequestStatus {

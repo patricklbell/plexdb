@@ -4,3 +4,5 @@ export import plexdb.os.core;
 export import plexdb.os.containers;
 export import plexdb.os.socket;
 export import plexdb.os.sysinfo;
+export import plexdb.os.signal;
+export import plexdb.os.event_loop;
