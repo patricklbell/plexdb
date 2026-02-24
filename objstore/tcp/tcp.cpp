@@ -47,7 +47,12 @@ namespace objstore::tcp {
         constexpr int DEFAULT_BUFFERS = 1000;
         if (use_io_uring && sysinfo->mlock_limit > 0 && sysinfo->mlock_limit != MAX_U64) {
             num_buffers = (int)min((U64)MAX_BUFFERS, sysinfo->mlock_limit / (U64)buffer_size);
-            num_buffers = max(num_buffers, MIN_BUFFERS);
+            // @note if the locked-memory budget cannot fit the minimum useful number of
+            // io_uring registered buffers, skip io_uring and use the socket fallback instead
+            if (num_buffers < MIN_BUFFERS) {
+                use_io_uring = false;
+                num_buffers  = DEFAULT_BUFFERS;
+            }
         } else {
             num_buffers = DEFAULT_BUFFERS;
         }
@@ -59,9 +64,18 @@ namespace objstore::tcp {
 
         init_socket(*this, port);
         if (use_io_uring) {
-            init_uring(*this);
-            init_buffers(*this);
-            init_epoll(*this);
+            // @note fall back to sockets if io_uring init or buffer registration fails at runtime
+            // (e.g., restricted capabilities or insufficient locked-memory budget in CI/containers)
+            bool uring_ok   = init_uring(*this);
+            bool buffers_ok = uring_ok ? init_buffers(*this) : false;
+            if (buffers_ok) {
+                init_epoll(*this);
+            } else {
+                if (uring_ok) io_uring_queue_exit(&this->ring);
+                use_io_uring = false;
+                init_socket_buffers(*this);
+                init_socket_epoll(*this);
+            }
         } else {
             init_socket_buffers(*this);
             init_socket_epoll(*this);
@@ -197,7 +211,7 @@ namespace objstore::tcp {
         assert_true_always(res == 0, "failed to listen on address");
     }
     
-    void init_uring(Pool& pool) {
+    bool init_uring(Pool& pool) {
         io_uring_params params{};
         
         // TigerBeetle-style flags
@@ -211,7 +225,7 @@ namespace objstore::tcp {
         assert_true_always(has_single_bit((U64)params.cq_entries), "cq_entries must be a power of 2");
         
         int res = io_uring_queue_init_params(pool.queue_depth, &pool.ring, &params);
-        assert_true_always(res == 0, "io_uring_queue_init_params failed");
+        return res == 0;
     }
     
     // allocates buffer_pool and sets up iovecs to point into it
@@ -226,11 +240,17 @@ namespace objstore::tcp {
         }
     }
 
-    void init_buffers(Pool& pool) {
+    bool init_buffers(Pool& pool) {
         alloc_buffer_pool(pool);
         madvise(pool.buffer_pool, (size_t)pool.buffer_size * (size_t)pool.num_buffers, MADV_WILLNEED);
         int err = io_uring_register_buffers(&pool.ring, pool.iovecs, (unsigned)pool.num_buffers);
-        assert_true_always(err == 0, "io_uring_register_buffers failed");
+        if (err != 0) {
+            free(pool.buffer_pool);
+            pool.buffer_pool = nullptr;
+            // @note pool.iovecs is re-populated by the alloc_buffer_pool call in init_socket_buffers
+            return false;
+        }
+        return true;
     }
 
     void init_socket_buffers(Pool& pool) {

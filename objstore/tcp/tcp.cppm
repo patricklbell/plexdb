@@ -129,8 +129,9 @@ namespace objstore::tcp {
     // init helpers
     // ========================================================================
     void init_socket(Pool& pool, int port);
-    void init_uring(Pool& pool);
-    void init_buffers(Pool& pool);
+    // @note returns false if io_uring could not be initialised; caller should fall back to sockets
+    bool init_uring(Pool& pool);
+    bool init_buffers(Pool& pool);
     void init_socket_buffers(Pool& pool);
     void init_epoll(Pool& pool);
     void init_socket_epoll(Pool& pool);
