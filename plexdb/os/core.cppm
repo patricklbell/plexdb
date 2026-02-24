@@ -10,8 +10,8 @@ export namespace plexdb::os {
         U64 u64[1];
         U32 u32[2];
     };
-    constexpr inline Handle zero_handle() { return {.u64 = {0} }; }
-    constexpr inline bool is_zero_handle(Handle h) { return h.u64[0] == 0; }
+    constexpr inline Handle zero_handle() { return {.u64 = {~0_u64} }; }
+    constexpr inline bool is_zero_handle(Handle h) { return h.u64[0] == ~0_u64; }
 
     // ========================================================================
     // memory

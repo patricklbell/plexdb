@@ -47,7 +47,7 @@ int main(int argc, char* argv[]) {
     {
         os::File pid_file{os::file_open(pid_file_path)};
 
-        AutoString8 pid_str = to_str(getpid());
+        AutoString8 pid_str = to_str(os::get_process_info()->pid);
         os::file_write(pid_file, (Rng1U64){0,pid_str.length}, pid_str.c_str);
     }
 
