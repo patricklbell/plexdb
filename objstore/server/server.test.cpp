@@ -215,6 +215,14 @@ TEST_CASE("Server new CQL statements", "[objstore.server]") {
         // TRUNCATE
         response = send_cql(client, "TRUNCATE TABLE test_ks.users;");
         REQUIRE(response.status_code == 200);
+
+        // DROP TABLE
+        response = send_cql(client, "DROP TABLE test_ks.users;");
+        REQUIRE(response.status_code == 200);
+
+        // DROP KEYSPACE
+        response = send_cql(client, "DROP KEYSPACE test_ks;");
+        REQUIRE(response.status_code == 200);
     }
 
     exit_signal = true;
