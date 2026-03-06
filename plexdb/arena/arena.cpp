@@ -12,7 +12,7 @@ namespace plexdb::arena {
         
         // extract arena header & fill
         ArenaPage* arena = reinterpret_cast<ArenaPage*>(base);
-        *arena = (ArenaPage) {
+        *arena = {
             .prev = nullptr,
             .current = arena,
             .free_stack = nullptr,

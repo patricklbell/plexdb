@@ -32,7 +32,7 @@ int main(int argc, char* argv[]) {
         os::File pid_file{os::file_open(pid_file_path)};
 
         AutoString8 pid_str = to_str(os::get_process_info()->pid);
-        os::file_write(pid_file, (Rng1U64){0,pid_str.length}, pid_str.c_str);
+        os::file_write(pid_file, {.start=0,.end=pid_str.length}, pid_str.c_str);
     }
 
     set_assert_handler(assert_handler);

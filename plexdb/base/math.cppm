@@ -9,12 +9,9 @@ export namespace plexdb {
     // ========================================================================
     // ranges
     // ========================================================================
-    union Rng1U64 {
-        struct {
-            U64 start;
-            U64 end;
-        };
-        U64 u64[2];
+    struct Rng1U64 {
+        U64 start;
+        U64 end;
     };
     static_assert(sizeof(Rng1U64) == sizeof(U64)*2);
 
