@@ -3,6 +3,7 @@
 - Prefer structs of POD. Only use classes for lifetime and resource management. For example, the `os::File` which wraps the file `os::Handle` and releases the handle. Only make members private if strictly necessary.
 - Do not define class methods except for compatibility with libaries. Use functions instead.
 - The `os` library should wrap os calls and should be very simple.
+- Prefer single-expression idioms over ternaries or if-else. E.g. saturating subtract: `max(x, y) - y` instead of `(x > y) ? (x - y) : 0`.
 
 ## Commenting style
 - Minimal comments. Do not explain what is obvious from the code.

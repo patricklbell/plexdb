@@ -31,32 +31,40 @@ namespace objstore::parser {
             String8 body;
         };
 
+        export struct Response {
+            U16 status_code;
+            String8 status_message;
+            Array<Header, MAX_HEADERS> headers;
+            U64 header_count = 0;
+            String8 body;
+        };
+
         // ====================================================================
-        // incremental parser
+        // request parser
         // ====================================================================
-        struct ParserState;
+        struct RequestParserState;
 
-        ParserState* parser_create();
-        void parser_reset(ParserState* state);
-        void parser_destroy(ParserState* state);
-        void parser_execute(ParserState* state, const char* data, U64 length);
-        const Request& parser_get_request(const ParserState* state);
-        bool parser_is_complete(const ParserState* state);
-        bool parser_has_error(const ParserState* state);
+        RequestParserState* request_parser_create();
+        void request_parser_reset(RequestParserState* state);
+        void request_parser_destroy(RequestParserState* state);
+        void request_parser_execute(RequestParserState* state, const char* data, U64 length);
+        const Request& request_parser_get_request(const RequestParserState* state);
+        bool request_parser_is_complete(const RequestParserState* state);
+        bool request_parser_has_error(const RequestParserState* state);
 
-        export struct Parser {
-            ParserState* state;
+        export struct RequestParser {
+            RequestParserState* state;
 
-            Parser() : state(parser_create()) {}
-            ~Parser() { if (state) parser_destroy(state); }
+            RequestParser() : state(request_parser_create()) {}
+            ~RequestParser() { if (state) request_parser_destroy(state); }
 
-            Parser(const Parser&) = delete;
-            Parser& operator=(const Parser&) = delete;
+            RequestParser(const RequestParser&) = delete;
+            RequestParser& operator=(const RequestParser&) = delete;
 
-            Parser(Parser&& other) noexcept : state(other.state) { other.state = nullptr; }
-            Parser& operator=(Parser&& other) noexcept {
+            RequestParser(RequestParser&& other) noexcept : state(other.state) { other.state = nullptr; }
+            RequestParser& operator=(RequestParser&& other) noexcept {
                 if (this != &other) {
-                    if (state) parser_destroy(state);
+                    if (state) request_parser_destroy(state);
                     state = other.state;
                     other.state = nullptr;
                 }
@@ -64,11 +72,50 @@ namespace objstore::parser {
             }
         };
 
-        export inline void reset(Parser& parser) { parser_reset(parser.state); }
-        export inline void execute(Parser& parser, const char* data, U64 length) { parser_execute(parser.state, data, length); }
-        export inline const Request& get_request(const Parser& parser) { return parser_get_request(parser.state); }
-        export inline bool is_complete(const Parser& parser) { return parser_is_complete(parser.state); }
-        export inline bool has_error(const Parser& parser) { return parser_has_error(parser.state); }
+        export inline void reset(RequestParser& parser) { request_parser_reset(parser.state); }
+        export inline void execute(RequestParser& parser, const char* data, U64 length) { request_parser_execute(parser.state, data, length); }
+        export inline const Request& get_request(const RequestParser& parser) { return request_parser_get_request(parser.state); }
+        export inline bool is_complete(const RequestParser& parser) { return request_parser_is_complete(parser.state); }
+        export inline bool has_error(const RequestParser& parser) { return request_parser_has_error(parser.state); }
+
+        // ====================================================================
+        // response parser
+        // ====================================================================
+        struct ResponseParserState;
+
+        ResponseParserState* response_parser_create();
+        void response_parser_reset(ResponseParserState* state);
+        void response_parser_destroy(ResponseParserState* state);
+        void response_parser_execute(ResponseParserState* state, const char* data, U64 length);
+        const Response& response_parser_get_response(const ResponseParserState* state);
+        bool response_parser_is_complete(const ResponseParserState* state);
+        bool response_parser_has_error(const ResponseParserState* state);
+
+        export struct ResponseParser {
+            ResponseParserState* state;
+
+            ResponseParser() : state(response_parser_create()) {}
+            ~ResponseParser() { if (state) response_parser_destroy(state); }
+
+            ResponseParser(const ResponseParser&) = delete;
+            ResponseParser& operator=(const ResponseParser&) = delete;
+
+            ResponseParser(ResponseParser&& other) noexcept : state(other.state) { other.state = nullptr; }
+            ResponseParser& operator=(ResponseParser&& other) noexcept {
+                if (this != &other) {
+                    if (state) response_parser_destroy(state);
+                    state = other.state;
+                    other.state = nullptr;
+                }
+                return *this;
+            }
+        };
+
+        export inline void reset(ResponseParser& parser) { response_parser_reset(parser.state); }
+        export inline void execute(ResponseParser& parser, const char* data, U64 length) { response_parser_execute(parser.state, data, length); }
+        export inline const Response& get_response(const ResponseParser& parser) { return response_parser_get_response(parser.state); }
+        export inline bool is_complete(const ResponseParser& parser) { return response_parser_is_complete(parser.state); }
+        export inline bool has_error(const ResponseParser& parser) { return response_parser_has_error(parser.state); }
     }
 
     // ========================================================================

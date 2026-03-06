@@ -1,7 +1,11 @@
+module;
+#include <inttypes.h>
+
 export module objstore.server;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.tagged_union;
 
 import objstore.tcp;
 import objstore.parser;
@@ -11,6 +15,84 @@ using namespace plexdb;
 using namespace objstore;
 
 namespace objstore::server {
+    // ========================================================================
+    // http
+    // ========================================================================
+    int get_http_status_for_execution_status(engine::ExecutionStatus status);
+    const char* get_reason_for_status(int code);
+    const char* get_connection_header(bool close);
+
+    // ========================================================================
+    // buffering
+    // ========================================================================
+
+    // @todo async
+    // struct HttpChunkedEncodingMetadata {
+    //     U64 buffer_size;
+    //     U32 prefix_max_byte_count;
+    //     String8 suffix;
+    // };
+    
+    // HttpChunkedEncodingMetadata create_http_chunked_encoding(U64 buffer_size);
+
+    // // @note asusmes buffer is correctly aligned and sized for http chunk
+    // // @note requires small chunk
+    // struct HttpChunkedEncodingFlushFunctor {
+    //     tcp::Connection* connection;
+    //     tcp::Chunk* chunk;
+
+    //     HttpChunkedEncodingMetadata* meta;
+    //     tcp::AsyncWriteFunctor* write;
+
+    //     HttpChunkedEncodingFlushFunctor(tcp::Connection* in_connection, tcp::Chunk* in_chunk, HttpChunkedEncodingMetadata* in_meta, tcp::AsyncWriteFunctor* in_write);
+    //     void operator ()(const char* data, U64 length, bool is_final);
+    // };
+
+    // inline BufferedString8<HttpChunkedEncodingFlushFunctor> make_http_chunked_encoding_buffered_str8(tcp::Connection* in_connection, tcp::Chunk* in_chunk, HttpChunkedEncodingMetadata* in_meta, tcp::AsyncWriteFunctor* in_write) {
+    //     // @note relies on guaranteed copy elision
+    //     return BufferedString8(
+    //         TArrayView<char>(
+    //             reinterpret_cast<char*>(in_chunk->data.ptr) + in_meta->prefix_max_byte_count,
+    //             in_chunk->data.length - (in_meta->prefix_max_byte_count + in_meta->suffix.length)
+    //         ),
+    //         HttpChunkedEncodingFlushFunctor(in_connection, in_chunk, in_meta, in_write)
+    //     );
+    // }
+
+    inline auto make_http_fixed_buffered_str8(tcp::Connection* in_connection, tcp::Chunk* in_chunk, tcp::AsyncWriteFunctor* in_write, int code, bool close) {
+        assert_true(in_chunk->buffer_idx >= 0, "cannot use large chunk for buffering");
+
+        U64 chunk_size = in_connection->chunk_chain.chunk_size;
+
+        const char* header_fmt = ""
+            "HTTP/1.1 %d %s\r\n"
+            "Content-Type: text/plain\r\n"
+            "Content-Length: %20" PRIu64 "\r\n"
+            "%s"
+            "\r\n";
+
+        U64 header_byte_count = fmt_length(header_fmt, code, get_reason_for_status(code), in_chunk->data.length, get_connection_header(close)); 
+        assert_true_not_implemented(chunk_size > header_byte_count, "not enough space in buffer for http header");
+
+        return BufferedString8(
+            TArrayView<char>(
+                reinterpret_cast<char*>(in_chunk->data.ptr + header_byte_count),
+                chunk_size - header_byte_count
+            ),
+            [=](const char* data, U64 length, bool is_final) {
+                assert_true_not_implemented(is_final, "multiple async reponses from fixed buffer");
+
+                String8 header_view(in_chunk->data.ptr, header_byte_count);
+                fmt_raw(header_view, header_fmt, code, get_reason_for_status(code), length, get_connection_header(close));
+
+                (*in_write)(in_connection, in_chunk->buffer_idx, 0, header_byte_count + length);
+            }
+        );
+    }
+
+    // ========================================================================
+    // json
+    // ========================================================================
     template<BufferedString8Flush F>
     void append_json_text(BufferedString8<F>& str, String8 text) {
         append(str, '"');
@@ -60,8 +142,9 @@ namespace objstore::server {
     }
 
     // @note ignores row kind because this needs to be streamed
+    // @todo avoid chunking the small json responses which will fit in the buffer
     template<BufferedString8Flush F>
-    void append_json_execution_result(BufferedString8<F>& str, engine::ExecutionResult& exec_result, U64 row_count) {
+    void append_json_execution_result(BufferedString8<F>& str, engine::ExecutionResult& exec_result) {
         switch (exec_result.kind) {
             case engine::ResultKind::Void:{
                 append(str, "{\"status\":");
@@ -71,14 +154,6 @@ namespace objstore::server {
                     append_json_text(str, exec_result.message);
                 }
                 append(str, "}");
-            }break;
-            case engine::ResultKind::Rows:{
-                if (row_count == 0) {
-                    append(str, "{\"status\":\"SUCCESS\",\"kind\":\"ROWS\",\"rows\":[]}");
-                } else {
-                    append(str, "]}");
-                }
-                return;
             }break;
             case engine::ResultKind::SchemaChange:{
                 append(str, "{\"status\":");
@@ -93,30 +168,30 @@ namespace objstore::server {
                 }
                 append(str, "}");
             }break;
+            case engine::ResultKind::Rows:{
+                assert_true(false, "unexpected execution result");
+            }break;
         }
-        
     }
-
-    int get_http_status_for_execution_status(engine::ExecutionStatus status);
 }
 
 export namespace objstore::server {
     template<typename F>
     concept OnReady = requires(F f) { f(); };
 
-    void run(int port, int signal_fd, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready) {
-        tcp::Pool pool{port, signal_fd};
-        on_ready();
-        
-        MapFixedSentinel<int, parser::http::Parser, 2*tcp::MAX_CONNECTIONS> req_id_to_http_parser;
-        const auto on_chunk = [&engine, &req_id_to_http_parser](tcp::Request& req) -> tcp::RequestStatus {
-            parser::http::Parser& http_parser = find_or_insert(req_id_to_http_parser, req.id);
+    void run(int port, os::Notifier& signal_pipe, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback) {
+        // @todo not compile time
+        MapFixedSentinel<os::Handle, parser::http::RequestParser, 2*tcp::MAX_CONCURRENT_CONNECTIONS> client_to_http_parser;
+
+        const auto on_chunk = [&engine, &client_to_http_parser](const tcp::Request& req) -> tcp::RequestStatus {
+            parser::http::RequestParser& http_parser = find_or_insert(client_to_http_parser, req.connection->client);
             
-            tcp::Chunk& chunk = *back(*req.chunks);
-            execute(http_parser, chunk.data.ptr, chunk.data.length);
+            tcp::Chunk& chunk = *front(req.connection->chunk_chain.chunks);
+            parser::http::execute(http_parser, reinterpret_cast<char*>(chunk.data.ptr), chunk.data.length);
             
             if (parser::http::has_error(http_parser)) {
-                tcp::return_http_fail(req, 400, "Bad request: Malformed HTTP", true);
+                auto response_bstr = make_http_fixed_buffered_str8(req.connection, &chunk, req.write, 400, /*close=*/true);
+                append(response_bstr, "Bad request: Malformed HTTP");
                 reset(http_parser);
                 return tcp::RequestStatus::Close;
             }
@@ -128,62 +203,69 @@ export namespace objstore::server {
 
             auto cql_opt = parser::cql::parse(http_req.body);
             if (!cql_opt) {
-                tcp::return_http_fail(req, 400, "Bad request: Failed to parse CQL");
+                auto response_bstr = make_http_fixed_buffered_str8(req.connection, &chunk, req.write, 400, /*close=*/false);
+                append(response_bstr, "Bad request: Failed to parse CQL");
                 reset(http_parser);
                 return tcp::RequestStatus::Handled;
             }
+            
+            engine::ExecutionResult exec_result = engine::execute(engine, *cql_opt);
+            
+            if (exec_result.rows) {
+                auto response_bstr = make_http_fixed_buffered_str8(req.connection, &chunk, req.write, 200, /*close=*/false);
 
-            // @todo make this write to the buffer directly
-            constexpr U64 RESPONSE_BUFFER_SIZE = 64 * 1_kb;
-            char response_buffer[RESPONSE_BUFFER_SIZE + 1];
-            const auto flush = [](const char*, U64) {
-                // @todo chunked http response
-                assert_not_implemented("large reponses that require flushing are not implemented");
-            };
+                U64 row_idx = 0;
+                append(response_bstr, "{\"status\":\"SUCCESS\",\"kind\":\"ROWS\",\"rows\":[");
+                for (auto& row = exec_result.rows->begin(); row != exec_result.rows->end(); ++row) {
+                    if (row_idx != 0)
+                        append(response_bstr, ",");
+                    
+                    U64 col_idx = 0;
+                    U64 col_count = column_count(columns_begin(row));
+                    append(response_bstr, "[");
+                    for (auto col = columns_begin(row); col != columns_end(row); ++col) {
+                        if (col_idx != 0)
+                            append(response_bstr, ',');
 
-            BufferedString8 reponse{TArrayView<char>{response_buffer, RESPONSE_BUFFER_SIZE}, flush};
-
-            bool row_count = 0;
-            const auto on_value = [&reponse,&row_count](const schema::Table& tbl, const schema::Column& col, U64 col_count, U64 row_idx, U64 col_idx, const dtype::ReadValue& value) {
-                if (col_idx == 0) {
-                    append(reponse, (row_idx == 0) ? "{\"status\":\"SUCCESS\",\"kind\":\"ROWS\",\"rows\":[" : ",");
+                        append_json_dtype_value(response_bstr, read_value(col), column(col).dtype);
+                        ++col_idx;
+                    }
+                    append(response_bstr, ']');
+                    ++row_idx;
                 }
-
-                append(reponse, (col_idx == 0) ? '[' : ',');
-                append_json_dtype_value(reponse, value, col.dtype);
-                if (col_idx == col_count - 1) {
-                    append(reponse, ']');
-                }
-
-                row_count = row_idx + 1;
-            };
-
-            engine::ExecutionResult exec_result = engine::execute(engine, *cql_opt, on_value);
-
-            append_json_execution_result(reponse, exec_result, row_count);
-
-            int http_status = get_http_status_for_execution_status(exec_result.status);
-
-            // @todo flushing
-            response_buffer[reponse.length] = '\0';
-            String8 body{response_buffer, reponse.length};
-
-            if (http_status / 100 == 2) {
-                tcp::return_http_success(req, body);
+                append(response_bstr, "]}");
             } else {
-                tcp::return_http_fail(req, http_status, body);
+                U64 code = get_http_status_for_execution_status(exec_result.status);
+                auto response_bstr = make_http_fixed_buffered_str8(req.connection, &chunk, req.write, code, /*close=*/false);
+                append_json_execution_result(response_bstr, exec_result);
             }
             
             reset(http_parser);
             return tcp::RequestStatus::Handled;
         };
 
-        const auto on_close = [&req_id_to_http_parser](int req_id) {
-            try_remove(req_id_to_http_parser, req_id);
+        const auto on_open = [](tcp::Connection*) {};
+
+        const auto on_close = [&client_to_http_parser](tcp::Connection* connection) {
+            if (connection != nullptr) {
+                try_remove(client_to_http_parser, connection->client);
+            }
         };
 
-        tcp::Stats stats{};
-
-        tcp::listen(on_chunk, on_close, pool, stats, should_exit);
+        {
+            os::Socket socket{os::socket_open()};
+            assert_true(!os::is_zero_handle(socket), "failed to open server socket");
+            assert_true(os::socket_set_option(socket, os::SocketOption::Reuse, true), "failed to set reuse on server socket");
+            assert_true(os::socket_bind(socket, static_cast<U16>(port)), "failed to bind server socket");
+            assert_true(os::socket_listen(socket, 128), "failed to listen on server socket");
+    
+            on_ready_callback();
+    
+            tcp::listen(
+                socket,
+                on_chunk, on_open, on_close,
+                signal_pipe, should_exit
+            );
+        }
     }
 }

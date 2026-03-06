@@ -28,23 +28,22 @@ TEST_CASE("Socket simple client-server exchange", "[plexdb.os.socket]") {
     AutoString8 received_data;
     
     std::thread server_thread([port, &server_ready, &server_done, &received_data]() {
-        Socket listen_sock{socket_create_tcp()};
-        socket_set_option(listen_sock, SocketOption::ReuseAddress, true);
+        Socket listen_sock{socket_open()};
+        socket_set_option(listen_sock, SocketOption::Reuse, true);
         socket_bind(listen_sock, (U16)port);
         socket_listen(listen_sock, 1);
         socket_set_timeout(listen_sock, 2000);
         
         server_ready = true;
         
-        Handle client_fd = socket_accept(listen_sock);
-        if (socket_valid(client_fd)) {
-            Socket client{client_fd};
+        Socket client{socket_accept(listen_sock)};
+        if (client) {
             socket_set_timeout(client, 1000);
             
             char buffer[256];
             auto res = socket_receive(client, buffer, sizeof(buffer) - 1);
-            if (res.bytes > 0) {
-                buffer[res.bytes] = '\0';
+            if (res.byte_count > 0) {
+                buffer[res.byte_count] = '\0';
                 received_data = AutoString8{buffer};
                 
                 String8 response = "PONG";
@@ -58,7 +57,7 @@ TEST_CASE("Socket simple client-server exchange", "[plexdb.os.socket]") {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
-    Socket client{socket_create_tcp()};
+    Socket client{socket_open()};
     socket_set_timeout(client, 1000);
     REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
     
@@ -68,10 +67,10 @@ TEST_CASE("Socket simple client-server exchange", "[plexdb.os.socket]") {
     
     char buffer[256];
     auto recv_res = socket_receive(client, buffer, sizeof(buffer) - 1);
-    REQUIRE(recv_res.bytes > 0);
-    buffer[recv_res.bytes] = '\0';
+    REQUIRE(recv_res.byte_count > 0);
+    buffer[recv_res.byte_count] = '\0';
     
-    REQUIRE(String8{buffer, (U64)recv_res.bytes} == "PONG");
+    REQUIRE(String8{buffer, (U64)recv_res.byte_count} == "PONG");
     
     server_thread.join();
     REQUIRE(received_data == "PING");
@@ -82,17 +81,16 @@ TEST_CASE("Socket recv timeout", "[plexdb.os.socket]") {
     
     std::atomic<bool> server_ready{false};
     std::thread server_thread([port, &server_ready]() {
-        Socket listen_sock{socket_create_tcp()};
-        socket_set_option(listen_sock, SocketOption::ReuseAddress, true);
+        Socket listen_sock{socket_open()};
+        socket_set_option(listen_sock, SocketOption::Reuse, true);
         socket_bind(listen_sock, (U16)port);
         socket_listen(listen_sock, 1);
         socket_set_timeout(listen_sock, 3000);
         
         server_ready = true;
         
-        Handle client_fd = socket_accept(listen_sock);
-        if (socket_valid(client_fd)) {
-            Socket client{client_fd};
+        Socket client{socket_accept(listen_sock)};
+        if (client) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1500));
         }
     });
@@ -101,7 +99,7 @@ TEST_CASE("Socket recv timeout", "[plexdb.os.socket]") {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
-    Socket client{socket_create_tcp()};
+    Socket client{socket_open()};
     socket_set_timeout(client, 500);
     REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
     
@@ -110,7 +108,7 @@ TEST_CASE("Socket recv timeout", "[plexdb.os.socket]") {
     auto recv_res = socket_receive(client, buffer, sizeof(buffer));
     auto elapsed = std::chrono::steady_clock::now() - start;
     
-    REQUIRE(recv_res.bytes <= 0);
+    REQUIRE(recv_res.byte_count <= 0);
     REQUIRE(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() < 2000);
     
     server_thread.join();
@@ -123,15 +121,15 @@ TEST_CASE("Socket multiple rapid connections", "[plexdb.os.socket]") {
     std::atomic<int> connections_handled{0};
     
     std::thread server_thread([port, &server_running, &connections_handled]() {
-        Socket listen_sock{socket_create_tcp()};
-        socket_set_option(listen_sock, SocketOption::ReuseAddress, true);
+        Socket listen_sock{socket_open()};
+        socket_set_option(listen_sock, SocketOption::Reuse, true);
         socket_bind(listen_sock, (U16)port);
         socket_listen(listen_sock, 32);
-        socket_set_option(listen_sock, SocketOption::Nonblocking, true);
+        socket_set_option(listen_sock, SocketOption::NonBlocking, true);
         
         while (server_running) {
             Handle client_fd = socket_accept(listen_sock);
-            if (socket_valid(client_fd)) {
+            if (!is_zero_handle(client_fd)) {
                 connections_handled++;
                 socket_close(client_fd);
             }
@@ -143,7 +141,7 @@ TEST_CASE("Socket multiple rapid connections", "[plexdb.os.socket]") {
     
     constexpr int NUM_CONNECTIONS = 10;
     for (int i = 0; i < NUM_CONNECTIONS; i++) {
-        Socket client{socket_create_tcp()};
+        Socket client{socket_open()};
         socket_set_timeout(client, 500);
         socket_connect(client, "127.0.0.1", (U16)port);
     }
@@ -162,24 +160,23 @@ TEST_CASE("Socket send_all sends complete data", "[plexdb.os.socket]") {
     U64 total_received = 0;
     
     std::thread server_thread([port, &server_ready, &total_received]() {
-        Socket listen_sock{socket_create_tcp()};
-        socket_set_option(listen_sock, SocketOption::ReuseAddress, true);
+        Socket listen_sock{socket_open()};
+        socket_set_option(listen_sock, SocketOption::Reuse, true);
         socket_bind(listen_sock, (U16)port);
         socket_listen(listen_sock, 1);
         socket_set_timeout(listen_sock, 2000);
         
         server_ready = true;
         
-        Handle client_fd = socket_accept(listen_sock);
-        if (socket_valid(client_fd)) {
-            Socket client{client_fd};
+        Socket client{socket_accept(listen_sock)};
+        if (client) {
             socket_set_timeout(client, 1000);
             
             char buffer[8192];
             while (true) {
                 auto res = socket_receive(client, buffer, sizeof(buffer));
-                if (res.bytes > 0) {
-                    total_received += res.bytes;
+                if (res.byte_count > 0) {
+                    total_received += res.byte_count;
                 } else {
                     break;
                 }
@@ -191,7 +188,7 @@ TEST_CASE("Socket send_all sends complete data", "[plexdb.os.socket]") {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
-    Socket client{socket_create_tcp()};
+    Socket client{socket_open()};
     socket_set_timeout(client, 2000);
     REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
     
@@ -203,7 +200,7 @@ TEST_CASE("Socket send_all sends complete data", "[plexdb.os.socket]") {
     
     auto send_res = socket_send_all(client, data, DATA_SIZE);
     REQUIRE(send_res.error == SocketError::None);
-    REQUIRE(send_res.bytes == (S64)DATA_SIZE);
+    REQUIRE(send_res.byte_count == (S64)DATA_SIZE);
     
     socket_close(client.handle);
     client.handle = zero_handle();
@@ -219,22 +216,21 @@ TEST_CASE("Socket handles empty connection (connect and close)", "[plexdb.os.soc
     std::atomic<bool> client_closed{false};
     
     std::thread server_thread([port, &server_ready, &client_closed]() {
-        Socket listen_sock{socket_create_tcp()};
-        socket_set_option(listen_sock, SocketOption::ReuseAddress, true);
+        Socket listen_sock{socket_open()};
+        socket_set_option(listen_sock, SocketOption::Reuse, true);
         socket_bind(listen_sock, (U16)port);
         socket_listen(listen_sock, 1);
         socket_set_timeout(listen_sock, 2000);
         
         server_ready = true;
         
-        Handle client_fd = socket_accept(listen_sock);
-        if (socket_valid(client_fd)) {
-            Socket client{client_fd};
+        Socket client{socket_accept(listen_sock)};
+        if (client) {
             socket_set_timeout(client, 1000);
             
             char buffer[256];
             auto res = socket_receive(client, buffer, sizeof(buffer));
-            if (res.error == SocketError::ConnectionClosed || res.bytes == 0) {
+            if (res.error == SocketError::ConnectionClosed || res.byte_count == 0) {
                 client_closed = true;
             }
         }
@@ -245,7 +241,7 @@ TEST_CASE("Socket handles empty connection (connect and close)", "[plexdb.os.soc
     }
     
     {
-        Socket client{socket_create_tcp()};
+        Socket client{socket_open()};
         socket_set_timeout(client, 500);
         REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
     }
@@ -261,24 +257,23 @@ TEST_CASE("Socket handles partial data", "[plexdb.os.socket]") {
     U64 total_received = 0;
     
     std::thread server_thread([port, &server_ready, &total_received]() {
-        Socket listen_sock{socket_create_tcp()};
-        socket_set_option(listen_sock, SocketOption::ReuseAddress, true);
+        Socket listen_sock{socket_open()};
+        socket_set_option(listen_sock, SocketOption::Reuse, true);
         socket_bind(listen_sock, (U16)port);
         socket_listen(listen_sock, 1);
         socket_set_timeout(listen_sock, 2000);
         
         server_ready = true;
         
-        Handle client_fd = socket_accept(listen_sock);
-        if (socket_valid(client_fd)) {
-            Socket client{client_fd};
+        Socket client{socket_accept(listen_sock)};
+        if (client) {
             socket_set_timeout(client, 1000);
             
             char buffer[1024];
             while (true) {
                 auto res = socket_receive(client, buffer, sizeof(buffer));
-                if (res.bytes > 0) {
-                    total_received += res.bytes;
+                if (res.byte_count > 0) {
+                    total_received += res.byte_count;
                 } else {
                     break;
                 }
@@ -290,7 +285,7 @@ TEST_CASE("Socket handles partial data", "[plexdb.os.socket]") {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
-    Socket client{socket_create_tcp()};
+    Socket client{socket_open()};
     socket_set_timeout(client, 1000);
     REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
     
@@ -313,22 +308,21 @@ TEST_CASE("Socket handles binary data with null bytes", "[plexdb.os.socket]") {
     U64 received_len = 0;
     
     std::thread server_thread([port, &server_ready, &received_data, &received_len]() {
-        Socket listen_sock{socket_create_tcp()};
-        socket_set_option(listen_sock, SocketOption::ReuseAddress, true);
+        Socket listen_sock{socket_open()};
+        socket_set_option(listen_sock, SocketOption::Reuse, true);
         socket_bind(listen_sock, (U16)port);
         socket_listen(listen_sock, 1);
         socket_set_timeout(listen_sock, 2000);
         
         server_ready = true;
         
-        Handle client_fd = socket_accept(listen_sock);
-        if (socket_valid(client_fd)) {
-            Socket client{client_fd};
+        Socket client{socket_accept(listen_sock)};
+        if (client) {
             socket_set_timeout(client, 1000);
             
             auto res = socket_receive(client, received_data, sizeof(received_data));
-            if (res.bytes > 0) {
-                received_len = res.bytes;
+            if (res.byte_count > 0) {
+                received_len = res.byte_count;
             }
         }
     });
@@ -337,7 +331,7 @@ TEST_CASE("Socket handles binary data with null bytes", "[plexdb.os.socket]") {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
-    Socket client{socket_create_tcp()};
+    Socket client{socket_open()};
     socket_set_timeout(client, 1000);
     REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
     

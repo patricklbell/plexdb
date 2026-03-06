@@ -52,7 +52,8 @@ TEST_CASE("KernelFeatures basic sanity", "[plexdb.os.sysinfo]") {
 
     SECTION("io_uring") {
         if (k->io_uring.supported) {
-            REQUIRE(k->io_uring.max_entries >= 1);
+            REQUIRE(k->io_uring.max_sq_entries >= 1);
+            REQUIRE(k->io_uring.max_cq_entries >= 1);
         }
     }
 }

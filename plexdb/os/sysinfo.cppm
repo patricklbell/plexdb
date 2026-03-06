@@ -3,6 +3,8 @@ export module plexdb.os.sysinfo;
 import plexdb.base;
 
 export namespace plexdb::os {
+    // @todo thread safe
+
     // ========================================================================
     // system info
     // ========================================================================
@@ -15,6 +17,7 @@ export namespace plexdb::os {
         U64 total_memory;
         U64 cache_line_size;
         U64 mlock_limit;
+        U32 vma_limit;
     };
 
     // ========================================================================
@@ -22,19 +25,21 @@ export namespace plexdb::os {
     // ========================================================================
     struct ProcessInfo {
         U32 pid;
-        B32 large_pages_allowed;
+        bool large_pages_allowed;
     };
 
     // ========================================================================
     // kernel features
     // ========================================================================
     struct IoUringFeatures {
-        B32 supported;
-        U32 max_entries;
-        B32 sqpoll;
-        B32 iopoll;
-        B32 registered_buffers;
-        B32 registered_files;
+        bool supported;
+        U32 max_sq_entries;
+        U32 max_cq_entries;
+        U32 max_iovecs;
+        bool sqpoll;
+        bool iopoll;
+        bool registered_buffers;
+        bool registered_files;
     };
 
     struct KernelFeatures {
@@ -44,9 +49,9 @@ export namespace plexdb::os {
         
         IoUringFeatures io_uring;
         
-        B32 aio_supported;
-        B32 aio_poll_supported;
-        B32 transparent_huge_pages;
+        bool aio_supported;
+        bool aio_poll_supported;
+        bool transparent_huge_pages;
     };
 
     // ========================================================================

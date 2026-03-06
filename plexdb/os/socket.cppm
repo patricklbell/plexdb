@@ -15,19 +15,18 @@ export namespace plexdb::os {
     };
 
     enum class SocketOption {
-        Nonblocking,
-        Nodelay,
-        ReuseAddress,
+        NonBlocking = 0,
+        NoDelay,
+        Reuse,
     };
 
     struct SocketResult {
-        S64 bytes;
+        S64 byte_count;
         SocketError error;
     };
 
-    Handle socket_create_tcp();
+    Handle socket_open();
     void   socket_close(Handle socket);
-    bool   socket_valid(Handle socket);
     bool   socket_set_option(Handle socket, SocketOption option, bool enabled);
     bool   socket_set_timeout(Handle socket, int timeout_ms);
     bool   socket_connect(Handle socket, const char* host, U16 port);
@@ -54,6 +53,6 @@ export namespace plexdb::os {
         Socket& operator=(Socket&& other) noexcept;
 
         operator Handle() const { return handle; }
-        bool valid() const;
+        operator bool() const;
     };
 }

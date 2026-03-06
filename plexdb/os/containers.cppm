@@ -28,6 +28,9 @@ export namespace plexdb {
 
         DynamicArray(Size length) {
             reserve(*this, length);
+            for (Size i = 0; i < length; ++i) {
+                new (ptr + i) T{};
+            }
             this->length = length;
         }
 

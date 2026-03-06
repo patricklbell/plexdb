@@ -1,7 +1,11 @@
 module;
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <inttypes.h>
+
+#define STB_SPRINTF_IMPLEMENTATION
+#include "stb_sprintf.h"
 
 module plexdb.base.string;
 
@@ -196,6 +200,78 @@ namespace plexdb {
 
     AutoString8 to_str(bool x) {
         return AutoString8((x) ? "true" : "false");
+    }
+
+    // @todo simplify the callbacks
+    namespace {
+        struct FmtContext {
+            char* buf;
+            U64 remaining;
+            U64 written;
+        };
+
+        char* fmt_callback(const char* buf, void* user, int len) {
+            auto* ctx = static_cast<FmtContext*>(user);
+            ctx->written += len;
+            if (static_cast<U64>(len) > ctx->remaining) {
+                ctx->remaining = 0;
+                return nullptr;
+            }
+            ctx->buf += len;
+            ctx->remaining -= len;
+            return ctx->buf;
+        }
+
+        struct AppendFmtContext {
+            char* buf_ptr;
+            U64 buf_len;
+            U64* length_ptr;
+            void* flush_ctx;
+            void (*flush_fn)(void* ctx, const char* data, U64 len);
+        };
+
+        char* append_fmt_callback(const char* buf, void* user, int len) {
+            auto* ctx = static_cast<AppendFmtContext*>(user);
+            
+            const char* src = buf;
+            int remaining = len;
+            
+            while (remaining > 0) {
+                U64 space = ctx->buf_len - *ctx->length_ptr;
+                
+                if (space == 0) {
+                    ctx->flush_fn(ctx->flush_ctx, ctx->buf_ptr, *ctx->length_ptr);
+                    *ctx->length_ptr = 0;
+                    space = ctx->buf_len;
+                }
+                
+                U64 to_copy = (static_cast<U64>(remaining) < space) ? remaining : space;
+                os::memory_copy(ctx->buf_ptr + *ctx->length_ptr, src, to_copy);
+                *ctx->length_ptr += to_copy;
+                src += to_copy;
+                remaining -= to_copy;
+            }
+            
+            return const_cast<char*>(buf);
+        }
+    }
+
+    U64 fmt_raw_impl(char* buf, U64 buf_len, const char* fmt, ...) {
+        FmtContext ctx{buf, buf_len, 0};
+        va_list va;
+        va_start(va, fmt);
+        stbsp_vsprintfcb(fmt_callback, &ctx, ctx.buf, fmt, va);
+        va_end(va);
+        return ctx.written;
+    }
+
+    void append_fmt_impl(char* buf_ptr, U64 buf_len, U64* length_ptr, void* flush_ctx, void (*flush_fn)(void*, const char*, U64), const char* fmt, ...) {
+        char working_buf[STB_SPRINTF_MIN];
+        AppendFmtContext ctx{buf_ptr, buf_len, length_ptr, flush_ctx, flush_fn};
+        va_list va;
+        va_start(va, fmt);
+        stbsp_vsprintfcb(append_fmt_callback, &ctx, working_buf, fmt, va);
+        va_end(va);
     }
 
     void print(const String8& str) {
