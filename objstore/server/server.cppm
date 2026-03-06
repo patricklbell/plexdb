@@ -5,6 +5,7 @@ export module objstore.server;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.tagged_union;
 
 import objstore.tcp;
 import objstore.parser;
