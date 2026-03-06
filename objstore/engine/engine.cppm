@@ -17,6 +17,7 @@ export namespace objstore::engine {
     struct Engine {
         Pager* pager;
         schema::Schema schema;
+        String8 current_keyspace = "";
 
         Engine(Pager* in_pager);
     };
