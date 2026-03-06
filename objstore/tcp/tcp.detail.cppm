@@ -7,6 +7,7 @@ import plexdb.os;
 import plexdb.os.uring;
 import plexdb.base;
 import plexdb.arena;
+import plexdb.tagged_union;
 import objstore.tcp.types;
 
 using namespace plexdb;
