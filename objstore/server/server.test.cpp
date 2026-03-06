@@ -150,3 +150,74 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
         server_thread.join();
     }
 }
+
+TEST_CASE("Server new CQL statements", "[objstore.server]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    os::Notifier signal_pipe;
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+
+    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        U64 page_size = 4_kb;
+        pager::create(db_file, page_size);
+        Pager pager{db_file};
+        engine::create_database(pager);
+        engine::Engine engine{&pager};
+        server::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            server_ready.release();
+        });
+    });
+
+    server_ready.acquire();
+
+    {
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+
+        auto response = send_cql(client, "CREATE KEYSPACE test_ks WITH replication = 'SimpleStrategy';");
+        REQUIRE(response.status_code == 200);
+
+        response = send_cql(client, "CREATE TABLE test_ks.users (id int PRIMARY KEY, name text, age int);");
+        REQUIRE(response.status_code == 200);
+
+        // USE keyspace
+        response = send_cql(client, "USE test_ks;");
+        REQUIRE(response.status_code == 200);
+
+        // ALTER KEYSPACE
+        response = send_cql(client, "ALTER KEYSPACE test_ks WITH replication = 'SimpleStrategy';");
+        REQUIRE(response.status_code == 200);
+
+        // INSERT rows for subsequent tests
+        response = send_cql(client, "INSERT INTO test_ks.users VALUES (1, 'Alice', 30);");
+        REQUIRE(response.status_code == 200);
+
+        response = send_cql(client, "INSERT INTO test_ks.users VALUES (2, 'Bob', 25);");
+        REQUIRE(response.status_code == 200);
+
+        // UPDATE
+        response = send_cql(client, "UPDATE test_ks.users SET name = 'AliceUpdated' WHERE id = 1;");
+        REQUIRE(response.status_code == 200);
+
+        // Verify UPDATE
+        response = send_cql(client, "SELECT * FROM test_ks.users;");
+        REQUIRE(response.status_code == 200);
+        REQUIRE(contains(response.body.c_str, "AliceUpdated"));
+
+        // DELETE entire row
+        response = send_cql(client, "DELETE FROM test_ks.users WHERE id = 2;");
+        REQUIRE(response.status_code == 200);
+
+        // TRUNCATE
+        response = send_cql(client, "TRUNCATE TABLE test_ks.users;");
+        REQUIRE(response.status_code == 200);
+    }
+
+    exit_signal = true;
+    os::signal_notify_safe(signal_pipe);
+    server_thread.join();
+}
