@@ -25,38 +25,47 @@ namespace plexdb::os {
         static int handle_to_fd(Handle h) { return static_cast<int>(h.u32[0]); }
         static Handle fd_to_handle(int fd) { return Handle{.u32={static_cast<U32>(fd)}}; }
 
-        Handle socket_create_tcp() {
+        Handle socket_open() {
             int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-            if (fd < 0) return zero_handle();
+            
+            if (fd < 0) {
+                return zero_handle();
+            }
             return fd_to_handle(fd);
         }
 
         void socket_close(Handle socket) {
-            if (!socket_valid(socket)) return;
+            if (is_zero_handle(socket)) {
+                return;
+            }
             ::close(handle_to_fd(socket));
         }
 
-        bool socket_valid(Handle socket) {
-            return !is_zero_handle(socket) && handle_to_fd(socket) >= 0;
-        }
-
-        bool socket_set_option(Handle socket, SocketOption option, bool enabled) {
+        bool socket_set_option(Handle socket, SocketOption option, bool enable) {
             int fd = handle_to_fd(socket);
-            int opt = enabled ? 1 : 0;
+            int opt = enable ? 1 : 0;
             
             switch (option) {
-                case SocketOption::Nonblocking: {
+                case SocketOption::NonBlocking: {
                     int flags = fcntl(fd, F_GETFL, 0);
-                    if (flags == -1) return false;
-                    if (enabled) flags |= O_NONBLOCK;
-                    else flags &= ~O_NONBLOCK;
+
+                    if (flags == -1) {
+                        return false;
+                    }
+
+                    if (enable) {
+                        flags |= O_NONBLOCK;
+                    } else {
+                        flags &= ~O_NONBLOCK;
+                    }
                     return fcntl(fd, F_SETFL, flags) != -1;
                 }
-                case SocketOption::Nodelay: {
+                case SocketOption::NoDelay: {
                     return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) == 0;
                 }
-                case SocketOption::ReuseAddress: {
+                case SocketOption::Reuse: {
                     return setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == 0;
+                    return setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) == 0;
                 }
             }
             return false;
@@ -96,72 +105,74 @@ namespace plexdb::os {
 
         Handle socket_accept(Handle socket) {
             int client_fd = ::accept(handle_to_fd(socket), nullptr, nullptr);
-            if (client_fd < 0) return zero_handle();
+            if (client_fd < 0) {
+                return zero_handle();
+            }
             return fd_to_handle(client_fd);
         }
 
         SocketResult socket_send(Handle socket, const void* data, U64 length) {
             ssize_t result = ::send(handle_to_fd(socket), data, length, 0);
-            if (result >= 0) return {result, SocketError::None};
             
+            if (result >= 0)                            return {result, SocketError::None};
             int err = errno;
-            if (err == EAGAIN || err == EWOULDBLOCK) return {0, SocketError::WouldBlock};
-            if (err == ECONNRESET) return {0, SocketError::ConnectionReset};
-            if (err == EPIPE) return {0, SocketError::ConnectionClosed};
+            if (err == EAGAIN || err == EWOULDBLOCK)    return {0, SocketError::WouldBlock};
+            if (err == ECONNRESET)                      return {0, SocketError::ConnectionReset};
+            if (err == EPIPE)                           return {0, SocketError::ConnectionClosed};
             return {0, SocketError::Other};
         }
 
         SocketResult socket_receive(Handle socket, void* data, U64 length) {
             ssize_t result = ::recv(handle_to_fd(socket), data, length, 0);
-            if (result > 0) return {result, SocketError::None};
-            if (result == 0) return {0, SocketError::ConnectionClosed};
             
+            if (result > 0)                             return {result, SocketError::None};
+            if (result == 0)                            return {0, SocketError::ConnectionClosed};
             int err = errno;
-            if (err == EAGAIN || err == EWOULDBLOCK) return {0, SocketError::WouldBlock};
-            if (err == ECONNRESET) return {0, SocketError::ConnectionReset};
-            if (err == ETIMEDOUT) return {0, SocketError::Timeout};
+            if (err == EAGAIN || err == EWOULDBLOCK)    return {0, SocketError::WouldBlock};
+            if (err == ECONNRESET)                      return {0, SocketError::ConnectionReset};
+            if (err == ETIMEDOUT)                       return {0, SocketError::Timeout};
             return {0, SocketError::Other};
         }
 
         SocketResult socket_send_all(Handle socket, const void* data, U64 length) {
             const U8* ptr = (const U8*)data;
             U64 remaining = length;
-            U64 total = 0;
+            S64 total = 0;
 
             while (remaining > 0) {
                 SocketResult res = socket_send(socket, ptr, remaining);
                 if (res.error != SocketError::None && res.error != SocketError::WouldBlock) {
-                    return {(S64)total, res.error};
+                    return {total, res.error};
                 }
-                if (res.bytes > 0) {
-                    ptr += res.bytes;
-                    remaining -= res.bytes;
-                    total += res.bytes;
+                if (res.byte_count > 0) {
+                    ptr += res.byte_count;
+                    remaining -= res.byte_count;
+                    total += res.byte_count;
                 }
             }
-            return {(S64)total, SocketError::None};
+            return {total, SocketError::None};
         }
 
         SocketResult socket_receive_all(Handle socket, void* data, U64 length) {
             U8* ptr = (U8*)data;
             U64 remaining = length;
-            U64 total = 0;
+            S64 total = 0;
 
             while (remaining > 0) {
                 SocketResult res = socket_receive(socket, ptr, remaining);
                 if (res.error == SocketError::ConnectionClosed) {
-                    return {(S64)total, SocketError::ConnectionClosed};
+                    return {total, SocketError::ConnectionClosed};
                 }
                 if (res.error != SocketError::None && res.error != SocketError::WouldBlock) {
-                    return {(S64)total, res.error};
+                    return {total, res.error};
                 }
-                if (res.bytes > 0) {
-                    ptr += res.bytes;
-                    remaining -= res.bytes;
-                    total += res.bytes;
+                if (res.byte_count > 0) {
+                    ptr += res.byte_count;
+                    remaining -= res.byte_count;
+                    total += res.byte_count;
                 }
             }
-            return {(S64)total, SocketError::None};
+            return {total, SocketError::None};
         }
     #elif PLEXDB_OS_WINDOWS
         static SOCKET handle_to_sock(Handle h) { return static_cast<SOCKET>(h.u64[0]); }
@@ -184,23 +195,19 @@ namespace plexdb::os {
             ::closesocket(handle_to_sock(socket));
         }
 
-        bool socket_valid(Handle socket) {
-            return !is_zero_handle(socket) && handle_to_sock(socket) != INVALID_SOCKET;
-        }
-
         bool socket_set_option(Handle socket, SocketOption option, bool enabled) {
             SOCKET s = handle_to_sock(socket);
             int opt = enabled ? 1 : 0;
             
             switch (option) {
-                case SocketOption::Nonblocking: {
+                case SocketOption::NonBlocking: {
                     u_long mode = enabled ? 1 : 0;
                     return ioctlsocket(s, FIONBIO, &mode) == 0;
                 }
-                case SocketOption::Nodelay: {
+                case SocketOption::NoDelay: {
                     return setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&opt, sizeof(opt)) == 0;
                 }
-                case SocketOption::ReuseAddress: {
+                case SocketOption::Reuse: {
                     return setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt)) == 0;
                 }
             }
@@ -273,7 +280,7 @@ namespace plexdb::os {
             while (remaining > 0) {
                 SocketResult res = socket_send(socket, ptr, remaining);
                 if (res.error != SocketError::None && res.error != SocketError::WouldBlock) {
-                    return {(S64)total, res.error};
+                    return {total, res.error};
                 }
                 if (res.bytes > 0) {
                     ptr += res.bytes;
@@ -281,7 +288,7 @@ namespace plexdb::os {
                     total += res.bytes;
                 }
             }
-            return {(S64)total, SocketError::None};
+            return {total, SocketError::None};
         }
 
         SocketResult socket_receive_all(Handle socket, void* data, U64 length) {
@@ -292,7 +299,7 @@ namespace plexdb::os {
             while (remaining > 0) {
                 SocketResult res = socket_receive(socket, ptr, remaining);
                 if (res.error == SocketError::ConnectionClosed) {
-                    return {(S64)total, SocketError::ConnectionClosed};
+                    return {total, SocketError::ConnectionClosed};
                 }
                 if (res.error != SocketError::None && res.error != SocketError::WouldBlock) {
                     return {(S64)total, res.error};
@@ -310,9 +317,7 @@ namespace plexdb::os {
     #endif
 
     Socket::~Socket() {
-        if (socket_valid(handle)) {
-            socket_close(handle);
-        }
+        socket_close(handle);
     }
 
     Socket::Socket(Socket&& other) noexcept : handle(other.handle) {
@@ -321,16 +326,14 @@ namespace plexdb::os {
 
     Socket& Socket::operator=(Socket&& other) noexcept {
         if (this != &other) {
-            if (socket_valid(handle)) {
-                socket_close(handle);
-            }
+            socket_close(handle);
             handle = other.handle;
             other.handle = zero_handle();
         }
         return *this;
     }
 
-    bool Socket::valid() const {
-        return socket_valid(handle);
+    Socket::operator bool() const {
+        return !is_zero_handle(this->handle);
     }
 }

@@ -77,6 +77,8 @@ target_sources(objstore_modules
             engine/statements.cppm
             parser/parser.cppm
             tcp/tcp.cppm
+            tcp/tcp.detail.cppm
+            tcp/tcp.types.cppm
             server/server.cppm
 )
 
@@ -103,7 +105,8 @@ target_sources(objstore
         engine/engine.cpp
         engine/schema.cpp
         parser/parser.cpp
-        tcp/tcp.cpp
+        tcp/tcp.detail.cpp
+        tcp/tcp.types.cpp
         server/server.cpp
 )
 

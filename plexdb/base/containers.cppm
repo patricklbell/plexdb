@@ -207,6 +207,20 @@ export namespace plexdb {
         return array.cap >= N;
     }
 
+    template<typename T, U64 N>
+    void clear(CappedArray<T, N>& array) {
+        array.cap = 0;
+    }
+
+    template<typename T, U64 N>
+    void swap_remove(CappedArray<T, N>& arr, U64 idx) {
+        assert_true(idx < arr.cap, "swap_remove index out of bounds");
+        if (idx < arr.cap - 1) {
+            arr[idx] = arr[arr.cap - 1];
+        }
+        arr.cap--;
+    }
+
     // ========================================================================
     // stack
     // ========================================================================
@@ -242,6 +256,10 @@ export namespace plexdb {
 
     template<typename T>
     T* front(Stack<T>& stack) {
+        return stack.top == nullptr ? nullptr : &stack.top->value;
+    }
+    template<typename T>
+    const T* front(const Stack<T>& stack) {
         return stack.top == nullptr ? nullptr : &stack.top->value;
     }
     template<typename T>
@@ -304,9 +322,17 @@ export namespace plexdb {
     T* front(Deque<T>& deque) {
         return deque.head == nullptr ? nullptr : &deque.head->value;
     }
+    template<typename T>
+    const T* front(const Deque<T>& deque) {
+        return deque.head == nullptr ? nullptr : &deque.head->value;
+    }
 
     template<typename T>
     T* back(Deque<T>& deque) {
+        return deque.tail == nullptr ? nullptr : &deque.tail->value;
+    }
+    template<typename T>
+    const T* back(const Deque<T>& deque) {
         return deque.tail == nullptr ? nullptr : &deque.tail->value;
     }
 
@@ -547,6 +573,28 @@ export namespace plexdb {
     };
 
     template<typename K, typename V, U64 C>
+    typename MapFixedSentinel<K,V,C>::Iterator find_it(MapFixedSentinel<K,V,C>& map, const K& key) {
+        assert_true(key != map.sentinel, "cannot find sentinel in map");
+
+        U64 slot_idx = hash(key) % C;
+        U64 end_slot_idx = (slot_idx + C - 1) % C;
+
+        while (slot_idx != end_slot_idx) {
+            auto& kv = map.key_values[slot_idx];
+            if (kv.first == key) {
+                return typename MapFixedSentinel<K,V,C>::Iterator{&map, slot_idx};
+            } else if (kv.first == map.sentinel) {
+                return map.end();
+            }
+            
+            slot_idx = (slot_idx + 1) % C;
+        }
+
+        assert_true(false, "fixed sentinel map is full");
+        return map.end();
+    }
+
+    template<typename K, typename V, U64 C>
     V* find(MapFixedSentinel<K,V,C>& map, const K& key) {
         assert_true(key != map.sentinel, "cannot find sentinel in map");
 
@@ -619,5 +667,11 @@ export namespace plexdb {
     template<typename K, typename V, U64 C>
     void remove(MapFixedSentinel<K,V,C>& map, const K& key) {
         assert_true(try_remove(map, key) != false, "attempting to remove key which is not present");
+    }
+    template<typename K, typename V, U64 C>
+    void remove_it(MapFixedSentinel<K,V,C>& map, const typename MapFixedSentinel<K,V,C>::Iterator& it) {
+        assert_true(it.slot_idx >= 0 && it.slot_idx < map.key_values.length, "invalid iterator");
+        auto& kv = map.key_values[it.slot_idx];
+        kv.first = map.sentinel;
     }
 }

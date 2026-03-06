@@ -1,11 +1,18 @@
 module;
-#include <string.h>
-#include <stdio.h>
+#include "stb_sprintf.h"
 
 export module plexdb.base.string;
 
 import plexdb.base.types;
 import plexdb.base.math;
+
+namespace plexdb {
+    // @note writes to inout.data WITHOUT null terminator, returns bytes written
+    U64 fmt_raw_impl(char* buf, U64 buf_len, const char* fmt, ...);
+
+    // @note appends formatted output directly to BufferedString8, flushing as needed
+    void append_fmt_impl(char* buf_ptr, U64 buf_len, U64* length_ptr, void* flush_ctx, void (*flush_fn)(void*, const char*, U64), const char* fmt, ...);
+}
 
 export namespace plexdb {
     struct AutoString8;
@@ -94,39 +101,41 @@ export namespace plexdb {
     AutoString8 to_str(bool x);
 
     template <typename... Args>
-    AutoString8 fmt(const char* fmt, Args&&... args) {
-        constexpr int BUFFER_SIZE = 1024;
-        char buffer[BUFFER_SIZE];
+    U64 fmt_length(const char* fmt, Args&&... args) {
+        return stbsp_snprintf(nullptr, 0, fmt, forward<Args>(args)...);
+    }
 
-        int length = snprintf(nullptr, 0, fmt, forward<Args>(args)...);
-        assert_true(length >= 0, "snprintf formatting error");
-        assert_true(length < BUFFER_SIZE, "fmt result too large");
-        
-        length = snprintf(buffer, length+1, fmt, forward<Args>(args)...);
-        assert_true(length >= 0, "snprintf formatting error");
+    template <typename... Args>
+    void fmt_raw(String8& inout, const char* fmt, Args&&... args) {
+        inout.length = fmt_raw_impl(const_cast<char*>(inout.data), inout.length, fmt, forward<Args>(args)...);
+    }
 
-        return AutoString8(reinterpret_cast<U8*>(buffer), length);
+    template <typename... Args>
+    AutoString8 fmt(const char* fmt_str, Args&&... args) {
+        U64 length = fmt_length(fmt_str, forward<Args>(args)...);
+        AutoString8 result(length);
+        String8 view{result.c_str, length};
+        fmt_raw(view, fmt_str, forward<Args>(args)...);
+        return result;
     }
 
     void print(const String8& str);
     
     template <typename... Args>
-    void print(const String8& first, const Args&... rest)
-    {
+    void print(const String8& first, const Args&... rest) {
         print(first);
         (print(rest), ...);
     }
 
     template <typename... Args>
-    void println(const Args&... args)
-    {
+    void println(const Args&... args) {
         print(args...);
         print("\n");
     }
 
     template<typename F>
-    concept BufferedString8Flush = requires(F f, const char* data, U64 len) {
-        f(data, len);
+    concept BufferedString8Flush = requires(F f, const char* data, U64 length, bool is_final) {
+        f(data, length, is_final);
     };
 
     template<BufferedString8Flush F>
@@ -136,12 +145,15 @@ export namespace plexdb {
         F flush;
 
         BufferedString8(TArrayView<char> buf, F flush_fn) : buffer(buf), length(0), flush(flush_fn) {}
+        ~BufferedString8() { this->flush(this->buffer.ptr, this->length, /*is_final=*/true); }
     };
     
     template<BufferedString8Flush F>
     void flush(BufferedString8<F>& str) {
-        if (str.length >= str.buffer.length) {
-            str.flush(str.buffer.ptr, str.length);
+        assert_true(str.length <= str.buffer.length, "invalid flush state, length overflows buffer");
+
+        if (str.length == str.buffer.length) {
+            str.flush(str.buffer.ptr, str.length, /*is_final=*/false);
             str.length = 0;
         }
     }
@@ -178,63 +190,67 @@ export namespace plexdb {
     void append(BufferedString8<F>& str, const char* prefix) {
         append(str, String8(prefix));
     }
+}
+
+namespace plexdb {
+    template<BufferedString8Flush F>
+    void buffered_string_flush_wrapper(void* ctx, const char* data, U64 len) {
+        auto* str = static_cast<BufferedString8<F>*>(ctx);
+        flush(*str);
+    }
+}
+
+export namespace plexdb {
+    template<BufferedString8Flush F, typename... Args>
+    void append_fmt(BufferedString8<F>& str, const char* fmt, Args&&... args) {
+        append_fmt_impl(
+            str.buffer.ptr, str.buffer.length, &str.length,
+            &str, buffered_string_flush_wrapper<F>,
+            fmt, forward<Args>(args)...
+        );
+    }
 
     template<BufferedString8Flush F>
     void append(BufferedString8<F>& str, S64 value) {
-        char tmp[32];
-        int len = snprintf(tmp, sizeof(tmp), "%lld", static_cast<long long>(value));
-        assert_true(len > 0 && len < 32, "format error");
-
-        append(str, String8(tmp, static_cast<U64>(len)));
+        append_fmt(str, "%lld", static_cast<long long>(value));
     }
 
     template<BufferedString8Flush F>
     void append(BufferedString8<F>& str, S32 value) {
-        char tmp[16];
-        int len = snprintf(tmp, sizeof(tmp), "%d", value);
-        assert_true(len > 0 && len < 16, "format error");
-
-        append(str, String8(tmp, static_cast<U64>(len)));
+        append_fmt(str, "%d", value);
     }
 
     template<BufferedString8Flush F>
     void append(BufferedString8<F>& str, S16 value) {
-        char tmp[8];
-        int len = snprintf(tmp, sizeof(tmp), "%d", static_cast<int>(value));
-        assert_true(len > 0 && len < 8, "format error");
-
-        append(str, String8(tmp, static_cast<U64>(len)));
+        append_fmt(str, "%d", static_cast<int>(value));
     }
 
     template<BufferedString8Flush F>
     void append(BufferedString8<F>& str, U8 value) {
-        char tmp[4];
-        int len = snprintf(tmp, sizeof(tmp), "%u", static_cast<unsigned>(value));
-        assert_true(len > 0 && len < 4, "format error");
-
-        append(str, String8(tmp, static_cast<U64>(len)));
+        append_fmt(str, "%u", static_cast<unsigned>(value));
     }
 
     template<BufferedString8Flush F>
     void append(BufferedString8<F>& str, F64 value) {
-        char tmp[32];
-        int len = snprintf(tmp, sizeof(tmp), "%g", value);
-        assert_true(len > 0 && len < 32, "format error");
-
-        append(str, String8(tmp, static_cast<U64>(len)));
+        append_fmt(str, "%g", value);
     }
 
     template<BufferedString8Flush F>
     void append(BufferedString8<F>& str, F32 value) {
-        char tmp[32];
-        int len = snprintf(tmp, sizeof(tmp), "%g", static_cast<double>(value));
-        assert_true(len > 0 && len < 32, "format error");
-
-        append(str, String8(tmp, static_cast<U64>(len)));
+        append_fmt(str, "%g", static_cast<double>(value));
     }
 
     template<BufferedString8Flush F>
     void append(BufferedString8<F>& str, bool value) {
         append(str, value ? String8("true") : String8("false"));
+    }
+
+    template <BufferedString8Flush F, typename First, typename... Rest>
+    void append(BufferedString8<F>& str, const First& first, const Rest&... rest)
+    {
+        append(str, first);
+        if constexpr (sizeof...(rest) > 0) {
+            append(str, rest...);
+        }
     }
 }

@@ -189,6 +189,10 @@ export namespace plexdb {
             }
             return *this;
         }
+
+        explicit operator bool() {
+            return this->index != invalid_index;
+        }
     };
 
     template<typename T, typename... Types>

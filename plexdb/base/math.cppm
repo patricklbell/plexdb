@@ -56,7 +56,7 @@ export namespace plexdb {
         requires Integer<T>
     inline constexpr T align_up(const T& x, const T& align) { return ceil_div(x, align)*align; }
 
-    inline constexpr U64 hash(U64 x) { return x; }
+    inline constexpr U64 hash(U64 x) { return 1 + x; }
 
 #if PLEXDB_COMPILER_GCC || PLEXDB_COMPILER_CLANG
     inline constexpr U64 bit_count(U64 x) {

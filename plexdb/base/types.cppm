@@ -204,8 +204,12 @@ export namespace plexdb {
         assert_true_always(expr, msg, loc);
     }
 
+    constexpr inline void assert_true_not_implemented(bool expr, const char* msg = not_implemented_msg, std::source_location loc = std::source_location::current()) noexcept {
+        assert_true_always(expr, msg, loc);
+    }
+
     constexpr inline void assert_not_implemented(const char* msg = not_implemented_msg, std::source_location loc = std::source_location::current()) noexcept {
-        assert_true_always(false, msg, loc);
+        assert_true_not_implemented(false, msg, loc);
     }
     void set_assert_handler(AssertHandler h) noexcept;
 

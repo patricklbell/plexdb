@@ -27,6 +27,7 @@ set_target_properties(plexdb_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(plexdb_modules PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
 )
 
 target_sources(plexdb_modules
@@ -54,9 +55,12 @@ target_sources(plexdb_modules
             btree/btree.types.cppm
             os/containers.cppm
             os/core.cppm
+            os/function.cppm
             os/os.cppm
+            os/signal.cppm
             os/socket.cppm
             os/sysinfo.cppm
+            os/uring.cppm
             pager/pager.cppm
             threads/threads.cppm
             tagged_union/tagged_union.cppm
@@ -71,6 +75,7 @@ set_target_properties(plexdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(plexdb PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
 )
 
 target_sources(plexdb
@@ -88,8 +93,10 @@ target_sources(plexdb
         btree/btree.detail.cpp
         btree/btree.node.cpp
         os/core.cpp
+        os/signal.cpp
         os/socket.cpp
         os/sysinfo.cpp
+        os/uring.cpp
         pager/pager.cpp
         threads/threads.cpp
 )

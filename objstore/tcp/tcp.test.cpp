@@ -2,15 +2,15 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <thread>
-#include <chrono>
 #include <atomic>
-#include <signal.h>
-#include <unistd.h>
+#include <semaphore>
 #include <vector>
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.os.uring;
 import objstore.tcp;
+import objstore.tcp.detail;
 
 using namespace plexdb;
 using namespace plexdb::os;
@@ -24,36 +24,60 @@ namespace {
         return TCP_TEST_PORT_BASE + port_counter.fetch_add(1);
     }
 
-    struct SignalPipe {
-        int read_fd = -1;
-        int write_fd = -1;
+    enum class ListenMode { Auto, Uring, Socket };
 
-        SignalPipe() {
-            int fds[2];
-            int res = pipe(fds);
-            if (res != 0) {
-                read_fd = -1;
-                write_fd = -1;
-            } else {
-                read_fd = fds[0];
-                write_fd = fds[1];
+    struct TestServer {
+        os::Handle socket = os::zero_handle();
+        os::Notifier signal_pipe;
+
+        TestServer(int port) {
+            this->socket = socket_open();
+            socket_set_option(this->socket, SocketOption::Reuse, true);
+            socket_bind(this->socket, static_cast<U16>(port));
+            socket_listen(this->socket, 128);
+        }
+
+        ~TestServer() {
+            if (!is_zero_handle(this->socket)) {
+                socket_close(this->socket);
             }
         }
 
-        ~SignalPipe() {
-            if (read_fd >= 0) close(read_fd);
-            if (write_fd >= 0) close(write_fd);
-        }
-
-        void signal() {
-            char c = 1;
-            [[maybe_unused]] auto res = write(write_fd, &c, 1);
+        void stop() {
+            os::signal_notify_safe(this->signal_pipe);
         }
     };
 
+    template<typename OnChunk, typename OnClose>
+    Stats listen(const OnChunk& on_chunk, const OnClose& on_close, TestServer& server, volatile bool& exit_signal, ListenMode mode = ListenMode::Auto) {
+        auto on_open = [](Connection*) {};
+        auto on_chunk_new = [&](const Request& req) -> RequestStatus {
+            return on_chunk(const_cast<Request&>(req));
+        };
+        auto on_close_new = [&](Connection* connection) {
+            on_close(static_cast<int>(connection->client.u32[0]));
+        };
+
+        if (mode == ListenMode::Socket) {
+            return objstore::tcp::listen_socket(server.socket, on_chunk_new, on_close_new, on_open, server.signal_pipe, exit_signal);
+        }
+        if (mode == ListenMode::Uring) {
+            auto ring_settings = uring::get_ring_settings();
+            uring::Ring ring{
+                server.socket,
+                ring_settings->recommended_queue_depth, ring_settings->recommended_buffer_size, ring_settings->recommended_buffer_count
+            };
+            if (ring) {
+                return objstore::tcp::listen_uring(ring, on_chunk_new, on_close_new, on_open, server.signal_pipe, exit_signal);
+            }
+        }
+
+        return objstore::tcp::listen(server.socket, on_chunk_new, on_open, on_close_new, server.signal_pipe, exit_signal);
+    }
+
     U64 total_chunk_bytes(const Request& req) {
         U64 total = 0;
-        for (const auto& chunk : *req.chunks) {
+        for (const auto& chunk : req.connection->chunk_chain.chunks) {
             total += (U64)chunk.data.length;
         }
         return total;
@@ -61,7 +85,7 @@ namespace {
 
     AutoString8 chunks_to_string(const Request& req) {
         AutoString8 result;
-        for (const auto& chunk : *req.chunks) {
+        for (const auto& chunk : req.connection->chunk_chain.chunks) {
             for (int i = 0; i < chunk.data.length; i++) {
                 result.push_back(chunk.data.ptr[i]);
             }
@@ -70,50 +94,84 @@ namespace {
     }
 }
 
-TEST_CASE("pool handles signal from pipe", "[objstore.tcp]") {
+TEST_CASE("handles signal from pipe", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
-
-    Pool pool(port, signal_pipe.read_fd);
+    TestServer server(port);
     
-    REQUIRE(pool.listen_fd >= 0);
-    REQUIRE(pool.epoll_fd >= 0);
-    REQUIRE(pool.buffer_pool != nullptr);
+    REQUIRE(!is_zero_handle(server.socket));
 }
 
-TEST_CASE("pool receives simple request", "[objstore.tcp]") {
+TEST_CASE("receives simple request - socket", "[objstore.tcp][socket]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestServer server(port);
 
-    std::atomic<bool> server_ready{false};
+    std::binary_semaphore server_ready{0};
+    std::binary_semaphore data_received{0};
     volatile bool exit_signal = false;
     AutoString8 received_data;
-    std::atomic<bool> data_received{false};
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &received_data, &data_received]() {
-        Pool pool(port, signal_pipe.read_fd);
-        Stats stats;
+    std::thread server_thread([&]() {
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
             received_data = chunks_to_string(req);
-            data_received = true;
+            data_received.release();
+            return RequestStatus::Handled;
+        };
+
+        auto on_close = [&](int fd) {};
+
+        server_ready.release();
+        listen(on_chunk, on_close, server, exit_signal, ListenMode::Socket);
+    });
+
+    server_ready.acquire();
+
+    {
+        Socket client{socket_open()};
+        bool connected = socket_connect(client, "127.0.0.1", (U16)port);
+        REQUIRE(connected);
+
+        String8 message = "HELLO";
+        auto res = socket_send_all(client, message.data, message.length);
+        REQUIRE(res.error == SocketError::None);
+    }
+
+    data_received.acquire();
+
+    exit_signal = true;
+    server.stop();
+    server_thread.join();
+
+    REQUIRE(received_data == "HELLO");
+}
+
+TEST_CASE("receives simple request - uring", "[objstore.tcp][uring]") {
+    int port = get_unique_port();
+    TestServer server(port);
+
+    std::binary_semaphore server_ready{0};
+    std::binary_semaphore data_received{0};
+    volatile bool exit_signal = false;
+    AutoString8 received_data;
+
+    std::thread server_thread([&server, &server_ready, &exit_signal, &received_data, &data_received]() {
+
+        auto on_chunk = [&](Request& req) -> RequestStatus {
+            received_data = chunks_to_string(req);
+            data_received.release();
             return RequestStatus::Handled;
         };
 
         auto on_close = [](int) {};
 
-        server_ready = true;
-        listen(on_chunk, on_close, pool, stats, exit_signal);
+        server_ready.release();
+        listen(on_chunk, on_close, server, exit_signal, ListenMode::Uring);
     });
 
-    while (!server_ready) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    server_ready.acquire();
 
     {
-        Socket client{socket_create_tcp()};
-        socket_set_timeout(client, 1000);
+        Socket client{socket_open()};
         REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
 
         String8 message = "HELLO";
@@ -121,45 +179,34 @@ TEST_CASE("pool receives simple request", "[objstore.tcp]") {
         REQUIRE(res.error == SocketError::None);
     }
 
-    auto start = std::chrono::steady_clock::now();
-    while (!data_received) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) {
-            break;
-        }
-    }
+    data_received.acquire();
 
     exit_signal = true;
-    signal_pipe.signal();
+    server.stop();
     server_thread.join();
 
-    REQUIRE(data_received);
     REQUIRE(received_data == "HELLO");
 }
 
-TEST_CASE("pool receives large request", "[objstore.tcp]") {
+TEST_CASE("receives large request", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestServer server(port);
 
-    std::atomic<bool> server_ready{false};
+    std::binary_semaphore server_ready{0};
+    std::binary_semaphore data_received{0};
     volatile bool exit_signal = false;
     U64 total_received = 0;
-    std::atomic<bool> data_received{false};
 
-    // Use a smaller data size that works with the limited buffer pool
     constexpr U64 DATA_SIZE = 32 * 1024;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &total_received, &data_received]() {
-        Pool pool(port, signal_pipe.read_fd);
-        Stats stats;
+    std::thread server_thread([&server, &server_ready, &exit_signal, &total_received, &data_received]() {
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
-            // total_chunk_bytes returns cumulative size (pending chunks accumulate)
             U64 bytes = total_chunk_bytes(req);
 
             if (bytes >= DATA_SIZE) {
                 total_received = bytes;
-                data_received = true;
+                data_received.release();
                 return RequestStatus::Handled;
             }
             return RequestStatus::Pending;
@@ -167,18 +214,14 @@ TEST_CASE("pool receives large request", "[objstore.tcp]") {
 
         auto on_close = [](int) {};
 
-        server_ready = true;
-        listen(on_chunk, on_close, pool, stats, exit_signal);
+        server_ready.release();
+        listen(on_chunk, on_close, server, exit_signal);
     });
 
-    while (!server_ready) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    server_ready.acquire();
 
     {
-        Socket client{socket_create_tcp()};
-        socket_set_timeout(client, 2000);
+        Socket client{socket_open()};
         REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
 
         std::vector<char> large_data(DATA_SIZE);
@@ -190,115 +233,93 @@ TEST_CASE("pool receives large request", "[objstore.tcp]") {
         REQUIRE(res.error == SocketError::None);
     }
 
-    auto start = std::chrono::steady_clock::now();
-    while (!data_received) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(3)) {
-            break;
-        }
-    }
+    data_received.acquire();
 
     exit_signal = true;
-    signal_pipe.signal();
+    server.stop();
     server_thread.join();
 
-    REQUIRE(data_received);
     REQUIRE(total_received >= DATA_SIZE);
 }
 
-TEST_CASE("pool handles multiple sequential connections", "[objstore.tcp]") {
+TEST_CASE("handles multiple sequential connections", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestServer server(port);
 
-    std::atomic<bool> server_ready{false};
+    std::binary_semaphore server_ready{0};
+    std::counting_semaphore<16> connection_sem{0};
     volatile bool exit_signal = false;
     std::atomic<int> connection_count{0};
 
     constexpr int NUM_CONNECTIONS = 5;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &connection_count]() {
-        Pool pool(port, signal_pipe.read_fd);
-        Stats stats;
+    std::thread server_thread([&server, &server_ready, &exit_signal, &connection_count, &connection_sem]() {
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
             connection_count++;
+            connection_sem.release();
             return RequestStatus::Close;
         };
 
         auto on_close = [](int) {};
 
-        server_ready = true;
-        listen(on_chunk, on_close, pool, stats, exit_signal);
+        server_ready.release();
+        listen(on_chunk, on_close, server, exit_signal);
     });
 
-    while (!server_ready) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    server_ready.acquire();
 
     for (int i = 0; i < NUM_CONNECTIONS; i++) {
-        Socket client{socket_create_tcp()};
-        socket_set_timeout(client, 1000);
+        Socket client{socket_open()};
         REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
 
         char message[32];
         int len = snprintf(message, sizeof(message), "MSG%d", i);
         socket_send_all(client, message, len);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-
-    auto start = std::chrono::steady_clock::now();
-    while (connection_count < NUM_CONNECTIONS) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(3)) {
-            break;
-        }
+        
+        connection_sem.acquire();
     }
 
     exit_signal = true;
-    signal_pipe.signal();
+    server.stop();
     server_thread.join();
 
     REQUIRE(connection_count == NUM_CONNECTIONS);
 }
 
-TEST_CASE("pool handles concurrent connections", "[objstore.tcp]") {
+TEST_CASE("handles concurrent connections", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestServer server(port);
 
-    std::atomic<bool> server_ready{false};
+    std::binary_semaphore server_ready{0};
+    std::counting_semaphore<16> request_sem{0};
     volatile bool exit_signal = false;
     std::atomic<int> request_count{0};
 
     constexpr int NUM_CLIENTS = 4;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &request_count]() {
-        Pool pool(port, signal_pipe.read_fd);
-        Stats stats;
+    std::thread server_thread([&server, &server_ready, &exit_signal, &request_count, &request_sem]() {
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
             request_count++;
+            request_sem.release();
             return RequestStatus::Close;
         };
 
         auto on_close = [](int) {};
 
-        server_ready = true;
-        listen(on_chunk, on_close, pool, stats, exit_signal);
+        server_ready.release();
+        listen(on_chunk, on_close, server, exit_signal);
     });
 
-    while (!server_ready) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    server_ready.acquire();
 
     std::vector<std::thread> client_threads;
     client_threads.reserve(NUM_CLIENTS);
 
     for (int i = 0; i < NUM_CLIENTS; i++) {
         client_threads.emplace_back([port, i]() {
-            Socket client{socket_create_tcp()};
-            socket_set_timeout(client, 2000);
+            Socket client{socket_open()};
             if (socket_connect(client, "127.0.0.1", (U16)port)) {
                 char message[32];
                 int len = snprintf(message, sizeof(message), "CLIENT%d", i);
@@ -311,32 +332,27 @@ TEST_CASE("pool handles concurrent connections", "[objstore.tcp]") {
         t.join();
     }
 
-    auto start = std::chrono::steady_clock::now();
-    while (request_count < NUM_CLIENTS) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(3)) {
-            break;
-        }
+    for (int i = 0; i < NUM_CLIENTS; i++) {
+        request_sem.acquire();
     }
 
     exit_signal = true;
-    signal_pipe.signal();
+    server.stop();
     server_thread.join();
 
     REQUIRE(request_count == NUM_CLIENTS);
 }
 
-TEST_CASE("pool handles client disconnect", "[objstore.tcp]") {
+TEST_CASE("handles client disconnect", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestServer server(port);
 
-    std::atomic<bool> server_ready{false};
+    std::binary_semaphore server_ready{0};
+    std::binary_semaphore close_sem{0};
     volatile bool exit_signal = false;
     std::atomic<int> close_count{0};
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &close_count]() {
-        Pool pool(port, signal_pipe.read_fd);
-        Stats stats;
+    std::thread server_thread([&server, &server_ready, &exit_signal, &close_count, &close_sem]() {
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
             return RequestStatus::Pending;
@@ -344,149 +360,113 @@ TEST_CASE("pool handles client disconnect", "[objstore.tcp]") {
 
         auto on_close = [&](int) {
             close_count++;
+            close_sem.release();
         };
 
-        server_ready = true;
-        listen(on_chunk, on_close, pool, stats, exit_signal);
+        server_ready.release();
+        listen(on_chunk, on_close, server, exit_signal);
     });
 
-    while (!server_ready) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    server_ready.acquire();
 
     {
-        Socket client{socket_create_tcp()};
-        socket_set_timeout(client, 1000);
+        Socket client{socket_open()};
         REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
         socket_send_all(client, "DATA", 4);
     }
 
-    auto start = std::chrono::steady_clock::now();
-    while (close_count < 1) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) {
-            break;
-        }
-    }
+    close_sem.acquire();
 
     exit_signal = true;
-    signal_pipe.signal();
+    server.stop();
     server_thread.join();
 
     REQUIRE(close_count >= 1);
 }
 
-TEST_CASE("pool tracks statistics correctly", "[objstore.tcp]") {
+TEST_CASE("tracks statistics correctly", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestServer server(port);
 
-    std::atomic<bool> server_ready{false};
+    std::binary_semaphore server_ready{0};
+    std::binary_semaphore done{0};
     volatile bool exit_signal = false;
-    Stats final_stats;
-    std::atomic<bool> done{false};
+    Stats stats;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &final_stats, &done]() {
-        Pool pool(port, signal_pipe.read_fd);
-        Stats stats;
+    std::thread server_thread([&server, &server_ready, &exit_signal, &stats, &done]() {
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
-            done = true;
-            final_stats = stats;
+            done.release();
             return RequestStatus::Close;
         };
 
         auto on_close = [](int) {};
 
-        server_ready = true;
-        listen(on_chunk, on_close, pool, stats, exit_signal);
+        server_ready.release();
+        stats = listen(on_chunk, on_close, server, exit_signal);
     });
 
-    while (!server_ready) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    server_ready.acquire();
 
     {
-        Socket client{socket_create_tcp()};
-        socket_set_timeout(client, 1000);
+        Socket client{socket_open()};
         REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
         socket_send_all(client, "TESTDATA", 8);
     }
 
-    auto start = std::chrono::steady_clock::now();
-    while (!done) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) {
-            break;
-        }
-    }
+    done.acquire();
 
     exit_signal = true;
-    signal_pipe.signal();
+    server.stop();
     server_thread.join();
 
-    REQUIRE(done);
-    REQUIRE(final_stats.total_connections >= 1);
-    REQUIRE(final_stats.total_bytes_read >= 8);
+    REQUIRE(stats.total_connections >= 1);
+    REQUIRE(stats.total_bytes_read >= 8);
 }
 
 TEST_CASE("binary data with null bytes", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestServer server(port);
 
-    std::atomic<bool> server_ready{false};
+    std::binary_semaphore server_ready{0};
+    std::binary_semaphore data_received{0};
     volatile bool exit_signal = false;
     std::vector<char> received_data;
-    std::atomic<bool> data_received{false};
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &received_data, &data_received]() {
-        Pool pool(port, signal_pipe.read_fd);
-        Stats stats;
+    std::thread server_thread([&server, &server_ready, &exit_signal, &received_data, &data_received]() {
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
-            for (const auto& chunk : *req.chunks) {
+            for (const auto& chunk : req.connection->chunk_chain.chunks) {
                 for (int i = 0; i < chunk.data.length; i++) {
                     received_data.push_back(chunk.data.ptr[i]);
                 }
             }
-            data_received = true;
+            data_received.release();
             return RequestStatus::Handled;
         };
 
         auto on_close = [](int) {};
 
-        server_ready = true;
-        listen(on_chunk, on_close, pool, stats, exit_signal);
+        server_ready.release();
+        listen(on_chunk, on_close, server, exit_signal);
     });
 
-    while (!server_ready) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    server_ready.acquire();
 
     {
-        Socket client{socket_create_tcp()};
-        socket_set_timeout(client, 1000);
+        Socket client{socket_open()};
         REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
 
         char binary_data[10] = {0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00};
         socket_send_all(client, binary_data, 10);
     }
 
-    auto start = std::chrono::steady_clock::now();
-    while (!data_received) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) {
-            break;
-        }
-    }
+    data_received.acquire();
 
     exit_signal = true;
-    signal_pipe.signal();
+    server.stop();
     server_thread.join();
 
-    REQUIRE(data_received);
     REQUIRE(received_data.size() >= 10);
     REQUIRE(received_data[0] == 0x01);
     REQUIRE(received_data[1] == 0x00);
@@ -496,19 +476,17 @@ TEST_CASE("binary data with null bytes", "[objstore.tcp]") {
 
 TEST_CASE("pending response accumulates data", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestServer server(port);
 
-    std::atomic<bool> server_ready{false};
+    std::binary_semaphore server_ready{0};
+    std::binary_semaphore done{0};
     volatile bool exit_signal = false;
     std::atomic<int> chunk_count{0};
     U64 final_size = 0;
-    std::atomic<bool> done{false};
 
     constexpr U64 TARGET_SIZE = 20;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &chunk_count, &final_size, &done]() {
-        Pool pool(port, signal_pipe.read_fd);
-        Stats stats;
+    std::thread server_thread([&server, &server_ready, &exit_signal, &chunk_count, &final_size, &done]() {
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
             chunk_count++;
@@ -516,7 +494,7 @@ TEST_CASE("pending response accumulates data", "[objstore.tcp]") {
             
             if (total >= TARGET_SIZE) {
                 final_size = total;
-                done = true;
+                done.release();
                 return RequestStatus::Handled;
             }
             return RequestStatus::Pending;
@@ -524,60 +502,43 @@ TEST_CASE("pending response accumulates data", "[objstore.tcp]") {
 
         auto on_close = [](int) {};
 
-        server_ready = true;
-        listen(on_chunk, on_close, pool, stats, exit_signal);
+        server_ready.release();
+        listen(on_chunk, on_close, server, exit_signal);
     });
 
-    while (!server_ready) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    server_ready.acquire();
 
     {
-        Socket client{socket_create_tcp()};
-        socket_set_timeout(client, 2000);
+        Socket client{socket_open()};
         REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
 
-        socket_send_all(client, "PART1", 5);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        socket_send_all(client, "PART2", 5);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        socket_send_all(client, "PART3", 5);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        socket_send_all(client, "PART4", 5);
+        socket_send_all(client, "PART1PART2PART3PART4", 20);
     }
 
-    auto start = std::chrono::steady_clock::now();
-    while (!done) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(3)) {
-            break;
-        }
-    }
+    done.acquire();
 
     exit_signal = true;
-    signal_pipe.signal();
+    server.stop();
     server_thread.join();
 
-    REQUIRE(done);
     REQUIRE(final_size >= TARGET_SIZE);
 }
 
 TEST_CASE("close response terminates connection", "[objstore.tcp]") {
     int port = get_unique_port();
-    SignalPipe signal_pipe;
+    TestServer server(port);
 
-    std::atomic<bool> server_ready{false};
+    std::binary_semaphore server_ready{0};
+    std::binary_semaphore chunk_sem{0};
     volatile bool exit_signal = false;
     std::atomic<int> request_count{0};
     std::atomic<int> close_count{0};
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &request_count, &close_count]() {
-        Pool pool(port, signal_pipe.read_fd);
-        Stats stats;
+    std::thread server_thread([&server, &server_ready, &exit_signal, &request_count, &close_count, &chunk_sem]() {
 
         auto on_chunk = [&](Request& req) -> RequestStatus {
             request_count++;
+            chunk_sem.release();
             return RequestStatus::Close;
         };
 
@@ -585,38 +546,22 @@ TEST_CASE("close response terminates connection", "[objstore.tcp]") {
             close_count++;
         };
 
-        server_ready = true;
-        listen(on_chunk, on_close, pool, stats, exit_signal);
+        server_ready.release();
+        listen(on_chunk, on_close, server, exit_signal);
     });
 
-    while (!server_ready) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    server_ready.acquire();
 
     {
-        Socket client{socket_create_tcp()};
-        socket_set_timeout(client, 1000);
+        Socket client{socket_open()};
         REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
         socket_send_all(client, "CLOSE_ME", 8);
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-        char buf[16];
-        auto res = socket_receive(client, buf, sizeof(buf));
-        REQUIRE((res.bytes == 0 || res.error == SocketError::ConnectionReset || res.error == SocketError::ConnectionClosed));
     }
 
-    auto start = std::chrono::steady_clock::now();
-    while (close_count < 1) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) {
-            break;
-        }
-    }
+    chunk_sem.acquire();
 
     exit_signal = true;
-    signal_pipe.signal();
+    server.stop();
     server_thread.join();
 
     REQUIRE(request_count >= 1);

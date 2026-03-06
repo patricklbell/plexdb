@@ -14,7 +14,7 @@ using namespace objstore::parser;
 
 
 TEST_CASE("HTTP single complete request", "[objstore.parser]") {
-    http::Parser parser;
+    http::RequestParser parser;
     
     String8 request = "GET /test HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\nhello";
     execute(parser, request.data, request.length);
@@ -29,7 +29,7 @@ TEST_CASE("HTTP single complete request", "[objstore.parser]") {
 }
 
 TEST_CASE("HTTP incremental chunks", "[objstore.parser]") {
-    http::Parser parser;
+    http::RequestParser parser;
     
     SECTION("headers split across chunks") {
         String8 c1 = "GET /pa";
@@ -71,7 +71,7 @@ TEST_CASE("HTTP incremental chunks", "[objstore.parser]") {
 }
 
 TEST_CASE("HTTP reset", "[objstore.parser]") {
-    http::Parser parser;
+    http::RequestParser parser;
     
     String8 req1 = "GET /first HTTP/1.1\r\n\r\n";
     execute(parser, req1.data, req1.length);
@@ -88,11 +88,86 @@ TEST_CASE("HTTP reset", "[objstore.parser]") {
 }
 
 TEST_CASE("HTTP malformed request", "[objstore.parser]") {
-    http::Parser parser;
+    http::RequestParser parser;
     
     String8 garbage = "NOT_HTTP garbage\r\n";
     execute(parser, garbage.data, garbage.length);
     REQUIRE(has_error(parser));
+}
+
+TEST_CASE("HTTP response with Content-Length", "[objstore.parser]") {
+    http::ResponseParser parser;
+    
+    String8 response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, World!";
+    execute(parser, response.data, response.length);
+    
+    REQUIRE(is_complete(parser));
+    REQUIRE_FALSE(has_error(parser));
+    
+    const http::Response& resp = get_response(parser);
+    REQUIRE(resp.status_code == 200);
+    REQUIRE(resp.body == "Hello, World!");
+}
+
+TEST_CASE("HTTP response chunked encoding", "[objstore.parser]") {
+    http::ResponseParser parser;
+    
+    String8 response = 
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "5\r\n"
+        "Hello\r\n"
+        "7\r\n"
+        ", World\r\n"
+        "0\r\n"
+        "\r\n";
+    execute(parser, response.data, response.length);
+    
+    REQUIRE(is_complete(parser));
+    REQUIRE_FALSE(has_error(parser));
+    
+    const http::Response& resp = get_response(parser);
+    REQUIRE(resp.status_code == 200);
+    REQUIRE(resp.body == "Hello, World");
+}
+
+TEST_CASE("HTTP response incremental", "[objstore.parser]") {
+    http::ResponseParser parser;
+    
+    String8 c1 = "HTTP/1.1 404 Not";
+    String8 c2 = " Found\r\nContent-Length: 9\r\n\r\n";
+    String8 c3 = "not found";
+    
+    execute(parser, c1.data, c1.length);
+    REQUIRE_FALSE(is_complete(parser));
+    
+    execute(parser, c2.data, c2.length);
+    REQUIRE_FALSE(is_complete(parser));
+    
+    execute(parser, c3.data, c3.length);
+    REQUIRE(is_complete(parser));
+    
+    const http::Response& resp = get_response(parser);
+    REQUIRE(resp.status_code == 404);
+    REQUIRE(resp.body == "not found");
+}
+
+TEST_CASE("HTTP response reset", "[objstore.parser]") {
+    http::ResponseParser parser;
+    
+    String8 resp1 = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+    execute(parser, resp1.data, resp1.length);
+    REQUIRE(is_complete(parser));
+    REQUIRE(get_response(parser).status_code == 200);
+    
+    reset(parser);
+    REQUIRE_FALSE(is_complete(parser));
+    
+    String8 resp2 = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\n\r\nerror";
+    execute(parser, resp2.data, resp2.length);
+    REQUIRE(is_complete(parser));
+    REQUIRE(get_response(parser).status_code == 500);
 }
 
 TEST_CASE("CQL CREATE KEYSPACE statements", "[objstore.parser]") {

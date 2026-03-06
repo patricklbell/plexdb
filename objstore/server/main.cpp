@@ -16,33 +16,17 @@ void assert_handler(const char* msg, const char* file_name, const char* function
     exit(1);
 }
 
-int signal_pipe[2];
-volatile bool exit_signal = false;
+os::Notifier g_signal_pipe{};
+volatile bool g_should_stop_listening = false;
 
-void signal_handler(int signal) {
-    exit_signal = true;
-
-    // unblocks blocking calls
-    char dummy = 0;
-    write(signal_pipe[1], &dummy, 1);
-}
-
-int init_signal_handlers() {
-    int res = pipe(signal_pipe);
-    assert_true(res == 0, "failed to create pipe");
-    
-    struct sigaction sa{};
-    sa.sa_handler = signal_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    
-    res = sigaction(SIGUSR1, &sa, nullptr); assert_true(res == 0, "sigaction failed");
-    res = sigaction(SIGTERM, &sa, nullptr); assert_true(res == 0, "sigaction failed");
-
-    return signal_pipe[0];
+void stop_kill_handler(int) {
+    g_should_stop_listening = true;
+    os::signal_notify_safe(g_signal_pipe);
 }
 
 int main(int argc, char* argv[]) {
+    os::signal_ignore_pipe();
+    
     String8 pid_file_path = "objstore_server.pid";
     {
         os::File pid_file{os::file_open(pid_file_path)};
@@ -52,7 +36,7 @@ int main(int argc, char* argv[]) {
     }
 
     set_assert_handler(assert_handler);
-    int signal_fd = init_signal_handlers();
+    os::signal_register_kill(stop_kill_handler);
     
     int port = 8080;
     if (argc > 1) {
@@ -79,7 +63,7 @@ int main(int argc, char* argv[]) {
         }
         engine::Engine engine{&pager};
     
-        server::run(port, signal_fd, exit_signal, engine, [&port]() { println("listening on port ", to_str(port));});
+        server::run(port, g_signal_pipe, g_should_stop_listening, engine, [&port]() { println("listening on port ", to_str(port));});
 
         println("shutting down...");
     }

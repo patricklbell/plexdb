@@ -19,10 +19,10 @@ import plexdb.os.containers;
 
 namespace objstore::parser::http {
     // ========================================================================
-    // incremental parser
+    // request parser
     // ========================================================================
     // @note accumulates data since llhttp callbacks point into current input buffer only
-    struct ParserState {
+    struct RequestParserState {
         llhttp_t parser;
         Request request;
         
@@ -50,7 +50,7 @@ namespace objstore::parser::http {
     };
 
     static int inc_on_method(llhttp_t* parser, const char* at, size_t length) {
-        auto* state = static_cast<ParserState*>(parser->data);
+        auto* state = static_cast<RequestParserState*>(parser->data);
         U64 copy_len = min(length, MAX_METHOD_SIZE - state->method_len);
         os::memory_copy(state->method_buf + state->method_len, at, copy_len);
         state->method_len += copy_len;
@@ -58,13 +58,13 @@ namespace objstore::parser::http {
     }
 
     static int inc_on_method_complete(llhttp_t* parser) {
-        auto* state = static_cast<ParserState*>(parser->data);
+        auto* state = static_cast<RequestParserState*>(parser->data);
         state->request.method = {reinterpret_cast<const U8*>(state->method_buf), state->method_len};
         return 0;
     }
 
     static int inc_on_url(llhttp_t* parser, const char* at, size_t length) {
-        auto* state = static_cast<ParserState*>(parser->data);
+        auto* state = static_cast<RequestParserState*>(parser->data);
         U64 copy_len = min(length, MAX_URL_SIZE - state->url_len);
         os::memory_copy(state->url_buf + state->url_len, at, copy_len);
         state->url_len += copy_len;
@@ -72,13 +72,13 @@ namespace objstore::parser::http {
     }
 
     static int inc_on_url_complete(llhttp_t* parser) {
-        auto* state = static_cast<ParserState*>(parser->data);
+        auto* state = static_cast<RequestParserState*>(parser->data);
         state->request.url = {reinterpret_cast<const U8*>(state->url_buf), state->url_len};
         return 0;
     }
 
     static int inc_on_header_field(llhttp_t* parser, const char* at, size_t length) {
-        auto* state = static_cast<ParserState*>(parser->data);
+        auto* state = static_cast<RequestParserState*>(parser->data);
         if (state->in_header_value && state->request.header_count < MAX_HEADERS) {
             state->request.headers.values[state->request.header_count].name = 
                 {reinterpret_cast<const U8*>(state->header_name_buf), state->header_name_len};
@@ -97,7 +97,7 @@ namespace objstore::parser::http {
     }
 
     static int inc_on_header_value(llhttp_t* parser, const char* at, size_t length) {
-        auto* state = static_cast<ParserState*>(parser->data);
+        auto* state = static_cast<RequestParserState*>(parser->data);
         state->in_header_value = true;
         
         U64 copy_len = min(length, MAX_HEADER_VALUE_SIZE - state->header_value_len);
@@ -107,7 +107,7 @@ namespace objstore::parser::http {
     }
 
     static int inc_on_headers_complete(llhttp_t* parser) {
-        auto* state = static_cast<ParserState*>(parser->data);
+        auto* state = static_cast<RequestParserState*>(parser->data);
         if (state->in_header_value && state->request.header_count < MAX_HEADERS) {
             state->request.headers.values[state->request.header_count].name = 
                 {reinterpret_cast<const U8*>(state->header_name_buf), state->header_name_len};
@@ -120,7 +120,7 @@ namespace objstore::parser::http {
     }
 
     static int inc_on_body(llhttp_t* parser, const char* at, size_t length) {
-        auto* state = static_cast<ParserState*>(parser->data);
+        auto* state = static_cast<RequestParserState*>(parser->data);
         if (state->body_len + length > state->body_capacity) {
             U64 new_capacity = max(state->body_capacity * 2, state->body_len + length);
             new_capacity = max(new_capacity, 4096_u64); // Minimum 4KB
@@ -140,7 +140,7 @@ namespace objstore::parser::http {
     }
 
     static int inc_on_message_complete(llhttp_t* parser) {
-        auto* state = static_cast<ParserState*>(parser->data);
+        auto* state = static_cast<RequestParserState*>(parser->data);
         state->request.body = {reinterpret_cast<const U8*>(state->body_buf), state->body_len};
         state->message_complete = true;
         return 0;
@@ -165,14 +165,14 @@ namespace objstore::parser::http {
         return settings;
     }
 
-    ParserState* parser_create() {
-        auto* state = reinterpret_cast<ParserState*>(os::allocate_zero(sizeof(ParserState)));
+    RequestParserState* request_parser_create() {
+        auto* state = reinterpret_cast<RequestParserState*>(os::allocate_zero(sizeof(RequestParserState)));
         llhttp_init(&state->parser, HTTP_REQUEST, &get_incremental_settings());
         state->parser.data = state;
         return state;
     }
 
-    void parser_reset(ParserState* state) {
+    void request_parser_reset(RequestParserState* state) {
         if (state->body_buf) {
             os::deallocate(state->body_buf);
         }
@@ -190,7 +190,7 @@ namespace objstore::parser::http {
         state->in_header_value = false;
     }
 
-    void parser_destroy(ParserState* state) {
+    void request_parser_destroy(RequestParserState* state) {
         if (state) {
             if (state->body_buf) {
                 os::deallocate(state->body_buf);
@@ -199,7 +199,7 @@ namespace objstore::parser::http {
         }
     }
 
-    void parser_execute(ParserState* state, const char* data, U64 length) {
+    void request_parser_execute(RequestParserState* state, const char* data, U64 length) {
         if (state->has_error || state->message_complete) {
             return;
         }
@@ -211,15 +211,198 @@ namespace objstore::parser::http {
         }
     }
 
-    const Request& parser_get_request(const ParserState* state) {
+    const Request& request_parser_get_request(const RequestParserState* state) {
         return state->request;
     }
 
-    bool parser_is_complete(const ParserState* state) {
+    bool request_parser_is_complete(const RequestParserState* state) {
         return state->message_complete;
     }
 
-    bool parser_has_error(const ParserState* state) {
+    bool request_parser_has_error(const RequestParserState* state) {
+        return state->has_error;
+    }
+
+    // ========================================================================
+    // response parser
+    // ========================================================================
+    struct ResponseParserState {
+        llhttp_t parser;
+        Response response;
+        
+        char status_buf[256];
+        U64 status_len = 0;
+        
+        char header_name_buf[MAX_HEADER_NAME_SIZE];
+        U64 header_name_len = 0;
+        
+        char header_value_buf[MAX_HEADER_VALUE_SIZE];
+        U64 header_value_len = 0;
+        
+        char* body_buf = nullptr;
+        U64 body_capacity = 0;
+        U64 body_len = 0;
+        
+        bool message_complete = false;
+        bool has_error = false;
+        bool in_header_value = false;
+    };
+
+    static int resp_on_status(llhttp_t* parser, const char* at, size_t length) {
+        auto* state = static_cast<ResponseParserState*>(parser->data);
+        U64 copy_len = min(length, 256 - state->status_len);
+        os::memory_copy(state->status_buf + state->status_len, at, copy_len);
+        state->status_len += copy_len;
+        return 0;
+    }
+
+    static int resp_on_status_complete(llhttp_t* parser) {
+        auto* state = static_cast<ResponseParserState*>(parser->data);
+        state->response.status_code = static_cast<U16>(parser->status_code);
+        state->response.status_message = {reinterpret_cast<const U8*>(state->status_buf), state->status_len};
+        return 0;
+    }
+
+    static int resp_on_header_field(llhttp_t* parser, const char* at, size_t length) {
+        auto* state = static_cast<ResponseParserState*>(parser->data);
+        if (state->in_header_value && state->response.header_count < MAX_HEADERS) {
+            state->response.headers.values[state->response.header_count].name = 
+                {reinterpret_cast<const U8*>(state->header_name_buf), state->header_name_len};
+            state->response.headers.values[state->response.header_count].value = 
+                {reinterpret_cast<const U8*>(state->header_value_buf), state->header_value_len};
+            state->response.header_count++;
+            state->header_name_len = 0;
+            state->header_value_len = 0;
+            state->in_header_value = false;
+        }
+        
+        U64 copy_len = min(length, MAX_HEADER_NAME_SIZE - state->header_name_len);
+        os::memory_copy(state->header_name_buf + state->header_name_len, at, copy_len);
+        state->header_name_len += copy_len;
+        return 0;
+    }
+
+    static int resp_on_header_value(llhttp_t* parser, const char* at, size_t length) {
+        auto* state = static_cast<ResponseParserState*>(parser->data);
+        state->in_header_value = true;
+        U64 copy_len = min(length, MAX_HEADER_VALUE_SIZE - state->header_value_len);
+        os::memory_copy(state->header_value_buf + state->header_value_len, at, copy_len);
+        state->header_value_len += copy_len;
+        return 0;
+    }
+
+    static int resp_on_headers_complete(llhttp_t* parser) {
+        auto* state = static_cast<ResponseParserState*>(parser->data);
+        if (state->in_header_value && state->response.header_count < MAX_HEADERS) {
+            state->response.headers.values[state->response.header_count].name = 
+                {reinterpret_cast<const U8*>(state->header_name_buf), state->header_name_len};
+            state->response.headers.values[state->response.header_count].value = 
+                {reinterpret_cast<const U8*>(state->header_value_buf), state->header_value_len};
+            state->response.header_count++;
+        }
+        state->header_name_len = 0;
+        state->header_value_len = 0;
+        state->in_header_value = false;
+        return 0;
+    }
+
+    static int resp_on_body(llhttp_t* parser, const char* at, size_t length) {
+        auto* state = static_cast<ResponseParserState*>(parser->data);
+        
+        if (state->body_len + length > state->body_capacity) {
+            U64 new_capacity = max(state->body_capacity * 2, state->body_len + length + 1024);
+            char* new_buf = reinterpret_cast<char*>(os::allocate(new_capacity));
+            if (state->body_buf) {
+                os::memory_copy(new_buf, state->body_buf, state->body_len);
+                os::deallocate(state->body_buf);
+            }
+            state->body_buf = new_buf;
+            state->body_capacity = new_capacity;
+        }
+        
+        os::memory_copy(state->body_buf + state->body_len, at, length);
+        state->body_len += length;
+        return 0;
+    }
+
+    static int resp_on_message_complete(llhttp_t* parser) {
+        auto* state = static_cast<ResponseParserState*>(parser->data);
+        state->response.body = {reinterpret_cast<const U8*>(state->body_buf), state->body_len};
+        state->message_complete = true;
+        return 0;
+    }
+
+    static llhttp_settings_t& get_response_settings() {
+        static llhttp_settings_t settings;
+        static bool initialized = false;
+        if (!initialized) {
+            llhttp_settings_init(&settings);
+            settings.on_status = resp_on_status;
+            settings.on_status_complete = resp_on_status_complete;
+            settings.on_header_field = resp_on_header_field;
+            settings.on_header_value = resp_on_header_value;
+            settings.on_headers_complete = resp_on_headers_complete;
+            settings.on_body = resp_on_body;
+            settings.on_message_complete = resp_on_message_complete;
+            initialized = true;
+        }
+        return settings;
+    }
+
+    ResponseParserState* response_parser_create() {
+        auto* state = reinterpret_cast<ResponseParserState*>(os::allocate_zero(sizeof(ResponseParserState)));
+        llhttp_init(&state->parser, HTTP_RESPONSE, &get_response_settings());
+        state->parser.data = state;
+        return state;
+    }
+
+    void response_parser_reset(ResponseParserState* state) {
+        if (state->body_buf) {
+            os::deallocate(state->body_buf);
+        }
+        llhttp_reset(&state->parser);
+        state->response = Response{};
+        state->status_len = 0;
+        state->header_name_len = 0;
+        state->header_value_len = 0;
+        state->body_buf = nullptr;
+        state->body_capacity = 0;
+        state->body_len = 0;
+        state->message_complete = false;
+        state->has_error = false;
+        state->in_header_value = false;
+    }
+
+    void response_parser_destroy(ResponseParserState* state) {
+        if (state) {
+            if (state->body_buf) {
+                os::deallocate(state->body_buf);
+            }
+            os::deallocate(state);
+        }
+    }
+
+    void response_parser_execute(ResponseParserState* state, const char* data, U64 length) {
+        if (state->has_error || state->message_complete) {
+            return;
+        }
+        
+        llhttp_errno err = llhttp_execute(&state->parser, data, length);
+        
+        if (err != HPE_OK) {
+            state->has_error = true;
+        }
+    }
+
+    const Response& response_parser_get_response(const ResponseParserState* state) {
+        return state->response;
+    }
+
+    bool response_parser_is_complete(const ResponseParserState* state) {
+        return state->message_complete;
+    }
+
+    bool response_parser_has_error(const ResponseParserState* state) {
         return state->has_error;
     }
 }

@@ -3,7 +3,6 @@
 #include <thread>
 #include <atomic>
 #include <semaphore>
-#include <unistd.h>
 #include <string.h>
 
 import plexdb.base;
@@ -12,6 +11,7 @@ import plexdb.pager;
 
 import objstore.engine;
 import objstore.server;
+import objstore.parser;
 
 using namespace plexdb;
 using namespace plexdb::os;
@@ -25,32 +25,14 @@ namespace {
         return E2E_TEST_PORT_BASE + port_counter.fetch_add(1);
     }
 
-    struct SignalPipe {
-        int read_fd = -1;
-        int write_fd = -1;
-
-        SignalPipe() {
-            int fds[2];
-            if (pipe(fds) == 0) {
-                read_fd = fds[0];
-                write_fd = fds[1];
-            }
-        }
-
-        ~SignalPipe() {
-            if (read_fd >= 0) close(read_fd);
-            if (write_fd >= 0) close(write_fd);
-        }
-
-        void signal() {
-            char c = 1;
-            [[maybe_unused]] auto res = write(write_fd, &c, 1);
-        }
-    };
-
     bool contains(const char* haystack, const char* needle) {
         return strstr(haystack, needle) != nullptr;
     }
+
+    struct OwnedResponse {
+        U16 status_code;
+        AutoString8 body;
+    };
 
     AutoString8 make_http_request(const String8& cql) {
         return fmt(
@@ -64,21 +46,24 @@ namespace {
         );
     }
 
-    AutoString8 send_cql(Socket& client, const String8& cql) {
+    OwnedResponse send_cql(Socket& client, const String8& cql) {
         AutoString8 request = make_http_request(cql);
         socket_send_all(client, request.c_str, request.length);
 
+        parser::http::ResponseParser parser;
         char buffer[4096];
-        auto res = socket_receive(client, buffer, sizeof(buffer) - 1);
-        if (res.bytes <= 0) return AutoString8{""};
-        buffer[res.bytes] = '\0';
-        return AutoString8{buffer};
-    }
-
-    const char* extract_http_body(const char* response) {
-        const char* body_start = strstr(response, "\r\n\r\n");
-        if (body_start == nullptr) return "";
-        return body_start + 4;
+        
+        while (!is_complete(parser) && !has_error(parser)) {
+            auto res = socket_receive(client, buffer, sizeof(buffer));
+            if (res.byte_count <= 0) break;
+            execute(parser, buffer, res.byte_count);
+        }
+        
+        const auto& resp = get_response(parser);
+        return OwnedResponse{
+            .status_code = resp.status_code,
+            .body = AutoString8{resp.body}
+        };
     }
 }
 
@@ -90,7 +75,7 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
 
     // First server instance: create schema and insert data
     {
-        SignalPipe signal_pipe;
+        os::Notifier signal_pipe;
         std::binary_semaphore server_ready{0};
         volatile bool exit_signal = false;
 
@@ -102,38 +87,38 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
             engine::create_database(pager);
             engine::Engine engine{&pager};
 
-            server::run(port, signal_pipe.read_fd, exit_signal, engine, [&server_ready]() {
+            server::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
                 server_ready.release();
             });
         });
 
         server_ready.acquire();
 
-        Socket client{socket_create_tcp()};
+        Socket client{socket_open()};
         socket_set_timeout(client, 2000);
         REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
 
         auto response = send_cql(client, "CREATE KEYSPACE test_ks WITH replication = 'SimpleStrategy';");
-        REQUIRE(contains(response.c_str, "200 OK"));
+        REQUIRE(response.status_code == 200);
 
         response = send_cql(client, "CREATE TABLE test_ks.users (id int PRIMARY KEY, name text, age int);");
-        REQUIRE(contains(response.c_str, "200 OK"));
+        REQUIRE(response.status_code == 200);
 
         response = send_cql(client, "INSERT INTO test_ks.users VALUES (1, 'Alice', 30);");
-        REQUIRE(contains(response.c_str, "200 OK"));
+        REQUIRE(response.status_code == 200);
 
         response = send_cql(client, "INSERT INTO test_ks.users VALUES (2, 'Bob', 25);");
-        REQUIRE(contains(response.c_str, "200 OK"));
+        REQUIRE(response.status_code == 200);
 
         exit_signal = true;
-        signal_pipe.signal();
+        os::signal_notify_safe(signal_pipe);
         server_thread.join();
     }
 
     // Second server instance: verify data persisted
     {
         int port2 = get_unique_port();
-        SignalPipe signal_pipe;
+        os::Notifier signal_pipe;
         std::binary_semaphore server_ready{0};
         volatile bool exit_signal = false;
 
@@ -141,28 +126,27 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
             Pager pager{db_file};
             engine::Engine engine{&pager};
 
-            server::run(port2, signal_pipe.read_fd, exit_signal, engine, [&server_ready]() {
+            server::run(port2, signal_pipe, exit_signal, engine, [&server_ready]() {
                 server_ready.release();
             });
         });
 
         server_ready.acquire();
 
-        Socket client{socket_create_tcp()};
+        Socket client{socket_open()};
         socket_set_timeout(client, 2000);
         REQUIRE(socket_connect(client, "127.0.0.1", (U16)port2));
 
         auto response = send_cql(client, "SELECT * FROM test_ks.users;");
-        REQUIRE(contains(response.c_str, "200 OK"));
+        REQUIRE(response.status_code == 200);
 
-        const char* body = extract_http_body(response.c_str);
-        REQUIRE(contains(body, "Alice"));
-        REQUIRE(contains(body, "Bob"));
-        REQUIRE(contains(body, "30"));
-        REQUIRE(contains(body, "25"));
+        REQUIRE(contains(response.body.c_str, "Alice"));
+        REQUIRE(contains(response.body.c_str, "Bob"));
+        REQUIRE(contains(response.body.c_str, "30"));
+        REQUIRE(contains(response.body.c_str, "25"));
 
         exit_signal = true;
-        signal_pipe.signal();
+        os::signal_notify_safe(signal_pipe);
         server_thread.join();
     }
 }
