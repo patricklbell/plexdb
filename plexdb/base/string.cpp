@@ -3,6 +3,7 @@ module;
 #include <stdio.h>
 #include <stdarg.h>
 #include <inttypes.h>
+#include <stdlib.h>
 
 #define STB_SPRINTF_IMPLEMENTATION
 #include "stb_sprintf.h"
@@ -94,7 +95,16 @@ namespace plexdb {
     }
 
     bool AutoString8::operator==(const String8& b) const {
-        return strcmp(this->c_str, b.c_str()) == 0;
+        if (this->length != b.length) {
+            return false;
+        }
+
+        for (U64 i = 0; i < b.length; i++) {
+            if (b.data[i] != this->c_str[i]) {
+                return false;
+            }
+        }
+        return true;
     }
     bool AutoString8::operator==(const char* b) const {
         return strcmp(this->c_str, b) == 0;
@@ -200,6 +210,61 @@ namespace plexdb {
 
     AutoString8 to_str(bool x) {
         return AutoString8((x) ? "true" : "false");
+    }
+
+    // @note these functions copy to ensure null-termination since String8 may not be null-terminated
+    S64 s64_from_str(String8 x) {
+        AutoString8 tmp(x);
+        return strtoll(tmp.c_str, nullptr, 10);
+    }
+
+    U64 u64_from_str(String8 x) {
+        AutoString8 tmp(x);
+        return strtoull(tmp.c_str, nullptr, 10);
+    }
+
+    S32 s32_from_str(String8 x) {
+        AutoString8 tmp(x);
+        return static_cast<S32>(strtol(tmp.c_str, nullptr, 10));
+    }
+
+    U32 u32_from_str(String8 x) {
+        AutoString8 tmp(x);
+        return static_cast<U32>(strtoul(tmp.c_str, nullptr, 10));
+    }
+
+    S16 s16_from_str(String8 x) {
+        AutoString8 tmp(x);
+        return static_cast<S16>(strtol(tmp.c_str, nullptr, 10));
+    }
+
+    U16 u16_from_str(String8 x) {
+        AutoString8 tmp(x);
+        return static_cast<U16>(strtoul(tmp.c_str, nullptr, 10));
+    }
+
+    S8 s8_from_str(String8 x) {
+        AutoString8 tmp(x);
+        return static_cast<S8>(strtol(tmp.c_str, nullptr, 10));
+    }
+
+    U8 u8_from_str(String8 x) {
+        AutoString8 tmp(x);
+        return static_cast<U8>(strtoul(tmp.c_str, nullptr, 10));
+    }
+
+    F32 f32_from_str(String8 x) {
+        AutoString8 tmp(x);
+        return strtof(tmp.c_str, nullptr);
+    }
+
+    F64 f64_from_str(String8 x) {
+        AutoString8 tmp(x);
+        return strtod(tmp.c_str, nullptr);
+    }
+
+    bool bool_from_str(String8 x) {
+        return x == "true" || x == "1";
     }
 
     // @todo simplify the callbacks

@@ -231,3 +231,9 @@
 #endif
 
 #define PLEXDB_CONSTEVAL_TRAP(x) {PLEXDB_UNUSED int a = 1/static_cast<int>(static_cast<bool>(x));}
+
+// OffsetOf
+#include <cstddef>
+
+// fixed type format specifier
+#include <inttypes.h>

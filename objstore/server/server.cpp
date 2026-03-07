@@ -1,5 +1,5 @@
 module;
-#include <inttypes.h>
+#include "macros.h"
 
 module objstore.server;
 

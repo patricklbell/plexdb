@@ -1,6 +1,3 @@
-#include <stdlib.h>
-#include <signal.h>
-
 import plexdb.base;
 import plexdb.os;
 import plexdb.pager;
@@ -14,7 +11,7 @@ using namespace plexdb;
 
 void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
     println(msg);
-    exit(1);
+    os::signal_exit(1);
 }
 
 os::Notifier g_signal_pipe{};
@@ -46,7 +43,7 @@ int main(int argc, char* argv[]) {
     }
 
     String8 db_path = argparse::get_positional(args, 0);
-    int port = atoi(argparse::get_positional(args, 1));
+    U16 port = u16_from_str(argparse::get_positional(args, 1));
 
     String8 pid_file_path = "objstore_server.pid";
     {
