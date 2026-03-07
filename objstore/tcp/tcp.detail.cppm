@@ -34,7 +34,7 @@ namespace objstore::tcp {
         auto get_next_free_buffer_idx = [&]() -> U32 {
             U32 initial_free_buffer_idx = next_free_buffer_idx;
             while (!os::is_zero_handle(buffer_infos[next_free_buffer_idx].client)) {
-                next_free_buffer_idx += (next_free_buffer_idx + 1) % ring.buffer_count;
+                next_free_buffer_idx = (next_free_buffer_idx + 1) % ring.buffer_count;
                 
                 if (next_free_buffer_idx == initial_free_buffer_idx) {
                     return INVALID_BUFFER_IDX;
