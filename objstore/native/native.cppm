@@ -1,0 +1,486 @@
+module;
+#include "macros.h"
+
+export module objstore.native;
+
+import plexdb.base;
+import plexdb.os;
+import plexdb.os.containers;
+import plexdb.btree;
+import plexdb.tagged_union;
+
+import objstore.tcp;
+import objstore.parser;
+import objstore.engine;
+import objstore.engine.statements;
+
+using namespace plexdb;
+using namespace objstore;
+
+// ============================================================================
+// Private implementation
+// ============================================================================
+namespace objstore::native {
+    constexpr U64 FRAME_HEADER_SIZE = 9;
+    constexpr U8  RESPONSE_VERSION  = 0x84;
+
+    // ========================================================================
+    // Opcodes
+    // ========================================================================
+    namespace opcode {
+        constexpr U8 ERROR         = 0x00;
+        constexpr U8 STARTUP       = 0x01;
+        constexpr U8 READY         = 0x02;
+        constexpr U8 OPTIONS       = 0x05;
+        constexpr U8 SUPPORTED     = 0x06;
+        constexpr U8 QUERY         = 0x07;
+        constexpr U8 RESULT        = 0x08;
+        constexpr U8 PREPARE       = 0x09;
+        constexpr U8 EXECUTE       = 0x0A;
+        constexpr U8 REGISTER      = 0x0B;
+        constexpr U8 BATCH         = 0x0D;
+        constexpr U8 AUTH_RESPONSE = 0x0F;
+    }
+
+    // ========================================================================
+    // RESULT kinds
+    // ========================================================================
+    namespace result_kind {
+        constexpr S32 VOID          = 0x0001;
+        constexpr S32 ROWS          = 0x0002;
+        constexpr S32 SET_KEYSPACE  = 0x0003;
+        constexpr S32 SCHEMA_CHANGE = 0x0005;
+    }
+
+    // ========================================================================
+    // CQL native type option IDs
+    // ========================================================================
+    namespace cql_type {
+        constexpr U16 Bigint    = 0x0002;
+        constexpr U16 Boolean   = 0x0004;
+        constexpr U16 Counter   = 0x0005;
+        constexpr U16 Double    = 0x0007;
+        constexpr U16 Float     = 0x0008;
+        constexpr U16 Int       = 0x0009;
+        constexpr U16 Timestamp = 0x000B;
+        constexpr U16 Uuid      = 0x000C;
+        constexpr U16 Varchar   = 0x000D;
+        constexpr U16 Smallint  = 0x0013;
+    }
+
+    // ========================================================================
+    // Per-connection state
+    // ========================================================================
+    struct NativeState {
+        DynamicArray<U8> recv_buf;
+        bool startup_done = false;
+    };
+
+    // ========================================================================
+    // Big-endian read helpers
+    // ========================================================================
+    inline U16 read_be_u16(const U8* p) {
+        return (U16(p[0]) << 8) | p[1];
+    }
+
+    inline S16 read_be_s16(const U8* p) {
+        return S16(read_be_u16(p));
+    }
+
+    inline S32 read_be_s32(const U8* p) {
+        return S32((U32(p[0]) << 24) | (U32(p[1]) << 16) | (U32(p[2]) << 8) | p[3]);
+    }
+
+    // Read [long string]: [int] n + n bytes
+    inline String8 read_cql_long_string(const U8*& p, const U8* end) {
+        assert_true(p + 4 <= end, "truncated long string length");
+        S32 len = read_be_s32(p);
+        p += 4;
+        assert_true(len >= 0 && p + len <= end, "long string body truncated");
+        String8 s(reinterpret_cast<const char*>(p), U64(len));
+        p += len;
+        return s;
+    }
+
+    // ========================================================================
+    // Big-endian write helpers
+    // ========================================================================
+    template<BufferedString8Flush F>
+    inline void append_be_u8(BufferedString8<F>& buf, U8 v) {
+        append(buf, static_cast<char>(v));
+    }
+
+    template<BufferedString8Flush F>
+    inline void append_be_u16(BufferedString8<F>& buf, U16 v) {
+        append_be_u8(buf, U8(v >> 8));
+        append_be_u8(buf, U8(v));
+    }
+
+    template<BufferedString8Flush F>
+    inline void append_be_s32(BufferedString8<F>& buf, S32 v) {
+        append_be_u8(buf, U8(U32(v) >> 24));
+        append_be_u8(buf, U8(U32(v) >> 16));
+        append_be_u8(buf, U8(U32(v) >> 8));
+        append_be_u8(buf, U8(U32(v)));
+    }
+
+    // Write [string]: [short] n + bytes
+    template<BufferedString8Flush F>
+    inline void append_cql_string(BufferedString8<F>& buf, String8 s) {
+        append_be_u16(buf, U16(s.length));
+        for (U64 i = 0; i < s.length; i++)
+            append_be_u8(buf, U8(s.data[i]));
+    }
+
+    // Write [bytes]: [int] n + bytes  (n < 0 = null)
+    template<BufferedString8Flush F>
+    inline void append_cql_bytes_raw(BufferedString8<F>& buf, const U8* data, S32 n) {
+        append_be_s32(buf, n);
+        if (n > 0) {
+            for (S32 i = 0; i < n; i++)
+                append_be_u8(buf, data[i]);
+        }
+    }
+
+    // Write a dtype::ReadValue as CQL native binary [bytes] (big-endian network order)
+    template<BufferedString8Flush F>
+    void append_cql_value(BufferedString8<F>& buf, const dtype::ReadValue& value, DType dtype) {
+        switch (dtype) {
+            case DType::text:
+            case DType::uuid:
+            case DType::timestamp: {
+                const AutoString8& s = get<AutoString8>(value);
+                append_cql_bytes_raw(buf, reinterpret_cast<const U8*>(s.c_str), S32(s.length));
+            } break;
+            case DType::smallint: {
+                S16 v = get<S16>(value);
+                U8 data[2] = { U8(v >> 8), U8(v) };
+                append_cql_bytes_raw(buf, data, 2);
+            } break;
+            case DType::int_: {
+                S32 v = get<S32>(value);
+                U8 data[4] = { U8(U32(v) >> 24), U8(U32(v) >> 16), U8(U32(v) >> 8), U8(U32(v)) };
+                append_cql_bytes_raw(buf, data, 4);
+            } break;
+            case DType::counter:
+            case DType::bigint: {
+                S64 v = get<S64>(value);
+                U8 data[8];
+                for (int i = 7; i >= 0; i--) {
+                    data[i] = U8(v);
+                    v >>= 8;
+                }
+                append_cql_bytes_raw(buf, data, 8);
+            } break;
+            case DType::boolean: {
+                U8 v = get<U8>(value);
+                append_cql_bytes_raw(buf, &v, 1);
+            } break;
+            case DType::float_: {
+                F32 v = get<F32>(value);
+                U32 bits;
+                os::memory_copy(&bits, &v, sizeof(bits));
+                U8 data[4] = { U8(bits >> 24), U8(bits >> 16), U8(bits >> 8), U8(bits) };
+                append_cql_bytes_raw(buf, data, 4);
+            } break;
+            case DType::double_: {
+                F64 v = get<F64>(value);
+                U64 bits;
+                os::memory_copy(&bits, &v, sizeof(bits));
+                U8 data[8];
+                for (int i = 7; i >= 0; i--) {
+                    data[i] = U8(bits);
+                    bits >>= 8;
+                }
+                append_cql_bytes_raw(buf, data, 8);
+            } break;
+        }
+    }
+
+    // Map DType to CQL native type option ID
+    constexpr U16 dtype_to_cql_type(DType dtype) {
+        switch (dtype) {
+            case DType::text:       return cql_type::Varchar;
+            case DType::uuid:       return cql_type::Uuid;
+            case DType::timestamp:  return cql_type::Timestamp;
+            case DType::smallint:   return cql_type::Smallint;
+            case DType::int_:       return cql_type::Int;
+            case DType::bigint:     return cql_type::Bigint;
+            case DType::counter:    return cql_type::Counter;
+            case DType::boolean:    return cql_type::Boolean;
+            case DType::float_:     return cql_type::Float;
+            case DType::double_:    return cql_type::Double;
+        }
+        return 0x0000;
+    }
+
+    // ========================================================================
+    // Response frame builder
+    // ========================================================================
+    // Reserves FRAME_HEADER_SIZE bytes at the front of the chunk buffer, writes
+    // the body after, and fills in the 9-byte header when the BufferedString8 flushes.
+    inline auto make_native_frame(tcp::Connection* conn, tcp::Chunk* chunk, tcp::AsyncWriteFunctor* write, U8 op, S16 stream) {
+        assert_true(chunk->buffer_idx >= 0, "cannot use large chunk for native response");
+
+        U64 chunk_size = conn->chunk_chain.chunk_size;
+
+        return BufferedString8(
+            TArrayView<char>(
+                reinterpret_cast<char*>(chunk->data.ptr + FRAME_HEADER_SIZE),
+                chunk_size - FRAME_HEADER_SIZE
+            ),
+            [=](const char* data, U64 length, bool is_final) {
+                assert_true_not_implemented(is_final, "native response body too large for chunk buffer");
+
+                U8* hdr = chunk->data.ptr;
+                hdr[0] = RESPONSE_VERSION;
+                hdr[1] = 0x00;  // flags
+                hdr[2] = U8(U16(stream) >> 8);
+                hdr[3] = U8(stream);
+                hdr[4] = op;
+                U32 body_len = U32(length);
+                hdr[5] = U8(body_len >> 24);
+                hdr[6] = U8(body_len >> 16);
+                hdr[7] = U8(body_len >> 8);
+                hdr[8] = U8(body_len);
+
+                (*write)(conn, chunk->buffer_idx, 0, FRAME_HEADER_SIZE + U32(length));
+            }
+        );
+    }
+
+    // ========================================================================
+    // Body writers for each RESULT/ERROR type
+    // ========================================================================
+    template<BufferedString8Flush F>
+    void append_error_body(BufferedString8<F>& buf, engine::ExecutionStatus status, String8 message) {
+        append_be_s32(buf, S32(static_cast<U16>(status)));
+        append_cql_string(buf, message);
+    }
+
+    template<BufferedString8Flush F>
+    void append_result_void(BufferedString8<F>& buf) {
+        append_be_s32(buf, result_kind::VOID);
+    }
+
+    template<BufferedString8Flush F>
+    void append_result_set_keyspace(BufferedString8<F>& buf, String8 keyspace) {
+        append_be_s32(buf, result_kind::SET_KEYSPACE);
+        append_cql_string(buf, keyspace);
+    }
+
+    // @note schema_change result: change_type + target + keyspace [+ table if TABLE]
+    template<BufferedString8Flush F>
+    void append_result_schema_change(BufferedString8<F>& buf, String8 change_type, String8 target, String8 keyspace, String8 table) {
+        append_be_s32(buf, result_kind::SCHEMA_CHANGE);
+        append_cql_string(buf, change_type);
+        append_cql_string(buf, target);
+        append_cql_string(buf, keyspace);
+        if (table.length > 0)
+            append_cql_string(buf, table);
+    }
+
+    // @note iterates rows once; uses btree size to get row count without double iteration
+    template<BufferedString8Flush F>
+    void append_result_rows(BufferedString8<F>& buf, engine::ExecutionResult& result, schema::Table* tbl) {
+        append_be_s32(buf, result_kind::ROWS);
+
+        // metadata: flags | col_count | [global_table_spec] | col_specs
+        append_be_s32(buf, 0x0001);  // Global_tables_spec flag
+        append_be_s32(buf, S32(tbl->cols.length));
+        append_cql_string(buf, result.keyspace);
+        append_cql_string(buf, result.table);
+
+        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+            append_cql_string(buf, tbl->cols[ci].name);
+            append_be_u16(buf, dtype_to_cql_type(tbl->cols[ci].dtype));
+        }
+
+        append_be_s32(buf, S32(btree::size(tbl->btree)));
+
+        for (auto& row = result.rows->begin(); row != result.rows->end(); ++row) {
+            for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col)
+                append_cql_value(buf, engine::read_value(col), engine::column(col).dtype);
+        }
+    }
+
+    // ========================================================================
+    // Frame dispatcher
+    // ========================================================================
+    void handle_frame(
+        NativeState& state,
+        engine::Engine& engine,
+        tcp::Connection* conn,
+        tcp::AsyncWriteFunctor* write,
+        const U8* header,
+        const U8* body,
+        S32 body_len
+    ) {
+        S16 stream  = read_be_s16(header + 2);
+        U8  op      = header[4];
+
+        tcp::Chunk& chunk = *front(conn->chunk_chain.chunks);
+        const U8* body_end = body + body_len;
+
+        switch (op) {
+            case opcode::STARTUP: {
+                state.startup_done = true;
+                auto frame = make_native_frame(conn, &chunk, write, opcode::READY, stream);
+                // empty body
+            } break;
+
+            case opcode::OPTIONS: {
+                auto frame = make_native_frame(conn, &chunk, write, opcode::SUPPORTED, stream);
+                // [string multimap]: n pairs of ([string] key, [string list] values)
+                append_be_u16(frame, 1);
+                append_cql_string(frame, "CQL_VERSION");
+                append_be_u16(frame, 1);
+                append_cql_string(frame, "3.0.0");
+            } break;
+
+            case opcode::QUERY: {
+                const U8* p = body;
+                String8 query = read_cql_long_string(p, body_end);
+                // Remaining bytes are query parameters (consistency, flags, etc.) - ignored
+
+                auto cql_opt = parser::cql::parse(query);
+                if (!cql_opt) {
+                    auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
+                    append_error_body(frame, engine::ExecutionStatus::SyntaxError, "Failed to parse CQL");
+                    break;
+                }
+
+                bool is_use_keyspace = false;
+                visit(cql_opt->value, [&is_use_keyspace](const auto& stmt) {
+                    using T = RemoveCVRef<decltype(stmt)>;
+                    if constexpr (SameAs<T, UseKeyspace>)
+                        is_use_keyspace = true;
+                });
+
+                engine::ExecutionResult result = engine::execute(engine, *cql_opt);
+
+                if (result.status != engine::ExecutionStatus::Success) {
+                    auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
+                    String8 msg = result.message.length ? result.message : engine::to_str(result.status);
+                    append_error_body(frame, result.status, msg);
+                    break;
+                }
+
+                if (is_use_keyspace) {
+                    auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                    append_result_set_keyspace(frame, engine.current_keyspace);
+                    break;
+                }
+
+                switch (result.kind) {
+                    case engine::ResultKind::Void: {
+                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                        append_result_void(frame);
+                    } break;
+                    case engine::ResultKind::SchemaChange: {
+                        String8 change_type = result.message.length ? result.message : "UPDATED";
+                        String8 target      = result.table.length   ? "TABLE"        : "KEYSPACE";
+                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                        append_result_schema_change(frame, change_type, target, result.keyspace, result.table);
+                    } break;
+                    case engine::ResultKind::Rows: {
+                        auto ks = schema::read_keyspace(engine.schema, result.keyspace);
+                        assert_true(ks != nullptr, "keyspace not found for rows result");
+                        auto tbl = schema::read_table(engine.schema, *ks, result.table);
+                        assert_true(tbl != nullptr, "table not found for rows result");
+                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                        append_result_rows(frame, result, tbl);
+                    } break;
+                }
+            } break;
+
+            case opcode::REGISTER: {
+                // Ignore event registration, respond with READY
+                auto frame = make_native_frame(conn, &chunk, write, opcode::READY, stream);
+            } break;
+
+            case opcode::PREPARE: {
+                assert_true_not_implemented(false, "PREPARE not implemented");
+            } break;
+
+            case opcode::EXECUTE: {
+                assert_true_not_implemented(false, "EXECUTE not implemented");
+            } break;
+
+            case opcode::BATCH: {
+                assert_true_not_implemented(false, "BATCH not implemented");
+            } break;
+
+            default: {
+                auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
+                append_error_body(frame, engine::ExecutionStatus::Invalid, "Unknown opcode");
+            } break;
+        }
+    }
+}
+
+// ============================================================================
+// Public interface
+// ============================================================================
+export namespace objstore::native {
+    template<typename F>
+    concept OnReady = requires(F f) { f(); };
+
+    void run(U16 port, os::Notifier& signal_pipe, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback) {
+        MapFixedSentinel<os::Handle, NativeState, 2_u64*tcp::MAX_CONCURRENT_CONNECTIONS> client_to_state;
+
+        const auto on_chunk = [&engine, &client_to_state](const tcp::Request& req) -> tcp::RequestStatus {
+            NativeState& state = find_or_insert(client_to_state, req.connection->client);
+
+            // Append all new data from the chunk chain to our receive buffer.
+            // Since we always return Handled, the chain contains only data from the current read.
+            for (tcp::Chunk& chunk : req.connection->chunk_chain.chunks) {
+                for (U64 i = 0; i < chunk.data.length; i++)
+                    push_back(state.recv_buf, chunk.data.ptr[i]);
+            }
+
+            // Process one complete frame (if available)
+            if (state.recv_buf.length >= FRAME_HEADER_SIZE) {
+                const U8* hdr = state.recv_buf.ptr;
+                S32 body_len = read_be_s32(hdr + 5);
+
+                if (body_len >= 0 && state.recv_buf.length >= FRAME_HEADER_SIZE + U64(body_len)) {
+                    handle_frame(state, engine, req.connection, req.write, hdr, hdr + FRAME_HEADER_SIZE, body_len);
+
+                    // Remove the consumed frame from the front of recv_buf
+                    U64 frame_size = FRAME_HEADER_SIZE + U64(body_len);
+                    U64 remaining  = state.recv_buf.length - frame_size;
+                    if (remaining > 0)
+                        os::memory_move(state.recv_buf.ptr, state.recv_buf.ptr + frame_size, remaining);
+                    state.recv_buf.length = remaining;
+                }
+            }
+
+            // Always release the chunk chain; unprocessed data is in recv_buf
+            return tcp::RequestStatus::Handled;
+        };
+
+        const auto on_open  = [](tcp::Connection*) {};
+
+        const auto on_close = [&client_to_state](tcp::Connection* connection) {
+            if (connection != nullptr)
+                try_remove(client_to_state, connection->client);
+        };
+
+        {
+            os::Socket socket{os::socket_open()};
+            assert_true_always(!os::is_zero_handle(socket), "failed to open server socket");
+            assert_true_always(os::socket_set_option(socket, os::SocketOption::Reuse, true), "failed to set reuse on server socket");
+            assert_true_always(os::socket_bind(socket, port), "failed to bind server socket");
+            assert_true_always(os::socket_listen(socket, 128), "failed to listen on server socket");
+
+            on_ready_callback();
+
+            tcp::listen(
+                socket,
+                on_chunk, on_open, on_close,
+                signal_pipe, should_exit
+            );
+        }
+    }
+}

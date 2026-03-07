@@ -264,6 +264,8 @@ namespace objstore::engine {
                 return {
                     .status = ExecutionStatus::Success,
                     .kind = ResultKind::Rows,
+                    .keyspace = stmt.keyspace_name,
+                    .table = stmt.table_name,
                     .rows = move(rows),
                 };
             } else if constexpr (SameAs<T, UseKeyspace>) {
