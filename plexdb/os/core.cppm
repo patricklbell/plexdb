@@ -121,4 +121,15 @@ export namespace plexdb::os {
         ~File();
         operator Handle() const;
     };
+
+    // ========================================================================
+    // streams
+    // ========================================================================
+    Handle stdin_stream();
+    Handle stdout_stream();
+
+    void   stream_write(Handle h, const void* data, U64 length);
+    void   stream_write(Handle h, String8 s);
+    U64    stream_read(Handle h, void* out, U64 max_length);
+    void   stream_close(Handle h);
 }

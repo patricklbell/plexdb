@@ -1,6 +1,5 @@
 module;
-#include <unistd.h>
-#include <string.h>
+#include "macros.h"
 
 module objstore.repl;
 
@@ -16,157 +15,120 @@ using namespace plexdb;
 namespace objstore::repl {
     static constexpr const char* PROMPT = "objstore> ";
 
-    static void fd_write(int fd, const char* data, U64 length) {
-        U64 written = 0;
-        while (written < length) {
-            ssize_t n = write(fd, data + written, length - written);
-            if (n <= 0) break;
-            written += (U64)n;
-        }
-    }
-
-    static void fd_write(int fd, String8 s) {
-        fd_write(fd, s.data, s.length);
-    }
-
-    static void write_result(int out_fd, engine::ExecutionResult& result, U64 row_count) {
+    static void write_result(os::Handle ostream, engine::ExecutionResult& result, U64 row_count) {
         switch (result.kind) {
             case engine::ResultKind::Void:{
-                fd_write(out_fd, engine::to_str(result.status));
+                os::stream_write(ostream, engine::to_str(result.status));
                 if (result.message.length) {
-                    fd_write(out_fd, ": ");
-                    fd_write(out_fd, result.message);
+                    os::stream_write(ostream, ": ");
+                    os::stream_write(ostream, result.message);
                 }
-                fd_write(out_fd, "\n");
+                os::stream_write(ostream, "\n");
             }break;
             case engine::ResultKind::Rows:{
                 if (row_count == 0) {
-                    fd_write(out_fd, "(0 rows)\n");
+                    os::stream_write(ostream, "(0 rows)\n");
                 } else {
                     AutoString8 count_str = to_str(row_count);
-                    fd_write(out_fd, "(");
-                    fd_write(out_fd, count_str.c_str, count_str.length);
-                    fd_write(out_fd, " rows)\n");
+                    os::stream_write(ostream, "(");
+                    os::stream_write(ostream, count_str.c_str, count_str.length);
+                    os::stream_write(ostream, " rows)\n");
                 }
             }break;
             case engine::ResultKind::SchemaChange:{
-                fd_write(out_fd, engine::to_str(result.status));
+                os::stream_write(ostream, engine::to_str(result.status));
                 if (result.message.length) {
-                    fd_write(out_fd, ": ");
-                    fd_write(out_fd, result.message);
+                    os::stream_write(ostream, ": ");
+                    os::stream_write(ostream, result.message);
                 }
                 if (result.keyspace.length) {
-                    fd_write(out_fd, " (keyspace: ");
-                    fd_write(out_fd, result.keyspace);
+                    os::stream_write(ostream, " (keyspace: ");
+                    os::stream_write(ostream, result.keyspace);
                     if (result.table.length) {
-                        fd_write(out_fd, ", table: ");
-                        fd_write(out_fd, result.table);
+                        os::stream_write(ostream, ", table: ");
+                        os::stream_write(ostream, result.table);
                     }
-                    fd_write(out_fd, ")");
+                    os::stream_write(ostream, ")");
                 }
-                fd_write(out_fd, "\n");
+                os::stream_write(ostream, "\n");
             }break;
         }
     }
 
-    void run(int in_fd, int out_fd, engine::Engine& eng) {
+    void run(os::Handle istream, os::Handle ostream, engine::Engine& eng) {
         constexpr U64 INPUT_BUFFER_SIZE = 4096;
         char input_buf[INPUT_BUFFER_SIZE];
         
-        AutoString8 pending_input;
-
-        fd_write(out_fd, PROMPT);
+        os::stream_write(ostream, PROMPT);
 
         while (true) {
-            ssize_t n = read(in_fd, input_buf, INPUT_BUFFER_SIZE - 1);
-            if (n <= 0) break;
-
-            input_buf[n] = '\0';
-
-            // Accumulate input
-            for (ssize_t i = 0; i < n; i++) {
-                pending_input.push_back(input_buf[i]);
+            U64 n = os::stream_read(istream, input_buf, INPUT_BUFFER_SIZE - 1);
+            if (n == 0) {
+                break;
             }
 
-            // Process complete statements (terminated by ';')
-            while (true) {
-                String8 pending{pending_input.c_str, pending_input.length};
-                if (!parser::cql::is_complete(pending)) break;
+            input_buf[n] = '\0';
+            String8 pending_input(input_buf, n);
 
-                // Find the ';' – only pass up to it for parsing
-                U64 semi_pos = 0;
-                for (U64 i = 0; i < pending_input.length; i++) {
-                    if (pending_input.c_str[i] == ';') {
-                        semi_pos = i + 1;
-                        break;
-                    }
+            while (true) {
+                if (!parser::cql::is_complete(pending_input)) {
+                    break;
                 }
 
-                String8 stmt_input{pending_input.c_str, semi_pos};
+                Optional<U64> semi_idx_opt = find(pending_input, ';');
+                String8 stmt_input{pending_input.data, (static_cast<bool>(semi_idx_opt)) ? (*semi_idx_opt + 1) : 0};
+
                 auto stmt_opt = parser::cql::parse(stmt_input, false);
                 if (!stmt_opt) {
-                    fd_write(out_fd, "ERROR: Failed to parse CQL\n");
+                    os::stream_write(ostream, "ERROR: Failed to parse CQL\n");
                     pending_input = AutoString8{};
                     break;
                 }
 
+                engine::ExecutionResult result = engine::execute(eng, *stmt_opt);
+                
                 U64 row_count = 0;
-
-                const auto on_value = [&out_fd, &row_count](
-                    const schema::Table& tbl,
-                    const schema::Column& col,
-                    U64 col_count,
-                    U64 row_idx,
-                    U64 col_idx,
-                    const dtype::ReadValue& value
-                ) {
-                    // Print column header row on first row
-                    if (row_idx == 0 && col_idx == 0) {
-                        for (U64 c = 0; c < col_count; c++) {
-                            if (c > 0) fd_write(out_fd, " | ");
-                            fd_write(out_fd, tbl.cols[c].name);
-                        }
-                        fd_write(out_fd, "\n");
-                        for (U64 c = 0; c < col_count; c++) {
-                            if (c > 0) fd_write(out_fd, "-+-");
-                            for (U64 j = 0; j < tbl.cols[c].name.length; j++) {
-                                fd_write(out_fd, "-", 1);
+                if (result.rows) {
+                    for (auto& row = result.rows->begin(); row != result.rows->end(); ++row) {
+                        if (row_count == 0) {
+                            U64 col_idx = 0;
+                            for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col, ++col_idx) {
+                                if (col_idx > 0) os::stream_write(ostream, " | ");
+                                os::stream_write(ostream, engine::column(col).name);
                             }
+                            os::stream_write(ostream, "\n");
+
+                            col_idx = 0;
+                            for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col, ++col_idx) {
+                                if (col_idx > 0) os::stream_write(ostream, "-+-");
+                                for (U64 j = 0; j < engine::column(col).name.length; j++)
+                                    os::stream_write(ostream, "-", 1);
+                            }
+                            os::stream_write(ostream, "\n");
                         }
-                        fd_write(out_fd, "\n");
+
+                        U64 col_idx = 0;
+                        for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col, ++col_idx) {
+                            os::stream_write(ostream, col_idx == 0 ? " " : " | ");
+                            AutoString8 val_str = dtype::to_str(engine::read_value(col), engine::column(col).dtype);
+                            os::stream_write(ostream, val_str.c_str, val_str.length);
+                        }
+                        os::stream_write(ostream, "\n");
+                        ++row_count;
                     }
-
-                    if (col_idx == 0) fd_write(out_fd, " ");
-                    else fd_write(out_fd, " | ");
-
-                    AutoString8 val_str = dtype::to_str(value, col.dtype);
-                    fd_write(out_fd, val_str.c_str, val_str.length);
-
-                    if (col_idx == col_count - 1) fd_write(out_fd, "\n");
-
-                    row_count = row_idx + 1;
-                };
-
-                engine::ExecutionResult result = engine::execute(eng, *stmt_opt, on_value);
-                write_result(out_fd, result, row_count);
-
-                // Remove the processed statement and skip trailing whitespace
-                while (semi_pos < pending_input.length &&
-                       (pending_input.c_str[semi_pos] == ' ' ||
-                        pending_input.c_str[semi_pos] == '\n' ||
-                        pending_input.c_str[semi_pos] == '\r' ||
-                        pending_input.c_str[semi_pos] == '\t')) {
-                    semi_pos++;
                 }
+                
+                write_result(ostream, result, row_count);
 
-                AutoString8 remainder;
-                for (U64 i = semi_pos; i < pending_input.length; i++) {
-                    remainder.push_back(pending_input.c_str[i]);
-                }
-                pending_input = remainder;
+                // @note guaranteed to be valid index since there is a trailing \0
+                pending_input = String8(&pending_input.data[stmt_input.length], pending_input.length - stmt_input.length);
             }
 
-            fd_write(out_fd, PROMPT);
+            os::stream_write(ostream, PROMPT);
         }
+    }
+
+    void run(engine::Engine& engine) {
+        run(os::stdin_stream(), os::stdout_stream(), engine);
     }
 }

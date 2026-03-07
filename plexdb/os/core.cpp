@@ -149,6 +149,43 @@ namespace plexdb::os {
         };
     }
 
+    // ========================================================================
+    // streams
+    // ========================================================================
+    Handle stdin_stream() {
+        return fd_to_handle(STDIN_FILENO);
+    }
+
+    Handle stdout_stream() {
+        return fd_to_handle(STDOUT_FILENO);
+    }
+
+    void stream_write(Handle h, const void* data, U64 length) {
+        int fd = handle_to_fd(h);
+        U64 written = 0;
+        while (written < length) {
+            ssize_t n = write(fd, static_cast<const char*>(data) + written, length - written);
+            if (n <= 0) break;
+            written += static_cast<U64>(n);
+        }
+    }
+
+    void stream_write(Handle h, String8 s) {
+        stream_write(h, s.data, s.length);
+    }
+
+    U64 stream_read(Handle h, void* out, U64 max_length) {
+        int fd = handle_to_fd(h);
+        ssize_t n = read(fd, out, max_length);
+        if (n <= 0) return 0;
+        return static_cast<U64>(n);
+    }
+
+    void stream_close(Handle h) {
+        int fd = handle_to_fd(h);
+        close(fd);
+    }
+
 #else
     #error "OS library not implemented."
 #endif

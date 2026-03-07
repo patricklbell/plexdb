@@ -58,13 +58,6 @@ int main(int argc, char* argv[]) {
     }
     Pager pager{db_file};
 
-    if (run_repl) {
-        if (db_create) engine::create_database(pager);
-        engine::Engine eng{&pager};
-        repl::run(os::handle_stdin(), os::handle_stdout(), eng);
-        return 0;
-    }
-
     String8 pid_file_path = "objstore_server.pid";
     {
         os::File pid_file{os::file_open(pid_file_path)};
@@ -78,9 +71,12 @@ int main(int argc, char* argv[]) {
         }
         engine::Engine engine{&pager};
     
-        server::run(port, g_signal_notifier, g_should_stop, engine, [&port]() { println("listening on port ", to_str(port));});
-
-        println("shutting down...");
+        if (run_repl) {
+            repl::run(engine);
+        } else {
+            server::run(port, g_signal_notifier, g_should_stop, engine, [&port]() { println("listening on port ", to_str(port));});
+            println("shutting down...");
+        }
     }
 
     os::file_delete(pid_file_path);

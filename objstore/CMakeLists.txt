@@ -21,6 +21,7 @@ endif()
 # =============================================================================
 # Third part dependencies
 # =============================================================================
+include(FetchContent)
 include(FindPkgConfig)
 pkg_check_modules(liburing REQUIRED IMPORTED_TARGET GLOBAL liburing>=2.0)
 
@@ -40,7 +41,6 @@ target_include_directories(llhttp PUBLIC
     ${llhttp_SOURCE_DIR}/include
 )
 
-include(FetchContent)
 FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
 FetchContent_MakeAvailable(lexy)
 
@@ -160,6 +160,10 @@ if(BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
     )
     target_sources(objstore_tests PRIVATE ${OBJSTORE_TEST_SOURCES})
+
+    target_include_directories(objstore_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+    )
 
     target_link_libraries(objstore_tests
         PRIVATE

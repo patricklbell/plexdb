@@ -18,7 +18,7 @@ export namespace plexdb {
     T& push_back(DynamicArray<T,Size>& arr, const T& value);
 
     // @todo move construct vs zero initialize
-    template <typename T, typename Size=U64>
+    template <typename T, typename Size>
     struct DynamicArray {
         T*  ptr      = nullptr;
         Size length   = 0;

@@ -27,6 +27,9 @@ namespace plexdb {
     template<typename T> struct VolatileHelper                { using removed = T; static constexpr bool is = false; };
     template<typename T> struct VolatileHelper<volatile T>    { using removed = T; static constexpr bool is = true;  };
 
+    template<typename T> struct LValueHelper     { using removed = T; static constexpr bool is = false; };
+    template<typename T> struct LValueHelper<T&> { using removed = T; static constexpr bool is = true; };
+
     template<typename T> struct RefHelper      { using removed = T; static constexpr bool is = false; };
     template<typename T> struct RefHelper<T&>  { using removed = T; static constexpr bool is = true;  };
     template<typename T> struct RefHelper<T&&> { using removed = T; static constexpr bool is = true;  };
@@ -42,13 +45,14 @@ namespace plexdb {
     template<bool b, typename T, typename F> struct ConditionalHelper               { using type = T; };
     template<typename T, typename F>         struct ConditionalHelper<false, T, F>  { using type = F; };
 
-    // ========================================================================
-    // data region
-    // ========================================================================
-    static const char* not_implemented_msg = "not implemented";
 }
 
 export namespace plexdb {
+    // ========================================================================
+    // data region
+    // ========================================================================
+    const char* not_implemented_msg = "not implemented";
+
     // ========================================================================
     // numerical types
     // ========================================================================
@@ -249,7 +253,7 @@ export namespace plexdb {
 
     template<typename T>
     constexpr T&& forward(RemoveRef<T>&& t) noexcept {
-        static_assert(!__is_lvalue_reference(T), "forward<T>(T&&) called with T as lvalue reference");
+        static_assert(!LValueHelper<T>::is, "forward<T>(T&&) called with T as lvalue reference");
         return static_cast<T&&>(t);
     }
 
