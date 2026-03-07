@@ -24,7 +24,6 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-19 \
             -DCMAKE_C_COMPILER=clang-19 \
             -DBUILD_TESTS=OFF
-          cp build/objstore/objstore_server objstore-linux-x64
 
       - name: Build
         run: ninja -C build
@@ -39,6 +38,10 @@ jobs:
           done
           cp macros/macros.h pkg/plexdb/macros/
           tar -czf plexdb-linux-x64.tar.gz -C pkg plexdb
+
+      - name: Package objstore
+        run: |
+          cp build/objstore/objstore_server objstore-linux-x64
 
       - name: Upload objstore
         uses: actions/upload-artifact@v4
