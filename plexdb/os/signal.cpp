@@ -4,6 +4,7 @@ module;
 #if PLEXDB_OS_LINUX
     #include <unistd.h>
     #include <signal.h>
+    #include <stdlib.h>
     #include <sys/epoll.h>
 #endif
 
@@ -71,6 +72,10 @@ namespace plexdb::os {
 
         void signal_ignore_pipe() {
             signal_register_linux(SIGPIPE, SIG_IGN);
+        }
+
+        void signal_exit(int code) {
+            ::exit(code);
         }
 
         Poll::Poll() {

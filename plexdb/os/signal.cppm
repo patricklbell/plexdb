@@ -29,6 +29,7 @@ export namespace plexdb::os {
     void signal_register_kill(SignalHandler handler);
     void signal_register_stop(SignalHandler handler);
     void signal_ignore_pipe();
+    void signal_exit(int code);
 
     struct Poll {
         Handle handle;

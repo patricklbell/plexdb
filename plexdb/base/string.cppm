@@ -100,6 +100,20 @@ export namespace plexdb {
 
     AutoString8 to_str(bool x);
 
+    S64 s64_from_str(String8 x);
+    U64 u64_from_str(String8 x);
+    S32 s32_from_str(String8 x);
+    U32 u32_from_str(String8 x);
+    S16 s16_from_str(String8 x);
+    U16 u16_from_str(String8 x);
+    S8  s8_from_str(String8 x);
+    U8  u8_from_str(String8 x);
+
+    F32 f32_from_str(String8 x);
+    F64 f64_from_str(String8 x);
+
+    bool bool_from_str(String8 x);
+
     template <typename... Args>
     U64 fmt_length(const char* fmt, Args&&... args) {
         return stbsp_snprintf(nullptr, 0, fmt, forward<Args>(args)...);

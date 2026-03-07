@@ -1,5 +1,5 @@
 module;
-#include <inttypes.h>
+#include "macros.h"
 
 export module objstore.server;
 
@@ -179,7 +179,7 @@ export namespace objstore::server {
     template<typename F>
     concept OnReady = requires(F f) { f(); };
 
-    void run(int port, os::Notifier& signal_pipe, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback) {
+    void run(U16 port, os::Notifier& signal_pipe, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback) {
         // @todo not compile time
         MapFixedSentinel<os::Handle, parser::http::RequestParser, 2*tcp::MAX_CONCURRENT_CONNECTIONS> client_to_http_parser;
 
@@ -254,10 +254,10 @@ export namespace objstore::server {
 
         {
             os::Socket socket{os::socket_open()};
-            assert_true(!os::is_zero_handle(socket), "failed to open server socket");
-            assert_true(os::socket_set_option(socket, os::SocketOption::Reuse, true), "failed to set reuse on server socket");
-            assert_true(os::socket_bind(socket, static_cast<U16>(port)), "failed to bind server socket");
-            assert_true(os::socket_listen(socket, 128), "failed to listen on server socket");
+            assert_true_always(!os::is_zero_handle(socket), "failed to open server socket");
+            assert_true_always(os::socket_set_option(socket, os::SocketOption::Reuse, true), "failed to set reuse on server socket");
+            assert_true_always(os::socket_bind(socket, port), "failed to bind server socket");
+            assert_true_always(os::socket_listen(socket, 128), "failed to listen on server socket");
     
             on_ready_callback();
     
