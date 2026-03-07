@@ -39,6 +39,15 @@ namespace plexdb {
         return i == b.length;
     }
 
+    Optional<U64> find(const String8& str, char c) {
+        for (U64 i = 0; i < str.length; i++) {
+            if (str.data[i] == c) {
+                return {i};
+            }
+        }
+        return {};
+    }
+
     AutoString8::AutoString8()
         : c_str(nullptr), length(0) {}
     AutoString8::AutoString8(U64 length)

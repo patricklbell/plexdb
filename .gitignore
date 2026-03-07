@@ -3,3 +3,5 @@ build/
 .cache/
 out/
 _codeql_detected_source_root
+*.db
+objstore.pid

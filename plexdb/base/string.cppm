@@ -47,6 +47,8 @@ export namespace plexdb {
     bool operator==(const String8& a, const String8& b);
     bool operator==(const char* a, const String8& b);
 
+    Optional<U64> find(const String8& str, char c);
+
     struct AutoString8 {
         char* c_str;
         U64 length;

@@ -14,17 +14,27 @@ export namespace plexdb::argparse {
         char description[MAX_DESC_LEN];
     };
 
+    constexpr U64 MAX_OPTIONS     = 16;
+
     struct FlagDef {
         char long_name[MAX_NAME_LEN];
         char short_name[8];
         char description[MAX_DESC_LEN];
     };
 
+    struct OptionDef {
+        char long_name[MAX_NAME_LEN];
+        char short_name[8];
+        char description[MAX_DESC_LEN];
+        char default_value[MAX_VALUE_LEN];
+    };
+
     struct Parser {
         char prog_name[MAX_NAME_LEN];
         char description[MAX_DESC_LEN];
         CappedArray<PositionalDef, MAX_POSITIONAL> positionals;
-        CappedArray<FlagDef, MAX_FLAGS> flags;
+        CappedArray<FlagDef, MAX_FLAGS>   flags;
+        CappedArray<OptionDef, MAX_OPTIONS> options;
     };
 
     struct ParseResult {
@@ -34,15 +44,18 @@ export namespace plexdb::argparse {
         char positional_values[MAX_POSITIONAL][MAX_VALUE_LEN];
         U64  positional_count;
         U32  flag_bits;
+        char option_values[MAX_OPTIONS][MAX_VALUE_LEN];
     };
 
     Parser make_parser(const char* prog_name, const char* description = "");
     void   add_positional(Parser& parser, const char* name, const char* description = "");
     void   add_flag(Parser& parser, const char* long_name, const char* short_name = "", const char* description = "");
+    void   add_option(Parser& parser, const char* long_name, const char* short_name = "", const char* description = "", const char* default_value = "");
 
     ParseResult parse(const Parser& parser, int argc, char* argv[]);
     void        print_help(const Parser& parser);
 
     String8 get_positional(const ParseResult& result, U64 index);
     bool    has_flag(const ParseResult& result, U64 flag_index);
+    String8 get_option(const ParseResult& result, U64 option_index);
 }
