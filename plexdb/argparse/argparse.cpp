@@ -28,9 +28,21 @@ namespace plexdb::argparse {
         push_back(parser.flags, def);
     }
 
+    void add_option(Parser& parser, const char* long_name, const char* short_name, const char* description, const char* default_value) {
+        OptionDef def{};
+        snprintf(def.long_name,     MAX_NAME_LEN,  "%s", long_name);
+        snprintf(def.short_name,    8,             "%s", short_name);
+        snprintf(def.description,   MAX_DESC_LEN,  "%s", description);
+        snprintf(def.default_value, MAX_VALUE_LEN, "%s", default_value);
+        push_back(parser.options, def);
+    }
+
     ParseResult parse(const Parser& parser, int argc, char* argv[]) {
         ParseResult result{};
         result.ok = true;
+
+        for (U64 oi = 0; oi < parser.options.cap; oi++)
+            snprintf(result.option_values[oi], MAX_VALUE_LEN, "%s", parser.options[oi].default_value);
 
         for (int i = 1; i < argc; i++) {
             const char* arg = argv[i];
@@ -42,6 +54,23 @@ namespace plexdb::argparse {
 
             if (arg[0] == '-') {
                 bool found = false;
+                for (U64 oi = 0; oi < parser.options.cap; oi++) {
+                    const OptionDef& opt = parser.options[oi];
+                    if (strcmp(arg, opt.long_name) == 0 ||
+                        (opt.short_name[0] != '\0' && strcmp(arg, opt.short_name) == 0))
+                    {
+                        if (i + 1 >= argc) {
+                            snprintf(result.error, MAX_DESC_LEN, "%s requires a value", arg);
+                            result.ok = false;
+                            return result;
+                        }
+                        snprintf(result.option_values[oi], MAX_VALUE_LEN, "%s", argv[++i]);
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) continue;
+
                 for (U64 fi = 0; fi < parser.flags.cap; fi++) {
                     const FlagDef& flag = parser.flags[fi];
                     if (strcmp(arg, flag.long_name) == 0 ||
@@ -86,6 +115,9 @@ namespace plexdb::argparse {
         for (U64 i = 0; i < parser.positionals.cap; i++) {
             printf(" <%s>", parser.positionals[i].name);
         }
+        for (U64 i = 0; i < parser.options.cap; i++) {
+            printf(" [--%s <%s>]", parser.options[i].long_name + 2, parser.options[i].long_name + 2);
+        }
         for (U64 i = 0; i < parser.flags.cap; i++) {
             printf(" [%s]", parser.flags[i].long_name);
         }
@@ -102,19 +134,29 @@ namespace plexdb::argparse {
             }
         }
 
-        if (parser.flags.cap > 0) {
+        if (parser.options.cap > 0 || parser.flags.cap > 0) {
             printf("\nOptions:\n");
+            for (U64 i = 0; i < parser.options.cap; i++) {
+                const OptionDef& opt = parser.options[i];
+                char name_val[MAX_NAME_LEN + 8];
+                snprintf(name_val, sizeof(name_val), "%s <%s>", opt.long_name, opt.long_name + 2);
+                if (opt.short_name[0] != '\0') {
+                    printf("  %s, %-20s  %s (default: %s)\n", opt.short_name, name_val, opt.description, opt.default_value);
+                } else {
+                    printf("  %-24s  %s (default: %s)\n", name_val, opt.description, opt.default_value);
+                }
+            }
             for (U64 i = 0; i < parser.flags.cap; i++) {
                 const FlagDef& flag = parser.flags[i];
                 if (flag.short_name[0] != '\0') {
-                    printf("  %s, %-16s  %s\n", flag.short_name, flag.long_name, flag.description);
+                    printf("  %s, %-20s  %s\n", flag.short_name, flag.long_name, flag.description);
                 } else {
-                    printf("  %-20s  %s\n", flag.long_name, flag.description);
+                    printf("  %-24s  %s\n", flag.long_name, flag.description);
                 }
             }
         }
 
-        printf("\n  -h, %-16s  Show this help message\n", "--help");
+        printf("\n  -h, %-20s  Show this help message\n", "--help");
     }
 
     String8 get_positional(const ParseResult& result, U64 index) {
@@ -125,5 +167,10 @@ namespace plexdb::argparse {
     bool has_flag(const ParseResult& result, U64 flag_index) {
         assert_true(flag_index < MAX_FLAGS, "flag index out of range");
         return (result.flag_bits & (U32(1) << flag_index)) != 0;
+    }
+
+    String8 get_option(const ParseResult& result, U64 option_index) {
+        assert_true(option_index < MAX_OPTIONS, "option index out of range");
+        return String8(result.option_values[option_index]);
     }
 }

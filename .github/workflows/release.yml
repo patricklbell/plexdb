@@ -18,16 +18,39 @@ jobs:
           sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19
 
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DBUILD_TESTS=OFF
+          cp build/objstore/objstore_server objstore-linux-x64
 
       - name: Build
         run: ninja -C build
 
-      - name: Upload objstore_server
+      - name: Package plexdb
+        run: |
+          mkdir -p pkg/plexdb/lib pkg/plexdb/modules pkg/plexdb/macros
+          cp build/plexdb/libplexdb.a pkg/plexdb/lib/
+          find plexdb -name '*.cppm' | while read f; do
+            mkdir -p "pkg/plexdb/modules/$(dirname "$f")"
+            cp "$f" "pkg/plexdb/modules/$f"
+          done
+          cp macros/macros.h pkg/plexdb/macros/
+          tar -czf plexdb-linux-x64.tar.gz -C pkg plexdb
+
+      - name: Upload objstore
         uses: actions/upload-artifact@v4
         with:
-          name: objstore_server-linux-x64
-          path: build/objstore/objstore_server
+          name: objstore-linux-x64
+          path: objstore-linux-x64
+
+      - name: Upload plexdb
+        uses: actions/upload-artifact@v4
+        with:
+          name: plexdb-linux-x64
+          path: plexdb-linux-x64.tar.gz
 
   release:
     needs: build
@@ -36,12 +59,19 @@ jobs:
       contents: write
 
     steps:
-      - name: Download artifact
+      - name: Download objstore
         uses: actions/download-artifact@v4
         with:
-          name: objstore_server-linux-x64
+          name: objstore-linux-x64
+
+      - name: Download plexdb
+        uses: actions/download-artifact@v4
+        with:
+          name: plexdb-linux-x64
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: objstore_server
+          files: |
+            objstore-linux-x64
+            plexdb-linux-x64.tar.gz

@@ -1,0 +1,42 @@
+tracepoint:syscalls:sys_enter_openat
+/ pid == $1 /
+{
+    printf("openat  pid=%d filename=%s flags=0x%x\n",
+           pid,
+           str(args->filename),
+           args->flags);
+}
+
+tracepoint:syscalls:sys_enter_read
+/ pid == $1 /
+{
+    printf("read    pid=%d fd=%d count=%d\n",
+           pid,
+           args->fd,
+           args->count);
+}
+
+tracepoint:syscalls:sys_enter_write
+/ pid == $1 /
+{
+    printf("write   pid=%d fd=%d count=%d\n",
+           pid,
+           args->fd,
+           args->count);
+}
+
+tracepoint:syscalls:sys_enter_fsync
+/ pid == $1 /
+{
+    printf("fsync   pid=%d fd=%d\n",
+           pid,
+           args->fd);
+}
+
+tracepoint:syscalls:sys_enter_close
+/ pid == $1 /
+{
+    printf("close   pid=%d fd=%d\n",
+           pid,
+           args->fd);
+}

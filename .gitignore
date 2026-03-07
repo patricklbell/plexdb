@@ -4,4 +4,4 @@ build/
 out/
 _codeql_detected_source_root
 *.db
-objstore_server.pid
+objstore.pid

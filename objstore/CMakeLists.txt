@@ -130,7 +130,7 @@ if(OBJSTORE_BUILD_SERVER)
 
     target_sources(objstore_server
         PRIVATE
-            server/main.cpp
+            entry/main.cpp
     )
 
     target_link_libraries(objstore_server

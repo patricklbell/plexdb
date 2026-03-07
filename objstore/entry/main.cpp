@@ -28,9 +28,9 @@ int main(int argc, char* argv[]) {
     set_assert_handler(assert_handler);
     os::signal_register_kill(signal_handler);
 
-    auto arg_parser = argparse::make_parser("objstore_server", "Object store database server");
+    auto arg_parser = argparse::make_parser("objstore", "Object store database server");
     argparse::add_positional(arg_parser, "db_path", "Path to the database file");
-    argparse::add_positional(arg_parser, "port", "TCP port to listen on");
+    argparse::add_option(arg_parser, "--port", "-p", "TCP port to listen on", "9042");
     argparse::add_flag(arg_parser, "--repl", "-r", "Run interactive REPL instead of HTTP server");
 
     auto args = argparse::parse(arg_parser, argc, argv);
@@ -45,7 +45,7 @@ int main(int argc, char* argv[]) {
     }
 
     String8 db_path = argparse::get_positional(args, 0);
-    U16 port = u16_from_str(argparse::get_positional(args, 1));
+    U16 port = u16_from_str(argparse::get_option(args, 0));
     bool run_repl = argparse::has_flag(args, 0);
 
     U64 page_size = 4_kb;
@@ -58,7 +58,7 @@ int main(int argc, char* argv[]) {
     }
     Pager pager{db_file};
 
-    String8 pid_file_path = "objstore_server.pid";
+    String8 pid_file_path = "objstore.pid";
     {
         os::File pid_file{os::file_open(pid_file_path)};
         AutoString8 pid_str = to_str(os::get_process_info()->pid);
