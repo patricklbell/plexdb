@@ -56,7 +56,7 @@ endif()
 # Library
 # =============================================================================
 # Modules
-add_library(objstore_modules)
+add_library(objstore_modules STATIC)
 add_library(plexdb::objstore_modules ALIAS objstore_modules)
 
 target_compile_features(objstore_modules PUBLIC cxx_std_20)

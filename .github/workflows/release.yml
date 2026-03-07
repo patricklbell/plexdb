@@ -23,7 +23,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-19 \
             -DCMAKE_C_COMPILER=clang-19 \
-            -DBUILD_TESTS=OFF
+            -DBUILD_TESTS=OFF \
+            -DBUILD_SHARED_LIBS=OFF
 
       - name: Build
         run: ninja -C build

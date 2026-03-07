@@ -19,7 +19,7 @@ endif()
 # Library
 # =============================================================================
 # Modules
-add_library(plexdb_modules)
+add_library(plexdb_modules STATIC)
 add_library(plexdb::plexdb_modules ALIAS plexdb_modules)
 
 target_compile_features(plexdb_modules PUBLIC cxx_std_20)
