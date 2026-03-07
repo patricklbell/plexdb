@@ -17,6 +17,20 @@ namespace objstore::tcp {
     bool append_chunk_chain(ChunkChain& chain, U32 buffer_idx, U8* buffer_data, int byte_count);
     void release_chunk_chain(DynamicArray<BufferInfo>& buffer_infos, ChunkChain& chain);
 
+    constexpr U32 INVALID_BUFFER_IDX = MAX_U32;
+
+    U32 get_next_free_buffer_idx(U32& next_free_buffer_idx, const DynamicArray<BufferInfo>& buffer_infos, U32 buffer_count) {
+        U32 initial_free_buffer_idx = next_free_buffer_idx;
+        while (!os::is_zero_handle(buffer_infos[next_free_buffer_idx].client)) {
+            next_free_buffer_idx = (next_free_buffer_idx + 1) % buffer_count;
+            
+            if (next_free_buffer_idx == initial_free_buffer_idx) {
+                return INVALID_BUFFER_IDX;
+            }
+        }
+        return next_free_buffer_idx;
+    };
+
     export Stats listen_uring(
         uring::Ring& ring,
         const OnChunk auto& on_chunk_callback, const OnClose auto& on_close_callback, const OnOpen auto& on_open_callback,
@@ -28,20 +42,7 @@ namespace objstore::tcp {
 
         MapFixedSentinel<os::Handle, Connection, 2_u64*MAX_CONCURRENT_CONNECTIONS> client_to_connection;
         DynamicArray<BufferInfo> buffer_infos{ring.buffer_count};
-        
-        constexpr U32 INVALID_BUFFER_IDX = MAX_U32;
         U32 next_free_buffer_idx = 0;
-        auto get_next_free_buffer_idx = [&]() -> U32 {
-            U32 initial_free_buffer_idx = next_free_buffer_idx;
-            while (!os::is_zero_handle(buffer_infos[next_free_buffer_idx].client)) {
-                next_free_buffer_idx += (next_free_buffer_idx + 1) % ring.buffer_count;
-                
-                if (next_free_buffer_idx == initial_free_buffer_idx) {
-                    return INVALID_BUFFER_IDX;
-                }
-            }
-            return next_free_buffer_idx;
-        };
 
         auto release_buffer = [](BufferInfo& info) {
             info.client = os::zero_handle();
@@ -99,8 +100,8 @@ namespace objstore::tcp {
             switch (status) {
                 case RequestStatus::Handled:
                 case RequestStatus::Pending:{
-                    U32 next_buffer_idx = get_next_free_buffer_idx();
-                    if (next_buffer_idx == INVALID_BUFFER_IDX) {
+                    U32 free_buffer_idx = get_next_free_buffer_idx(next_free_buffer_idx, buffer_infos, ring.buffer_count);
+                    if (free_buffer_idx == INVALID_BUFFER_IDX) {
                         release_chunk_chain(buffer_infos, connection->chunk_chain);
                         // @todo log/avoid starvation
                         close_and_cleanup(connection->client);
@@ -112,11 +113,11 @@ namespace objstore::tcp {
                     }
 
                     // acquire buffer for client to read to
-                    BufferInfo& info = buffer_infos[next_buffer_idx];
+                    BufferInfo& info = buffer_infos[free_buffer_idx];
                     acquire_buffer(info, connection->client);
-                    PLEXDB_DEBUG_X(info.buffer_idx = next_buffer_idx;)
+                    PLEXDB_DEBUG_X(info.buffer_idx = free_buffer_idx;)
 
-                    uring::sqe_push_read(ring, connection->client, next_buffer_idx);
+                    uring::sqe_push_read(ring, connection->client, free_buffer_idx);
                     return;
                 }break;
                 case RequestStatus::Close:{
@@ -154,8 +155,8 @@ namespace objstore::tcp {
 
             socket_set_option(accept.client, os::SocketOption::NoDelay, true);
             
-            U32 buffer_idx = get_next_free_buffer_idx();
-            if (buffer_idx == INVALID_BUFFER_IDX) {
+            U32 free_buffer_idx = get_next_free_buffer_idx(next_free_buffer_idx, buffer_infos, ring.buffer_count);
+            if (free_buffer_idx == INVALID_BUFFER_IDX) {
                 // @todo log starvation
                 stats.dropped_connections += 1;
                 uring::sqe_push_close(ring, accept.client);
@@ -173,12 +174,12 @@ namespace objstore::tcp {
             on_open_callback(&connection);
 
             // acquire buffer for client to read to
-            BufferInfo& info = buffer_infos[buffer_idx];
+            BufferInfo& info = buffer_infos[free_buffer_idx];
             acquire_buffer(info, accept.client);
-            PLEXDB_DEBUG_X(info.buffer_idx = buffer_idx;)
+            PLEXDB_DEBUG_X(info.buffer_idx = free_buffer_idx;)
 
             // read first packet from the client
-            uring::sqe_push_read(ring, accept.client, buffer_idx);
+            uring::sqe_push_read(ring, accept.client, free_buffer_idx);
         };
 
         auto handle_close_completion = [&](const uring::CloseEvent& close) {
@@ -227,6 +228,11 @@ namespace objstore::tcp {
             }
         }
 
+        // close active connections
+        for (auto& it : client_to_connection) {
+            uring::sqe_push_close(ring, it.second.client);
+        }
+
         return stats;
     }
 
@@ -246,28 +252,10 @@ namespace objstore::tcp {
 
         MapFixedSentinel<os::Handle, Connection, 2_u64*MAX_CONCURRENT_CONNECTIONS> client_to_connection;
         DynamicArray<BufferInfo> buffer_infos{BUFFER_COUNT};
-
-        // initialize all buffer slots as free
-        for (U32 i = 0; i < BUFFER_COUNT; i++) {
-            buffer_infos[i].client = os::zero_handle();
-        }
+        U32 next_free_buffer_idx = 0;
 
         U8* buffer_pool = os::allocate(BUFFER_SIZE * BUFFER_COUNT);
         auto get_buffer_ptr = [&](U32 idx) -> U8* { return buffer_pool + idx * BUFFER_SIZE; };
-
-        constexpr U32 INVALID_BUFFER_IDX = MAX_U32;
-        U32 next_free_buffer_idx = 0;
-        auto get_next_free_buffer_idx = [&]() -> U32 {
-            U32 initial_free_buffer_idx = next_free_buffer_idx;
-            while (!os::is_zero_handle(buffer_infos[next_free_buffer_idx].client)) {
-                next_free_buffer_idx = (next_free_buffer_idx + 1) % BUFFER_COUNT;
-                
-                if (next_free_buffer_idx == initial_free_buffer_idx) {
-                    return INVALID_BUFFER_IDX;
-                }
-            }
-            return next_free_buffer_idx;
-        };
 
         auto release_buffer = [](BufferInfo& info) {
             info.client = os::zero_handle();
@@ -303,8 +291,8 @@ namespace objstore::tcp {
                 os::socket_set_option(client, os::SocketOption::NonBlocking, true);
                 os::socket_set_option(client, os::SocketOption::NoDelay, true);
 
-                U32 buffer_idx = get_next_free_buffer_idx();
-                if (buffer_idx == INVALID_BUFFER_IDX) {
+                U32 free_buffer_idx = get_next_free_buffer_idx(next_free_buffer_idx, buffer_infos, BUFFER_COUNT);
+                if (free_buffer_idx == INVALID_BUFFER_IDX) {
                     stats.dropped_connections++;
                     os::socket_close(client);
                     continue;
@@ -321,7 +309,7 @@ namespace objstore::tcp {
                 push_back(active_clients, client);
                 poll_unblock_on(poll, client);
                 
-                acquire_buffer(buffer_infos[buffer_idx], client);
+                acquire_buffer(buffer_infos[free_buffer_idx], client);
                 stats.active_connections++;
             }
 
@@ -335,13 +323,13 @@ namespace objstore::tcp {
                     continue;
                 }
 
-                U32 buffer_idx = get_next_free_buffer_idx();
-                if (buffer_idx == INVALID_BUFFER_IDX) {
+                U32 free_buffer_idx = get_next_free_buffer_idx(next_free_buffer_idx, buffer_infos, BUFFER_COUNT);
+                if (free_buffer_idx == INVALID_BUFFER_IDX) {
                     i++;
                     continue;
                 }
 
-                U8* buffer = get_buffer_ptr(buffer_idx);
+                U8* buffer = get_buffer_ptr(free_buffer_idx);
                 auto result = os::socket_receive(client, buffer, BUFFER_SIZE);
 
                 if (result.error == os::SocketError::WouldBlock) {
@@ -361,9 +349,9 @@ namespace objstore::tcp {
 
                 stats.total_bytes_read += result.byte_count;
 
-                bool active = append_chunk_chain(connection->chunk_chain, buffer_idx, buffer, static_cast<int>(result.byte_count));
+                bool active = append_chunk_chain(connection->chunk_chain, free_buffer_idx, buffer, static_cast<int>(result.byte_count));
                 if (!active) {
-                    release_buffer(buffer_infos[buffer_idx]);
+                    release_buffer(buffer_infos[free_buffer_idx]);
                 }
 
                 Request req{connection, &socket_async_write_functor};
@@ -390,17 +378,13 @@ namespace objstore::tcp {
             }
         }
 
-        // cleanup
-        for (os::Handle client : active_clients) {
-            Connection* connection = find(client_to_connection, client);
-            if (connection) {
-                on_close_callback(connection);
-                release_chunk_chain(buffer_infos, connection->chunk_chain);
-            }
-            os::socket_close(client);
+        // close active connections
+        for (auto& it : client_to_connection) {
+            os::socket_close(it.second.client);
         }
-
+        
         os::deallocate(buffer_pool);
+
         return stats;
     }
 }

@@ -107,4 +107,5 @@ export namespace objstore::schema {
 
     Column* create_column(Schema& schema, Table& tbl, const CreateColumn& create);
     Column* read_column(Schema& schema, Table& tbl, String8 name);
+    bool delete_column(Schema& schema, Table& tbl, String8 name);
 }

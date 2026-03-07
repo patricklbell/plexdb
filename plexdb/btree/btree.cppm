@@ -134,4 +134,16 @@ export namespace plexdb::btree {
         it.impl = end_iterator_impl();
         return move(it);
     }
+
+    template<BTree BT>
+    U64 size(BT& btree) {
+        typename BT::Transaction t{&btree};
+        return read_header(t)->size;
+    }
+
+    template<BTree BT>
+    void truncate(BT& btree) {
+        typename BT::Transaction t{&btree};
+        truncate_impl(t);
+    }
 }

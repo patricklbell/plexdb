@@ -267,32 +267,344 @@ namespace objstore::engine {
                     .rows = move(rows),
                 };
             } else if constexpr (SameAs<T, UseKeyspace>) {
-                // @todo implement USE keyspace (set current keyspace context)
-                return {.status = ExecutionStatus::NotImplemented, .message = "USE not implemented"};
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
+                if (ks == nullptr) {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Keyspace does not exist",
+                        .keyspace = stmt.keyspace_name,
+                    };
+                }
+                engine.current_keyspace = stmt.keyspace_name;
+                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
             } else if constexpr (SameAs<T, AlterKeyspace>) {
-                // @todo implement ALTER KEYSPACE
-                return {.status = ExecutionStatus::NotImplemented, .message = "ALTER KEYSPACE not implemented"};
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
+                if (ks == nullptr) {
+                    if (stmt.if_exists) {
+                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+                    }
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Keyspace does not exist",
+                        .keyspace = stmt.keyspace_name,
+                    };
+                }
+                return {
+                    .status = ExecutionStatus::Success,
+                    .kind = ResultKind::SchemaChange,
+                    .keyspace = stmt.keyspace_name,
+                };
             } else if constexpr (SameAs<T, DropKeyspace>) {
-                // @todo implement DROP KEYSPACE
-                return {.status = ExecutionStatus::NotImplemented, .message = "DROP KEYSPACE not implemented"};
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
+                if (ks == nullptr) {
+                    if (stmt.if_exists) {
+                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+                    }
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Keyspace does not exist",
+                        .keyspace = stmt.keyspace_name,
+                    };
+                }
+                for (auto& tbl : ks->tbls) {
+                    if (!tbl.tombstone) {
+                        schema::delete_table(engine.schema, *ks, tbl.name);
+                    }
+                }
+                schema::delete_keyspace(engine.schema, stmt.keyspace_name);
+                return {
+                    .status = ExecutionStatus::Success,
+                    .kind = ResultKind::SchemaChange,
+                    .keyspace = stmt.keyspace_name,
+                };
             } else if constexpr (SameAs<T, AlterTable>) {
-                // @todo implement ALTER TABLE
-                return {.status = ExecutionStatus::NotImplemented, .message = "ALTER TABLE not implemented"};
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
+                if (ks == nullptr) {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Keyspace does not exist",
+                        .keyspace = stmt.keyspace_name,
+                    };
+                }
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
+                if (tbl == nullptr) {
+                    if (stmt.if_exists) {
+                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+                    }
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Table does not exist",
+                        .keyspace = stmt.keyspace_name,
+                        .table = stmt.table_name,
+                    };
+                }
+                if (stmt.op == AlterTableOp::add_column) {
+                    for (U64 i = 0; i < stmt.columns.length; i++) {
+                        const auto& col = stmt.columns[i];
+                        CreateColumn create{.name = col.name, .dtype = col.dtype, .is_primary_key = false};
+                        if (schema::create_column(engine.schema, *tbl, create) == nullptr) {
+                            return {
+                                .status = ExecutionStatus::Invalid,
+                                .message = "Column already exists",
+                                .keyspace = stmt.keyspace_name,
+                                .table = stmt.table_name,
+                            };
+                        }
+                    }
+                } else if (stmt.op == AlterTableOp::drop_column) {
+                    for (U64 i = 0; i < stmt.columns.length; i++) {
+                        if (!schema::delete_column(engine.schema, *tbl, stmt.columns[i].name)) {
+                            return {
+                                .status = ExecutionStatus::Invalid,
+                                .message = "Column does not exist",
+                                .keyspace = stmt.keyspace_name,
+                                .table = stmt.table_name,
+                            };
+                        }
+                    }
+                } else {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "RENAME COLUMN not supported",
+                        .keyspace = stmt.keyspace_name,
+                        .table = stmt.table_name,
+                    };
+                }
+                return {
+                    .status = ExecutionStatus::Success,
+                    .kind = ResultKind::SchemaChange,
+                    .keyspace = stmt.keyspace_name,
+                    .table = stmt.table_name,
+                };
             } else if constexpr (SameAs<T, DropTable>) {
-                // @todo implement DROP TABLE
-                return {.status = ExecutionStatus::NotImplemented, .message = "DROP TABLE not implemented"};
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
+                if (ks == nullptr) {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Keyspace does not exist",
+                        .keyspace = stmt.keyspace_name,
+                    };
+                }
+                if (!schema::delete_table(engine.schema, *ks, stmt.table_name)) {
+                    if (stmt.if_exists) {
+                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+                    }
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Table does not exist",
+                        .keyspace = stmt.keyspace_name,
+                        .table = stmt.table_name,
+                    };
+                }
+                return {
+                    .status = ExecutionStatus::Success,
+                    .kind = ResultKind::SchemaChange,
+                    .keyspace = stmt.keyspace_name,
+                    .table = stmt.table_name,
+                };
             } else if constexpr (SameAs<T, TruncateTable>) {
-                // @todo implement TRUNCATE TABLE
-                return {.status = ExecutionStatus::NotImplemented, .message = "TRUNCATE not implemented"};
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
+                if (ks == nullptr) {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Keyspace does not exist",
+                        .keyspace = stmt.keyspace_name,
+                    };
+                }
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
+                if (tbl == nullptr) {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Table does not exist",
+                        .keyspace = stmt.keyspace_name,
+                        .table = stmt.table_name,
+                    };
+                }
+                btree::truncate(tbl->btree);
+                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
             } else if constexpr (SameAs<T, Update>) {
-                // @todo implement UPDATE
-                return {.status = ExecutionStatus::NotImplemented, .message = "UPDATE not implemented"};
+                // @todo implement USING TIMESTAMP, USING TTL, IF EXISTS
+                assert_true(stmt.timestamp == -1, "UPDATE with USING TIMESTAMP not implemented");
+                assert_true(stmt.ttl == -1, "UPDATE with USING TTL not implemented");
+                assert_true(!stmt.if_exists, "UPDATE IF EXISTS not implemented");
+
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
+                if (ks == nullptr) {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Keyspace does not exist",
+                        .keyspace = stmt.keyspace_name,
+                    };
+                }
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
+                if (tbl == nullptr) {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Table does not exist",
+                        .keyspace = stmt.keyspace_name,
+                        .table = stmt.table_name,
+                    };
+                }
+
+                // find primary key equality in WHERE clause
+                const auto& pk_col = tbl->cols[tbl->primary_col_idx];
+                const WhereRelation* pk_where = nullptr;
+                for (U64 i = 0; i < stmt.where.cap; i++) {
+                    if (stmt.where[i].column_name == pk_col.name && stmt.where[i].op == ComparisonOp::eq) {
+                        pk_where = &stmt.where[i];
+                        break;
+                    }
+                }
+                if (pk_where == nullptr) {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "UPDATE requires primary key equality in WHERE clause",
+                    };
+                }
+
+                U64 pk_hash = dtype::hash(pk_where->value);
+                auto row_page_opt = btree::tfind<U64>(tbl->btree, pk_hash);
+                if (!row_page_opt) {
+                    return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+                }
+                U64 row_page = *row_page_opt;
+
+                blob::BlobDynamicPaged row_blob(engine.pager, row_page);
+
+                // read all column values
+                DynamicArray<dtype::ReadValue> read_values{};
+                U64 read_offset = 0;
+                auto read_fn = [&](U8* out, U64 size) {
+                    blob::get(row_blob, out, size, read_offset);
+                    read_offset += size;
+                };
+                for (const auto& col : tbl->cols) {
+                    push_back(read_values, dtype::read(read_fn, col.dtype));
+                }
+
+                // rewrite row applying assignments
+                blob::resize(row_blob, 0);
+                U64 write_offset = 0;
+                auto write_fn = [&](const U8* in, U64 size) {
+                    blob::insert(row_blob, in, size, write_offset);
+                    write_offset += size;
+                };
+                for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                    const auto& col = tbl->cols[ci];
+
+                    const dtype::WriteValue* updated = nullptr;
+                    for (U64 ai = 0; ai < stmt.assignments.cap; ai++) {
+                        if (stmt.assignments[ai].column_name == col.name) {
+                            updated = &stmt.assignments[ai].value;
+                            break;
+                        }
+                    }
+                    if (updated != nullptr) {
+                        dtype::write(write_fn, *updated, col.dtype);
+                    } else {
+                        dtype::write_from_read(write_fn, read_values[ci], col.dtype);
+                    }
+                }
+
+                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
             } else if constexpr (SameAs<T, Delete>) {
-                // @todo implement DELETE
-                return {.status = ExecutionStatus::NotImplemented, .message = "DELETE not implemented"};
+                // @todo implement USING TIMESTAMP
+                assert_true(stmt.timestamp == -1, "DELETE with USING TIMESTAMP not implemented");
+
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
+                if (ks == nullptr) {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Keyspace does not exist",
+                        .keyspace = stmt.keyspace_name,
+                    };
+                }
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
+                if (tbl == nullptr) {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "Table does not exist",
+                        .keyspace = stmt.keyspace_name,
+                        .table = stmt.table_name,
+                    };
+                }
+
+                // find primary key equality in WHERE clause
+                const auto& pk_col = tbl->cols[tbl->primary_col_idx];
+                const WhereRelation* pk_where = nullptr;
+                for (U64 i = 0; i < stmt.where.cap; i++) {
+                    if (stmt.where[i].column_name == pk_col.name && stmt.where[i].op == ComparisonOp::eq) {
+                        pk_where = &stmt.where[i];
+                        break;
+                    }
+                }
+                if (pk_where == nullptr) {
+                    return {
+                        .status = ExecutionStatus::Invalid,
+                        .message = "DELETE requires primary key equality in WHERE clause",
+                    };
+                }
+
+                U64 pk_hash = dtype::hash(pk_where->value);
+
+                if (stmt.column_names.cap == 0) {
+                    // delete entire row
+                    btree::remove(tbl->btree, pk_hash);
+                } else {
+                    // delete specific columns: set them to default
+                    auto row_page_opt = btree::tfind<U64>(tbl->btree, pk_hash);
+                    if (!row_page_opt) {
+                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+                    }
+                    U64 row_page = *row_page_opt;
+                    blob::BlobDynamicPaged row_blob(engine.pager, row_page);
+
+                    DynamicArray<dtype::ReadValue> read_values{};
+                    U64 read_offset = 0;
+                    auto read_fn = [&](U8* out, U64 size) {
+                        blob::get(row_blob, out, size, read_offset);
+                        read_offset += size;
+                    };
+                    for (const auto& col : tbl->cols) {
+                        push_back(read_values, dtype::read(read_fn, col.dtype));
+                    }
+
+                    blob::resize(row_blob, 0);
+                    U64 write_offset = 0;
+                    auto write_fn = [&](const U8* in, U64 size) {
+                        blob::insert(row_blob, in, size, write_offset);
+                        write_offset += size;
+                    };
+                    for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                        const auto& col = tbl->cols[ci];
+                        bool is_deleted = false;
+                        for (U64 di = 0; di < stmt.column_names.cap; di++) {
+                            if (stmt.column_names[di] == col.name) {
+                                is_deleted = true;
+                                break;
+                            }
+                        }
+                        if (is_deleted) {
+                            dtype::write_default(write_fn, col.dtype);
+                        } else {
+                            dtype::write_from_read(write_fn, read_values[ci], col.dtype);
+                        }
+                    }
+                }
+
+                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
             } else if constexpr (SameAs<T, Batch>) {
-                // @todo implement BATCH
-                return {.status = ExecutionStatus::NotImplemented, .message = "BATCH not implemented"};
+                for (U64 i = 0; i < stmt.statements.length; i++) {
+                    ExecutionResult result = visit(stmt.statements[i].value, [&](const auto& sub_stmt) -> ExecutionResult {
+                        Statement sub{};
+                        sub.value = sub_stmt;
+                        return execute(engine, sub);
+                    });
+                    if (result.status != ExecutionStatus::Success) {
+                        return result;
+                    }
+                }
+                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
             } else {
                 static_assert(false, "Unhandled statement type in engine::execute");
             }
