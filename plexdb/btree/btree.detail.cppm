@@ -299,6 +299,68 @@ export namespace plexdb::btree {
         return true;
     }
 
+    template<Transaction Tx>
+    void truncate_impl(Tx& t) {
+        auto t_truncate = scope(t);
+
+        // acquire read/write on header for duration of truncate
+        auto& h = *update_header(t_truncate);
+        
+        // traverse from first child of root to leaf
+        // deleting horizontally in a zig-zag pattern
+        Node* n_root = update_node(t_truncate, h.root);
+        auto root_children_view = children(n_root, h);
+        if (root_children_view.length > 0) {
+            NodeRef curr_ref = root_children_view[0];
+            for (CountType depth = 1; depth <= h.depth; depth++) {
+                const Node* curr = read_node(t_truncate, curr_ref);
+                if (curr->prev == 0) {
+                    while (curr->next != 0) {
+                        NodeRef next_ref = curr->next;  
+                        delete_node(t_truncate, curr_ref);
+    
+                        curr_ref = next_ref;
+                        curr = read_node(t_truncate, curr_ref);
+                    }
+    
+                    if (depth != h.depth) {
+                        auto children_view = children(curr, h);
+                        NodeRef right_most_child_ref = children_view[children_view.length-1];
+                        delete_node(t_truncate, curr_ref);
+        
+                        curr_ref = right_most_child_ref;
+                    } else {
+                        delete_node(t_truncate, curr_ref);
+                    }
+                } else {
+                    assert_true(curr->next == 0, "first node in level must be left-most or right-most");
+    
+                    while (curr->prev != 0) {
+                        NodeRef prev_ref = curr->prev;
+                        delete_node(t_truncate, curr_ref);
+    
+                        curr_ref = prev_ref;
+                        curr = read_node(t_truncate, curr_ref);
+                    }
+    
+                    if (depth != h.depth) {
+                        auto children_view = children(curr, h);
+                        NodeRef left_most_child_ref = children_view[0];
+                        delete_node(t_truncate, curr_ref);
+        
+                        curr_ref = left_most_child_ref;
+                    } else {
+                        delete_node(t_truncate, curr_ref);
+                    }
+                }
+            }
+        }
+        
+        n_root->key_count = 0;
+        h.size = 0;
+        h.depth = 0;
+    }
+
     // ========================================================================
     // iterators
     // ========================================================================

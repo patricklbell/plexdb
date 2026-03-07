@@ -128,7 +128,6 @@ TEST_CASE("insert", "[plexdb.btree.paged]") {
 }
 
 TEST_CASE("remove", "[plexdb.btree.paged]") {
-
     SECTION("(page_size=128) consecutive deletion in order") {
         os::File pfile(os::file_tmp());
         U64 header_page;
@@ -171,7 +170,7 @@ TEST_CASE("remove", "[plexdb.btree.paged]") {
         }
     }
 
-    SECTION("(page_size=1284) reinsertion after complete deletion") {
+    SECTION("(page_size=128) reinsertion after complete deletion") {
         os::File pfile(os::file_tmp());
         U64 header_page;
 
@@ -191,6 +190,39 @@ TEST_CASE("remove", "[plexdb.btree.paged]") {
 
             for (int key = 0; key < 8; key++) 
                 REQUIRE(*tfind<int>(t, key) == 100*key);
+        }
+    }
+}
+
+
+TEST_CASE("truncate", "[plexdb.btree.paged]" ) {
+    SECTION("(page_size=128) insert then truncate and check pages are freed") {
+        os::File pfile(os::file_tmp());
+        U64 header_page;
+
+        U64 initial_page_count;
+
+        {
+            Pager pager(pfile, pager::create(pfile, 128_u64));
+            header_page = create_paged(pager, sizeof(int));
+            BTreePaged t(&pager, header_page);
+            initial_page_count = pager.header.page_count;
+
+            for (int key = 0; key < 1000; key++) tinsert(t, key, 10*key);
+            REQUIRE(size(t) == 1000);
+
+            truncate(t);
+            REQUIRE(size(t) == 0);
+            // @note we can't assert page count because new root pages may be allocated near the end, stopping trimming
+            // @todo introduce tracking of free pages for testing purposes
+            // @todo investigate if we should reallocate the root page
+        }
+
+        {
+            Pager pager(pfile);
+            BTreePaged t(&pager, header_page);
+
+            REQUIRE(size(t) == 0);
         }
     }
 }

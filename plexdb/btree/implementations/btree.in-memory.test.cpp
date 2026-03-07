@@ -262,3 +262,24 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
         }
     }
 }
+
+TEST_CASE("truncate", "[plexdb.btree.in-memory]" ) {
+    SECTION("(internal=3,leaf=4) insert then truncate then insert again") {
+        BTreeInMemory t(3, 4, sizeof(int));
+
+        for (int key = 0; key < 32; key++) {
+            int value = 10*key;
+            tinsert(t, key, value);
+        }
+        REQUIRE(size(t) == 32);
+
+        truncate(t);
+        REQUIRE(size(t) == 0);
+
+        for (int key = 0; key < 64; key++) {
+            int value = 10*key;
+            tinsert(t, key, value);
+        }
+        REQUIRE(size(t) == 64);
+    }
+}
