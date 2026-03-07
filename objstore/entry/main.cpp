@@ -77,10 +77,12 @@ int main(int argc, char* argv[]) {
         if (run_repl) {
             repl::run(engine);
         } else if (run_native) {
-            native::run(port, g_signal_notifier, g_should_stop, engine, [&port]() { println("listening on port ", to_str(port), " (native protocol)");});
+            auto on_ready = [&port]() { println("listening on port ", to_str(port), " (native protocol)"); };
+            native::run(port, g_signal_notifier, g_should_stop, engine, on_ready);
             println("shutting down...");
         } else {
-            server::run(port, g_signal_notifier, g_should_stop, engine, [&port]() { println("listening on port ", to_str(port), " (http protocol)");});
+            auto on_ready = [&port]() { println("listening on port ", to_str(port), " (http protocol)"); };
+            server::run(port, g_signal_notifier, g_should_stop, engine, on_ready);
             println("shutting down...");
         }
     }

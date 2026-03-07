@@ -269,7 +269,6 @@ namespace objstore::native {
         append_cql_string(buf, keyspace);
     }
 
-    // @note schema_change result: change_type + target + keyspace [+ table if TABLE]
     template<BufferedString8Flush F>
     void append_result_schema_change(BufferedString8<F>& buf, String8 change_type, String8 target, String8 keyspace, String8 table) {
         append_be_s32(buf, result_kind::SCHEMA_CHANGE);
@@ -280,12 +279,11 @@ namespace objstore::native {
             append_cql_string(buf, table);
     }
 
-    // @note iterates rows once; uses btree size to get row count without double iteration
+    // @note uses btree::size so RowRange is only iterated once (RowRange iterators are not resettable)
     template<BufferedString8Flush F>
     void append_result_rows(BufferedString8<F>& buf, engine::ExecutionResult& result, schema::Table* tbl) {
         append_be_s32(buf, result_kind::ROWS);
 
-        // metadata: flags | col_count | [global_table_spec] | col_specs
         append_be_s32(buf, 0x0001);  // Global_tables_spec flag
         append_be_s32(buf, S32(tbl->cols.length));
         append_cql_string(buf, result.keyspace);
