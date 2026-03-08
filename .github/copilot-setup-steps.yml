@@ -12,7 +12,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 unzip
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 unzip nodejs npm
 
       - name: Download lexy
         run: |
@@ -24,3 +24,7 @@ jobs:
 
       - name: Build
         run: ninja -C build
+
+      - name: Install test_cql.js dependencies
+        run: npm install
+        working-directory: extra/node
