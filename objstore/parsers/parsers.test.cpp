@@ -1116,3 +1116,35 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[objstore.parse
         REQUIRE(get<AutoString8>(ks.options[1].value) == "true");
     }
 }
+
+TEST_CASE("CQL parse error reporting", "[objstore.parser]") {
+    SECTION("Invalid syntax with report_errors returns empty") {
+        auto result = cql::parse("INVALID STATEMENT;", true);
+        REQUIRE_FALSE(result.has_value());
+    }
+
+    SECTION("Missing semicolon with report_errors returns empty") {
+        auto result = cql::parse("SELECT * FROM my_app.products", true);
+        REQUIRE_FALSE(result.has_value());
+    }
+
+    SECTION("Valid query with report_errors succeeds") {
+        auto result = cql::parse("SELECT * FROM ks.tbl;", true);
+        REQUIRE(result.has_value());
+    }
+
+    SECTION("Empty query with report_errors returns empty") {
+        auto result = cql::parse("", true);
+        REQUIRE_FALSE(result.has_value());
+    }
+
+    SECTION("Unclosed string with report_errors returns empty") {
+        auto result = cql::parse("INSERT INTO ks.tbl VALUES ('unclosed);", true);
+        REQUIRE_FALSE(result.has_value());
+    }
+
+    SECTION("Multiple error types with report_errors returns empty") {
+        auto result = cql::parse("CREATE TABLE;", true);
+        REQUIRE_FALSE(result.has_value());
+    }
+}

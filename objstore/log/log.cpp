@@ -13,4 +13,12 @@ namespace objstore::log {
             query.length
         );
     }
+
+    void cql_parse_error(const char* text, plexdb::U64 len) {
+        plexdb::log::fire_message(
+            producer.id,
+            text,
+            len
+        );
+    }
 }

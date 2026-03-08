@@ -122,7 +122,7 @@ namespace objstore::parsers {
     // cassandra query language (CQL)
     // ========================================================================
     namespace cql {
-        export Optional<Statement> parse(String8 bytes, bool stderr=false);
+        export Optional<Statement> parse(String8 bytes, bool report_errors=false);
         export bool is_complete(String8 bytes);
     }
 }
