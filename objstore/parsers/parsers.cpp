@@ -1216,18 +1216,14 @@ namespace objstore::parsers::cql {
 
         auto input = lexy::string_input<lexy::ascii_encoding>(bytes.data, bytes.length);
 
-        if (report_errors) {
-            auto result = lexy::parse<grammar::cql_statement>(input, LogErrorCallback{});
-            if (result.has_value()) {
-                return result.value();
-            }
-        } else {
-            auto result = lexy::parse<grammar::cql_statement>(input, lexy::noop);
-            if (result.has_value()) {
-                return result.value();
-            }
-        }
-        return {};
+        auto try_parse = [&](auto callback) -> Optional<Statement> {
+            auto result = lexy::parse<grammar::cql_statement>(input, callback);
+            if (result.has_value()) return result.value();
+            return {};
+        };
+
+        if (report_errors) return try_parse(LogErrorCallback{});
+        return try_parse(lexy::noop);
     }
 
     bool is_complete(String8 bytes) {
