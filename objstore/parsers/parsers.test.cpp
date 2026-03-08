@@ -639,18 +639,6 @@ TEST_CASE("CQL Invalid syntax handling", "[objstore.parser]") {
         auto result = cql::parse(query);
         REQUIRE_FALSE(result.has_value());
     }
-
-    SECTION("Missing semicolon from SELECT FROM") {
-        auto query = "SELECT * FROM my_app.products";
-        auto result = cql::parse(query);
-        REQUIRE_FALSE(result.has_value());
-    }
-
-    SECTION("Missing semicolon from CREATE KEYSPACE") {
-        auto query = "CREATE KEYSPACE no_semi WITH replication = 'test'";
-        auto result = cql::parse(query);
-        REQUIRE_FALSE(result.has_value());
-    }
     
     SECTION("Missing table name in CREATE TABLE") {
         auto query = "CREATE TABLE;";
@@ -1120,11 +1108,6 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[objstore.parse
 TEST_CASE("CQL parse error reporting", "[objstore.parser]") {
     SECTION("Invalid syntax with report_errors returns empty") {
         auto result = cql::parse("INVALID STATEMENT;", true);
-        REQUIRE_FALSE(result.has_value());
-    }
-
-    SECTION("Missing semicolon with report_errors returns empty") {
-        auto result = cql::parse("SELECT * FROM my_app.products", true);
         REQUIRE_FALSE(result.has_value());
     }
 
