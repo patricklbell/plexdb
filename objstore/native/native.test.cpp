@@ -565,9 +565,9 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
     }
 
     send_frame(client, make_query("DROP TABLE test_ks.users;"));
-    recv_frame(client);
+    CHECK(recv_frame(client).opcode == 0x08);
     send_frame(client, make_query("DROP KEYSPACE test_ks;"));
-    recv_frame(client);
+    CHECK(recv_frame(client).opcode == 0x08);
 
     exit_signal = true;
     os::signal_notify_safe(signal_pipe);

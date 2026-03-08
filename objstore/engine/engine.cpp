@@ -258,9 +258,9 @@ namespace objstore::engine {
                     push_back(row.values, dtype::ReadValue{AutoString8(tbl.name)});
                     push_back(row.values, dtype::ReadValue{AutoString8(col.name)});
                     push_back(row.values, dtype::ReadValue{AutoString8("none")});
-                    bool is_pk = (ci == tbl.primary_col_idx);
-                    push_back(row.values, dtype::ReadValue{AutoString8(is_pk ? "partition_key" : "regular")});
-                    push_back(row.values, dtype::ReadValue{S32(is_pk ? 0 : pos++)});
+                    bool is_partition_key = (ci == tbl.primary_col_idx);
+                    push_back(row.values, dtype::ReadValue{AutoString8(is_partition_key ? "partition_key" : "regular")});
+                    push_back(row.values, dtype::ReadValue{S32(is_partition_key ? 0 : pos++)});
                     push_back(row.values, dtype::ReadValue{AutoString8(dtype::to_str(col.dtype))});
                     push_back(vr.rows, move(row));
                 }
@@ -292,6 +292,16 @@ namespace objstore::engine {
             using T = RemoveCVRef<decltype(stmt)>;
 
             if constexpr (SameAs<T, CreateKeyspace>) {
+                if (is_system_keyspace(stmt.keyspace_name)) {
+                    if (stmt.if_not_exists) {
+                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+                    }
+                    return {
+                        .status = ExecutionStatus::AlreadyExists,
+                        .message = "Keyspace already exists",
+                        .keyspace = stmt.keyspace_name,
+                    };
+                }
                 if (!stmt.if_not_exists) {
                     auto existing = schema::read_keyspace(engine.schema, stmt.keyspace_name);
                     if (existing != nullptr) {
