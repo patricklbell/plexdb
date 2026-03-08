@@ -15,13 +15,18 @@ if(OBJSTORE_IS_MAIN_PROJECT)
     option(BUILD_TESTS "Build unit tests" ON)
     option(OBJSTORE_BUILD_SERVER "Build objstore server" ON)
     option(PLEXDB_LOG_ENABLED "Enable structured logging hooks" OFF)
+    option(PLEXDB_DEBUG "Build debug checks" ON)
     
     add_subdirectory(../plexdb plexdb)
+
+    if(PLEXDB_LOG_ENABLED)
+        add_compile_definitions(PLEXDB_LOG_ENABLED=1)
+    endif()
+    if(PLEXDB_DEBUG)
+        add_compile_definitions(PLEXDB_DEBUG=1)
+    endif()
 endif()
 
-if(PLEXDB_LOG_ENABLED)
-    add_compile_definitions(PLEXDB_LOG_ENABLED=1)
-endif()
 
 # =============================================================================
 # Third part dependencies
@@ -163,6 +168,10 @@ if(OBJSTORE_BUILD_SERVER)
     target_link_libraries(objstore_server
         PRIVATE
             plexdb::objstore
+    )
+
+    target_include_directories(objstore_server PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
     )
 
     if(PLEXDB_LOG_ENABLED)

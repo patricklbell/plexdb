@@ -14,6 +14,14 @@ project(plexdb)
 if(PLEXDB_IS_MAIN_PROJECT)
     option(BUILD_TESTS "Build unit tests" ON)
     option(PLEXDB_LOG_ENABLED "Enable structured logging hooks" OFF)
+    option(PLEXDB_DEBUG "Build debug checks" ON)
+
+    if(PLEXDB_DEBUG)
+        add_compile_definitions(PLEXDB_DEBUG=1)
+    endif()
+    if(PLEXDB_LOG_ENABLED)
+        add_compile_definitions(PLEXDB_LOG_ENABLED=1)
+    endif()
 endif()
 
 # =============================================================================
@@ -109,10 +117,6 @@ target_sources(plexdb
 )
 
 target_link_libraries(plexdb PUBLIC plexdb_modules)
-
-if(PLEXDB_LOG_ENABLED)
-    target_compile_definitions(plexdb_modules PUBLIC PLEXDB_LOG_ENABLED=1)
-endif()
 
 # =============================================================================
 # Tests

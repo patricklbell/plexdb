@@ -196,15 +196,20 @@ export namespace plexdb {
             PLEXDB_CONSTEVAL_TRAP(expr);
         } else {
             if (unlikely(!expr)) {
-                PLEXDB_TRAP;
-                if (g_assert_handler != nullptr)
+                if (g_assert_handler != nullptr) {
                     g_assert_handler(msg, loc.file_name(), loc.function_name(), loc.line());
+                } else {
+                    PLEXDB_TRAP;
+                }
             }
         }
     }
     constexpr inline void assert_true(bool expr, const char* msg, std::source_location loc = std::source_location::current()) noexcept {
-        if constexpr (!k_assert_enabled && !PLEXDB_IS_CONSTEVAL())
-            return;
+        if constexpr (!k_assert_enabled) {
+            if (!PLEXDB_IS_CONSTEVAL()) {
+                return;
+            }
+        }
         assert_true_always(expr, msg, loc);
     }
 
