@@ -4,10 +4,9 @@ module;
 #include <lexy/action/parse.hpp>
 #include <lexy/callback.hpp>
 #include <lexy/dsl.hpp>
+#include <lexy/error.hpp>
 #include <lexy/input/string_input.hpp>
-
-// @todo
-#include <lexy_ext/report_error.hpp>
+#include <lexy/input_location.hpp>
 
 #define LEXY_LIT_CI(x) lexy::dsl::ascii::case_folding(LEXY_LIT(x))
 
@@ -1153,7 +1152,7 @@ namespace objstore::parsers::cql {
                 auto select = dsl::p<select_from_stmt>;
                 
                 return dsl::p<ws> + (use | create_ks | alter_ks | drop_ks | create_tbl | drop_tbl | 
-                                     truncate | insert | update | del | select) + dsl::p<ws> + dsl::lit_c<';'>;
+                                     truncate | insert | update | del | select) + dsl::p<ws> + (dsl::lit_c<';'> | dsl::eof);
             }();
             
             static constexpr auto value = lexy::construct<Statement>;
@@ -1165,20 +1164,66 @@ namespace objstore::parsers::cql {
         };
     }
 
-    // @todo return error message
+    struct LogErrorCallback {
+        struct _sink {
+            using return_type = size_t;
+            size_t _count = 0;
+
+            template <typename Input, typename Reader, typename Tag>
+            void operator()(const lexy::error_context<Input>& context,
+                            const lexy::error<Reader, Tag>& error) {
+                auto location = lexy::get_input_location(context.input(), error.position());
+
+                AutoString8 msg;
+                if constexpr (SameAs<Tag, lexy::expected_literal>) {
+                    msg = fmt("error: while parsing %s at %u:%u: expected '%.*s'",
+                              context.production(),
+                              location.line_nr(), location.column_nr(),
+                              static_cast<int>(error.length()), reinterpret_cast<const char*>(error.string()));
+                } else if constexpr (SameAs<Tag, lexy::expected_keyword>) {
+                    msg = fmt("error: while parsing %s at %u:%u: expected keyword '%.*s'",
+                              context.production(),
+                              location.line_nr(), location.column_nr(),
+                              static_cast<int>(error.length()), reinterpret_cast<const char*>(error.string()));
+                } else if constexpr (SameAs<Tag, lexy::expected_char_class>) {
+                    msg = fmt("error: while parsing %s at %u:%u: expected %s",
+                              context.production(),
+                              location.line_nr(), location.column_nr(),
+                              error.name());
+                } else {
+                    msg = fmt("error: while parsing %s at %u:%u: %s",
+                              context.production(),
+                              location.line_nr(), location.column_nr(),
+                              error.message());
+                }
+
+                log::cql_parse_error(msg.c_str, msg.length);
+                ++_count;
+            }
+
+            size_t finish() && {
+                return _count;
+            }
+        };
+
+        auto sink() const {
+            return _sink{};
+        }
+    };
+
     Optional<Statement> parse(String8 bytes, bool report_errors) {
         log::cql_parse(bytes);
 
         auto input = lexy::string_input<lexy::ascii_encoding>(bytes.data, bytes.length);
 
-        // auto reporter = lexy_ext::report_error.path("cql");
-        auto reporter = lexy::noop;
-        auto result = lexy::parse<grammar::cql_statement>(input, reporter);
+        auto try_parse = [&](auto callback) -> Optional<Statement> {
+            auto result = lexy::parse<grammar::cql_statement>(input, callback);
+            if (result.has_value()) return result.value();
+            return {};
+        };
 
-        if (result.has_value()) {
-            return result.value();
-        }
-        return {};
+        if (report_errors) return try_parse(LogErrorCallback{});
+        return try_parse(lexy::noop);
     }
 
     bool is_complete(String8 bytes) {
