@@ -46,7 +46,7 @@ target_include_directories(llhttp PUBLIC
     ${llhttp_SOURCE_DIR}/include
 )
 
-FetchContent_Declare(lexy URL https://github.com/foonathan/lexy/archive/refs/heads/main.zip)
+FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
 FetchContent_MakeAvailable(lexy)
 
 set(LEXY_ENCODING_OF_CHAR lexy::ascii)

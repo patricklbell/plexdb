@@ -12,10 +12,15 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 unzip
+
+      - name: Download lexy
+        run: |
+          curl -fLo /tmp/lexy.zip https://lexy.foonathan.net/download/lexy-src.zip
+          unzip -q /tmp/lexy.zip -d /tmp/lexy_extracted
 
       - name: Configure CMake
-        run: cmake -B build -G Ninja -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+        run: cmake -B build -G Ninja -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19 -DFETCHCONTENT_SOURCE_DIR_LEXY=/tmp/lexy_extracted
 
       - name: Build
         run: ninja -C build
