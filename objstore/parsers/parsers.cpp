@@ -1152,7 +1152,7 @@ namespace objstore::parsers::cql {
                 auto select = dsl::p<select_from_stmt>;
                 
                 return dsl::p<ws> + (use | create_ks | alter_ks | drop_ks | create_tbl | drop_tbl | 
-                                     truncate | insert | update | del | select) + dsl::p<ws> + dsl::lit_c<';'>;
+                                     truncate | insert | update | del | select) + dsl::p<ws> + (dsl::lit_c<';'> | dsl::eof);
             }();
             
             static constexpr auto value = lexy::construct<Statement>;
@@ -1166,8 +1166,8 @@ namespace objstore::parsers::cql {
 
     struct LogErrorCallback {
         struct _sink {
-            using return_type = std::size_t;
-            std::size_t _count = 0;
+            using return_type = size_t;
+            size_t _count = 0;
 
             template <typename Input, typename Reader, typename Tag>
             void operator()(const lexy::error_context<Input>& context,
@@ -1175,17 +1175,17 @@ namespace objstore::parsers::cql {
                 auto location = lexy::get_input_location(context.input(), error.position());
 
                 AutoString8 msg;
-                if constexpr (std::is_same_v<Tag, lexy::expected_literal>) {
+                if constexpr (SameAs<Tag, lexy::expected_literal>) {
                     msg = fmt("error: while parsing %s at %u:%u: expected '%.*s'",
                               context.production(),
                               location.line_nr(), location.column_nr(),
                               static_cast<int>(error.length()), reinterpret_cast<const char*>(error.string()));
-                } else if constexpr (std::is_same_v<Tag, lexy::expected_keyword>) {
+                } else if constexpr (SameAs<Tag, lexy::expected_keyword>) {
                     msg = fmt("error: while parsing %s at %u:%u: expected keyword '%.*s'",
                               context.production(),
                               location.line_nr(), location.column_nr(),
                               static_cast<int>(error.length()), reinterpret_cast<const char*>(error.string()));
-                } else if constexpr (std::is_same_v<Tag, lexy::expected_char_class>) {
+                } else if constexpr (SameAs<Tag, lexy::expected_char_class>) {
                     msg = fmt("error: while parsing %s at %u:%u: expected %s",
                               context.production(),
                               location.line_nr(), location.column_nr(),
@@ -1201,7 +1201,7 @@ namespace objstore::parsers::cql {
                 ++_count;
             }
 
-            std::size_t finish() && {
+            size_t finish() && {
                 return _count;
             }
         };

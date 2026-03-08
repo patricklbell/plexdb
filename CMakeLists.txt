@@ -29,6 +29,12 @@ if(DISABLE_EXCEPTIONS)
         add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>" "$<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>")
     endif()
 endif()
+if(PLEXDB_DEBUG)
+    add_compile_definitions(PLEXDB_DEBUG=1)
+endif()
+if(PLEXDB_LOG_ENABLED)
+    add_compile_definitions(PLEXDB_LOG_ENABLED=1)
+endif()
 
 # =============================================================================
 # Build

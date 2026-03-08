@@ -1,3 +1,5 @@
+#include "macros.h"
+
 import plexdb.base;
 import plexdb.os;
 import plexdb.pager;
@@ -12,8 +14,13 @@ using namespace objstore;
 using namespace plexdb;
 
 void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-    println(msg);
-    os::signal_exit(1);
+    println("assert failed with message \"", msg, "\"");
+    
+    #if PLEXDB_DEBUG
+        PLEXDB_TRAP;
+    #else
+        os::signal_exit(1);
+    #endif
 }
 
 os::Notifier g_signal_notifier{};
