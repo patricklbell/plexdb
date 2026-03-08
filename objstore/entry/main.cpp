@@ -55,6 +55,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    String8 pid_file_path = "objstore.pid";
+    {
+        os::File pid_file{os::file_open(pid_file_path)};
+        AutoString8 pid_str = to_str(os::get_process_info()->pid);
+        os::file_write(pid_file, {.start=0,.end=pid_str.length}, pid_str.c_str);
+    }
+
     U64 page_size = 4_kb;
     bool db_create = !os::file_exists(db_path);
     os::File db_file{os::file_open(db_path)};
@@ -64,13 +71,6 @@ int main(int argc, char* argv[]) {
         pager::create(db_file, page_size);
     }
     Pager pager{db_file};
-
-    String8 pid_file_path = "objstore.pid";
-    {
-        os::File pid_file{os::file_open(pid_file_path)};
-        AutoString8 pid_str = to_str(os::get_process_info()->pid);
-        os::file_write(pid_file, {.start=0,.end=pid_str.length}, pid_str.c_str);
-    }
 
     {
         if (db_create) {
