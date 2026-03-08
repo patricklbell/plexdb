@@ -264,6 +264,8 @@ namespace objstore::engine {
                 return {
                     .status = ExecutionStatus::Success,
                     .kind = ResultKind::Rows,
+                    .keyspace = stmt.keyspace_name,
+                    .table = stmt.table_name,
                     .rows = move(rows),
                 };
             } else if constexpr (SameAs<T, UseKeyspace>) {
@@ -276,7 +278,7 @@ namespace objstore::engine {
                     };
                 }
                 engine.current_keyspace = stmt.keyspace_name;
-                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+                return {.status = ExecutionStatus::Success, .kind = ResultKind::UseKeyspace, .keyspace = engine.current_keyspace};
             } else if constexpr (SameAs<T, AlterKeyspace>) {
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
                 if (ks == nullptr) {

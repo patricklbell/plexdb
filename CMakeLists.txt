@@ -8,6 +8,7 @@ project(plexdb_workspace)
 option(BUILD_TESTS "Build unit tests" OFF)
 option(DISABLE_EXCEPTIONS "Disable exceptions globally" ON)
 option(PLEXDB_DEBUG "Build debug checks" ON)
+option(PLEXDB_LOG_ENABLED "Enable structured logging hooks" OFF)
 
 option(OBJSTORE_BUILD "Build objstore" ON)
 option(OBJSTORE_BUILD_SERVER "Build objstore server" ON)

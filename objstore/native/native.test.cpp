@@ -1,0 +1,440 @@
+#include <catch2/catch_test_macros.hpp>
+
+#include <thread>
+#include <semaphore>
+#include <string.h>
+#include <vector>
+#include <stdint.h>
+
+import plexdb.base;
+import plexdb.os;
+import plexdb.pager;
+
+import objstore.engine;
+import objstore.native;
+
+using namespace plexdb;
+using namespace plexdb::os;
+using namespace objstore;
+
+namespace {
+    constexpr int NATIVE_TEST_PORT_BASE = 23000;
+    std::atomic<int> port_counter{0};
+
+    int get_unique_port() {
+        return NATIVE_TEST_PORT_BASE + port_counter.fetch_add(1);
+    }
+
+    // ========================================================================
+    // Binary frame builder (client side)
+    // ========================================================================
+    struct Bytes {
+        std::vector<uint8_t> data;
+
+        void u8(uint8_t v)  { data.push_back(v); }
+        void u16(uint16_t v){ u8(v >> 8); u8(v); }
+        void s32(int32_t v) { u8(uint32_t(v) >> 24); u8(uint32_t(v) >> 16); u8(uint32_t(v) >> 8); u8(uint32_t(v)); }
+
+        // [string]: [short] n + bytes
+        void cql_string(const char* s) {
+            uint16_t len = uint16_t(strlen(s));
+            u16(len);
+            for (uint16_t i = 0; i < len; i++) u8(uint8_t(s[i]));
+        }
+
+        // [long string]: [int] n + bytes
+        void cql_long_string(const char* s) {
+            int32_t len = int32_t(strlen(s));
+            s32(len);
+            for (int32_t i = 0; i < len; i++) u8(uint8_t(s[i]));
+        }
+
+        // Prepend 9-byte frame header
+        void prepend_header(uint8_t op, int16_t stream) {
+            int32_t body_len = int32_t(data.size());
+            std::vector<uint8_t> hdr(9);
+            hdr[0] = 0x04; // request version
+            hdr[1] = 0x00; // flags
+            hdr[2] = uint8_t(uint16_t(stream) >> 8);
+            hdr[3] = uint8_t(stream);
+            hdr[4] = op;
+            hdr[5] = uint8_t(uint32_t(body_len) >> 24);
+            hdr[6] = uint8_t(uint32_t(body_len) >> 16);
+            hdr[7] = uint8_t(uint32_t(body_len) >> 8);
+            hdr[8] = uint8_t(body_len);
+            data.insert(data.begin(), hdr.begin(), hdr.end());
+        }
+    };
+
+    Bytes make_startup(int16_t stream = 0) {
+        Bytes b;
+        b.u16(1);
+        b.cql_string("CQL_VERSION");
+        b.cql_string("3.0.0");
+        b.prepend_header(0x01, stream);
+        return b;
+    }
+
+    Bytes make_options(int16_t stream = 0) {
+        Bytes b;
+        b.prepend_header(0x05, stream);
+        return b;
+    }
+
+    Bytes make_query(const char* cql, int16_t stream = 0) {
+        Bytes b;
+        b.cql_long_string(cql);
+        b.u16(0x0001); // consistency = ONE
+        b.u8(0x00);    // flags
+        b.prepend_header(0x07, stream);
+        return b;
+    }
+
+    void send_frame(Socket& client, const Bytes& b) {
+        socket_send_all(client, reinterpret_cast<const char*>(b.data.data()), b.data.size());
+    }
+
+    // ========================================================================
+    // Response reader
+    // ========================================================================
+    struct NativeResponse {
+        uint8_t  version  = 0;
+        uint8_t  flags    = 0;
+        int16_t  stream   = 0;
+        uint8_t  opcode   = 0;
+        int32_t  body_len = 0;
+        std::vector<uint8_t> body;
+    };
+
+    NativeResponse recv_frame(Socket& client) {
+        NativeResponse resp;
+        uint8_t hdr[9] = {};
+        size_t got = 0;
+        while (got < 9) {
+            auto res = socket_receive(client, reinterpret_cast<char*>(hdr + got), 9 - got);
+            if (res.byte_count <= 0) break;
+            got += size_t(res.byte_count);
+        }
+        resp.version  = hdr[0];
+        resp.flags    = hdr[1];
+        resp.stream   = int16_t((uint16_t(hdr[2]) << 8) | hdr[3]);
+        resp.opcode   = hdr[4];
+        resp.body_len = int32_t((uint32_t(hdr[5]) << 24) | (uint32_t(hdr[6]) << 16) | (uint32_t(hdr[7]) << 8) | hdr[8]);
+
+        if (resp.body_len > 0) {
+            resp.body.resize(size_t(resp.body_len));
+            size_t received = 0;
+            while (received < size_t(resp.body_len)) {
+                auto res = socket_receive(client, reinterpret_cast<char*>(resp.body.data() + received), size_t(resp.body_len) - received);
+                if (res.byte_count <= 0) break;
+                received += size_t(res.byte_count);
+            }
+        }
+        return resp;
+    }
+
+    // Check if the raw body bytes contain a substring
+    bool body_contains(const NativeResponse& resp, const char* needle) {
+        if (resp.body.empty()) return false;
+        // Search as a byte sequence
+        const char* body_str = reinterpret_cast<const char*>(resp.body.data());
+        size_t body_size     = resp.body.size();
+        size_t needle_len    = strlen(needle);
+        if (needle_len == 0) return true;
+        for (size_t i = 0; i + needle_len <= body_size; i++) {
+            if (memcmp(body_str + i, needle, needle_len) == 0) return true;
+        }
+        return false;
+    }
+
+    // Read the RESULT kind (first 4 bytes of body)
+    int32_t result_kind(const NativeResponse& resp) {
+        if (resp.body.size() < 4) return -1;
+        return int32_t(
+            (uint32_t(resp.body[0]) << 24) |
+            (uint32_t(resp.body[1]) << 16) |
+            (uint32_t(resp.body[2]) << 8)  |
+            uint32_t(resp.body[3])
+        );
+    }
+}
+
+TEST_CASE("Native protocol STARTUP handshake", "[objstore.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    os::Notifier signal_pipe;
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+
+    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        U64 page_size = 4_kb;
+        pager::create(db_file, page_size);
+        Pager pager{db_file};
+        engine::create_database(pager);
+        engine::Engine engine{&pager};
+        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            server_ready.release();
+        });
+    });
+
+    server_ready.acquire();
+    Socket client{socket_open()};
+    socket_set_timeout(client, 2000);
+    REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+
+    send_frame(client, make_startup());
+    auto resp = recv_frame(client);
+    CHECK(resp.version == 0x84);
+    CHECK(resp.opcode  == 0x02);  // READY
+    CHECK(resp.body_len == 0);
+
+    exit_signal = true;
+    os::signal_notify_safe(signal_pipe);
+    server_thread.join();
+}
+
+TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[objstore.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    os::Notifier signal_pipe;
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+
+    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        U64 page_size = 4_kb;
+        pager::create(db_file, page_size);
+        Pager pager{db_file};
+        engine::create_database(pager);
+        engine::Engine engine{&pager};
+        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            server_ready.release();
+        });
+    });
+
+    server_ready.acquire();
+    Socket client{socket_open()};
+    socket_set_timeout(client, 2000);
+    REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+
+    send_frame(client, make_options());
+    auto resp = recv_frame(client);
+    CHECK(resp.version == 0x84);
+    CHECK(resp.opcode  == 0x06);  // SUPPORTED
+    CHECK(resp.body_len > 0);
+    CHECK(body_contains(resp, "CQL_VERSION"));
+    CHECK(body_contains(resp, "3.0.0"));
+
+    exit_signal = true;
+    os::signal_notify_safe(signal_pipe);
+    server_thread.join();
+}
+
+TEST_CASE("Native protocol CQL DDL and DML operations", "[objstore.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    os::Notifier signal_pipe;
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+
+    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        U64 page_size = 4_kb;
+        pager::create(db_file, page_size);
+        Pager pager{db_file};
+        engine::create_database(pager);
+        engine::Engine engine{&pager};
+        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            server_ready.release();
+        });
+    });
+
+    server_ready.acquire();
+    Socket client{socket_open()};
+    socket_set_timeout(client, 2000);
+    REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+
+    send_frame(client, make_startup());
+    REQUIRE(recv_frame(client).opcode == 0x02);
+
+    // CREATE KEYSPACE -> RESULT Schema_change (0x0005)
+    send_frame(client, make_query("CREATE KEYSPACE ks WITH replication = 'SimpleStrategy';"));
+    auto resp = recv_frame(client);
+    REQUIRE(resp.opcode == 0x08);
+    CHECK(result_kind(resp) == 0x0005);
+    CHECK(body_contains(resp, "CREATED"));
+    CHECK(body_contains(resp, "KEYSPACE"));
+
+    // CREATE TABLE -> RESULT Schema_change
+    send_frame(client, make_query("CREATE TABLE ks.users (id int PRIMARY KEY, name text, age int);"));
+    resp = recv_frame(client);
+    REQUIRE(resp.opcode == 0x08);
+    CHECK(result_kind(resp) == 0x0005);
+    CHECK(body_contains(resp, "TABLE"));
+
+    // INSERT -> RESULT Void (0x0001)
+    send_frame(client, make_query("INSERT INTO ks.users VALUES (1, 'Alice', 30);"));
+    resp = recv_frame(client);
+    REQUIRE(resp.opcode == 0x08);
+    CHECK(result_kind(resp) == 0x0001);
+
+    send_frame(client, make_query("INSERT INTO ks.users VALUES (2, 'Bob', 25);"));
+    resp = recv_frame(client);
+    REQUIRE(resp.opcode == 0x08);
+    CHECK(result_kind(resp) == 0x0001);
+
+    // SELECT -> RESULT Rows (0x0002)
+    send_frame(client, make_query("SELECT * FROM ks.users;"));
+    resp = recv_frame(client);
+    REQUIRE(resp.opcode == 0x08);
+    CHECK(result_kind(resp) == 0x0002);
+    CHECK(body_contains(resp, "Alice"));
+    CHECK(body_contains(resp, "Bob"));
+
+    // USE keyspace -> RESULT Set_keyspace (0x0003)
+    send_frame(client, make_query("USE ks;"));
+    resp = recv_frame(client);
+    REQUIRE(resp.opcode == 0x08);
+    CHECK(result_kind(resp) == 0x0003);
+
+    // DROP TABLE -> RESULT Schema_change
+    send_frame(client, make_query("DROP TABLE ks.users;"));
+    resp = recv_frame(client);
+    REQUIRE(resp.opcode == 0x08);
+    CHECK(result_kind(resp) == 0x0005);
+
+    // DROP KEYSPACE -> RESULT Schema_change
+    send_frame(client, make_query("DROP KEYSPACE ks;"));
+    resp = recv_frame(client);
+    REQUIRE(resp.opcode == 0x08);
+    CHECK(result_kind(resp) == 0x0005);
+
+    exit_signal = true;
+    os::signal_notify_safe(signal_pipe);
+    server_thread.join();
+}
+
+TEST_CASE("Native protocol error responses", "[objstore.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    os::Notifier signal_pipe;
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+
+    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        U64 page_size = 4_kb;
+        pager::create(db_file, page_size);
+        Pager pager{db_file};
+        engine::create_database(pager);
+        engine::Engine engine{&pager};
+        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            server_ready.release();
+        });
+    });
+
+    server_ready.acquire();
+    Socket client{socket_open()};
+    socket_set_timeout(client, 2000);
+    REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+
+    send_frame(client, make_startup());
+    REQUIRE(recv_frame(client).opcode == 0x02);
+
+    // Query non-existent keyspace -> ERROR (0x00)
+    send_frame(client, make_query("SELECT * FROM no_such_ks.no_table;"));
+    auto resp = recv_frame(client);
+    CHECK(resp.opcode == 0x00);
+
+    // Stream id is preserved in the response
+    send_frame(client, make_query("SELECT * FROM missing.tbl;", /*stream=*/42));
+    resp = recv_frame(client);
+    CHECK(resp.opcode == 0x00);
+    CHECK(resp.stream == 42);
+
+    exit_signal = true;
+    os::signal_notify_safe(signal_pipe);
+    server_thread.join();
+}
+
+TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") {
+    int port1 = get_unique_port();
+    int port2 = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    {
+        os::Notifier signal_pipe;
+        std::binary_semaphore server_ready{0};
+        volatile bool exit_signal = false;
+
+        std::thread srv([port1, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+            U64 page_size = 4_kb;
+            pager::create(db_file, page_size);
+            Pager pager{db_file};
+            engine::create_database(pager);
+            engine::Engine engine{&pager};
+            native::run(port1, signal_pipe, exit_signal, engine, [&server_ready]() {
+                server_ready.release();
+            });
+        });
+
+        server_ready.acquire();
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port1));
+
+        send_frame(client, make_startup());
+        REQUIRE(recv_frame(client).opcode == 0x02);
+
+        send_frame(client, make_query("CREATE KEYSPACE pks WITH replication = 'SimpleStrategy';"));
+        REQUIRE(recv_frame(client).opcode == 0x08);
+
+        send_frame(client, make_query("CREATE TABLE pks.data (id int PRIMARY KEY, val text);"));
+        REQUIRE(recv_frame(client).opcode == 0x08);
+
+        send_frame(client, make_query("INSERT INTO pks.data VALUES (99, 'persisted');"));
+        REQUIRE(recv_frame(client).opcode == 0x08);
+
+        exit_signal = true;
+        os::signal_notify_safe(signal_pipe);
+        srv.join();
+    }
+
+    {
+        os::Notifier signal_pipe;
+        std::binary_semaphore server_ready{0};
+        volatile bool exit_signal = false;
+
+        std::thread srv([port2, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+            Pager pager{db_file};
+            engine::Engine engine{&pager};
+            native::run(port2, signal_pipe, exit_signal, engine, [&server_ready]() {
+                server_ready.release();
+            });
+        });
+
+        server_ready.acquire();
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port2));
+
+        send_frame(client, make_startup());
+        REQUIRE(recv_frame(client).opcode == 0x02);
+
+        send_frame(client, make_query("SELECT * FROM pks.data;"));
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);  // Rows
+        CHECK(body_contains(resp, "persisted"));
+
+        exit_signal = true;
+        os::signal_notify_safe(signal_pipe);
+        srv.join();
+    }
+}

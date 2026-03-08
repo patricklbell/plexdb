@@ -13,6 +13,7 @@ project(plexdb)
 
 if(PLEXDB_IS_MAIN_PROJECT)
     option(BUILD_TESTS "Build unit tests" ON)
+    option(PLEXDB_LOG_ENABLED "Enable structured logging hooks" OFF)
 endif()
 
 # =============================================================================
@@ -28,6 +29,7 @@ set_target_properties(plexdb_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(plexdb_modules PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../macros
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
+    ${CMAKE_CURRENT_SOURCE_DIR}/log
 )
 
 target_sources(plexdb_modules
@@ -65,6 +67,7 @@ target_sources(plexdb_modules
             pager/pager.cppm
             threads/threads.cppm
             tagged_union/tagged_union.cppm
+            log/log.cppm
 )
 
 # Static library
@@ -77,6 +80,7 @@ set_target_properties(plexdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(plexdb PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../macros
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
+    ${CMAKE_CURRENT_SOURCE_DIR}/log
 )
 
 target_sources(plexdb
@@ -101,9 +105,14 @@ target_sources(plexdb
         os/uring.cpp
         pager/pager.cpp
         threads/threads.cpp
+        log/log.cpp
 )
 
 target_link_libraries(plexdb PUBLIC plexdb_modules)
+
+if(PLEXDB_LOG_ENABLED)
+    target_compile_definitions(plexdb_modules PUBLIC PLEXDB_LOG_ENABLED=1)
+endif()
 
 # =============================================================================
 # Tests

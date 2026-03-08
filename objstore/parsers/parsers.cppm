@@ -1,4 +1,4 @@
-export module objstore.parser;
+export module objstore.parsers;
 
 import plexdb.base;
 import plexdb.tagged_union;
@@ -7,7 +7,7 @@ import objstore.engine.statements;
 
 using namespace plexdb;
 
-namespace objstore::parser {
+namespace objstore::parsers {
     // ========================================================================
     // hypertext transfer protocol (HTTP)
     // ========================================================================

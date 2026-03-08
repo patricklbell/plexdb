@@ -14,8 +14,13 @@ project(objstore)
 if(OBJSTORE_IS_MAIN_PROJECT)
     option(BUILD_TESTS "Build unit tests" ON)
     option(OBJSTORE_BUILD_SERVER "Build objstore server" ON)
+    option(PLEXDB_LOG_ENABLED "Enable structured logging hooks" OFF)
     
     add_subdirectory(../plexdb plexdb)
+endif()
+
+if(PLEXDB_LOG_ENABLED)
+    add_compile_definitions(PLEXDB_LOG_ENABLED=1)
 endif()
 
 # =============================================================================
@@ -41,7 +46,7 @@ target_include_directories(llhttp PUBLIC
     ${llhttp_SOURCE_DIR}/include
 )
 
-FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
+FetchContent_Declare(lexy URL https://github.com/foonathan/lexy/archive/refs/heads/main.zip)
 FetchContent_MakeAvailable(lexy)
 
 set(LEXY_ENCODING_OF_CHAR lexy::ascii)
@@ -75,11 +80,13 @@ target_sources(objstore_modules
             engine/engine.cppm
             engine/schema.cppm
             engine/statements.cppm
-            parser/parser.cppm
+            log/log.cppm
+            parsers/parsers.cppm
             tcp/tcp.cppm
             tcp/tcp.detail.cppm
             tcp/tcp.types.cppm
-            server/server.cppm
+            http/http.cppm
+            native/native.cppm
             repl/repl.cppm
 )
 
@@ -105,10 +112,12 @@ target_sources(objstore
     PRIVATE
         engine/engine.cpp
         engine/schema.cpp
-        parser/parser.cpp
+        log/log.cpp
+        parsers/parsers.cpp
         tcp/tcp.detail.cpp
         tcp/tcp.types.cpp
-        server/server.cpp
+        http/http.cpp
+        native/native.cpp
         repl/repl.cpp
 )
 
@@ -121,6 +130,24 @@ target_link_libraries(objstore
         foonathan::lexy::core
         foonathan::lexy::ext
 )
+
+# =============================================================================
+# Plugins
+# =============================================================================
+if(PLEXDB_LOG_ENABLED)
+    add_library(objstore_log_file SHARED)
+    target_compile_features(objstore_log_file PRIVATE cxx_std_20)
+
+    target_sources(objstore_log_file
+        PRIVATE
+            plugins/log_file/log_file_plugin.cpp
+    )
+
+    target_include_directories(objstore_log_file
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../plexdb/log
+    )
+endif()
 
 # =============================================================================
 # Executables
@@ -137,6 +164,10 @@ if(OBJSTORE_BUILD_SERVER)
         PRIVATE
             plexdb::objstore
     )
+
+    if(PLEXDB_LOG_ENABLED)
+        target_link_options(objstore_server PRIVATE -rdynamic)
+    endif()
 endif()
 
 # =============================================================================
