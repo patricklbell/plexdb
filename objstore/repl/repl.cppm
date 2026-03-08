@@ -7,7 +7,7 @@ import plexdb.base;
 import plexdb.os;
 
 import objstore.engine;
-import objstore.parser;
+import objstore.parsers;
 
 using namespace plexdb;
 

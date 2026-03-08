@@ -54,6 +54,7 @@ export namespace objstore::engine {
         Void = 0,       // No result (INSERT, UPDATE, DELETE)
         Rows,           // SELECT result
         SchemaChange,   // CREATE/DROP/ALTER result
+        UseKeyspace,    // USE keyspace
     };
 
     // ========================================================================

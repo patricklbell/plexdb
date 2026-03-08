@@ -1,7 +1,7 @@
 module;
 #include "macros.h"
 
-module objstore.server;
+module objstore.http;
 
 import plexdb.base;
 
@@ -10,7 +10,7 @@ import objstore.engine;
 
 using namespace plexdb;
 
-namespace objstore::server {
+namespace objstore::http {
     // @todo async
     // HttpChunkedEncodingMetadata create_http_chunked_encoding(U64 buffer_size) {
     //     return {

@@ -10,7 +10,7 @@ import plexdb.btree;
 import plexdb.tagged_union;
 
 import objstore.tcp;
-import objstore.parser;
+import objstore.parsers;
 import objstore.engine;
 import objstore.engine.statements;
 
@@ -25,7 +25,7 @@ namespace objstore::native {
     constexpr U8  RESPONSE_VERSION  = 0x84;
 
     // ========================================================================
-    // Opcodes
+    // Protocol
     // ========================================================================
     namespace opcode {
         constexpr U8 ERROR         = 0x00;
@@ -42,9 +42,6 @@ namespace objstore::native {
         constexpr U8 AUTH_RESPONSE = 0x0F;
     }
 
-    // ========================================================================
-    // RESULT kinds
-    // ========================================================================
     namespace result_kind {
         constexpr S32 VOID          = 0x0001;
         constexpr S32 ROWS          = 0x0002;
@@ -52,9 +49,6 @@ namespace objstore::native {
         constexpr S32 SCHEMA_CHANGE = 0x0005;
     }
 
-    // ========================================================================
-    // CQL native type option IDs
-    // ========================================================================
     namespace cql_type {
         constexpr U16 Bigint    = 0x0002;
         constexpr U16 Boolean   = 0x0004;
@@ -68,43 +62,41 @@ namespace objstore::native {
         constexpr U16 Smallint  = 0x0013;
     }
 
+    constexpr U16 dtype_to_cql_type(DType dtype) {
+        switch (dtype) {
+            case DType::text:       return cql_type::Varchar;
+            case DType::uuid:       return cql_type::Uuid;
+            case DType::timestamp:  return cql_type::Timestamp;
+            case DType::smallint:   return cql_type::Smallint;
+            case DType::int_:       return cql_type::Int;
+            case DType::bigint:     return cql_type::Bigint;
+            case DType::counter:    return cql_type::Counter;
+            case DType::boolean:    return cql_type::Boolean;
+            case DType::float_:     return cql_type::Float;
+            case DType::double_:    return cql_type::Double;
+        }
+        return 0x0000;
+    }
+
     // ========================================================================
     // Per-connection state
     // ========================================================================
     struct NativeState {
+        // @todo obviously this is wrong
         DynamicArray<U8> recv_buf;
         bool startup_done = false;
     };
 
     // ========================================================================
-    // Big-endian read helpers
+    // Read/write helpers
     // ========================================================================
-    inline U16 read_be_u16(const U8* p) {
-        return (U16(p[0]) << 8) | p[1];
-    }
-
-    inline S16 read_be_s16(const U8* p) {
-        return S16(read_be_u16(p));
-    }
-
-    inline S32 read_be_s32(const U8* p) {
-        return S32((U32(p[0]) << 24) | (U32(p[1]) << 16) | (U32(p[2]) << 8) | p[3]);
-    }
+    U16 read_be_u16(const U8* p);
+    S16 read_be_s16(const U8* p);
+    S32 read_be_s32(const U8* p);
 
     // Read [long string]: [int] n + n bytes
-    inline String8 read_cql_long_string(const U8*& p, const U8* end) {
-        assert_true(p + 4 <= end, "truncated long string length");
-        S32 len = read_be_s32(p);
-        p += 4;
-        assert_true(len >= 0 && p + len <= end, "long string body truncated");
-        String8 s(reinterpret_cast<const char*>(p), U64(len));
-        p += len;
-        return s;
-    }
+    String8 read_cql_long_string(const U8*& p, const U8* end);
 
-    // ========================================================================
-    // Big-endian write helpers
-    // ========================================================================
     template<BufferedString8Flush F>
     inline void append_be_u8(BufferedString8<F>& buf, U8 v) {
         append(buf, static_cast<char>(v));
@@ -195,23 +187,6 @@ namespace objstore::native {
                 append_cql_bytes_raw(buf, data, 8);
             } break;
         }
-    }
-
-    // Map DType to CQL native type option ID
-    constexpr U16 dtype_to_cql_type(DType dtype) {
-        switch (dtype) {
-            case DType::text:       return cql_type::Varchar;
-            case DType::uuid:       return cql_type::Uuid;
-            case DType::timestamp:  return cql_type::Timestamp;
-            case DType::smallint:   return cql_type::Smallint;
-            case DType::int_:       return cql_type::Int;
-            case DType::bigint:     return cql_type::Bigint;
-            case DType::counter:    return cql_type::Counter;
-            case DType::boolean:    return cql_type::Boolean;
-            case DType::float_:     return cql_type::Float;
-            case DType::double_:    return cql_type::Double;
-        }
-        return 0x0000;
     }
 
     // ========================================================================
@@ -341,19 +316,12 @@ namespace objstore::native {
                 String8 query = read_cql_long_string(p, body_end);
                 // Remaining bytes are query parameters (consistency, flags, etc.) - ignored
 
-                auto cql_opt = parser::cql::parse(query);
+                auto cql_opt = parsers::cql::parse(query);
                 if (!cql_opt) {
                     auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
                     append_error_body(frame, engine::ExecutionStatus::SyntaxError, "Failed to parse CQL");
                     break;
                 }
-
-                bool is_use_keyspace = false;
-                visit(cql_opt->value, [&is_use_keyspace](const auto& stmt) {
-                    using T = RemoveCVRef<decltype(stmt)>;
-                    if constexpr (SameAs<T, UseKeyspace>)
-                        is_use_keyspace = true;
-                });
 
                 engine::ExecutionResult result = engine::execute(engine, *cql_opt);
 
@@ -364,31 +332,29 @@ namespace objstore::native {
                     break;
                 }
 
-                if (is_use_keyspace) {
-                    auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
-                    append_result_set_keyspace(frame, engine.current_keyspace);
-                    break;
-                }
-
                 switch (result.kind) {
-                    case engine::ResultKind::Void: {
+                    case engine::ResultKind::Void:{
                         auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
                         append_result_void(frame);
-                    } break;
-                    case engine::ResultKind::SchemaChange: {
+                    }break;
+                    case engine::ResultKind::SchemaChange:{
                         String8 change_type = result.message.length ? result.message : "UPDATED";
                         String8 target      = result.table.length   ? "TABLE"        : "KEYSPACE";
                         auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
                         append_result_schema_change(frame, change_type, target, result.keyspace, result.table);
-                    } break;
-                    case engine::ResultKind::Rows: {
+                    }break;
+                    case engine::ResultKind::UseKeyspace:{
+                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                        append_result_set_keyspace(frame, result.keyspace);
+                    }break;
+                    case engine::ResultKind::Rows:{
                         auto ks = schema::read_keyspace(engine.schema, result.keyspace);
                         assert_true(ks != nullptr, "keyspace not found for rows result");
                         auto tbl = schema::read_table(engine.schema, *ks, result.table);
                         assert_true(tbl != nullptr, "table not found for rows result");
                         auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
                         append_result_rows(frame, result, tbl);
-                    } break;
+                    }break;
                 }
             } break;
 
@@ -424,12 +390,13 @@ export namespace objstore::native {
     template<typename F>
     concept OnReady = requires(F f) { f(); };
 
-    void run(U16 port, os::Notifier& signal_pipe, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback) {
+    Optional<String8> run(U16 port, os::Notifier& signal_pipe, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback) {
         MapFixedSentinel<os::Handle, NativeState, 2_u64*tcp::MAX_CONCURRENT_CONNECTIONS> client_to_state;
 
         const auto on_chunk = [&engine, &client_to_state](const tcp::Request& req) -> tcp::RequestStatus {
             NativeState& state = find_or_insert(client_to_state, req.connection->client);
 
+            // @todo async, proper chunk chaining
             // Append all new data from the chunk chain to our receive buffer.
             // Since we always return Handled, the chain contains only data from the current read.
             for (tcp::Chunk& chunk : req.connection->chunk_chain.chunks) {
@@ -467,10 +434,14 @@ export namespace objstore::native {
 
         {
             os::Socket socket{os::socket_open()};
-            assert_true_always(!os::is_zero_handle(socket), "failed to open server socket");
-            assert_true_always(os::socket_set_option(socket, os::SocketOption::Reuse, true), "failed to set reuse on server socket");
-            assert_true_always(os::socket_bind(socket, port), "failed to bind server socket");
-            assert_true_always(os::socket_listen(socket, 128), "failed to listen on server socket");
+            if (!socket)
+                return {"failed to open server socket"};
+            if (!os::socket_set_option(socket, os::SocketOption::Reuse, true))
+                return {"failed to set reuse on server socket"};
+            if (!os::socket_bind(socket, port))
+                return {"failed to bind server socket"};
+            if (!os::socket_listen(socket, 128))
+                return {"failed to listen on server socket"};
 
             on_ready_callback();
 
@@ -479,6 +450,8 @@ export namespace objstore::native {
                 on_chunk, on_open, on_close,
                 signal_pipe, should_exit
             );
+
+            return {};
         }
     }
 }

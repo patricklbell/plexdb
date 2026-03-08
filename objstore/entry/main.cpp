@@ -5,7 +5,7 @@ import plexdb.argparse;
 
 import objstore.engine;
 import objstore.repl;
-import objstore.server;
+import objstore.http;
 import objstore.native;
 
 using namespace objstore;
@@ -50,6 +50,10 @@ int main(int argc, char* argv[]) {
     U16 port = u16_from_str(argparse::get_option(args, 0));
     bool run_repl   = argparse::has_flag(args, 0);
     bool run_native = argparse::has_flag(args, 1);
+    if (port == 0) {
+        println("Invalid port");
+        return 1;
+    }
 
     U64 page_size = 4_kb;
     bool db_create = !os::file_exists(db_path);
@@ -78,13 +82,15 @@ int main(int argc, char* argv[]) {
             repl::run(engine);
         } else if (run_native) {
             auto on_ready = [&port]() { println("listening on port ", to_str(port), " (native protocol)"); };
-            native::run(port, g_signal_notifier, g_should_stop, engine, on_ready);
-            println("shutting down...");
+            Optional<String8> err = native::run(port, g_signal_notifier, g_should_stop, engine, on_ready);
+            if (err) println(*err);
         } else {
             auto on_ready = [&port]() { println("listening on port ", to_str(port), " (http protocol)"); };
-            server::run(port, g_signal_notifier, g_should_stop, engine, on_ready);
-            println("shutting down...");
+            Optional<String8> err = http::run(port, g_signal_notifier, g_should_stop, engine, on_ready);
+            if (err) println(*err);
         }
+
+        println("shutting down");
     }
 
     os::file_delete(pid_file_path);

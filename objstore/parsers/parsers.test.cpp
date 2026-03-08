@@ -4,13 +4,13 @@
 import plexdb.base;
 import plexdb.tagged_union;
 
-import objstore.parser;
+import objstore.parsers;
 import objstore.engine.statements;
 import objstore.engine.dtype;
 
 using namespace plexdb;
 using namespace objstore;
-using namespace objstore::parser;
+using namespace objstore::parsers;
 
 
 TEST_CASE("HTTP single complete request", "[objstore.parser]") {

@@ -11,13 +11,14 @@ module;
 
 #define LEXY_LIT_CI(x) lexy::dsl::ascii::case_folding(LEXY_LIT(x))
 
-module objstore.parser;
+module objstore.parsers;
 
 import plexdb.base;
 import plexdb.os;
 import plexdb.os.containers;
+import objstore.log;
 
-namespace objstore::parser::http {
+namespace objstore::parsers::http {
     // ========================================================================
     // request parser
     // ========================================================================
@@ -407,7 +408,7 @@ namespace objstore::parser::http {
     }
 }
 
-namespace objstore::parser::cql {
+namespace objstore::parsers::cql {
     // ========================================================================
     // cassandra query language (CQL)
     // ========================================================================
@@ -1166,6 +1167,8 @@ namespace objstore::parser::cql {
 
     // @todo return error message
     Optional<Statement> parse(String8 bytes, bool report_errors) {
+        log::cql_parse(bytes);
+
         auto input = lexy::string_input<lexy::ascii_encoding>(bytes.data, bytes.length);
 
         // auto reporter = lexy_ext::report_error.path("cql");

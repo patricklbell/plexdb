@@ -1,20 +1,20 @@
 module;
 #include "macros.h"
 
-export module objstore.server;
+export module objstore.http;
 
 import plexdb.base;
 import plexdb.os;
 import plexdb.tagged_union;
 
 import objstore.tcp;
-import objstore.parser;
+import objstore.parsers;
 import objstore.engine;
 
 using namespace plexdb;
 using namespace objstore;
 
-namespace objstore::server {
+namespace objstore::http {
     // ========================================================================
     // http
     // ========================================================================
@@ -155,7 +155,8 @@ namespace objstore::server {
                 }
                 append(str, "}");
             }break;
-            case engine::ResultKind::SchemaChange:{
+            case engine::ResultKind::SchemaChange:
+            case engine::ResultKind::UseKeyspace:{
                 append(str, "{\"status\":");
                 append_json_text(str, engine::to_str(exec_result.status));
                 if (exec_result.keyspace.length > 0) {
@@ -175,33 +176,33 @@ namespace objstore::server {
     }
 }
 
-export namespace objstore::server {
+export namespace objstore::http {
     template<typename F>
     concept OnReady = requires(F f) { f(); };
 
-    void run(U16 port, os::Notifier& signal_pipe, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback) {
+    Optional<String8> run(U16 port, os::Notifier& signal_pipe, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback) {
         // @todo not compile time
-        MapFixedSentinel<os::Handle, parser::http::RequestParser, 2*tcp::MAX_CONCURRENT_CONNECTIONS> client_to_http_parser;
+        MapFixedSentinel<os::Handle, parsers::http::RequestParser, 2*tcp::MAX_CONCURRENT_CONNECTIONS> client_to_http_parser;
 
         const auto on_chunk = [&engine, &client_to_http_parser](const tcp::Request& req) -> tcp::RequestStatus {
-            parser::http::RequestParser& http_parser = find_or_insert(client_to_http_parser, req.connection->client);
+            parsers::http::RequestParser& http_parser = find_or_insert(client_to_http_parser, req.connection->client);
             
             tcp::Chunk& chunk = *front(req.connection->chunk_chain.chunks);
-            parser::http::execute(http_parser, reinterpret_cast<char*>(chunk.data.ptr), chunk.data.length);
+            parsers::http::execute(http_parser, reinterpret_cast<char*>(chunk.data.ptr), chunk.data.length);
             
-            if (parser::http::has_error(http_parser)) {
+            if (parsers::http::has_error(http_parser)) {
                 auto response_bstr = make_http_fixed_buffered_str8(req.connection, &chunk, req.write, 400, /*close=*/true);
                 append(response_bstr, "Bad request: Malformed HTTP");
                 reset(http_parser);
                 return tcp::RequestStatus::Close;
             }
-            if (!parser::http::is_complete(http_parser)) {
+            if (!parsers::http::is_complete(http_parser)) {
                 return tcp::RequestStatus::Pending;
             }
             
-            const parser::http::Request& http_req = get_request(http_parser);
+            const parsers::http::Request& http_req = get_request(http_parser);
 
-            auto cql_opt = parser::cql::parse(http_req.body);
+            auto cql_opt = parsers::cql::parse(http_req.body);
             if (!cql_opt) {
                 auto response_bstr = make_http_fixed_buffered_str8(req.connection, &chunk, req.write, 400, /*close=*/false);
                 append(response_bstr, "Bad request: Failed to parse CQL");
@@ -254,10 +255,14 @@ export namespace objstore::server {
 
         {
             os::Socket socket{os::socket_open()};
-            assert_true_always(!os::is_zero_handle(socket), "failed to open server socket");
-            assert_true_always(os::socket_set_option(socket, os::SocketOption::Reuse, true), "failed to set reuse on server socket");
-            assert_true_always(os::socket_bind(socket, port), "failed to bind server socket");
-            assert_true_always(os::socket_listen(socket, 128), "failed to listen on server socket");
+            if (!socket)
+                return {"failed to open server socket"};
+            if (!os::socket_set_option(socket, os::SocketOption::Reuse, true))
+                return {"failed to set reuse on server socket"};
+            if (!os::socket_bind(socket, port))
+                return {"failed to bind server socket"};
+            if (!os::socket_listen(socket, 128))
+                return {"failed to listen on server socket"};
     
             on_ready_callback();
     
@@ -266,6 +271,8 @@ export namespace objstore::server {
                 on_chunk, on_open, on_close,
                 signal_pipe, should_exit
             );
+
+            return {};
         }
     }
 }

@@ -10,8 +10,8 @@ import plexdb.os;
 import plexdb.pager;
 
 import objstore.engine;
-import objstore.server;
-import objstore.parser;
+import objstore.http;
+import objstore.parsers;
 
 using namespace plexdb;
 using namespace plexdb::os;
@@ -50,7 +50,7 @@ namespace {
         AutoString8 request = make_http_request(cql);
         socket_send_all(client, request.c_str, request.length);
 
-        parser::http::ResponseParser parser;
+        parsers::http::ResponseParser parser;
         char buffer[4096];
         
         while (!is_complete(parser) && !has_error(parser)) {
@@ -67,7 +67,7 @@ namespace {
     }
 }
 
-TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server]") {
+TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.http]") {
     int port = get_unique_port();
 
     os::File db_file{os::file_tmp()};
@@ -87,7 +87,7 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
             engine::create_database(pager);
             engine::Engine engine{&pager};
 
-            server::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            http::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
                 server_ready.release();
             });
         });
@@ -126,7 +126,7 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
             Pager pager{db_file};
             engine::Engine engine{&pager};
 
-            server::run(port2, signal_pipe, exit_signal, engine, [&server_ready]() {
+            http::run(port2, signal_pipe, exit_signal, engine, [&server_ready]() {
                 server_ready.release();
             });
         });
@@ -151,7 +151,7 @@ TEST_CASE("Server end-to-end CQL operations with persistence", "[objstore.server
     }
 }
 
-TEST_CASE("Server new CQL statements", "[objstore.server]") {
+TEST_CASE("Server new CQL statements", "[objstore.http]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
@@ -166,7 +166,7 @@ TEST_CASE("Server new CQL statements", "[objstore.server]") {
         Pager pager{db_file};
         engine::create_database(pager);
         engine::Engine engine{&pager};
-        server::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+        http::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
             server_ready.release();
         });
     });
