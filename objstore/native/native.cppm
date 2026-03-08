@@ -277,6 +277,28 @@ namespace objstore::native {
         }
     }
 
+    template<BufferedString8Flush F>
+    void append_result_virtual_rows(BufferedString8<F>& buf, engine::VirtualRows& vr) {
+        append_be_s32(buf, result_kind::ROWS);
+
+        append_be_s32(buf, 0x0001);  // Global_tables_spec flag
+        append_be_s32(buf, S32(vr.columns.length));
+        append_cql_string(buf, vr.keyspace);
+        append_cql_string(buf, vr.table);
+
+        for (U64 ci = 0; ci < vr.columns.length; ci++) {
+            append_cql_string(buf, vr.columns[ci].name);
+            append_be_u16(buf, dtype_to_cql_type(vr.columns[ci].dtype));
+        }
+
+        append_be_s32(buf, S32(vr.rows.length));
+
+        for (U64 ri = 0; ri < vr.rows.length; ri++) {
+            for (U64 ci = 0; ci < vr.columns.length; ci++)
+                append_cql_value(buf, vr.rows[ri].values[ci], vr.columns[ci].dtype);
+        }
+    }
+
     // ========================================================================
     // Frame dispatcher
     // ========================================================================
@@ -354,6 +376,11 @@ namespace objstore::native {
                         assert_true(tbl != nullptr, "table not found for rows result");
                         auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
                         append_result_rows(frame, result, tbl);
+                    }break;
+                    case engine::ResultKind::VirtualRows:{
+                        assert_true(result.virtual_rows.has_value(), "virtual rows missing");
+                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                        append_result_virtual_rows(frame, *result.virtual_rows);
                     }break;
                 }
             } break;

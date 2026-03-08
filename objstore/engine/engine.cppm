@@ -53,8 +53,28 @@ export namespace objstore::engine {
     enum class ResultKind : U8 {
         Void = 0,       // No result (INSERT, UPDATE, DELETE)
         Rows,           // SELECT result
+        VirtualRows,    // Virtual/system table result (not backed by storage)
         SchemaChange,   // CREATE/DROP/ALTER result
         UseKeyspace,    // USE keyspace
+    };
+
+    // ========================================================================
+    // virtual rows (for system/virtual tables not backed by storage)
+    // ========================================================================
+    struct VirtualColumn {
+        String8 name;
+        DType dtype;
+    };
+
+    struct VirtualRow {
+        DynamicArray<dtype::ReadValue> values;
+    };
+
+    struct VirtualRows {
+        String8 keyspace;
+        String8 table;
+        DynamicArray<VirtualColumn> columns;
+        DynamicArray<VirtualRow> rows;
     };
 
     // ========================================================================
@@ -113,6 +133,7 @@ export namespace objstore::engine {
         String8 table = "";
         
         Optional<RowRange> rows;
+        Optional<VirtualRows> virtual_rows;
     };
 
     ExecutionResult execute(Engine& engine, const Statement& statement);

@@ -172,6 +172,9 @@ namespace objstore::http {
             case engine::ResultKind::Rows:{
                 assert_true(false, "unexpected execution result");
             }break;
+            case engine::ResultKind::VirtualRows:{
+                assert_true(false, "unexpected execution result");
+            }break;
         }
     }
 }

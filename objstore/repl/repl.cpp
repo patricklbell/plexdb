@@ -53,6 +53,12 @@ namespace objstore::repl {
                 }
                 os::stream_write(ostream, "\n");
             }break;
+            case engine::ResultKind::VirtualRows:{
+                AutoString8 count_str = to_str(row_count);
+                os::stream_write(ostream, "(");
+                os::stream_write(ostream, count_str.c_str, count_str.length);
+                os::stream_write(ostream, " rows)\n");
+            }break;
         }
     }
 
@@ -112,6 +118,30 @@ namespace objstore::repl {
                         for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col, ++col_idx) {
                             os::stream_write(ostream, col_idx == 0 ? " " : " | ");
                             AutoString8 val_str = dtype::to_str(engine::read_value(col), engine::column(col).dtype);
+                            os::stream_write(ostream, val_str.c_str, val_str.length);
+                        }
+                        os::stream_write(ostream, "\n");
+                        ++row_count;
+                    }
+                } else if (result.virtual_rows) {
+                    auto& vr = *result.virtual_rows;
+                    if (vr.columns.length > 0) {
+                        for (U64 ci = 0; ci < vr.columns.length; ci++) {
+                            if (ci > 0) os::stream_write(ostream, " | ");
+                            os::stream_write(ostream, vr.columns[ci].name);
+                        }
+                        os::stream_write(ostream, "\n");
+                        for (U64 ci = 0; ci < vr.columns.length; ci++) {
+                            if (ci > 0) os::stream_write(ostream, "-+-");
+                            for (U64 j = 0; j < vr.columns[ci].name.length; j++)
+                                os::stream_write(ostream, "-", 1);
+                        }
+                        os::stream_write(ostream, "\n");
+                    }
+                    for (U64 ri = 0; ri < vr.rows.length; ri++) {
+                        for (U64 ci = 0; ci < vr.columns.length; ci++) {
+                            os::stream_write(ostream, ci == 0 ? " " : " | ");
+                            AutoString8 val_str = dtype::to_str(vr.rows[ri].values[ci], vr.columns[ci].dtype);
                             os::stream_write(ostream, val_str.c_str, val_str.length);
                         }
                         os::stream_write(ostream, "\n");
