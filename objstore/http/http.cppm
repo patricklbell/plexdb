@@ -110,9 +110,70 @@ namespace objstore::http {
         append(str, '"');
     }
 
+    template<typename T> concept IsHttpDA = IsDynamicArray<T>;
+    template<typename T> concept IsHttpDS = IsDynamicSet<T>;
+    template<typename T> concept IsHttpDM = IsDynamicMap<T>;
+
+    // Serialize a single native collection element as a JSON value
+    template<BufferedString8Flush F, typename T>
+    void append_json_native_element(BufferedString8<F>& str, const T& v) {
+        using TT = Decay<T>;
+        if constexpr (SameAs<TT, AutoString8>) {
+            append_json_text(str, String8(v.c_str, v.length));
+        } else if constexpr (SameAs<TT, S64>) {
+            append(str, v);
+        } else if constexpr (SameAs<TT, S32>) {
+            append(str, v);
+        } else if constexpr (SameAs<TT, S16>) {
+            append(str, v);
+        } else if constexpr (SameAs<TT, U8>) {
+            append(str, static_cast<bool>(v));
+        } else if constexpr (SameAs<TT, F32>) {
+            append(str, v);
+        } else if constexpr (SameAs<TT, F64>) {
+            append(str, v);
+        }
+    }
+
     template<BufferedString8Flush F>
-    void append_json_dtype_value(BufferedString8<F>& str, const dtype::ReadValue& value, DType dtype) {
-        switch (dtype) {
+    void append_json_dtype_value(BufferedString8<F>& str, const dtype::ReadValue& value, CDType cdtype) {
+        if (cdtype.base.ctype != CType::native) {
+            visit(value, [&](const auto& v) {
+                using T = Decay<decltype(v)>;
+                if constexpr (IsHttpDM<T>) {
+                    // map → JSON object (numeric keys are quoted as strings)
+                    append(str, '{');
+                    bool first = true;
+                    for (auto it = v.begin(); it != v.end(); ++it) {
+                        if (!first) append(str, ',');
+                        first = false;
+                        using Key = Decay<decltype((*it).first)>;
+                        if constexpr (SameAs<Key, AutoString8>) {
+                            append_json_text(str, String8((*it).first.c_str, (*it).first.length));
+                        } else {
+                            append(str, '"');
+                            append(str, (*it).first);
+                            append(str, '"');
+                        }
+                        append(str, ':');
+                        append_json_native_element(str, (*it).second);
+                    }
+                    append(str, '}');
+                } else if constexpr (IsHttpDS<T> || IsHttpDA<T>) {
+                    // list/set → JSON array
+                    append(str, '[');
+                    bool first = true;
+                    for (auto it = v.begin(); it != v.end(); ++it) {
+                        if (!first) append(str, ',');
+                        first = false;
+                        append_json_native_element(str, *it);
+                    }
+                    append(str, ']');
+                }
+            });
+            return;
+        }
+        switch (cdtype.native.value_dtype) {
             case DType::text:
             case DType::uuid:
             case DType::timestamp:{
@@ -172,6 +233,9 @@ namespace objstore::http {
             case engine::ResultKind::Rows:{
                 assert_true(false, "unexpected execution result");
             }break;
+            case engine::ResultKind::VirtualRows:{
+                assert_true(false, "unexpected execution result");
+            }break;
         }
     }
 }
@@ -228,7 +292,7 @@ export namespace objstore::http {
                         if (col_idx != 0)
                             append(response_bstr, ',');
 
-                        append_json_dtype_value(response_bstr, read_value(col), column(col).dtype);
+                        append_json_dtype_value(response_bstr, read_value(col), column(col).type);
                         ++col_idx;
                     }
                     append(response_bstr, ']');

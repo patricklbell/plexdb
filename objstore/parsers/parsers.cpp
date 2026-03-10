@@ -472,47 +472,47 @@ namespace objstore::parsers::cql {
         struct data_type {
             struct text : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("text");
-                static constexpr auto value = lexy::constant(DType::text);
+                static constexpr auto value = lexy::constant(dtype::make_native(DType::text));
             };
             struct int_ : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("int");
-                static constexpr auto value = lexy::constant(DType::int_);
+                static constexpr auto value = lexy::constant(dtype::make_native(DType::int_));
             };
             struct bigint : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("bigint");
-                static constexpr auto value = lexy::constant(DType::bigint);
+                static constexpr auto value = lexy::constant(dtype::make_native(DType::bigint));
             };
             struct smallint : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("smallint");
-                static constexpr auto value = lexy::constant(DType::smallint);
+                static constexpr auto value = lexy::constant(dtype::make_native(DType::smallint));
             };
             struct counter : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("counter");
-                static constexpr auto value = lexy::constant(DType::counter);
+                static constexpr auto value = lexy::constant(dtype::make_native(DType::counter));
             };
             struct timestamp : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("timestamp");
-                static constexpr auto value = lexy::constant(DType::timestamp);
+                static constexpr auto value = lexy::constant(dtype::make_native(DType::timestamp));
             };
             struct boolean : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("boolean");
-                static constexpr auto value = lexy::constant(DType::boolean);
+                static constexpr auto value = lexy::constant(dtype::make_native(DType::boolean));
             };
             struct float_ : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("float");
-                static constexpr auto value = lexy::constant(DType::float_);
+                static constexpr auto value = lexy::constant(dtype::make_native(DType::float_));
             };
             struct double_ : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("double");
-                static constexpr auto value = lexy::constant(DType::double_);
+                static constexpr auto value = lexy::constant(dtype::make_native(DType::double_));
             };
             struct uuid : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("uuid");
-                static constexpr auto value = lexy::constant(DType::uuid);
+                static constexpr auto value = lexy::constant(dtype::make_native(DType::uuid));
             };
 
             static constexpr auto rule  = dsl::p<text> | dsl::p<int_> | dsl::p<bigint> | dsl::p<smallint> | dsl::p<counter> | dsl::p<timestamp> | dsl::p<boolean> | dsl::p<float_> | dsl::p<double_> | dsl::p<uuid>;
-            static constexpr auto value = lexy::forward<DType>;
+            static constexpr auto value = lexy::forward<CDType>;
         };
     
         // string literal
@@ -951,7 +951,7 @@ namespace objstore::parsers::cql {
         struct column_def {
             static constexpr auto rule = [] {
                 return (dsl::member<&CreateColumn::name> = dsl::p<identifier>) + dsl::p<ws> + 
-                       (dsl::member<&CreateColumn::dtype> = dsl::p<data_type>) + dsl::p<ws> + 
+                       (dsl::member<&CreateColumn::type> = dsl::p<data_type>) + dsl::p<ws> + 
                        (dsl::member<&CreateColumn::is_primary_key> = dsl::p<primary_key>) + dsl::p<ws>;
             }();
             

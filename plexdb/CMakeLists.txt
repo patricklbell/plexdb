@@ -66,6 +66,7 @@ target_sources(plexdb_modules
             btree/btree.types.cppm
             os/containers.cppm
             os/core.cppm
+            third_party/xxhash/xxhash.cppm
             os/function.cppm
             os/os.cppm
             os/signal.cppm

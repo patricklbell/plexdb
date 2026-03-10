@@ -60,6 +60,9 @@ namespace objstore::native {
         constexpr U16 Uuid      = 0x000C;
         constexpr U16 Varchar   = 0x000D;
         constexpr U16 Smallint  = 0x0013;
+        constexpr U16 List      = 0x0020;
+        constexpr U16 Map       = 0x0021;
+        constexpr U16 Set       = 0x0022;
     }
 
     constexpr U16 dtype_to_cql_type(DType dtype) {
@@ -77,6 +80,15 @@ namespace objstore::native {
         }
         return 0x0000;
     }
+
+    constexpr U16 dtype_to_cql_type(CDType cdtype) {
+        if (cdtype.base.ctype != CType::native) return 0x0000;
+        return dtype_to_cql_type(cdtype.native.value_dtype);
+    }
+
+    template<typename T> concept IsCqlDA = IsDynamicArray<T>;
+    template<typename T> concept IsCqlDS = IsDynamicSet<T>;
+    template<typename T> concept IsCqlDM = IsDynamicMap<T>;
 
     // ========================================================================
     // Per-connection state
@@ -134,10 +146,115 @@ namespace objstore::native {
         }
     }
 
-    // Write a dtype::ReadValue as CQL native binary [bytes] (big-endian network order)
+    // Write a single native element as [bytes] (big-endian, includes the [int] length prefix)
+    template<BufferedString8Flush F, typename T>
+    void append_cql_native_element(BufferedString8<F>& buf, const T& v) {
+        using TT = Decay<T>;
+        if constexpr (SameAs<TT, AutoString8>) {
+            append_cql_bytes_raw(buf, reinterpret_cast<const U8*>(v.c_str), S32(v.length));
+        } else if constexpr (SameAs<TT, S64>) {
+            S64 vv = v;
+            U8 data[8];
+            for (int i = 7; i >= 0; i--) { data[i] = U8(vv); vv >>= 8; }
+            append_cql_bytes_raw(buf, data, 8);
+        } else if constexpr (SameAs<TT, S32>) {
+            U8 data[4] = { U8(U32(v) >> 24), U8(U32(v) >> 16), U8(U32(v) >> 8), U8(U32(v)) };
+            append_cql_bytes_raw(buf, data, 4);
+        } else if constexpr (SameAs<TT, S16>) {
+            U8 data[2] = { U8(U16(v) >> 8), U8(v) };
+            append_cql_bytes_raw(buf, data, 2);
+        } else if constexpr (SameAs<TT, U8>) {
+            append_cql_bytes_raw(buf, &v, 1);
+        } else if constexpr (SameAs<TT, F32>) {
+            U32 bits; os::memory_copy(&bits, &v, sizeof(bits));
+            U8 data[4] = { U8(bits >> 24), U8(bits >> 16), U8(bits >> 8), U8(bits) };
+            append_cql_bytes_raw(buf, data, 4);
+        } else if constexpr (SameAs<TT, F64>) {
+            U64 bits; os::memory_copy(&bits, &v, sizeof(bits));
+            U8 data[8];
+            for (int i = 7; i >= 0; i--) { data[i] = U8(bits); bits >>= 8; }
+            append_cql_bytes_raw(buf, data, 8);
+        }
+    }
+
+    template<typename T>
+    S32 cql_native_element_byte_size(const T& v) {
+        using TT = Decay<T>;
+        if constexpr (SameAs<TT, AutoString8>) return S32(v.length);
+        if constexpr (SameAs<TT, S64>)        return 8;
+        if constexpr (SameAs<TT, S32>)        return 4;
+        if constexpr (SameAs<TT, S16>)        return 2;
+        if constexpr (SameAs<TT, U8>)         return 1;
+        if constexpr (SameAs<TT, F32>)        return 4;
+        if constexpr (SameAs<TT, F64>)        return 8;
+        return 0;
+    }
+
+    // Write an [option] for a column type (§4.2.5.2): [short] type_id + optional nested type(s)
     template<BufferedString8Flush F>
-    void append_cql_value(BufferedString8<F>& buf, const dtype::ReadValue& value, DType dtype) {
-        switch (dtype) {
+    void append_cql_type_option(BufferedString8<F>& buf, CDType cdtype) {
+        switch (cdtype.base.ctype) {
+            case CType::native:
+                append_be_u16(buf, dtype_to_cql_type(cdtype.native.value_dtype));
+                break;
+            case CType::list:
+                append_be_u16(buf, cql_type::List);
+                append_be_u16(buf, dtype_to_cql_type(cdtype.list.element_dtype));
+                break;
+            case CType::set:
+                append_be_u16(buf, cql_type::Set);
+                append_be_u16(buf, dtype_to_cql_type(cdtype.set.key_dtype));
+                break;
+            case CType::map:
+                append_be_u16(buf, cql_type::Map);
+                append_be_u16(buf, dtype_to_cql_type(cdtype.map.key_dtype));
+                append_be_u16(buf, dtype_to_cql_type(cdtype.map.value_dtype));
+                break;
+        }
+    }
+
+    // Write a dtype::ReadValue as CQL binary [bytes] (big-endian network order)
+    template<BufferedString8Flush F>
+    void append_cql_value(BufferedString8<F>& buf, const dtype::ReadValue& value, CDType cdtype) {
+        if (cdtype.base.ctype != CType::native) {
+            // Serialize collection as [bytes]: [int] body_len | [int] elem_count | n×[bytes]
+            visit(value, [&](const auto& v) {
+                using T = Decay<decltype(v)>;
+                if constexpr (IsCqlDM<T>) {
+                    U64 pair_count = length(v);
+                    S32 body = 4; // [int] pair count
+                    for (auto it = v.begin(); it != v.end(); ++it) {
+                        body += 4 + cql_native_element_byte_size((*it).first);
+                        body += 4 + cql_native_element_byte_size((*it).second);
+                    }
+                    append_be_s32(buf, body);
+                    append_be_s32(buf, S32(pair_count));
+                    for (auto it = v.begin(); it != v.end(); ++it) {
+                        append_cql_native_element(buf, (*it).first);
+                        append_cql_native_element(buf, (*it).second);
+                    }
+                } else if constexpr (IsCqlDS<T>) {
+                    U64 elem_count = length(v);
+                    S32 body = 4;
+                    for (auto it = v.begin(); it != v.end(); ++it)
+                        body += 4 + cql_native_element_byte_size(*it);
+                    append_be_s32(buf, body);
+                    append_be_s32(buf, S32(elem_count));
+                    for (auto it = v.begin(); it != v.end(); ++it)
+                        append_cql_native_element(buf, *it);
+                } else if constexpr (IsCqlDA<T>) {
+                    S32 body = 4;
+                    for (U64 i = 0; i < v.length; i++)
+                        body += 4 + cql_native_element_byte_size(v[i]);
+                    append_be_s32(buf, body);
+                    append_be_s32(buf, S32(v.length));
+                    for (U64 i = 0; i < v.length; i++)
+                        append_cql_native_element(buf, v[i]);
+                }
+            });
+            return;
+        }
+        switch (cdtype.native.value_dtype) {
             case DType::text:
             case DType::uuid:
             case DType::timestamp: {
@@ -266,14 +383,36 @@ namespace objstore::native {
 
         for (U64 ci = 0; ci < tbl->cols.length; ci++) {
             append_cql_string(buf, tbl->cols[ci].name);
-            append_be_u16(buf, dtype_to_cql_type(tbl->cols[ci].dtype));
+            append_cql_type_option(buf, tbl->cols[ci].type);
         }
 
         append_be_s32(buf, S32(btree::size(tbl->btree)));
 
         for (auto& row = result.rows->begin(); row != result.rows->end(); ++row) {
             for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col)
-                append_cql_value(buf, engine::read_value(col), engine::column(col).dtype);
+                append_cql_value(buf, engine::read_value(col), engine::column(col).type);
+        }
+    }
+
+    template<BufferedString8Flush F>
+    void append_result_virtual_rows(BufferedString8<F>& buf, engine::VirtualRows& vr) {
+        append_be_s32(buf, result_kind::ROWS);
+
+        append_be_s32(buf, 0x0001);  // Global_tables_spec flag
+        append_be_s32(buf, S32(vr.columns.length));
+        append_cql_string(buf, vr.keyspace);
+        append_cql_string(buf, vr.table);
+
+        for (U64 ci = 0; ci < vr.columns.length; ci++) {
+            append_cql_string(buf, vr.columns[ci].name);
+            append_cql_type_option(buf, vr.columns[ci].type);
+        }
+
+        append_be_s32(buf, S32(vr.rows.length));
+
+        for (U64 ri = 0; ri < vr.rows.length; ri++) {
+            for (U64 ci = 0; ci < vr.columns.length; ci++)
+                append_cql_value(buf, vr.rows[ri].values[ci], vr.columns[ci].type);
         }
     }
 
@@ -354,6 +493,11 @@ namespace objstore::native {
                         assert_true(tbl != nullptr, "table not found for rows result");
                         auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
                         append_result_rows(frame, result, tbl);
+                    }break;
+                    case engine::ResultKind::VirtualRows:{
+                        assert_true(result.virtual_rows.has_value(), "virtual rows missing");
+                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                        append_result_virtual_rows(frame, *result.virtual_rows);
                     }break;
                 }
             } break;

@@ -438,3 +438,204 @@ TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") 
         srv.join();
     }
 }
+
+TEST_CASE("Native protocol system.local virtual view", "[objstore.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    os::Notifier signal_pipe;
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+
+    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        U64 page_size = 4_kb;
+        pager::create(db_file, page_size);
+        Pager pager{db_file};
+        engine::create_database(pager);
+        engine::Engine engine{&pager};
+        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            server_ready.release();
+        });
+    });
+
+    server_ready.acquire();
+    Socket client{socket_open()};
+    socket_set_timeout(client, 2000);
+    REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+
+    send_frame(client, make_startup());
+    REQUIRE(recv_frame(client).opcode == 0x02);
+
+    SECTION("SELECT * FROM system.local returns rows with expected columns") {
+        send_frame(client, make_query("SELECT * FROM system.local;"));
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK(body_contains(resp, "local"));
+        CHECK(body_contains(resp, "datacenter1"));
+        CHECK(body_contains(resp, "rack1"));
+        CHECK(body_contains(resp, "objstore"));
+    }
+
+    SECTION("SELECT * FROM system.peers returns empty rows") {
+        send_frame(client, make_query("SELECT * FROM system.peers;"));
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK(body_contains(resp, "peer"));
+    }
+
+    SECTION("SELECT * FROM system.peers_v2 returns empty rows") {
+        send_frame(client, make_query("SELECT * FROM system.peers_v2;"));
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+    }
+
+    exit_signal = true;
+    os::signal_notify_safe(signal_pipe);
+    server_thread.join();
+}
+
+TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    os::Notifier signal_pipe;
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+
+    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        U64 page_size = 4_kb;
+        pager::create(db_file, page_size);
+        Pager pager{db_file};
+        engine::create_database(pager);
+        engine::Engine engine{&pager};
+        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            server_ready.release();
+        });
+    });
+
+    server_ready.acquire();
+    Socket client{socket_open()};
+    socket_set_timeout(client, 2000);
+    REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+
+    send_frame(client, make_startup());
+    REQUIRE(recv_frame(client).opcode == 0x02);
+
+    send_frame(client, make_query("CREATE KEYSPACE test_ks WITH replication = 'SimpleStrategy';"));
+    REQUIRE(recv_frame(client).opcode == 0x08);
+
+    send_frame(client, make_query("CREATE TABLE test_ks.users (id int PRIMARY KEY, name text);"));
+    REQUIRE(recv_frame(client).opcode == 0x08);
+
+    // system_schema.keyspaces
+    send_frame(client, make_query("SELECT * FROM system_schema.keyspaces;"));
+    {
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK(body_contains(resp, "keyspace_name"));
+        CHECK(body_contains(resp, "test_ks"));
+    }
+
+    // system_schema.tables
+    send_frame(client, make_query("SELECT * FROM system_schema.tables;"));
+    {
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK(body_contains(resp, "table_name"));
+        CHECK(body_contains(resp, "users"));
+    }
+
+    // system_schema.columns
+    send_frame(client, make_query("SELECT * FROM system_schema.columns;"));
+    {
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK(body_contains(resp, "column_name"));
+        CHECK(body_contains(resp, "partition_key"));
+        CHECK(body_contains(resp, "name"));
+    }
+
+    send_frame(client, make_query("DROP TABLE test_ks.users;"));
+    CHECK(recv_frame(client).opcode == 0x08);
+    send_frame(client, make_query("DROP KEYSPACE test_ks;"));
+    CHECK(recv_frame(client).opcode == 0x08);
+
+    exit_signal = true;
+    os::signal_notify_safe(signal_pipe);
+    server_thread.join();
+}
+
+namespace {
+    bool body_contains_bytes(const NativeResponse& resp, std::initializer_list<uint8_t> needle) {
+        const auto* data = resp.body.data();
+        size_t size = resp.body.size();
+        size_t n = needle.size();
+        if (n == 0 || size < n) return false;
+        const uint8_t* pat = needle.begin();
+        for (size_t i = 0; i + n <= size; i++) {
+            if (memcmp(data + i, pat, n) == 0) return true;
+        }
+        return false;
+    }
+}
+
+TEST_CASE("Native protocol collection serialization", "[objstore.native]") {
+    // system.local has a tokens column of type set<text> with one element "0".
+    // This test verifies the CQL native binary encoding of collection types and values.
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    os::Notifier signal_pipe;
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+
+    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        U64 page_size = 4_kb;
+        pager::create(db_file, page_size);
+        Pager pager{db_file};
+        engine::create_database(pager);
+        engine::Engine engine{&pager};
+        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            server_ready.release();
+        });
+    });
+
+    server_ready.acquire();
+    Socket client{socket_open()};
+    socket_set_timeout(client, 2000);
+    REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+
+    send_frame(client, make_startup());
+    REQUIRE(recv_frame(client).opcode == 0x02);
+
+    send_frame(client, make_query("SELECT * FROM system.local;"));
+    auto resp = recv_frame(client);
+    REQUIRE(resp.opcode == 0x08);
+    REQUIRE(result_kind(resp) == 0x0002);  // Rows
+
+    SECTION("tokens column type option is Set<Varchar>") {
+        // [short] 0x0022 (Set) + [short] 0x000D (Varchar)
+        CHECK(body_contains_bytes(resp, {0x00, 0x22, 0x00, 0x0D}));
+    }
+
+    SECTION("tokens set value encodes one-element set containing '0'") {
+        // [int] body=9 | [int] count=1 | [int] elemlen=1 | '0'(0x30)
+        CHECK(body_contains_bytes(resp, {0x00, 0x00, 0x00, 0x09,
+                                         0x00, 0x00, 0x00, 0x01,
+                                         0x00, 0x00, 0x00, 0x01,
+                                         0x30}));
+    }
+
+    exit_signal = true;
+    os::signal_notify_safe(signal_pipe);
+    server_thread.join();
+}

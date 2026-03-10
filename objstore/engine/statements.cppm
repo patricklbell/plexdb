@@ -111,7 +111,7 @@ export namespace objstore {
     // ========================================================================
     struct CreateColumn {
         String8 name;
-        DType dtype;
+        CDType type;
         bool is_primary_key = false;
     };
 
@@ -133,7 +133,7 @@ export namespace objstore {
 
     struct AlterColumn {
         String8 name;
-        DType dtype;  // only used for add_column
+        CDType type;  // only used for add_column
     };
 
     struct RenameColumn {

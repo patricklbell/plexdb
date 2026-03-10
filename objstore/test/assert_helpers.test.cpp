@@ -3,6 +3,7 @@
 import plexdb.base;
 
 inline void catch2_assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
+    // @todo do not throw, just register exception and continue until test case ends, use macro+destructor to fail
     FAIL("Assert failed \"" << msg << "\" at " << function_name << " in " << file_name << ":" << line_number);
 }
 

@@ -289,7 +289,7 @@ TEST_CASE("CQL CREATE TABLE statements", "[objstore.parser]") {
         REQUIRE(tbl.if_not_exists == false);
         REQUIRE(tbl.columns.length == 1);
         REQUIRE(tbl.columns[0].name == "id");
-        REQUIRE(tbl.columns[0].dtype == DType::int_);
+        REQUIRE(tbl.columns[0].type == dtype::make_native(DType::int_));
         REQUIRE(tbl.columns[0].is_primary_key == true);
     }
     
@@ -305,15 +305,15 @@ TEST_CASE("CQL CREATE TABLE statements", "[objstore.parser]") {
         REQUIRE(tbl.columns.length == 3);
         
         REQUIRE(tbl.columns[0].name == "id");
-        REQUIRE(tbl.columns[0].dtype == DType::int_);
+        REQUIRE(tbl.columns[0].type == dtype::make_native(DType::int_));
         REQUIRE(tbl.columns[0].is_primary_key == true);
         
         REQUIRE(tbl.columns[1].name == "name");
-        REQUIRE(tbl.columns[1].dtype == DType::text);
+        REQUIRE(tbl.columns[1].type == dtype::make_native(DType::text));
         REQUIRE(tbl.columns[1].is_primary_key == false);
         
         REQUIRE(tbl.columns[2].name == "age");
-        REQUIRE(tbl.columns[2].dtype == DType::int_);
+        REQUIRE(tbl.columns[2].type == dtype::make_native(DType::int_));
         REQUIRE(tbl.columns[2].is_primary_key == false);
     }
     
@@ -337,11 +337,11 @@ TEST_CASE("CQL CREATE TABLE statements", "[objstore.parser]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.columns.length == 5);
-        REQUIRE(tbl.columns[0].dtype == DType::int_);
-        REQUIRE(tbl.columns[1].dtype == DType::text);
-        REQUIRE(tbl.columns[2].dtype == DType::bigint);
-        REQUIRE(tbl.columns[3].dtype == DType::timestamp);
-        REQUIRE(tbl.columns[4].dtype == DType::boolean);
+        REQUIRE(tbl.columns[0].type == dtype::make_native(DType::int_));
+        REQUIRE(tbl.columns[1].type == dtype::make_native(DType::text));
+        REQUIRE(tbl.columns[2].type == dtype::make_native(DType::bigint));
+        REQUIRE(tbl.columns[3].type == dtype::make_native(DType::timestamp));
+        REQUIRE(tbl.columns[4].type == dtype::make_native(DType::boolean));
     }
     
     SECTION("CREATE TABLE with FLOAT and DOUBLE types") {
@@ -351,8 +351,8 @@ TEST_CASE("CQL CREATE TABLE statements", "[objstore.parser]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.columns.length == 3);
-        REQUIRE(tbl.columns[1].dtype == DType::float_);
-        REQUIRE(tbl.columns[2].dtype == DType::double_);
+        REQUIRE(tbl.columns[1].type == dtype::make_native(DType::float_));
+        REQUIRE(tbl.columns[2].type == dtype::make_native(DType::double_));
     }
     
     SECTION("CREATE TABLE with UUID type") {
@@ -362,7 +362,7 @@ TEST_CASE("CQL CREATE TABLE statements", "[objstore.parser]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.columns.length == 2);
-        REQUIRE(tbl.columns[0].dtype == DType::uuid);
+        REQUIRE(tbl.columns[0].type == dtype::make_native(DType::uuid));
         REQUIRE(tbl.columns[0].is_primary_key == true);
     }
     

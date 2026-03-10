@@ -346,6 +346,9 @@ export namespace plexdb {
     // ========================================================================
     template<typename A, typename B>
     struct Pair {
+        using First = A;
+        using Second = B;
+
         A first{};
         B second{};
 
@@ -807,4 +810,36 @@ namespace plexdb {
 
     export template<typename T>
     using Decay = typename DecayHelper<T>::type;
+
+    // ========================================================================
+    // type combinatorics
+    // ========================================================================
+    export template<typename... Ts>
+    struct TypeList {};
+
+    template<typename... Lists>
+    struct ConcatHelper;
+
+    template<>
+    struct ConcatHelper<> {
+        using type = TypeList<>;
+    };
+
+    template<typename List>
+    struct ConcatHelper<List> {
+        using type = List;
+    };
+
+    template<typename List1, typename List2, typename... Rest>
+    struct ConcatHelper<List1, List2, Rest...> {
+        using type = typename ConcatHelper<typename ConcatHelper<List1, List2>::type, Rest...>::type;
+    };
+
+    template<typename... Ts1, typename... Ts2>
+    struct ConcatHelper<TypeList<Ts1...>, TypeList<Ts2...>> {
+        using type = TypeList<Ts1..., Ts2...>;
+    };
+
+    export template<typename... Lists>
+    using Concat = typename ConcatHelper<Lists...>::type;
 }

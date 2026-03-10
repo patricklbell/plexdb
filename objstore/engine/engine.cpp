@@ -48,7 +48,7 @@ namespace objstore::engine {
             blob::get(row_blob, out_value, size, offset);
             offset += size;
         };
-        return dtype::read(read, it.table->cols[it.col_idx].dtype);
+        return dtype::read_specific(read, it.table->cols[it.col_idx].type);
     }
 
     ColumnIterator& ColumnIterator::operator++() {
@@ -58,7 +58,7 @@ namespace objstore::engine {
             blob::get(row_blob, out_value, size, offset);
             offset += size;
         };
-        dtype::read(skip, table->cols[col_idx].dtype);
+        dtype::read_specific(skip, table->cols[col_idx].type);
         row_offset_bytes = offset;
         ++col_idx;
         return *this;
@@ -86,6 +86,207 @@ namespace objstore::engine {
     }
 
     // ========================================================================
+    // system virtual tables
+    // ========================================================================
+    bool is_system_keyspace(String8 ks) {
+        return ks == "system" || ks == "system_schema" ||
+               ks == "system_virtual_schema" || ks == "system_auth" ||
+               ks == "system_distributed" || ks == "system_traces";
+    }
+
+    VirtualRows make_system_local() {
+        VirtualRows vr;
+        vr.keyspace = "system";
+        vr.table = "local";
+
+        push_back(vr.columns, VirtualColumn{"key", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"bootstrapped", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"broadcast_address", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"broadcast_port", dtype::make_native(DType::int_)});
+        push_back(vr.columns, VirtualColumn{"cluster_name", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"cql_version", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"data_center", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"host_id", dtype::make_native(DType::uuid)});
+        push_back(vr.columns, VirtualColumn{"listen_address", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"listen_port", dtype::make_native(DType::int_)});
+        push_back(vr.columns, VirtualColumn{"native_protocol_version", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"partitioner", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"rack", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"release_version", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"rpc_address", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"rpc_port", dtype::make_native(DType::int_)});
+        push_back(vr.columns, VirtualColumn{"schema_version", dtype::make_native(DType::uuid)});
+        push_back(vr.columns, VirtualColumn{"tokens", dtype::make_set(DType::text)});
+
+        const U8 uuid_bytes[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+
+        VirtualRow row;
+        push_back(row.values, dtype::ReadValue{"local"_as});
+        push_back(row.values, dtype::ReadValue{"COMPLETED"_as});
+        push_back(row.values, dtype::ReadValue{"127.0.0.1"_as});
+        push_back(row.values, dtype::ReadValue{S32(7000)});
+        push_back(row.values, dtype::ReadValue{"objstore"_as});
+        push_back(row.values, dtype::ReadValue{"3.4.7"_as});
+        push_back(row.values, dtype::ReadValue{"datacenter1"_as});
+        push_back(row.values, dtype::ReadValue{AutoString8{uuid_bytes, 16}});
+        push_back(row.values, dtype::ReadValue{"127.0.0.1"_as});
+        push_back(row.values, dtype::ReadValue{S32(7000)});
+        push_back(row.values, dtype::ReadValue{"4"_as});
+        push_back(row.values, dtype::ReadValue{"org.apache.cassandra.dht.Murmur3Partitioner"_as});
+        push_back(row.values, dtype::ReadValue{"rack1"_as});
+        push_back(row.values, dtype::ReadValue{"3.11.19"_as}); // @note last version in 3.x, before system_virtual
+        push_back(row.values, dtype::ReadValue{"127.0.0.1"_as});
+        push_back(row.values, dtype::ReadValue{S32(9042)});
+        push_back(row.values, dtype::ReadValue{AutoString8{uuid_bytes, 16}}); 
+        push_back(row.values, dtype::ReadValue{DynamicSet<AutoString8>{{"0"_as}}});
+        push_back(vr.rows, move(row));
+
+        return vr;
+    }
+
+    VirtualRows make_system_peers() {
+        VirtualRows vr;
+        vr.keyspace = "system";
+        vr.table = "peers";
+
+        push_back(vr.columns, VirtualColumn{"peer", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"data_center", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"host_id", dtype::make_native(DType::uuid)});
+        push_back(vr.columns, VirtualColumn{"preferred_ip", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"rack", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"release_version", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"rpc_address", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"schema_version", dtype::make_native(DType::uuid)});
+        push_back(vr.columns, VirtualColumn{"tokens", dtype::make_set(DType::text)});
+
+        return vr;
+    }
+
+    VirtualRows make_system_peers_v2() {
+        VirtualRows vr;
+        vr.keyspace = "system";
+        vr.table = "peers_v2";
+
+        push_back(vr.columns, VirtualColumn{"peer", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"peer_port", dtype::make_native(DType::int_)});
+        push_back(vr.columns, VirtualColumn{"data_center", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"host_id", dtype::make_native(DType::uuid)});
+        push_back(vr.columns, VirtualColumn{"native_address", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"native_port", dtype::make_native(DType::int_)});
+        push_back(vr.columns, VirtualColumn{"preferred_ip", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"preferred_port", dtype::make_native(DType::int_)});
+        push_back(vr.columns, VirtualColumn{"rack", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"release_version", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"schema_version", dtype::make_native(DType::uuid)});
+        push_back(vr.columns, VirtualColumn{"tokens", dtype::make_native(DType::text)});
+
+        return vr;
+    }
+
+    VirtualRows make_schema_keyspaces(schema::Schema& schema) {
+        VirtualRows vr;
+        vr.keyspace = "system_schema";
+        vr.table = "keyspaces";
+
+        push_back(vr.columns, VirtualColumn{"keyspace_name", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"durable_writes", dtype::make_native(DType::boolean)});
+        push_back(vr.columns, VirtualColumn{"replication", dtype::make_native(DType::text)});
+
+        for (auto& ks : schema.keyspaces) {
+            if (ks.tombstone) continue;
+            VirtualRow row;
+            push_back(row.values, dtype::ReadValue{AutoString8(ks.name)});
+            push_back(row.values, dtype::ReadValue{U8(1)});
+            push_back(row.values, dtype::ReadValue{"{'class': 'SimpleStrategy', 'replication_factor': '1'}"_as});
+            push_back(vr.rows, move(row));
+        }
+
+        return vr;
+    }
+
+    VirtualRows make_schema_tables(schema::Schema& schema) {
+        VirtualRows vr;
+        vr.keyspace = "system_schema";
+        vr.table = "tables";
+
+        push_back(vr.columns, VirtualColumn{"keyspace_name", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"table_name", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"bloom_filter_fp_chance", dtype::make_native(DType::double_)});
+        push_back(vr.columns, VirtualColumn{"comment", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"default_time_to_live", dtype::make_native(DType::int_)});
+        push_back(vr.columns, VirtualColumn{"gc_grace_seconds", dtype::make_native(DType::int_)});
+
+        for (auto& ks : schema.keyspaces) {
+            if (ks.tombstone) continue;
+            for (auto& tbl : ks.tbls) {
+                if (tbl.tombstone) continue;
+                VirtualRow row;
+                push_back(row.values, dtype::ReadValue{AutoString8(ks.name)});
+                push_back(row.values, dtype::ReadValue{AutoString8(tbl.name)});
+                push_back(row.values, dtype::ReadValue{F64(0.01)});
+                push_back(row.values, dtype::ReadValue{""_as});
+                push_back(row.values, dtype::ReadValue{S32(0)});
+                push_back(row.values, dtype::ReadValue{S32(864000)});
+                push_back(vr.rows, move(row));
+            }
+        }
+
+        return vr;
+    }
+
+    VirtualRows make_schema_columns(schema::Schema& schema) {
+        VirtualRows vr;
+        vr.keyspace = "system_schema";
+        vr.table = "columns";
+
+        push_back(vr.columns, VirtualColumn{"keyspace_name", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"table_name", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"column_name", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"clustering_order", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"kind", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"position", dtype::make_native(DType::int_)});
+        push_back(vr.columns, VirtualColumn{"type", dtype::make_native(DType::text)});
+
+        for (auto& ks : schema.keyspaces) {
+            if (ks.tombstone) continue;
+            for (auto& tbl : ks.tbls) {
+                if (tbl.tombstone) continue;
+                S32 pos = 0;
+                for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                    auto& col = tbl.cols[ci];
+                    if (col.tombstone) continue;
+                    VirtualRow row;
+                    push_back(row.values, dtype::ReadValue{AutoString8(ks.name)});
+                    push_back(row.values, dtype::ReadValue{AutoString8(tbl.name)});
+                    push_back(row.values, dtype::ReadValue{AutoString8(col.name)});
+                    push_back(row.values, dtype::ReadValue{"none"_as});
+                    bool is_partition_key = (ci == tbl.primary_col_idx);
+                    push_back(row.values, dtype::ReadValue{is_partition_key ? "partition_key"_as : "regular"_as});
+                    push_back(row.values, dtype::ReadValue{S32(is_partition_key ? 0 : pos++)});
+                    push_back(row.values, dtype::ReadValue{AutoString8(dtype::to_str(col.type))});
+                    push_back(vr.rows, move(row));
+                }
+            }
+        }
+
+        return vr;
+    }
+
+    Optional<VirtualRows> try_system_select(Engine& engine, String8 keyspace, String8 table) {
+        if (keyspace == "system") {
+            if (table == "local")     return make_system_local();
+            if (table == "peers")     return make_system_peers();
+            if (table == "peers_v2")  return make_system_peers_v2();
+        }
+        if (keyspace == "system_schema") {
+            if (table == "keyspaces") return make_schema_keyspaces(engine.schema);
+            if (table == "tables")    return make_schema_tables(engine.schema);
+            if (table == "columns")   return make_schema_columns(engine.schema);
+        }
+        return {};
+    }
+
+    // ========================================================================
     // execute
     // ========================================================================
     ExecutionResult execute(Engine& engine, const Statement& statement) {
@@ -93,6 +294,16 @@ namespace objstore::engine {
             using T = RemoveCVRef<decltype(stmt)>;
 
             if constexpr (SameAs<T, CreateKeyspace>) {
+                if (is_system_keyspace(stmt.keyspace_name)) {
+                    if (stmt.if_not_exists) {
+                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+                    }
+                    return {
+                        .status = ExecutionStatus::AlreadyExists,
+                        .message = "Keyspace already exists",
+                        .keyspace = stmt.keyspace_name,
+                    };
+                }
                 if (!stmt.if_not_exists) {
                     auto existing = schema::read_keyspace(engine.schema, stmt.keyspace_name);
                     if (existing != nullptr) {
@@ -188,7 +399,7 @@ namespace objstore::engine {
                     const auto& col = tbl->cols[idx];
                     const auto& value = stmt.values[idx];
 
-                    if (!dtype::can_write(value, col.dtype)) {
+                    if (!dtype::can_write_generic(value, col.type)) {
                         return {
                             .status = ExecutionStatus::Invalid,
                             .message = "Value does not match its column's type",
@@ -212,7 +423,7 @@ namespace objstore::engine {
                     const auto& col = tbl->cols[idx];
                     const auto& value = stmt.values[idx];
     
-                    dtype::write(write, value, col.dtype);
+                    dtype::write_generic(write, value, col.type);
                 }
                 
                 // @todo uniqueness check
@@ -220,6 +431,17 @@ namespace objstore::engine {
                 
                 return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
             } else if constexpr (SameAs<T, SelectFrom>) {
+                auto system_vr = try_system_select(engine, stmt.keyspace_name, stmt.table_name);
+                if (system_vr) {
+                    return {
+                        .status = ExecutionStatus::Success,
+                        .kind = ResultKind::VirtualRows,
+                        .keyspace = stmt.keyspace_name,
+                        .table = stmt.table_name,
+                        .virtual_rows = move(system_vr),
+                    };
+                }
+
                 // @todo implement these features
                 assert_true(stmt.column_names.cap == 0, "SELECT with column names not implemented");
                 assert_true(stmt.where.cap == 0, "SELECT with WHERE clause not implemented");
@@ -269,6 +491,10 @@ namespace objstore::engine {
                     .rows = move(rows),
                 };
             } else if constexpr (SameAs<T, UseKeyspace>) {
+                if (is_system_keyspace(stmt.keyspace_name)) {
+                    engine.current_keyspace = stmt.keyspace_name;
+                    return {.status = ExecutionStatus::Success, .kind = ResultKind::UseKeyspace, .keyspace = engine.current_keyspace};
+                }
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
                 if (ks == nullptr) {
                     return {
@@ -343,7 +569,7 @@ namespace objstore::engine {
                 if (stmt.op == AlterTableOp::add_column) {
                     for (U64 i = 0; i < stmt.columns.length; i++) {
                         const auto& col = stmt.columns[i];
-                        CreateColumn create{.name = col.name, .dtype = col.dtype, .is_primary_key = false};
+                        CreateColumn create{.name = col.name, .type = col.type, .is_primary_key = false};
                         if (schema::create_column(engine.schema, *tbl, create) == nullptr) {
                             return {
                                 .status = ExecutionStatus::Invalid,
@@ -481,7 +707,7 @@ namespace objstore::engine {
                     read_offset += size;
                 };
                 for (const auto& col : tbl->cols) {
-                    push_back(read_values, dtype::read(read_fn, col.dtype));
+                    push_back(read_values, dtype::read_specific(read_fn, col.type));
                 }
 
                 // rewrite row applying assignments
@@ -502,9 +728,9 @@ namespace objstore::engine {
                         }
                     }
                     if (updated != nullptr) {
-                        dtype::write(write_fn, *updated, col.dtype);
+                        dtype::write_generic(write_fn, *updated, col.type);
                     } else {
-                        dtype::write_from_read(write_fn, read_values[ci], col.dtype);
+                        dtype::write_specific(write_fn, read_values[ci], col.type);
                     }
                 }
 
@@ -568,7 +794,7 @@ namespace objstore::engine {
                         read_offset += size;
                     };
                     for (const auto& col : tbl->cols) {
-                        push_back(read_values, dtype::read(read_fn, col.dtype));
+                        push_back(read_values, dtype::read_specific(read_fn, col.type));
                     }
 
                     blob::resize(row_blob, 0);
@@ -587,9 +813,9 @@ namespace objstore::engine {
                             }
                         }
                         if (is_deleted) {
-                            dtype::write_default(write_fn, col.dtype);
+                            dtype::write_specific_default(write_fn, col.type);
                         } else {
-                            dtype::write_from_read(write_fn, read_values[ci], col.dtype);
+                            dtype::write_specific(write_fn, read_values[ci], col.type);
                         }
                     }
                 }

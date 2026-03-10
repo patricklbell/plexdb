@@ -111,7 +111,7 @@ namespace objstore::schema {
                     Column col {
                         .tombstone = col_storage.header.tombstone,
                         .name = col_storage.name,
-                        .dtype = col_storage.header.dtype,
+                        .type = col_storage.header.type,
                     };
 
                     push_back(tbl.cols, move(col));
@@ -331,7 +331,7 @@ namespace objstore::schema {
             .header = ColumnHeader{
                 .tombstone = false,
                 .name_length = create.name.length,
-                .dtype = create.dtype,
+                .type = create.type,
                 .table_idx = tbl.idx,
             },
             .name = AutoString8(create.name),
@@ -352,7 +352,7 @@ namespace objstore::schema {
         Column col {
             .tombstone = col_storage_ref.header.tombstone,
             .name = col_storage_ref.name,
-            .dtype = col_storage_ref.header.dtype,
+            .type = col_storage_ref.header.type,
         };
         return &push_back(tbl.cols, move(col));
     }
