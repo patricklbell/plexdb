@@ -15,7 +15,7 @@ export namespace objstore::schema {
     struct Column {
         bool tombstone;
         String8 name;
-        const DType dtype;
+        const CDType type;
     };
     
     struct Table {
@@ -53,7 +53,7 @@ export namespace objstore::schema {
     struct ColumnHeader {
         bool tombstone;
         U64 name_length;
-        DType dtype;
+        CDType type;
         U64 table_idx;
     };
     #pragma pack(pop)

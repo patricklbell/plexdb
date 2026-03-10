@@ -63,7 +63,7 @@ export namespace objstore::engine {
     // ========================================================================
     struct VirtualColumn {
         String8 name;
-        DType dtype;
+        CDType type;
     };
 
     struct VirtualRow {

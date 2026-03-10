@@ -11,6 +11,7 @@ module;
 module plexdb.base.string;
 
 import plexdb.os;
+import xxhash;
 
 namespace plexdb {
     String8::String8(const AutoString8& str) : data(str.c_str), length(str.length) {}
@@ -117,6 +118,22 @@ namespace plexdb {
     }
     bool AutoString8::operator==(const char* b) const {
         return strcmp(this->c_str, b) == 0;
+    }
+    bool AutoString8::operator==(const AutoString8& b) const {
+        if (this->length != b.length) return false;
+        for (U64 i = 0; i < this->length; i++) {
+            if (this->c_str[i] != b.c_str[i]) return false;
+        }
+        return true;
+    }
+    U64 hash(const AutoString8& s) {
+        U64 result = XXHash64::hash(s.c_str, s.length, 0);
+        return result | (result == 0);
+    }
+
+    U64 hash(String8 s) {
+        U64 result = XXHash64::hash(s.data, s.length, 0);
+        return result | (result == 0);
     }
 
     void AutoString8::push_back(const char& c) {

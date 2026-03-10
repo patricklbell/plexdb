@@ -1,4 +1,4 @@
-module:
+module;
 #include <stdint.h>
 
 export module xxhash;
@@ -23,7 +23,7 @@ export module xxhash;
 
     Note: my code is NOT endian-aware !
 **/
-class XXHash64
+export class XXHash64
 {
 public:
   /// create new XXHash (64 bit)
