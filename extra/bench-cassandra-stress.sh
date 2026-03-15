@@ -29,20 +29,9 @@ while getopts "b:n:t:p:h" opt; do
     esac
 done
 
-if ! command -v cassandra-stress >/dev/null 2>&1; then
-    cat >&2 <<EOF
-error: cassandra-stress not found.
-
-Install on Debian/Ubuntu:
-  sudo apt-get install -y default-jre-headless
-  curl -fsSL https://downloads.apache.org/cassandra/KEYS \\
-    | gpg --dearmor \\
-    | sudo tee /usr/share/keyrings/cassandra-archive.gpg > /dev/null
-  echo "deb [signed-by=/usr/share/keyrings/cassandra-archive.gpg] \\
-    https://debian.cassandra.apache.org 41x main" \\
-    | sudo tee /etc/apt/sources.list.d/cassandra.list
-  sudo apt-get update && sudo apt-get install -y cassandra-tools
-EOF
+if ! command -v docker >/dev/null 2>&1; then
+    echo "error: docker not found — required to run scylladb/cassandra-stress" >&2
+    echo "Install Docker: https://docs.docker.com/engine/install/" >&2
     exit 1
 fi
 
@@ -85,12 +74,12 @@ EOF
 
 echo
 echo "=== Write benchmark (n=$OPS, threads=$THREADS) ==="
-cassandra-stress write n="$OPS" \
+docker run --rm --network host scylladb/cassandra-stress write n="$OPS" \
     -rate threads="$THREADS" \
     -node 127.0.0.1 -port native="$PORT"
 
 echo
 echo "=== Read benchmark (n=$OPS, threads=$THREADS) ==="
-cassandra-stress read n="$OPS" \
+docker run --rm --network host scylladb/cassandra-stress read n="$OPS" \
     -rate threads="$THREADS" \
     -node 127.0.0.1 -port native="$PORT"

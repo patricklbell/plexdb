@@ -40,16 +40,8 @@ jobs:
       - name: Build
         run: ninja -C build
 
-      - name: Install cassandra-stress
-        run: |
-          sudo apt-get install -y default-jre-headless
-          curl -fsSL https://downloads.apache.org/cassandra/KEYS \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/cassandra-archive.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/cassandra-archive.gpg] https://debian.cassandra.apache.org 41x main" \
-            | sudo tee /etc/apt/sources.list.d/cassandra.list
-          sudo apt-get update
-          sudo apt-get install -y cassandra-tools
+      - name: Pull cassandra-stress image
+        run: docker pull scylladb/cassandra-stress
 
       - name: Start objstore (native mode)
         run: |
@@ -59,13 +51,13 @@ jobs:
 
       - name: Write benchmark
         run: |
-          cassandra-stress write n=${{ inputs.ops }} \
+          docker run --rm --network host scylladb/cassandra-stress write n=${{ inputs.ops }} \
             -rate threads=${{ inputs.threads }} \
             -node 127.0.0.1 -port native=9042
 
       - name: Read benchmark
         run: |
-          cassandra-stress read n=${{ inputs.ops }} \
+          docker run --rm --network host scylladb/cassandra-stress read n=${{ inputs.ops }} \
             -rate threads=${{ inputs.threads }} \
             -node 127.0.0.1 -port native=9042
 
