@@ -21,13 +21,11 @@ objstore <db_path> [--port|-p <port>] [--repl|-r]
 |---|---|---|
 | `db_path` | *(required)* | Path to the database file (created if it does not exist) |
 | `--port`, `-p` | `8080` | TCP port for the HTTP server |
-| `--repl`, `-r` | — | Run an interactive REPL (currently only supports server) |
+| `--repl`, `-r` | — | Start an interactive REPL |
 
 ## Building from source
 
-Requires: CMake ≥ 3.28, liburing ≥ 2.0.
-
-Tested with: Ninja, Clang ≥ 19
+Requires: CMake ≥ 3.28, liburing ≥ 2.0. Tested with: Ninja, Clang ≥ 19.
 
 ```sh
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \

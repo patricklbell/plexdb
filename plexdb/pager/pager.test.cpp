@@ -22,7 +22,6 @@ TEST_CASE("write and check read back", "[plexdb.pager]" ) {
     U8 data[] = "some data";
     REQUIRE(sizeof(data) <= page_size);
     
-    // create, write and flush
     {
         auto pager = Pager(f, pager::create(f, page_size));
         
@@ -31,7 +30,6 @@ TEST_CASE("write and check read back", "[plexdb.pager]" ) {
         os::memory_copy(buffer, data, sizeof(data));
     }
 
-    // read back
     {
         auto pager = Pager(f);
         REQUIRE(pager.header.page_size == page_size);
@@ -83,7 +81,6 @@ TEST_CASE("write many pages and check random free does not increase size", "[ple
     
     U64 page_size = 32;
 
-    // write many pages
     U64 total_pages_after_write;
     U64 total_bytes_after_write;
     std::vector<U64> pages{};
@@ -97,7 +94,6 @@ TEST_CASE("write many pages and check random free does not increase size", "[ple
         total_bytes_after_write = os::file_get_stats(f).byte_count;
     }
 
-    // free some pages and check space is not increased
     {
         std::mt19937 rng(GENERATE(take(1, random(0_u32, MAX_U32))));
         std::shuffle(pages.begin(), pages.end(), rng);
@@ -141,14 +137,12 @@ TEST_CASE("pager randomized stress and reuse freed pages", "[plexdb.pager]") {
     std::vector<U64> pages;
     for(int i = 0; i < 500; ++i) pages.push_back(pager::new_page(pager));
 
-    // random delete
     std::mt19937 rng(123);
     std::shuffle(pages.begin(), pages.end(), rng);
     for(int i = 0; i < 200; ++i) pager::delete_page(pager, pages[i]);
 
-    // reuse freed pages
     for(int i = 0; i < 200; ++i) {
-        pager::new_page(pager); // allocate without assumptions on index
+        pager::new_page(pager);
     }
 }
 
@@ -202,7 +196,6 @@ TEST_CASE("pager partial writes do not corrupt", "[plexdb.pager]") {
         os::memory_copy(pager::rwpage(pager, pidx), buffer.data(), page_size / 2);
     }
 
-    // reopen and check first half is written, rest untouched
     auto pager = Pager(f);
     auto readback = pager::rpage(pager, pidx);
     for(int i = 0; i < page_size / 2; ++i) REQUIRE(readback[i] == 0xAA);
@@ -218,7 +211,6 @@ TEST_CASE("pager repeated reopen and free consistency", "[plexdb.pager]") {
         pager::delete_page(pager, pidx);
     }
 
-    // reopen and free again
     {
         auto pager = Pager(f);
         U64 pidx = pager::new_page(pager);
