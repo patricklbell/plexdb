@@ -1,0 +1,15 @@
+on:
+  workflow_dispatch:
+    inputs:
+      allow_run:
+        description: "Type YES to run"
+        required: true
+        default: "NO"
+        type: string
+
+jobs:
+  stress:
+    if: ${{ inputs.allow_run == 'YES' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "running"
