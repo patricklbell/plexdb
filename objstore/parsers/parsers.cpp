@@ -1164,10 +1164,12 @@ namespace objstore::parsers::cql {
         };
     }
 
-    struct LogErrorCallback {
+    template <typename Fn>
+    struct ErrorCallback {
         struct _sink {
             using return_type = size_t;
             size_t _count = 0;
+            Fn fn;
 
             template <typename Input, typename Reader, typename Tag>
             void operator()(const lexy::error_context<Input>& context,
@@ -1197,7 +1199,7 @@ namespace objstore::parsers::cql {
                               error.message());
                 }
 
-                log::cql_parse_error(msg.c_str, msg.length);
+                fn(msg.c_str, msg.length);
                 ++_count;
             }
 
@@ -1206,10 +1208,14 @@ namespace objstore::parsers::cql {
             }
         };
 
+        Fn fn;
+
         auto sink() const {
-            return _sink{};
+            return _sink{0, fn};
         }
     };
+
+    using LogErrorCallback = ErrorCallback<decltype(&log::cql_parse_error)>;
 
     Optional<Statement> parse(String8 bytes, bool report_errors) {
         log::cql_parse(bytes);
@@ -1222,8 +1228,22 @@ namespace objstore::parsers::cql {
             return {};
         };
 
-        if (report_errors) return try_parse(LogErrorCallback{});
+        if (report_errors) return try_parse(LogErrorCallback{log::cql_parse_error});
         return try_parse(lexy::noop);
+    }
+
+    Optional<Statement> parse(String8 bytes, void(*error_fn)(const char*, size_t)) {
+        log::cql_parse(bytes);
+
+        auto input = lexy::string_input<lexy::ascii_encoding>(bytes.data, bytes.length);
+
+        auto try_parse = [&](auto callback) -> Optional<Statement> {
+            auto result = lexy::parse<grammar::cql_statement>(input, callback);
+            if (result.has_value()) return result.value();
+            return {};
+        };
+
+        return try_parse(ErrorCallback<void(*)(const char*, size_t)>{error_fn});
     }
 
     bool is_complete(String8 bytes) {
