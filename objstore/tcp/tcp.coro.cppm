@@ -303,8 +303,15 @@ export namespace objstore::tcp {
         auto handle_coro = [&](const uring::CoroEvent& ev) {
             // @note awaitable lives in the coroutine frame.  If the connection
             //       was closed before this CQE arrived the pointer is dangling.
-            //       In production, use io_uring_prep_cancel before destroying
-            //       the Task to drain stale completions.
+            //       This is benign in the normal path because close_conn only
+            //       removes the entry after either:
+            //         a) the coroutine finishes naturally (task.done()), or
+            //         b) the coroutine is woken via pending_recv->complete(0)
+            //       In case (b) the pending SQE will still produce a CQE with
+            //       a stale awaitable pointer.
+            // @todo Mitigate by calling io_uring_prep_cancel on the pending
+            //       SQE before destroying the Task, then draining the cancel
+            //       completion before freeing the entry.
             static_cast<coro::IoAwaitable*>(ev.awaitable_ptr)->complete(ev.result);
         };
 

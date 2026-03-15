@@ -688,4 +688,5 @@ TEST_CASE("listen_coro - coroutine can disconnect on empty recv", "[objstore.tcp
     server_thread.join();
 
     REQUIRE(conn_count >= 1);
+    REQUIRE(disconn_count >= 1);
 }
