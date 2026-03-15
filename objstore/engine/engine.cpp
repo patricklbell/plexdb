@@ -776,10 +776,8 @@ namespace objstore::engine {
                 U64 pk_hash = dtype::hash(pk_where->value);
 
                 if (stmt.column_names.cap == 0) {
-                    // delete entire row
                     btree::remove(tbl->btree, pk_hash);
                 } else {
-                    // delete specific columns: set them to default
                     auto row_page_opt = btree::tfind<U64>(tbl->btree, pk_hash);
                     if (!row_page_opt) {
                         return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};

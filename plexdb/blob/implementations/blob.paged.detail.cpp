@@ -142,7 +142,6 @@ namespace plexdb::blob {
         auto new_header_pages = (new_header_page_count > 0) ? TArrayView(&new_pages_ptr[new_data_page_count], 0_u64) : TArrayView<U64,U64>();
         
         if (new_total_page_count > old_total_page_count) {
-            // create link from first data page to header linked list
             if (old_data_page_count == 1) {
                 U64 first_header_page = pager::new_page(*blob.pager);
                 first_data_entries[next_page_entry_idx] = first_header_page;
@@ -197,14 +196,12 @@ namespace plexdb::blob {
                 }
             }
         } else {
-            // copy existing pages that will remain
             os::memory_append_copy(new_data_pages, TArrayView(blob.data_pages.ptr, new_data_page_count));
 
             if (new_header_page_count > 0) {
                 os::memory_append_copy(new_header_pages, TArrayView(blob.header_pages.ptr, new_header_page_count));
             }
             
-            // delete trailing header and data pages
             const U64 new_last_header_idx = max(new_header_page_count, 1_u64) - 1_u64;
             
             for (U64 header_idx = new_last_header_idx; header_idx < old_header_page_count; header_idx++) {
@@ -227,13 +224,11 @@ namespace plexdb::blob {
 
                 assert_true(first_entry_idx <= last_entry_count, "entry bounds match resizing down");
                 
-                // delete old data pages
                 for (U64 entry_idx = first_entry_idx; entry_idx < last_entry_count; entry_idx++) {
                     U64 data_page = entries[entry_idx];
                     pager::delete_page(*blob.pager, data_page);
                 }
                 
-                // delete the header page itself
                 if (header_idx + 1 > new_header_page_count) {
                     pager::delete_page(*blob.pager, header_page);
                 }
