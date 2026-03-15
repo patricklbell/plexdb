@@ -1,8 +1,14 @@
+module;
+#include "macros.h"
+#include <coroutine>
+
 export module plexdb.pager;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.os.uring;
 import plexdb.arena;
+import plexdb.coro;
 
 export namespace plexdb::pager {
     constexpr U64 DEFAULT_READ_CACHE = 1000u;
@@ -64,6 +70,25 @@ export namespace plexdb::pager {
 
     U64 new_page(Pager& pager);
     void delete_page(Pager& pager, U64 idx);
+
+    // ========================================================================
+    // Async IO (coroutine-based, requires io_uring Ring)
+    //   These functions yield from the calling coroutine while the page IO is
+    //   in flight, allowing the event loop to service other connections.
+    //
+    //   Pattern:
+    //       const U8* data = co_await pager::rpage_async(pager, ring, idx);
+    //
+    //   @note The Ring must have been initialised with a queue depth large
+    //         enough to hold the page IO alongside network SQEs.
+    //   @note The Ring's registered-buffer pool is NOT used; pager::rpage_async
+    //         reads directly into the pager's own read-cache buffers (no extra
+    //         copy).  This avoids registering the read cache with io_uring.
+    // ========================================================================
+    coro::Task rpage_async(Pager& pager, uring::Ring& ring, U64 idx,
+                           const U8** out_ptr, coro::EventLoop& loop);
+    coro::Task wpage_async(Pager& pager, uring::Ring& ring, U64 idx,
+                           coro::EventLoop& loop);
 }
 
 export namespace plexdb {

@@ -1,10 +1,13 @@
 module;
 #include "macros.h"
+#include <coroutine>
 
 module plexdb.pager;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.os.uring;
+import plexdb.coro;
 
 namespace plexdb::pager {
     inline static U64 get_cache_size(Pager& pager) {
@@ -310,5 +313,95 @@ namespace plexdb::pager {
         PLEXDB_DEBUG_X(assert_true(h.page_count < old_page_count, "trimming actually trimmed"));
         os::file_resize_zero(pager.file, pager.base_offset + h.page_count*h.page_size);
         pager.header_in_write_set = true;
+    }
+
+    // ========================================================================
+    // Async pager IO
+    //
+    //   rpage_async submits an io_uring file-read SQE and yields the calling
+    //   coroutine until the OS completes the read.  On a cache hit the
+    //   coroutine is never suspended (fast path).
+    //
+    //   wpage_async flushes one dirty page asynchronously.
+    //
+    //   @note These functions share the same uring::Ring as the network event
+    //         loop (passed by the caller).  File IO and network IO are thus
+    //         batched together in one io_uring submission.
+    //
+    //   @note Because pager read-cache buffers are not registered with
+    //         io_uring, sqe_push_file_read uses io_uring_prep_read (unregistered
+    //         buffer path).  This is slightly less efficient than the
+    //         registered-buffer path used for TCP, but avoids the overhead of
+    //         re-registering buffers every time the cache is resized.
+    // ========================================================================
+    coro::Task rpage_async(Pager& pager, uring::Ring& ring, U64 idx,
+                           const U8** out_ptr, coro::EventLoop& loop)
+    {
+        // Fast path: cache hit — no IO needed.
+        Pager::ReadCacheEntry* entry = get_cache_entry(pager, idx);
+        if (entry->idx == idx) {
+            *out_ptr = get_cache_data(pager, idx);
+            co_return;
+        }
+
+        // Slow path: cache miss — submit async file read.
+        U8* cache_data = get_cache_data(pager, idx);
+        U64 file_offset = pager.base_offset + pager.header.page_size * idx;
+
+        if (!loop.can_submit()) {
+            // In-flight cap reached — fall back to synchronous read.
+            read_page(pager, cache_data, idx);
+            entry->idx = idx;
+            *out_ptr = cache_data;
+            co_return;
+        }
+
+        coro::IoAwaitable aw;
+        bool ok = uring::sqe_push_file_read(
+            ring, pager.file, file_offset,
+            cache_data, static_cast<U32>(pager.header.page_size),
+            &aw);
+
+        if (!ok) {
+            // Ring full — synchronous fallback.
+            read_page(pager, cache_data, idx);
+            entry->idx = idx;
+            *out_ptr = cache_data;
+            co_return;
+        }
+
+        loop.in_flight++;
+        co_await aw;
+        loop.in_flight--;
+
+        entry->idx = idx;
+        *out_ptr = cache_data;
+    }
+
+    coro::Task wpage_async(Pager& pager, uring::Ring& ring, U64 idx,
+                           coro::EventLoop& loop)
+    {
+        Pager::ReadCacheEntry* entry = get_cache_entry(pager, idx);
+        if (!entry->in_write_set) co_return;
+
+        U8*  cache_data  = get_cache_data(pager, idx);
+        U64  file_offset = pager.base_offset + pager.header.page_size * idx;
+
+        coro::IoAwaitable aw;
+        bool ok = uring::sqe_push_file_write(
+            ring, pager.file, file_offset,
+            cache_data, static_cast<U32>(pager.header.page_size),
+            &aw);
+
+        if (!ok) {
+            write_page(pager, cache_data, idx);
+            co_return;
+        }
+
+        loop.in_flight++;
+        co_await aw;
+        loop.in_flight--;
+
+        entry->in_write_set = false;
     }
 }

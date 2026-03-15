@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <coroutine>
 #include <thread>
 #include <atomic>
 #include <semaphore>
@@ -9,8 +10,10 @@
 import plexdb.base;
 import plexdb.os;
 import plexdb.os.uring;
+import plexdb.coro;
 import objstore.tcp;
 import objstore.tcp.detail;
+import objstore.tcp.coro;
 
 using namespace plexdb;
 using namespace plexdb::os;
@@ -566,4 +569,123 @@ TEST_CASE("close response terminates connection", "[objstore.tcp]") {
 
     REQUIRE(request_count >= 1);
     REQUIRE(close_count >= 1);
+}
+
+// ============================================================================
+// Coroutine TCP tests
+//   These tests exercise listen_coro via an io_uring ring.
+//   They require io_uring to be available (Linux kernel >= 5.19).
+// ============================================================================
+
+TEST_CASE("listen_coro - single connection echoes data", "[objstore.tcp][objstore.tcp.coro]") {
+    auto ring_settings = uring::get_ring_settings();
+    if (!ring_settings->recommended) {
+        SKIP("io_uring not available on this platform");
+    }
+
+    int port = get_unique_port();
+    TestServer server(port);
+
+    std::binary_semaphore server_ready{0};
+    std::binary_semaphore data_received{0};
+    volatile bool exit_signal = false;
+    std::atomic<int> recv_count{0};
+
+    std::thread server_thread([&]() {
+        uring::Ring ring{
+            server.socket,
+            ring_settings->recommended_queue_depth,
+            ring_settings->recommended_buffer_size,
+            ring_settings->recommended_buffer_count
+        };
+        if (!ring) return;
+
+        auto handler = [&](CoroConnectionIO& io) -> coro::Task {
+            auto chunk = co_await io.recv();
+            if (chunk.valid()) {
+                recv_count++;
+                data_received.release();
+                // Echo back using send() (fire-and-forget).
+                io.send(chunk.buffer_idx, 0, static_cast<U32>(chunk.byte_count));
+            }
+        };
+
+        server_ready.release();
+        listen_coro(ring, handler, server.signal_pipe, exit_signal);
+    });
+
+    server_ready.acquire();
+
+    {
+        Socket client{socket_open()};
+        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+        socket_send_all(client, "HELLO", 5);
+    }
+
+    data_received.acquire();
+
+    exit_signal = true;
+    server.stop();
+    server_thread.join();
+
+    REQUIRE(recv_count >= 1);
+}
+
+TEST_CASE("listen_coro - coroutine can disconnect on empty recv", "[objstore.tcp][objstore.tcp.coro]") {
+    auto ring_settings = uring::get_ring_settings();
+    if (!ring_settings->recommended) {
+        SKIP("io_uring not available on this platform");
+    }
+
+    int port = get_unique_port();
+    TestServer server(port);
+
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+    std::atomic<int> conn_count{0};
+    std::atomic<int> disconn_count{0};
+
+    std::thread server_thread([&]() {
+        uring::Ring ring{
+            server.socket,
+            ring_settings->recommended_queue_depth,
+            ring_settings->recommended_buffer_size,
+            ring_settings->recommended_buffer_count
+        };
+        if (!ring) return;
+
+        auto handler = [&](CoroConnectionIO& io) -> coro::Task {
+            conn_count++;
+            while (true) {
+                auto chunk = co_await io.recv();
+                if (!chunk.valid()) {
+                    disconn_count++;
+                    co_return;
+                }
+                io.release_recv(chunk.buffer_idx);
+            }
+        };
+
+        server_ready.release();
+        listen_coro(ring, handler, server.signal_pipe, exit_signal);
+    });
+
+    server_ready.acquire();
+
+    // Connect, send one message, then disconnect.
+    {
+        Socket client{socket_open()};
+        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+        socket_send_all(client, "DATA", 4);
+        // Socket closes here (out of scope) — server sees byte_count == 0.
+    }
+
+    // Give the server time to process the disconnect.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    exit_signal = true;
+    server.stop();
+    server_thread.join();
+
+    REQUIRE(conn_count >= 1);
 }

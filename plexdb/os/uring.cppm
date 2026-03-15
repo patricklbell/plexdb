@@ -78,7 +78,15 @@ export namespace plexdb::uring {
         os::Handle client;
     };
 
-    using CQE = TaggedUnion<ReadEvent,WriteEvent,AcceptEvent,MultishotAcceptEvent,CloseEvent>;
+    // Completion for any io_uring operation submitted with a coro::IoAwaitable
+    // pointer encoded in user_data.  The event loop calls
+    // IoAwaitable::complete(result) to resume the waiting coroutine.
+    struct CoroEvent {
+        void* awaitable_ptr;
+        int   result;
+    };
+
+    using CQE = TaggedUnion<ReadEvent,WriteEvent,AcceptEvent,MultishotAcceptEvent,CloseEvent,CoroEvent>;
 
     U32 cqe_get_size(const Ring& ring);
     CQE cqe_top(Ring& ring);
@@ -93,6 +101,24 @@ export namespace plexdb::uring {
 
     bool sqe_push_read(Ring& ring, os::Handle client, U32 buffer_idx);
     bool sqe_push_write(Ring& ring, os::Handle client, U32 buffer_idx, U32 offset, U32 byte_count);
+
+    // ========================================================================
+    // coroutine-compatible SQE operations
+    //   These encode an IoAwaitable pointer in user_data (TYPE_CORO tag).
+    //   The event loop decodes it and calls IoAwaitable::complete(result)
+    //   to resume the waiting coroutine.
+    // ========================================================================
+
+    // Recv from a registered buffer; awaitable is resumed when data arrives.
+    bool sqe_push_coro_recv(Ring& ring, os::Handle client, U32 buffer_idx, void* awaitable_ptr);
+
+    // Send from a registered buffer; awaitable is resumed when the send completes.
+    bool sqe_push_coro_send(Ring& ring, os::Handle client, U32 buffer_idx, U32 offset, U32 byte_count, void* awaitable_ptr);
+
+    // Async file read/write (unregistered buffer) for coroutine-based pager IO.
+    // @note Uses io_uring_prep_read/write (not fixed), so no buffer registration required.
+    bool sqe_push_file_read(Ring& ring, os::Handle file, U64 file_offset, void* buf, U32 byte_count, void* awaitable_ptr);
+    bool sqe_push_file_write(Ring& ring, os::Handle file, U64 file_offset, const void* buf, U32 byte_count, void* awaitable_ptr);
 
     bool sqe_submit_non_blocking(Ring& ring);
 

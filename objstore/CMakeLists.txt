@@ -88,6 +88,7 @@ target_sources(objstore_modules
             log/log.cppm
             parsers/parsers.cppm
             tcp/tcp.cppm
+            tcp/tcp.coro.cppm
             tcp/tcp.detail.cppm
             tcp/tcp.types.cppm
             http/http.cppm

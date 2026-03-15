@@ -1,5 +1,6 @@
 module;
 #include "macros.h"
+#include <coroutine>
 
 export module objstore.tcp.detail;
 
@@ -7,6 +8,7 @@ import plexdb.os;
 import plexdb.os.uring;
 import plexdb.base;
 import plexdb.arena;
+import plexdb.coro;
 import plexdb.tagged_union;
 import objstore.tcp.types;
 
@@ -216,6 +218,9 @@ namespace objstore::tcp {
                         handle_accept_completion(cqe);
                     } else if constexpr (SameAs<T, uring::CloseEvent>) {
                         handle_close_completion(cqe);
+                    } else if constexpr (SameAs<T, uring::CoroEvent>) {
+                        // Coroutine-awaited IO: resume the waiting coroutine.
+                        static_cast<coro::IoAwaitable*>(cqe.awaitable_ptr)->complete(cqe.result);
                     } else {
                         static_assert(!SameAs<T,T>);
                     }

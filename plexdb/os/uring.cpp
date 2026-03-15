@@ -25,6 +25,9 @@ namespace plexdb::uring {
         TYPE_WRITE              = 0x3_u64 << 60,
         TYPE_CLOSE              = 0x4_u64 << 60,
         TYPE_MULTISHOT_ACCEPT   = 0x5_u64 << 60,
+        // Coroutine-awaited IO: lower 60 bits hold a coro::IoAwaitable pointer.
+        // On x86-64 user-space addresses fit in 47 bits (< 60).
+        TYPE_CORO               = 0x6_u64 << 60,
 
         TYPE_MASK  = 0xF_u64 << 60,
         DATA_MASK = ~TYPE_MASK
@@ -300,6 +303,12 @@ namespace plexdb::uring {
                     case TYPE_CLOSE:{
                         return CQE{CloseEvent{.client = fd_to_handle(static_cast<int>(data))}};
                     }break;
+                    case TYPE_CORO:{
+                        return CQE{CoroEvent{
+                            .awaitable_ptr = reinterpret_cast<void*>(data),
+                            .result        = result
+                        }};
+                    }break;
                     case TYPE_MASK:{}break;
                     case DATA_MASK:{}break;
                 }
@@ -400,6 +409,71 @@ namespace plexdb::uring {
             auto* iovecs = static_cast<iovec*>(ring.iovecs_vptr);
             U8* base = static_cast<U8*>(iovecs[buffer_idx].iov_base) + offset;
             io_uring_prep_write_fixed(sqe, client_fd, base, byte_count, 0, buffer_idx);
+            io_uring_sqe_set_data(sqe, (void*)user_data);
+            return true;
+        }
+
+        // ========================================================================
+        // coroutine SQE operations
+        // ========================================================================
+
+        bool sqe_push_coro_recv(Ring& ring, os::Handle client, U32 buffer_idx, void* awaitable_ptr) {
+            assert_true(static_cast<bool>(ring), "invalid ring");
+            assert_true(buffer_idx < ring.buffer_count, "buffer_idx out of range");
+            auto* uring_ring = static_cast<io_uring*>(ring.ring_vptr);
+            io_uring_sqe* sqe = io_uring_get_sqe(uring_ring);
+            if (sqe == nullptr) return false;
+
+            int client_fd = handle_to_fd(client);
+            U64 user_data = encode_user_data(TYPE_CORO, reinterpret_cast<U64>(awaitable_ptr));
+
+            auto* iovecs = static_cast<iovec*>(ring.iovecs_vptr);
+            io_uring_prep_read_fixed(sqe, client_fd, iovecs[buffer_idx].iov_base, ring.buffer_size, 0, buffer_idx);
+            io_uring_sqe_set_data(sqe, (void*)user_data);
+            return true;
+        }
+
+        bool sqe_push_coro_send(Ring& ring, os::Handle client, U32 buffer_idx, U32 offset, U32 byte_count, void* awaitable_ptr) {
+            assert_true(static_cast<bool>(ring), "invalid ring");
+            assert_true(buffer_idx < ring.buffer_count, "buffer_idx out of range");
+            auto* uring_ring = static_cast<io_uring*>(ring.ring_vptr);
+            io_uring_sqe* sqe = io_uring_get_sqe(uring_ring);
+            if (sqe == nullptr) return false;
+
+            int client_fd = handle_to_fd(client);
+            U64 user_data = encode_user_data(TYPE_CORO, reinterpret_cast<U64>(awaitable_ptr));
+
+            auto* iovecs = static_cast<iovec*>(ring.iovecs_vptr);
+            U8* base = static_cast<U8*>(iovecs[buffer_idx].iov_base) + offset;
+            io_uring_prep_write_fixed(sqe, client_fd, base, byte_count, 0, buffer_idx);
+            io_uring_sqe_set_data(sqe, (void*)user_data);
+            return true;
+        }
+
+        bool sqe_push_file_read(Ring& ring, os::Handle file, U64 file_offset, void* buf, U32 byte_count, void* awaitable_ptr) {
+            assert_true(static_cast<bool>(ring), "invalid ring");
+            auto* uring_ring = static_cast<io_uring*>(ring.ring_vptr);
+            io_uring_sqe* sqe = io_uring_get_sqe(uring_ring);
+            if (sqe == nullptr) return false;
+
+            int file_fd = handle_to_fd(file);
+            U64 user_data = encode_user_data(TYPE_CORO, reinterpret_cast<U64>(awaitable_ptr));
+
+            io_uring_prep_read(sqe, file_fd, buf, byte_count, static_cast<__u64>(file_offset));
+            io_uring_sqe_set_data(sqe, (void*)user_data);
+            return true;
+        }
+
+        bool sqe_push_file_write(Ring& ring, os::Handle file, U64 file_offset, const void* buf, U32 byte_count, void* awaitable_ptr) {
+            assert_true(static_cast<bool>(ring), "invalid ring");
+            auto* uring_ring = static_cast<io_uring*>(ring.ring_vptr);
+            io_uring_sqe* sqe = io_uring_get_sqe(uring_ring);
+            if (sqe == nullptr) return false;
+
+            int file_fd = handle_to_fd(file);
+            U64 user_data = encode_user_data(TYPE_CORO, reinterpret_cast<U64>(awaitable_ptr));
+
+            io_uring_prep_write(sqe, file_fd, buf, byte_count, static_cast<__u64>(file_offset));
             io_uring_sqe_set_data(sqe, (void*)user_data);
             return true;
         }
@@ -521,6 +595,26 @@ namespace plexdb::uring {
         }
 
         bool sqe_push_write(Ring& ring, os::Handle client, U32 buffer_idx, U32 offset, U32 byte_count) {
+            assert_always_true(false, "io_uring not available on this platform");
+            return false;
+        }
+
+        bool sqe_push_coro_recv(Ring& ring, os::Handle client, U32 buffer_idx, void* awaitable_ptr) {
+            assert_always_true(false, "io_uring not available on this platform");
+            return false;
+        }
+
+        bool sqe_push_coro_send(Ring& ring, os::Handle client, U32 buffer_idx, U32 offset, U32 byte_count, void* awaitable_ptr) {
+            assert_always_true(false, "io_uring not available on this platform");
+            return false;
+        }
+
+        bool sqe_push_file_read(Ring& ring, os::Handle file, U64 file_offset, void* buf, U32 byte_count, void* awaitable_ptr) {
+            assert_always_true(false, "io_uring not available on this platform");
+            return false;
+        }
+
+        bool sqe_push_file_write(Ring& ring, os::Handle file, U64 file_offset, const void* buf, U32 byte_count, void* awaitable_ptr) {
             assert_always_true(false, "io_uring not available on this platform");
             return false;
         }

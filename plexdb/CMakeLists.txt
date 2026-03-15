@@ -73,6 +73,7 @@ target_sources(plexdb_modules
             os/socket.cppm
             os/sysinfo.cppm
             os/uring.cppm
+            coro/coro.cppm
             pager/pager.cppm
             threads/threads.cppm
             tagged_union/tagged_union.cppm
@@ -118,6 +119,15 @@ target_sources(plexdb
 )
 
 target_link_libraries(plexdb PUBLIC plexdb_modules)
+
+# Link liburing if available (required by os/uring.cpp and pager/pager.cpp async IO)
+include(FindPkgConfig)
+if(PKG_CONFIG_FOUND)
+    pkg_check_modules(liburing IMPORTED_TARGET liburing>=2.0)
+    if(liburing_FOUND)
+        target_link_libraries(plexdb PRIVATE PkgConfig::liburing)
+    endif()
+endif()
 
 # =============================================================================
 # Tests

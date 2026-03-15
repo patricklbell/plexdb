@@ -8,6 +8,7 @@ import objstore.tcp.detail;
 
 // @todo limit export
 export import objstore.tcp.types;
+export import objstore.tcp.coro;
 
 using namespace plexdb;
 
