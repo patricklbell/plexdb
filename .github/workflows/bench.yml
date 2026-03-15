@@ -1,15 +1,68 @@
+name: Cassandra Stress
+
 on:
   workflow_dispatch:
     inputs:
-      allow_run:
-        description: "Type YES to run"
-        required: true
-        default: "NO"
+      ops:
+        description: 'Operations per workload (write + read)'
+        required: false
+        default: '100000'
+        type: string
+      threads:
+        description: 'Concurrent client threads'
+        required: false
+        default: '16'
         type: string
 
 jobs:
-  stress:
-    if: ${{ inputs.allow_run == 'YES' }}
-    runs-on: ubuntu-latest
+  bench:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
     steps:
-      - run: echo "running"
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DPLEXDB_DEBUG=OFF \
+            -DBUILD_TESTS=OFF
+
+      - name: Build
+        run: ninja -C build
+
+      - name: Pull cassandra-stress image
+        run: docker pull scylladb/cassandra-stress
+
+      - name: Start objstore (native mode)
+        run: |
+          ./build/objstore/objstore_server /tmp/bench.db --native &
+          echo $! > /tmp/objstore.pid
+          timeout 20 bash -c 'until nc -z 127.0.0.1 9042; do sleep 0.2; done'
+
+      - name: Write benchmark
+        run: |
+          docker run --rm --network host scylladb/cassandra-stress write n=${{ inputs.ops }} \
+            -rate threads=${{ inputs.threads }} \
+            -node 127.0.0.1 -port native=9042
+
+      - name: Read benchmark
+        run: |
+          docker run --rm --network host scylladb/cassandra-stress read n=${{ inputs.ops }} \
+            -rate threads=${{ inputs.threads }} \
+            -node 127.0.0.1 -port native=9042
+
+      - name: Stop server
+        if: always()
+        run: |
+          kill "$(cat /tmp/objstore.pid)" 2>/dev/null || true
+          rm -f /tmp/bench.db /tmp/objstore.pid
