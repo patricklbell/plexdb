@@ -1,14 +1,13 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
-#include "../test/parsers_error_reporter.hpp"
-
 import plexdb.base;
 import plexdb.tagged_union;
 
 import objstore.parsers;
 import objstore.engine.statements;
 import objstore.engine.dtype;
+import objstore.test.parsers_error_reporter;
 
 using namespace plexdb;
 using namespace objstore;

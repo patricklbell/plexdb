@@ -1164,12 +1164,12 @@ namespace objstore::parsers::cql {
         };
     }
 
-    template <typename Fn>
+    template <typename ErrorFn>
     struct ErrorCallback {
         struct _sink {
             using return_type = size_t;
             size_t _count = 0;
-            Fn fn;
+            ErrorFn fn;
 
             template <typename Input, typename Reader, typename Tag>
             void operator()(const lexy::error_context<Input>& context,
@@ -1208,7 +1208,7 @@ namespace objstore::parsers::cql {
             }
         };
 
-        Fn fn;
+        ErrorFn fn;
 
         auto sink() const {
             return _sink{0, fn};
