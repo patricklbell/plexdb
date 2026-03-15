@@ -4,7 +4,6 @@ import plexdb.os;
 
 namespace plexdb::arena {
     ArenaPage* allocate(U64 page_size, void* optional_backing_buffer) {
-        // allocate initial block
         void* base = optional_backing_buffer;
         if (base == nullptr) {
             base = os::allocate(page_size + HEADER_SIZE);
@@ -59,7 +58,6 @@ namespace plexdb::arena {
         U64 page_offset_before = align_pow2(current->page_offset, align);
         U64 page_offset_after = page_offset_before + size;
 
-        // add a new page if needed
         if (page_offset_after > HEADER_SIZE + current->page_size) {
             ArenaPage* new_page;
 
@@ -116,7 +114,6 @@ namespace plexdb::arena {
         page->page_offset = HEADER_SIZE;
         // os::memory_zero(reinterpret_cast<U8*>(arena) + HEADER_SIZE, page->page_size - HEADER_SIZE);
 
-        // add pages to free list for use
         if (page->current != page) {
             page->free_stack = page->current;
             page->current = page;

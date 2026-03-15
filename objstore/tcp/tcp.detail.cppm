@@ -69,7 +69,7 @@ namespace objstore::tcp {
             uring::sqe_push_write(ring, connection->client, buffer_idx, offset, byte_count);
         }};
 
-        // @note handles client resporead.client = infonding to the server's read submission
+        // @note handles client responding to the server's read submission
         auto handle_read_completion = [&](const uring::ReadEvent& read) {
             BufferInfo& info = buffer_infos[read.buffer_idx];
             PLEXDB_DEBUG_X(assert_true(info.buffer_idx == read.buffer_idx, "buffer info was not written before read completion"));
@@ -223,7 +223,7 @@ namespace objstore::tcp {
             }
 
             if (cqe_entry_processed_count == 0) {
-                // @blocking wait until either the callers interrupt or a writeo to the server socket unblocks us
+                // @blocking wait until either the callers interrupt or a write to the server socket unblocks us
                 block_until_poll_unblocks(poll_until_server_or_interrupt);
             }
         }
