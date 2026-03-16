@@ -1,0 +1,91 @@
+name: CQL Conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Comma-separated test tags to run (e.g. "ddl,dml,system"). Empty = all.'
+        required: false
+        default: ''
+      continue_on_failure:
+        description: 'Continue running tests after first failure'
+        required: false
+        default: 'true'
+        type: boolean
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  cql-conformance:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+
+      - name: Build server
+        run: ninja -C build objstore_server
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install test dependencies
+        run: cd extra/node && npm install
+
+      - name: Start objstore server
+        run: |
+          DB=$(mktemp /tmp/cql_conformance_XXXXXX.db)
+          echo "DB_PATH=$DB" >> "$GITHUB_ENV"
+          ./build/objstore/objstore_server "$DB" --native --port 9042 &
+          echo "SERVER_PID=$!" >> "$GITHUB_ENV"
+
+          # Wait for server to be ready
+          for i in $(seq 1 50); do
+            if nc -z 127.0.0.1 9042 2>/dev/null; then
+              echo "Server ready on port 9042"
+              break
+            fi
+            sleep 0.2
+          done
+
+      - name: Run CQL conformance tests
+        env:
+          CQL_TEST_SUMMARY: /tmp/cql_conformance_summary.json
+        run: |
+          ARGS="--port 9042"
+          if [ "${{ inputs.continue_on_failure || 'true' }}" = "true" ]; then
+            ARGS="$ARGS --continue"
+          fi
+          if [ -n "${{ inputs.tags }}" ]; then
+            ARGS="$ARGS --tags ${{ inputs.tags }}"
+          fi
+          node extra/node/cql_conformance.js $ARGS
+
+      - name: Print test summary
+        if: always()
+        run: |
+          if [ -f /tmp/cql_conformance_summary.json ]; then
+            echo "### CQL Conformance Test Results" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/cql_conformance_summary.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -n "$SERVER_PID" ]; then
+            kill "$SERVER_PID" 2>/dev/null || true
+          fi
+          rm -f "$DB_PATH"
