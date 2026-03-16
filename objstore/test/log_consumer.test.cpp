@@ -12,10 +12,10 @@
 namespace {
 
 struct LogBuffer {
-    std::vector<std::string>              entries;
-    std::map<uint32_t, std::string>       stat_names;
-    std::mutex                            mtx;
-    bool                                  active = false;
+    std::vector<std::string>                                   entries;
+    std::map<std::pair<uint32_t,uint32_t>, std::string>        stat_names;
+    std::mutex                                                 mtx;
+    bool                                                       active = false;
 
     void clear() {
         std::lock_guard<std::mutex> g(mtx);
@@ -33,10 +33,10 @@ struct LogBuffer {
         UNSCOPED_INFO(entries.back());
     }
 
-    void push_stat(uint32_t stat_id, int64_t value) {
+    void push_stat(uint32_t producer_id, uint32_t stat_id, int64_t value) {
         std::lock_guard<std::mutex> g(mtx);
         if (!active) return;
-        auto it = stat_names.find(stat_id);
+        auto it = stat_names.find({producer_id, stat_id});
         std::string entry;
         if (it != stat_names.end()) {
             entry = "[STAT:" + it->second + "] " + std::to_string(value);
@@ -47,9 +47,9 @@ struct LogBuffer {
         UNSCOPED_INFO(entries.back());
     }
 
-    void register_stat_name(uint32_t stat_id, const char* name) {
+    void register_stat_name(uint32_t producer_id, uint32_t stat_id, const char* name) {
         std::lock_guard<std::mutex> g(mtx);
-        stat_names[stat_id] = name;
+        stat_names[{producer_id, stat_id}] = name;
     }
 };
 
@@ -76,11 +76,13 @@ void on_log_event(const PlexdbLogEvent* event, void* /*ctx*/) {
             break;
         case PLEXDB_LOG_STAT:
             g_log_buffer.push_stat(
+                event->stat.producer_id,
                 event->stat.stat_id,
                 event->stat.value);
             break;
         case PLEXDB_LOG_STAT_META:
             g_log_buffer.register_stat_name(
+                event->stat_meta.producer_id,
                 event->stat_meta.stat_id,
                 event->stat_meta.name);
             break;

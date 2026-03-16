@@ -8,3 +8,4 @@ _codeql_detected_source_root
 objstore.pid
 **/.venv
 **/node_modules
+**/__pycache__
