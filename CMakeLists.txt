@@ -13,6 +13,9 @@ option(PLEXDB_LOG_ENABLED "Enable structured logging hooks" OFF)
 option(OBJSTORE_BUILD "Build objstore" ON)
 option(OBJSTORE_BUILD_SERVER "Build objstore server" ON)
 
+option(DOCSTORE_BUILD "Build docstore" ON)
+option(DOCSTORE_BUILD_SERVER "Build docstore server" ON)
+
 # =============================================================================
 # Global compiler flags
 # =============================================================================
@@ -42,4 +45,7 @@ endif()
 add_subdirectory(plexdb)
 if(OBJSTORE_BUILD)
     add_subdirectory(objstore)
+endif()
+if(DOCSTORE_BUILD)
+    add_subdirectory(docstore)
 endif()
