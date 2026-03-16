@@ -76,19 +76,19 @@ TEST_CASE("spsc queue FIFO ordering", "[plexdb.shard.spsc]") {
 }
 
 TEST_CASE("spsc queue concurrent producer/consumer", "[plexdb.shard.spsc]") {
-    constexpr U64 COUNT = 100000;
+    constexpr U64 ITERATIONS = 100000;
     SpscQueue<U64, 1024> q;
     std::atomic<bool> done{false};
 
     std::thread producer([&q, &done]() {
-        for (U64 i = 0; i < COUNT; i++) {
+        for (U64 i = 0; i < ITERATIONS; i++) {
             while (!try_push(q, i)) {}
         }
         done.store(true, std::memory_order_release);
     });
 
     U64 expected = 0;
-    while (expected < COUNT) {
+    while (expected < ITERATIONS) {
         U64 val;
         if (try_pop(q, val)) {
             REQUIRE(val == expected);
@@ -97,7 +97,7 @@ TEST_CASE("spsc queue concurrent producer/consumer", "[plexdb.shard.spsc]") {
     }
 
     producer.join();
-    REQUIRE(expected == COUNT);
+    REQUIRE(expected == ITERATIONS);
     REQUIRE(size(q) == 0);
 }
 

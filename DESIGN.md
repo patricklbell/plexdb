@@ -109,7 +109,7 @@ flowchart LR
 
 ### Token Ring (ScyllaDB-inspired)
 
-Every table has a **partition key** (already represented by `primary_col_idx` in `schema::Table`). The partition key is hashed to a 64-bit **token** using a deterministic hash (e.g. MurmurHash3). The token space `[0, 2^64)` is split into contiguous ranges, one per shard.
+Every table has a **partition key** (already represented by `primary_col_idx` in `schema::Table`). The partition key is hashed to a 64-bit **token** using a deterministic hash (xxhash64 via `plexdb::shard::token_of`). The token space `[0, 2^64)` is split into contiguous ranges, one per shard.
 
 ```
 Token space:  0 ──────────────── 2^64
@@ -123,7 +123,7 @@ Consistent hashing with virtual nodes is used when shards are added or removed s
 ### Token Calculation
 
 ```
-token(partition_key) = murmur3_64(serialize(partition_key))
+token(partition_key) = xxhash64(serialize(partition_key))
 owning_shard(token)  = token / (2^64 / shard_count)
 ```
 
