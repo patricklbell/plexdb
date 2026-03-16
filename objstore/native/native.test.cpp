@@ -227,6 +227,7 @@ TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[objstore.native]") {
     CHECK(resp.body_len > 0);
     CHECK(body_contains(resp, "CQL_VERSION"));
     CHECK(body_contains(resp, "3.0.0"));
+    CHECK(body_contains(resp, "COMPRESSION"));
 
     exit_signal = true;
     os::signal_notify_safe(signal_pipe);
