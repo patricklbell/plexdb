@@ -22,6 +22,7 @@ typedef enum PlexdbLogEventType : uint32_t {
     PLEXDB_LOG_PRODUCER_REGISTERED = 1,  // producer announces itself
     PLEXDB_LOG_MESSAGE             = 2,  // generic string message
     PLEXDB_LOG_STAT                = 3,  // structured numeric stat
+    PLEXDB_LOG_STAT_META           = 4,  // stat metadata (name for producer+stat_id pair)
 } PlexdbLogEventType;
 
 typedef struct {
@@ -42,6 +43,12 @@ typedef struct {
     int64_t     value;
 } PlexdbLogStat;
 
+typedef struct {
+    uint32_t    producer_id;
+    uint32_t    stat_id;
+    const char* name;
+} PlexdbLogStatMeta;
+
 // @note fat struct with a type tag and union payload
 typedef struct {
     uint32_t type;   // PlexdbLogEventType
@@ -50,6 +57,7 @@ typedef struct {
         PlexdbLogProducerRegistered producer_registered;
         PlexdbLogMessage            message;
         PlexdbLogStat               stat;
+        PlexdbLogStatMeta           stat_meta;
     };
 } PlexdbLogEvent;
 

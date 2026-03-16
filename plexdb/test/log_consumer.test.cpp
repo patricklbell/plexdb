@@ -4,6 +4,7 @@
 #include <catch2/reporters/catch_reporter_registrars.hpp>
 #include "log_abi.h"
 
+#include <map>
 #include <string>
 #include <vector>
 #include <mutex>
@@ -11,9 +12,10 @@
 namespace {
 
 struct LogBuffer {
-    std::vector<std::string> entries;
-    std::mutex               mtx;
-    bool                     active = false;
+    std::vector<std::string>              entries;
+    std::map<uint32_t, std::string>       stat_names;
+    std::mutex                            mtx;
+    bool                                  active = false;
 
     void clear() {
         std::lock_guard<std::mutex> g(mtx);
@@ -34,9 +36,20 @@ struct LogBuffer {
     void push_stat(uint32_t stat_id, int64_t value) {
         std::lock_guard<std::mutex> g(mtx);
         if (!active) return;
-        std::string entry = "[STAT] id=" + std::to_string(stat_id) + " value=" + std::to_string(value);
+        auto it = stat_names.find(stat_id);
+        std::string entry;
+        if (it != stat_names.end()) {
+            entry = "[STAT:" + it->second + "] " + std::to_string(value);
+        } else {
+            entry = "[STAT] id=" + std::to_string(stat_id) + " value=" + std::to_string(value);
+        }
         entries.push_back(std::move(entry));
         UNSCOPED_INFO(entries.back());
+    }
+
+    void register_stat_name(uint32_t stat_id, const char* name) {
+        std::lock_guard<std::mutex> g(mtx);
+        stat_names[stat_id] = name;
     }
 };
 
@@ -65,6 +78,11 @@ void on_log_event(const PlexdbLogEvent* event, void* /*ctx*/) {
             g_log_buffer.push_stat(
                 event->stat.stat_id,
                 event->stat.value);
+            break;
+        case PLEXDB_LOG_STAT_META:
+            g_log_buffer.register_stat_name(
+                event->stat_meta.stat_id,
+                event->stat_meta.name);
             break;
         default:
             break;

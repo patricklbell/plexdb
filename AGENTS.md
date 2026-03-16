@@ -22,4 +22,6 @@
 - The log system uses levels: `Trace`, `Debug`, `Info`, `Warn`, `Error` (see `plexdb::log::Level`).
 - To add diagnostic logging, create a `plexdb::log::Producer` and call `plexdb::log::fire_message(producer.id, Level::Debug, text, len)`.
 - For structured numeric metrics use `plexdb::log::fire_stat(producer.id, stat_id, value)` — no string formatting overhead.
+- Register stat metadata with `plexdb::log::fire_stat_meta(producer.id, stat_id, "name")` so consumers can map stat IDs to human-readable names.
 - The plugin system (`plexdb/log/log_abi.h`) allows custom consumers. Register via `plexdb_log_register_consumer` to filter or redirect logs. See `objstore/plugins/log_file/log_file_plugin.cpp` for a reference plugin.
+- The stat plugin (`objstore/plugins/log_stat/log_stat_plugin.cpp`) writes stat events to a file. Graph them with `python extra/plot_stats.py plexdb.stats`.

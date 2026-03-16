@@ -133,6 +133,19 @@ if(PLEXDB_LOG_ENABLED)
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../plexdb/log
     )
+
+    add_library(objstore_log_stat SHARED)
+    target_compile_features(objstore_log_stat PRIVATE cxx_std_20)
+
+    target_sources(objstore_log_stat
+        PRIVATE
+            plugins/log_stat/log_stat_plugin.cpp
+    )
+
+    target_include_directories(objstore_log_stat
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../plexdb/log
+    )
 endif()
 
 # =============================================================================

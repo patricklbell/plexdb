@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -32,11 +33,12 @@ constexpr std::string DEFAULT_PLEXDB_LOG_FILE = "plexdb.log";
 constexpr size_t DEFAULT_PLEXDB_LOG_BATCH = 1;
 
 struct State {
-    std::unordered_map<uint32_t, std::string> producers;
-    std::vector<std::string>                  buffer;
-    std::FILE*                                file  = nullptr;
-    std::mutex                                mtx;
-    size_t                                    batch = DEFAULT_PLEXDB_LOG_BATCH;
+    std::unordered_map<uint32_t, std::string>                producers;
+    std::map<std::pair<uint32_t,uint32_t>, std::string>      stat_names;
+    std::vector<std::string>                                 buffer;
+    std::FILE*                                               file  = nullptr;
+    std::mutex                                               mtx;
+    size_t                                                   batch = DEFAULT_PLEXDB_LOG_BATCH;
 
     State() {
         const char* path_cstr = std::getenv("PLEXDB_LOG_FILE");
@@ -94,11 +96,23 @@ struct State {
             line += '[' + it->second + "] ";
         }
         line += '[' + current_local_datetime()  + "] ";
-        line += "[STAT] id=" + std::to_string(stat_id) + " value=" + std::to_string(value);
+
+        auto sit = stat_names.find({producer_id, stat_id});
+        if (sit != stat_names.end()) {
+            line += "[STAT:" + sit->second + "] " + std::to_string(value);
+        } else {
+            line += "[STAT] id=" + std::to_string(stat_id) + " value=" + std::to_string(value);
+        }
+
         buffer.push_back(std::move(line));
         if (buffer.size() >= batch) {
             flush_locked();
         }
+    }
+
+    void on_stat_meta(uint32_t producer_id, uint32_t stat_id, const char* name) {
+        std::lock_guard<std::mutex> guard(mtx);
+        stat_names[{producer_id, stat_id}] = name;
     }
 
     void flush() {
@@ -143,6 +157,12 @@ void on_event(const PlexdbLogEvent* event, void* ctx) {
                 event->stat.producer_id,
                 event->stat.stat_id,
                 event->stat.value);
+        }break;
+        case PLEXDB_LOG_STAT_META:{
+            state->on_stat_meta(
+                event->stat_meta.producer_id,
+                event->stat_meta.stat_id,
+                event->stat_meta.name);
         }break;
     }
 }

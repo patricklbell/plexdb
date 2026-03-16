@@ -191,7 +191,8 @@ export namespace plexdb {
     using AssertHandler = void(*)(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
     inline AssertHandler g_assert_handler = nullptr;
 
-    constexpr inline void assert_true_always(bool expr, const char* msg, std::source_location loc = std::source_location::current()) noexcept {
+    // @note not noexcept: the custom assert handler (e.g. Catch2 FAIL) may throw
+    constexpr inline void assert_true_always(bool expr, const char* msg, std::source_location loc = std::source_location::current()) {
         if (PLEXDB_IS_CONSTEVAL()) {
             PLEXDB_CONSTEVAL_TRAP(expr);
         } else {
@@ -204,7 +205,7 @@ export namespace plexdb {
             }
         }
     }
-    constexpr inline void assert_true(bool expr, const char* msg, std::source_location loc = std::source_location::current()) noexcept {
+    constexpr inline void assert_true(bool expr, const char* msg, std::source_location loc = std::source_location::current()) {
         if constexpr (!k_assert_enabled) {
             if (!PLEXDB_IS_CONSTEVAL()) {
                 return;
@@ -213,11 +214,11 @@ export namespace plexdb {
         assert_true_always(expr, msg, loc);
     }
 
-    constexpr inline void assert_true_not_implemented(bool expr, const char* msg = not_implemented_msg, std::source_location loc = std::source_location::current()) noexcept {
+    constexpr inline void assert_true_not_implemented(bool expr, const char* msg = not_implemented_msg, std::source_location loc = std::source_location::current()) {
         assert_true_always(expr, msg, loc);
     }
 
-    constexpr inline void assert_not_implemented(const char* msg = not_implemented_msg, std::source_location loc = std::source_location::current()) noexcept {
+    constexpr inline void assert_not_implemented(const char* msg = not_implemented_msg, std::source_location loc = std::source_location::current()) {
         assert_true_not_implemented(false, msg, loc);
     }
     void set_assert_handler(AssertHandler h) noexcept;

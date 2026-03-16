@@ -84,6 +84,15 @@ export namespace plexdb::log {
     //   zero-overhead structured numeric events for realtime metrics.
     //   no string formatting overhead — consumers read the value directly.
     // ========================================================================
+    inline void fire_stat_meta(uint32_t producer_id, uint32_t stat_id, const char* name) {
+        if constexpr (enabled) {
+            PlexdbLogEvent e{};
+            e.type = PLEXDB_LOG_STAT_META;
+            e.stat_meta = {producer_id, stat_id, name};
+            dispatch(e);
+        }
+    }
+
     inline void fire_stat(uint32_t producer_id, uint32_t stat_id, int64_t value) {
         if constexpr (enabled) {
             PlexdbLogEvent e{};

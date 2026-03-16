@@ -3,7 +3,7 @@
 import plexdb.base;
 
 inline void catch2_assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-    FAIL_CHECK("Assert failed \"" << msg << "\" at " << function_name << " in " << file_name << ":" << line_number);
+    FAIL("Assert failed \"" << msg << "\" at " << function_name << " in " << file_name << ":" << line_number);
 }
 
 struct AssertHandlerInstaller {
