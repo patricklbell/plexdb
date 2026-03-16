@@ -5,5 +5,8 @@ out/
 _codeql_detected_source_root
 *.db
 objstore.pid
+docstore.pid
+sqlstore.pid
+graphstore.pid
 **/.venv
 **/node_modules
