@@ -29,9 +29,17 @@ TEST_CASE("descriptive name", "[tag]") {
 ```
 
 ## Running Tests
-- Build: `ninja -C build`
+- Build: `cmake -B build -G Ninja -DBUILD_TESTS=ON -DPLEXDB_LOG_ENABLED=ON -DPLEXDB_DEBUG=ON && ninja -C build`
 - Run all: `./build/plexdb/plexdb_tests --skip-benchmarks` or `./build/objstore/objstore_tests --skip-benchmarks`
 - Run specific tags: `./build/objstore/objstore_tests --skip-benchmarks "[tagname]"`
+
+## Debugging Test Failures
+- Build with `-DPLEXDB_LOG_ENABLED=ON` so log messages appear in failing tests.
+- All `plexdb::log` messages are routed to Catch2 `UNSCOPED_INFO` by the test log consumer (`test/log_consumer.test.cpp`). When a test fails, all log messages emitted during that test case are printed alongside the failure.
+- To add diagnostic logging in production code, use `plexdb::log::fire_message(producer.id, Level::Debug, text, len)`. This is zero-overhead when logging is disabled at build time.
+- For numeric metrics without string formatting overhead, use `plexdb::log::fire_stat(producer.id, stat_id, value)`.
+- Custom log consumers can be registered via the plugin ABI (`plexdb_log_register_consumer` in `plexdb/log/log_abi.h`). Write a consumer to filter by producer ID, log level, or stat ID.
+- Parse errors are reported via `UNSCOPED_INFO` through `objstore/test/parsers_error_reporter.helper.cppm` and also through the log system (`objstore::log::cql_parse_error` at `Level::Error`).
 
 ## Benchmarks
 - Catch2 supports benchmarks but use them sparingly

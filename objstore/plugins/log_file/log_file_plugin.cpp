@@ -65,7 +65,8 @@ struct State {
 
     void on_message(uint32_t producer_id, uint32_t level, const char* text, size_t len) {
         static constexpr const char* level_tags[] = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"};
-        const char* tag = (level < 5) ? level_tags[level] : "???";
+        constexpr size_t n_levels = sizeof(level_tags) / sizeof(level_tags[0]);
+        const char* tag = (level < n_levels) ? level_tags[level] : "???";
 
         std::lock_guard<std::mutex> guard(mtx);
         std::string line = "";

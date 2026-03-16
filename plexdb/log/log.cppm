@@ -35,8 +35,8 @@ export namespace plexdb::log {
             case Level::Info:  return "INFO";
             case Level::Warn:  return "WARN";
             case Level::Error: return "ERROR";
+            default:           return "???";
         }
-        return "???";
     }
 
     // ========================================================================
