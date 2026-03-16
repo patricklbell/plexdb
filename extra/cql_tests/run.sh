@@ -42,7 +42,7 @@ while getopts "b:P:r:t:xlh" opt; do
         x) PYTEST_EXTRA="$PYTEST_EXTRA -x" ;;
         l) LIST_ONLY=true ;;
         h)
-            sed -n '2,19p' "$0" | sed 's/^# \?//'
+            sed -n '2,22p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         *) exit 1 ;;

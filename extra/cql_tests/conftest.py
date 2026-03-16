@@ -58,8 +58,7 @@ def cql_test_connection(cql, request):
     except Exception:
         cql_test_connection.server_crashed = True
         pytest.exit(
-            f"objstore appears to have crashed during "
-            f"{request.node.parent.name}::{request.node.name}",
+            f"objstore appears to have crashed during {request.node.parent.name}::{request.node.name}",
             returncode=pytest.ExitCode.INTERNAL_ERROR,
         )
 
