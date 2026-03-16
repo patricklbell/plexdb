@@ -16,6 +16,9 @@ option(OBJSTORE_BUILD_SERVER "Build objstore server" ON)
 option(DOCSTORE_BUILD "Build docstore" ON)
 option(DOCSTORE_BUILD_SERVER "Build docstore server" ON)
 
+option(SQLSTORE_BUILD "Build sqlstore" ON)
+option(SQLSTORE_BUILD_SERVER "Build sqlstore server" ON)
+
 # =============================================================================
 # Global compiler flags
 # =============================================================================
@@ -48,4 +51,7 @@ if(OBJSTORE_BUILD)
 endif()
 if(DOCSTORE_BUILD)
     add_subdirectory(docstore)
+endif()
+if(SQLSTORE_BUILD)
+    add_subdirectory(sqlstore)
 endif()
