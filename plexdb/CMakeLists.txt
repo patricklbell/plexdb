@@ -74,6 +74,9 @@ target_sources(plexdb_modules
             os/sysinfo.cppm
             os/uring.cppm
             pager/pager.cppm
+            shard/shard.cppm
+            shard/spsc.cppm
+            shard/token.cppm
             threads/threads.cppm
             tagged_union/tagged_union.cppm
             log/log.cppm

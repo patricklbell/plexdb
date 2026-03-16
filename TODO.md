@@ -6,28 +6,25 @@
     - Again cache planning result if complex
 - Do file io with io_uring
 - Shard across cores
+    - plexdb core shard primitives (done)
+        - `plexdb.shard.spsc` — Lock-free SPSC ring buffer
+        - `plexdb.shard.token` — Token hashing and shard mapping
     - OS layer
         - Expose `sched_setaffinity` in `plexdb.os` for CPU pinning
         - Expose `SO_REUSEPORT` in `plexdb.os.socket`
-    - Lock-free SPSC ring buffer (`shard::Mailbox`)
-        - Power-of-two ring, atomic head/tail on separate cache lines
-        - Enforce 64-byte alignment (`alignas(64)`) on head/tail to prevent false sharing
-        - Message types: `CrossShardRequest`, `CrossShardResponse`, `SchemaChangeMsg`
-    - Token map (`shard::TokenMap`)
-        - MurmurHash3 for partition key → token
-        - Uniform split: `token / (2^64 / shard_count)` → owning shard
-        - Consistent hashing with virtual nodes for rebalancing
-    - Shard coordinator (`shard::Coordinator`)
+    - Per-store shard coordinator
         - Detect core count, spawn pinned threads
         - Each thread: own `Pager`, `Engine`, `ThreadContext`, `io_uring Ring`
         - `SO_REUSEPORT` TCP listener per shard
         - Event loop: drain CQEs + drain SPSC inboxes + submit SQEs
-    - Request routing
-        - Parse CQL, extract partition key, hash to token
+    - Per-store request routing
+        - Extract partition key (store-specific: CQL key, doc ID, vertex ID, …)
+        - Hash to token via `plexdb::shard::token_of`
+        - Map to shard via `plexdb::shard::owning_shard`
         - Local path: execute on receiving shard
         - Forward path: SPSC push to owning shard, await response
         - Scatter-gather for partition-unbound queries
-    - Schema consensus (Raft-Lite)
+    - Per-store schema consensus (Raft-Lite)
         - Leader on core 0, heartbeat via SPSC
         - Log replication: leader → all followers via SPSC
         - Commit on majority ack, apply on commit notification

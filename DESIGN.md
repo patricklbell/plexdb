@@ -15,37 +15,41 @@ Designed for **predictable low-latency and high throughput** on modern superscal
 
 ## Layer Separation
 
-The system is split into three independent layers. Each layer has a clear boundary and communicates through narrow interfaces.
+The system is split into three independent layers. Each layer has a clear boundary and communicates through narrow interfaces. The key principle is that **generic sharding primitives live in `plexdb`** while **strategy-specific logic lives in each store**.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  objstore (or any application)                          │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │  Shard Coordinator                                │  │
-│  │  · Partition map + consistent hashing             │  │
-│  │  · Request routing                                │  │
-│  │  · Inter-shard mailbox (lock-free SPSC queues)    │  │
-│  │  · Schema consensus (Raft)                        │  │
-│  │  · Membership / failure detection                 │  │
-│  └───────────────┬───────────────────────────────────┘  │
-│                  │ one instance per core                 │
-│  ┌───────────────▼───────────────────────────────────┐  │
-│  │  Shard                                            │  │
-│  │  · Own event loop + io_uring ring                 │  │
-│  │  · Own TCP accept (SO_REUSEPORT)                  │  │
-│  │  · Own Engine (schema, execution)                 │  │
-│  │  · Own Pager (file region or dedicated file)      │  │
-│  │  · Own ThreadContext + arena                      │  │
-│  └───────────────┬───────────────────────────────────┘  │
-│                  │ uses                                  │
-│  ┌───────────────▼───────────────────────────────────┐  │
-│  │  plexdb (unchanged)                               │  │
-│  │  · Pager · BTree · Blob · Arena · OS · Threads    │  │
-│  └───────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Store (objstore, docstore, graphstore, …)               │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  Store-Specific Strategy                           │  │
+│  │  · Partition key extraction (CQL, doc-id, …)       │  │
+│  │  · Request routing / query planning                │  │
+│  │  · Schema consensus policy                         │  │
+│  │  · Protocol handling (CQL, HTTP, GraphQL, …)       │  │
+│  └───────────────┬────────────────────────────────────┘  │
+│                  │ one instance per core                  │
+│  ┌───────────────▼────────────────────────────────────┐  │
+│  │  Shard Instance                                    │  │
+│  │  · Own event loop + io_uring ring                  │  │
+│  │  · Own TCP accept (SO_REUSEPORT)                   │  │
+│  │  · Own Engine / data structures                    │  │
+│  │  · Own Pager (file region or dedicated file)       │  │
+│  │  · Own ThreadContext + arena                       │  │
+│  └───────────────┬────────────────────────────────────┘  │
+│                  │ uses                                   │
+│  ┌───────────────▼────────────────────────────────────┐  │
+│  │  plexdb (core library)                             │  │
+│  │  · Pager · BTree · Blob · Arena · OS · Threads     │  │
+│  │  · Shard primitives:                               │  │
+│  │    · SpscQueue — lock-free SPSC ring buffer        │  │
+│  │    · token_of / owning_shard — hash-based mapping  │  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
 ```
 
-`plexdb` sees only a file handle, a page size, and memory arenas. It never imports shard identifiers, partition tokens, or network addresses. This makes it reusable for embedded (SQLite-style), single-node multi-core (ScyllaDB-style), and distributed deployments.
+`plexdb` provides **strategy-independent building blocks**: the SPSC queue handles all inter-shard message passing regardless of message content; `token_of`/`owning_shard` map arbitrary byte keys to shards regardless of what the key represents. Each store provides its own strategy by extracting the appropriate key from its domain (partition key for CQL, document ID for docstore, vertex/edge ID for graphstore) and feeding it to the generic primitives.
+
+This makes `plexdb` reusable across embedded (SQLite-style), single-node multi-core (ScyllaDB-style), and distributed deployments — and across any store type.
 
 ---
 
@@ -327,7 +331,7 @@ flowchart LR
 
 ## 9. What Changes in Each Layer
 
-### plexdb (no changes)
+### plexdb (generic shard primitives)
 
 | Component | Status |
 |---|---|
@@ -335,19 +339,22 @@ flowchart LR
 | `BTree` / `Blob` | Already take a `Pager*`. No global state. |
 | `Arena` / `ThreadContext` | Already per-thread. Each shard thread calls `equip()`. |
 | `os::uring` | Already per-instance `Ring`. Each shard creates its own. |
+| `shard::SpscQueue` | **New.** Lock-free SPSC ring buffer for inter-shard messaging. Generic over message type. |
+| `shard::token_of` / `owning_shard` | **New.** Hash-based token generation and uniform shard assignment. Stores provide key bytes; plexdb maps to shard. |
 
-### objstore (changes needed)
+### Store layer (objstore, docstore, graphstore, …)
 
-| Component | Change |
+Each store provides **strategy-specific** logic on top of plexdb's generic primitives:
+
+| Component | Responsibility |
 |---|---|
-| `tcp::listen` | Wrap in per-shard thread; add `SO_REUSEPORT`. |
-| `engine::Engine` | One instance per shard. Schema sync via Raft-Lite. |
-| `native::run` / `http::run` | Accept shard ID; route requests by partition token. |
-| New: `shard::Coordinator` | Token map, SPSC setup, Raft-Lite, startup/shutdown. |
-| New: `shard::Mailbox` | Lock-free SPSC ring buffer. |
-| New: `shard::TokenMap` | Consistent hashing: token → shard mapping. |
+| Partition key extraction | Extract the appropriate key from the store's domain (CQL partition key, doc ID, vertex ID, …) |
+| Request routing | Decide local vs. cross-shard execution using `shard_for_key()` |
+| Shard coordinator | Spawn per-core threads, set up SPSC queues between shards, manage lifecycle |
+| Schema/metadata consensus | Store-specific Raft-Lite or simpler protocol over SPSC queues |
+| Protocol handling | CQL native, HTTP/REST, GraphQL, etc. |
 
-### os layer (small additions)
+### os layer (small additions needed)
 
 | Component | Change |
 |---|---|
