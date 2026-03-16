@@ -10,9 +10,18 @@ extern "C" {
 // ============================================================================
 // data types
 // ============================================================================
+typedef enum PlexdbLogLevel : uint32_t {
+    PLEXDB_LOG_TRACE = 0,
+    PLEXDB_LOG_DEBUG = 1,
+    PLEXDB_LOG_INFO  = 2,
+    PLEXDB_LOG_WARN  = 3,
+    PLEXDB_LOG_ERROR = 4,
+} PlexdbLogLevel;
+
 typedef enum PlexdbLogEventType : uint32_t {
     PLEXDB_LOG_PRODUCER_REGISTERED = 1,  // producer announces itself
     PLEXDB_LOG_MESSAGE             = 2,  // generic string message
+    PLEXDB_LOG_STAT                = 3,  // structured numeric stat
 } PlexdbLogEventType;
 
 typedef struct {
@@ -22,10 +31,16 @@ typedef struct {
 
 typedef struct {
     uint32_t    producer_id;
-    uint32_t    _pad;   // @padding
+    uint32_t    level;      // PlexdbLogLevel
     const char* text;
     size_t      text_len;
 } PlexdbLogMessage;
+
+typedef struct {
+    uint32_t    producer_id;
+    uint32_t    stat_id;
+    int64_t     value;
+} PlexdbLogStat;
 
 // @note fat struct with a type tag and union payload
 typedef struct {
@@ -34,6 +49,7 @@ typedef struct {
     union {
         PlexdbLogProducerRegistered producer_registered;
         PlexdbLogMessage            message;
+        PlexdbLogStat               stat;
     };
 } PlexdbLogEvent;
 

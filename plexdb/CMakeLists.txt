@@ -141,6 +141,11 @@ if(BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
     )
     target_sources(plexdb_tests PRIVATE ${PLEXDB_TEST_SOURCES})
+
+    target_include_directories(plexdb_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/log
+    )
+
     target_link_libraries(plexdb_tests
         PRIVATE
             plexdb::plexdb

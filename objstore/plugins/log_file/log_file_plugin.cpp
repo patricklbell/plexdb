@@ -63,8 +63,9 @@ struct State {
         producers[id] = name;
     }
 
-    void on_message(uint32_t producer_id, const char* text, size_t len) {
-        std::time_t t = std::time(nullptr);
+    void on_message(uint32_t producer_id, uint32_t level, const char* text, size_t len) {
+        static constexpr const char* level_tags[] = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"};
+        const char* tag = (level < 5) ? level_tags[level] : "???";
 
         std::lock_guard<std::mutex> guard(mtx);
         std::string line = "";
@@ -73,8 +74,26 @@ struct State {
             line += '[' + it->second + "] ";
         }
         line += '[' + current_local_datetime()  + "] ";
+        line += '[';
+        line += tag;
+        line += "] ";
 
         line.append(text, len);
+        buffer.push_back(std::move(line));
+        if (buffer.size() >= batch) {
+            flush_locked();
+        }
+    }
+
+    void on_stat(uint32_t producer_id, uint32_t stat_id, int64_t value) {
+        std::lock_guard<std::mutex> guard(mtx);
+        std::string line = "";
+        auto it = producers.find(producer_id);
+        if (it != producers.end()) {
+            line += '[' + it->second + "] ";
+        }
+        line += '[' + current_local_datetime()  + "] ";
+        line += "[STAT] id=" + std::to_string(stat_id) + " value=" + std::to_string(value);
         buffer.push_back(std::move(line));
         if (buffer.size() >= batch) {
             flush_locked();
@@ -114,8 +133,15 @@ void on_event(const PlexdbLogEvent* event, void* ctx) {
         case PLEXDB_LOG_MESSAGE:{
             state->on_message(
                 event->message.producer_id,
+                event->message.level,
                 event->message.text,
                 event->message.text_len);
+        }break;
+        case PLEXDB_LOG_STAT:{
+            state->on_stat(
+                event->stat.producer_id,
+                event->stat.stat_id,
+                event->stat.value);
         }break;
     }
 }

@@ -195,6 +195,7 @@ if(BUILD_TESTS)
 
     target_include_directories(objstore_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+        ${CMAKE_CURRENT_SOURCE_DIR}/../plexdb/log
     )
 
     target_link_libraries(objstore_tests
