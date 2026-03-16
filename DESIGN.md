@@ -174,7 +174,7 @@ Requests without a partition key constraint (full table scans) are fanned out to
 
 ### Lock-Free SPSC Mailboxes
 
-Between every ordered pair of shards `(i, j)` there is a **single-producer single-consumer (SPSC) ring buffer**. Shard *i* produces; shard *j* consumes. This gives `N*(N-1)` queues total — acceptable for typical core counts (e.g. 16 cores → 240 queues, each just a few cache lines).
+Between every ordered pair of shards `(i, j)` there is a **single-producer single-consumer (SPSC) ring buffer**. Shard *i* produces; shard *j* consumes. This gives `N*(N-1)` queues total — acceptable for typical core counts (e.g. 16 cores → 240 queues, each just a few cache lines of metadata each). For machines with more than ~64 cores, a hub-based topology (one coordinator shard that multiplexes messages) should replace the full mesh to keep memory usage linear.
 
 ```
 Shard 0 ──SPSC──▶ Shard 1
@@ -213,7 +213,7 @@ Schema mutations (`CREATE KEYSPACE`, `CREATE TABLE`, `DROP`, `ALTER`) must be ap
 
 ### Raft-Lite (intra-process)
 
-- **Leader election**: the shard on core 0 starts as leader. If it dies, the lowest-numbered live shard takes over. Failure is detected by heartbeat absence in SPSC queues.
+- **Leader election**: the shard on core 0 starts as leader. If it dies, the lowest-numbered live shard takes over. Failure is detected by the absence of periodic heartbeat messages: each shard sends a heartbeat on its outbound SPSC queues at a fixed interval (e.g. 100ms). If a shard's inbound queue from the leader carries no heartbeat for a configurable timeout (e.g. 500ms), it considers the leader dead and initiates election.
 - **Log replication**: the leader appends the schema mutation to its log, then pushes `SchemaChangeMsg` to all followers via SPSC queues.
 - **Commit**: once a majority acknowledge (via response SPSC), the leader marks the entry committed and applies it locally. Followers apply on receiving the commit notification.
 - **Persistence**: the leader writes the committed schema log to a dedicated schema pager page. On recovery, all shards replay the log.
@@ -373,7 +373,7 @@ Each shard maintains a per-shard WAL. Before modifying btree/blob pages, the sha
 
 ### Failure Handling
 
-- **Shard crash**: other shards detect via SPSC heartbeat timeout. The crashed shard's token range is temporarily unavailable (fail-fast) until the shard restarts and replays its WAL.
+- **Shard crash**: other shards detect via SPSC heartbeat timeout. The crashed shard's token range becomes temporarily unavailable (fail-fast). The main thread automatically restarts the shard on the same core — the new shard replays its WAL and re-joins the Raft group. Downtime for the affected token range is bounded by WAL replay time. This is acceptable for single-node deployments; multi-node deployments use replicas to avoid any downtime (see §6.3).
 - **Full process crash**: on restart, each shard replays its WAL independently. Schema is recovered from the leader's committed log.
 - **Multi-node**: Raft leader election handles node failure. Partition replicas on surviving nodes continue serving reads.
 

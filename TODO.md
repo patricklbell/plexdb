@@ -11,6 +11,7 @@
         - Expose `SO_REUSEPORT` in `plexdb.os.socket`
     - Lock-free SPSC ring buffer (`shard::Mailbox`)
         - Power-of-two ring, atomic head/tail on separate cache lines
+        - Enforce 64-byte alignment (`alignas(64)`) on head/tail to prevent false sharing
         - Message types: `CrossShardRequest`, `CrossShardResponse`, `SchemaChangeMsg`
     - Token map (`shard::TokenMap`)
         - MurmurHash3 for partition key → token
@@ -34,6 +35,7 @@
     - Storage layout
         - File-per-shard mode: `db_0`, `db_1`, ..., `db_N`
         - Region-per-shard mode: single file with `Pager::base_offset`
+        - Dynamic region expansion when a shard exhausts its allocated space
     - Recovery
         - Per-shard WAL at pager level
         - Independent replay on crash recovery
