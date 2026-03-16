@@ -19,6 +19,9 @@ option(DOCSTORE_BUILD_SERVER "Build docstore server" ON)
 option(SQLSTORE_BUILD "Build sqlstore" ON)
 option(SQLSTORE_BUILD_SERVER "Build sqlstore server" ON)
 
+option(GRAPHSTORE_BUILD "Build graphstore" ON)
+option(GRAPHSTORE_BUILD_SERVER "Build graphstore server" ON)
+
 # =============================================================================
 # Global compiler flags
 # =============================================================================
@@ -54,4 +57,7 @@ if(DOCSTORE_BUILD)
 endif()
 if(SQLSTORE_BUILD)
     add_subdirectory(sqlstore)
+endif()
+if(GRAPHSTORE_BUILD)
+    add_subdirectory(graphstore)
 endif()
