@@ -35,7 +35,7 @@ TEST_CASE("descriptive name", "[tag]") {
 
 ## Debugging Test Failures
 - Build with `-DPLEXDB_LOG_ENABLED=ON` so log messages appear in failing tests.
-- All `plexdb::log` messages are routed to Catch2 `UNSCOPED_INFO` by the test log consumer (`test/log_consumer.test.cpp`). When a test fails, all log messages emitted during that test case are printed alongside the failure.
+- All `plexdb::log` messages are routed to Catch2 `UNSCOPED_INFO` by the test log consumer (`test/log_consumer_helper.test.cpp`). When a test fails, all log messages emitted during that test case are printed alongside the failure.
 - To add diagnostic logging in production code, use `plexdb::log::fire_message(producer.id, Level::Debug, text, len)`. This is zero-overhead when logging is disabled at build time.
 - For numeric metrics without string formatting overhead, use `plexdb::log::fire_stat(producer.id, stat_id, value)`.
 - Register stat metadata with `plexdb::log::fire_stat_meta(producer.id, stat_id, "name")` so consumers display human-readable stat names on failure.

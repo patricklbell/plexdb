@@ -18,7 +18,7 @@
 
 ## Logging & debugging test failures
 - Build with `-DPLEXDB_LOG_ENABLED=ON` to enable the structured logging system.
-- All log messages are routed to Catch2's `UNSCOPED_INFO` via the test log consumer (`test/log_consumer.test.cpp`). They appear automatically in the output of any failing test case.
+- All log messages are routed to Catch2's `UNSCOPED_INFO` via the test log consumer (`test/log_consumer_helper.test.cpp`). They appear automatically in the output of any failing test case.
 - The log system uses levels: `Trace`, `Debug`, `Info`, `Warn`, `Error` (see `plexdb::log::Level`).
 - To add diagnostic logging, create a `plexdb::log::Producer` and call `plexdb::log::fire_message(producer.id, Level::Debug, text, len)`.
 - For structured numeric metrics use `plexdb::log::fire_stat(producer.id, stat_id, value)` — no string formatting overhead.

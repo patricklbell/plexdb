@@ -157,7 +157,7 @@ struct LogListener : Catch::EventListenerBase {
 CATCH_REGISTER_LISTENER(LogListener)
 
 // @note Static init order: consumer only sees messages fired after registration.
-//   Producer catch-up IS replayed (see log_abi.h load-order contract).
+//   Producer catch-up is replayed (see log_abi.h load-order contract).
 struct LogConsumerInstaller {
     LogConsumerInstaller()  { plexdb_log_register_consumer(on_log_event, nullptr); }
     ~LogConsumerInstaller() { plexdb_log_unregister_consumer(on_log_event, nullptr); }
