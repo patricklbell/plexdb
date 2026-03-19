@@ -75,16 +75,13 @@ export namespace plexdb {
         bool operator==(const String8& b) const;
         bool operator==(const char* b) const;
         bool operator==(const AutoString8& b) const;
-
-        // stl helpers
-        void push_back(const char& c);
-        void append(const char* first, const char* last);
     };
 
     void resize(AutoString8& str, U64 size);
     void push_back(AutoString8& str, const char& c);
     void append(AutoString8& str, const char* first, const char* last);
     void append(AutoString8& str, String8 s);
+    void to_lowercase_inplace(AutoString8& str);
     
     U64 hash(const AutoString8& s);
     U64 hash(String8 s);

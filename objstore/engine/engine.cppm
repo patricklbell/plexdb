@@ -17,7 +17,7 @@ export namespace objstore::engine {
     struct Engine {
         Pager* pager;
         schema::Schema schema;
-        String8 current_keyspace = "";
+        AutoString8 current_keyspace{""};
 
         Engine(Pager* in_pager);
     };
@@ -63,11 +63,11 @@ export namespace objstore::engine {
     // ========================================================================
     struct VirtualColumn {
         String8 name;
-        CDType type;
+        CqlType type;
     };
 
     struct VirtualRow {
-        DynamicArray<dtype::ReadValue> values;
+        DynamicArray<types::ReadValue> values;
     };
 
     struct VirtualRows {
@@ -86,6 +86,7 @@ export namespace objstore::engine {
         U64 row_page;
         U64 col_idx;
         U64 row_offset_bytes;
+        DynamicArray<bool> active_cols;
 
         ColumnIterator& operator++();
         bool operator==(const ColumnIterator& other) const { return col_idx == other.col_idx; }
@@ -94,7 +95,7 @@ export namespace objstore::engine {
 
     const schema::Column& column(const ColumnIterator& it);
     U64 column_count(const ColumnIterator& it);
-    dtype::ReadValue read_value(ColumnIterator& it);
+    types::ReadValue read_value(ColumnIterator& it);
     ColumnIterator columns_begin(Pager* pager, const schema::Table* table, U64 row_page);
     ColumnIterator columns_end(const schema::Table* table);
 

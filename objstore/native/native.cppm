@@ -65,24 +65,37 @@ namespace objstore::native {
         constexpr U16 Set       = 0x0022;
     }
 
-    constexpr U16 dtype_to_cql_type(DType dtype) {
+    constexpr U16 dtype_to_cql_type(NativeType dtype) {
         switch (dtype) {
-            case DType::text:       return cql_type::Varchar;
-            case DType::uuid:       return cql_type::Uuid;
-            case DType::timestamp:  return cql_type::Timestamp;
-            case DType::smallint:   return cql_type::Smallint;
-            case DType::int_:       return cql_type::Int;
-            case DType::bigint:     return cql_type::Bigint;
-            case DType::counter:    return cql_type::Counter;
-            case DType::boolean:    return cql_type::Boolean;
-            case DType::float_:     return cql_type::Float;
-            case DType::double_:    return cql_type::Double;
+            case types::text:       return cql_type::Varchar;
+            case types::uuid:       return cql_type::Uuid;
+            case types::timestamp:  return cql_type::Timestamp;
+            case types::smallint:   return cql_type::Smallint;
+            case types::int_:       return cql_type::Int;
+            case types::bigint:     return cql_type::Bigint;
+            case types::counter:    return cql_type::Counter;
+            case types::boolean:    return cql_type::Boolean;
+            case types::float_:     return cql_type::Float;
+            case types::double_:    return cql_type::Double;
+            case types::ascii:
+            case types::blob:
+            case types::date:
+            case types::decimal:
+            case types::duration:
+            case types::inet:
+            case types::time:
+            case types::timeuuid:
+            case types::tinyint:
+            case types::varchar:
+            case types::varint:
+            case types::vector:
+                break;
         }
         return 0x0000;
     }
 
-    constexpr U16 dtype_to_cql_type(CDType cdtype) {
-        if (cdtype.base.ctype != CType::native) return 0x0000;
+    constexpr U16 dtype_to_cql_type(CqlType cdtype) {
+        if (cdtype.base.ctype != ClassType::native) return 0x0000;
         return dtype_to_cql_type(cdtype.native.value_dtype);
     }
 
@@ -192,31 +205,33 @@ namespace objstore::native {
 
     // Write an [option] for a column type (§4.2.5.2): [short] type_id + optional nested type(s)
     template<BufferedString8Flush F>
-    void append_cql_type_option(BufferedString8<F>& buf, CDType cdtype) {
+    void append_cql_type_option(BufferedString8<F>& buf, CqlType cdtype) {
         switch (cdtype.base.ctype) {
-            case CType::native:
+            case ClassType::native:
                 append_be_u16(buf, dtype_to_cql_type(cdtype.native.value_dtype));
                 break;
-            case CType::list:
+            case ClassType::list:
                 append_be_u16(buf, cql_type::List);
                 append_be_u16(buf, dtype_to_cql_type(cdtype.list.element_dtype));
                 break;
-            case CType::set:
+            case ClassType::set:
                 append_be_u16(buf, cql_type::Set);
                 append_be_u16(buf, dtype_to_cql_type(cdtype.set.key_dtype));
                 break;
-            case CType::map:
+            case ClassType::map:
                 append_be_u16(buf, cql_type::Map);
                 append_be_u16(buf, dtype_to_cql_type(cdtype.map.key_dtype));
                 append_be_u16(buf, dtype_to_cql_type(cdtype.map.value_dtype));
                 break;
+            case ClassType::vector:
+                break;
         }
     }
 
-    // Write a dtype::ReadValue as CQL binary [bytes] (big-endian network order)
+    // Write a types::ReadValue as CQL binary [bytes] (big-endian network order)
     template<BufferedString8Flush F>
-    void append_cql_value(BufferedString8<F>& buf, const dtype::ReadValue& value, CDType cdtype) {
-        if (cdtype.base.ctype != CType::native) {
+    void append_cql_value(BufferedString8<F>& buf, const types::ReadValue& value, CqlType cdtype) {
+        if (cdtype.base.ctype != ClassType::native) {
             // Serialize collection as [bytes]: [int] body_len | [int] elem_count | n×[bytes]
             visit(value, [&](const auto& v) {
                 using T = Decay<decltype(v)>;
@@ -255,24 +270,24 @@ namespace objstore::native {
             return;
         }
         switch (cdtype.native.value_dtype) {
-            case DType::text:
-            case DType::uuid:
-            case DType::timestamp: {
+            case types::text:
+            case types::uuid:
+            case types::timestamp: {
                 const AutoString8& s = get<AutoString8>(value);
                 append_cql_bytes_raw(buf, reinterpret_cast<const U8*>(s.c_str), S32(s.length));
             } break;
-            case DType::smallint: {
+            case types::smallint: {
                 S16 v = get<S16>(value);
                 U8 data[2] = { U8(v >> 8), U8(v) };
                 append_cql_bytes_raw(buf, data, 2);
             } break;
-            case DType::int_: {
+            case types::int_: {
                 S32 v = get<S32>(value);
                 U8 data[4] = { U8(U32(v) >> 24), U8(U32(v) >> 16), U8(U32(v) >> 8), U8(U32(v)) };
                 append_cql_bytes_raw(buf, data, 4);
             } break;
-            case DType::counter:
-            case DType::bigint: {
+            case types::counter:
+            case types::bigint: {
                 S64 v = get<S64>(value);
                 U8 data[8];
                 for (int i = 7; i >= 0; i--) {
@@ -281,18 +296,18 @@ namespace objstore::native {
                 }
                 append_cql_bytes_raw(buf, data, 8);
             } break;
-            case DType::boolean: {
+            case types::boolean: {
                 U8 v = get<U8>(value);
                 append_cql_bytes_raw(buf, &v, 1);
             } break;
-            case DType::float_: {
+            case types::float_: {
                 F32 v = get<F32>(value);
                 U32 bits;
                 os::memory_copy(&bits, &v, sizeof(bits));
                 U8 data[4] = { U8(bits >> 24), U8(bits >> 16), U8(bits >> 8), U8(bits) };
                 append_cql_bytes_raw(buf, data, 4);
             } break;
-            case DType::double_: {
+            case types::double_: {
                 F64 v = get<F64>(value);
                 U64 bits;
                 os::memory_copy(&bits, &v, sizeof(bits));
@@ -303,6 +318,19 @@ namespace objstore::native {
                 }
                 append_cql_bytes_raw(buf, data, 8);
             } break;
+            case types::ascii:
+            case types::blob:
+            case types::date:
+            case types::decimal:
+            case types::duration:
+            case types::inet:
+            case types::time:
+            case types::timeuuid:
+            case types::tinyint:
+            case types::varchar:
+            case types::varint:
+            case types::vector:
+                break;
         }
     }
 

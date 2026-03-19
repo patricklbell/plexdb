@@ -262,7 +262,7 @@ TEST_CASE("Native protocol CQL DDL and DML operations", "[objstore.native]") {
     REQUIRE(recv_frame(client).opcode == 0x02);
 
     // CREATE KEYSPACE -> RESULT Schema_change (0x0005)
-    send_frame(client, make_query("CREATE KEYSPACE ks WITH replication = 'SimpleStrategy';"));
+    send_frame(client, make_query("CREATE KEYSPACE ks;"));
     auto resp = recv_frame(client);
     REQUIRE(resp.opcode == 0x08);
     CHECK(result_kind(resp) == 0x0005);
@@ -277,12 +277,12 @@ TEST_CASE("Native protocol CQL DDL and DML operations", "[objstore.native]") {
     CHECK(body_contains(resp, "TABLE"));
 
     // INSERT -> RESULT Void (0x0001)
-    send_frame(client, make_query("INSERT INTO ks.users VALUES (1, 'Alice', 30);"));
+    send_frame(client, make_query("INSERT INTO ks.users (id, name, age) VALUES (1, 'Alice', 30);"));
     resp = recv_frame(client);
     REQUIRE(resp.opcode == 0x08);
     CHECK(result_kind(resp) == 0x0001);
 
-    send_frame(client, make_query("INSERT INTO ks.users VALUES (2, 'Bob', 25);"));
+    send_frame(client, make_query("INSERT INTO ks.users (id, name, age) VALUES (2, 'Bob', 25);"));
     resp = recv_frame(client);
     REQUIRE(resp.opcode == 0x08);
     CHECK(result_kind(resp) == 0x0001);
@@ -392,13 +392,13 @@ TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") 
         send_frame(client, make_startup());
         REQUIRE(recv_frame(client).opcode == 0x02);
 
-        send_frame(client, make_query("CREATE KEYSPACE pks WITH replication = 'SimpleStrategy';"));
+        send_frame(client, make_query("CREATE KEYSPACE pks;"));
         REQUIRE(recv_frame(client).opcode == 0x08);
 
         send_frame(client, make_query("CREATE TABLE pks.data (id int PRIMARY KEY, val text);"));
         REQUIRE(recv_frame(client).opcode == 0x08);
 
-        send_frame(client, make_query("INSERT INTO pks.data VALUES (99, 'persisted');"));
+        send_frame(client, make_query("INSERT INTO pks.data (id, val) VALUES (99, 'persisted');"));
         REQUIRE(recv_frame(client).opcode == 0x08);
 
         exit_signal = true;
@@ -526,7 +526,7 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
     send_frame(client, make_startup());
     REQUIRE(recv_frame(client).opcode == 0x02);
 
-    send_frame(client, make_query("CREATE KEYSPACE test_ks WITH replication = 'SimpleStrategy';"));
+    send_frame(client, make_query("CREATE KEYSPACE test_ks;"));
     REQUIRE(recv_frame(client).opcode == 0x08);
 
     send_frame(client, make_query("CREATE TABLE test_ks.users (id int PRIMARY KEY, name text);"));

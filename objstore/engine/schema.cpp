@@ -147,7 +147,7 @@ namespace objstore::schema {
 
     Keyspace* read_keyspace_impl(Schema& schema, String8 name) {
         for (auto& ks : schema.keyspaces) {
-            if (ks.name == name) {
+            if (ks.name == name && !ks.tombstone) {
                 return &ks;
             }
         }
@@ -155,7 +155,7 @@ namespace objstore::schema {
     }
     Table* read_table_impl(Schema& schema, Keyspace& ks, String8 name) {
         for (auto& tbl : ks.tbls) {
-            if (tbl.name == name) {
+            if (tbl.name == name && !tbl.tombstone) {
                 return &tbl;
             }
         }
@@ -163,7 +163,7 @@ namespace objstore::schema {
     }
     Column* read_column_impl(Schema& schema, Table& tbl, String8 name) {
         for (auto& col : tbl.cols) {
-            if (col.name == name) {
+            if (col.name == name && !col.tombstone) {
                 return &col;
             }
         }
@@ -171,13 +171,8 @@ namespace objstore::schema {
     }
 
     Keyspace* create_keyspace(Schema& schema, const CreateKeyspace& create) {
-        if (Keyspace* ks = read_keyspace_impl(schema, create.keyspace_name); ks != nullptr) {
-            if (create.if_not_exists) {
-                return ks;
-            } else {
-                return nullptr;
-            }
-        }
+        assert_true_not_implemented(create.options.identifier_values.length == 0);
+        assert_true(read_keyspace_impl(schema, create.name) == nullptr, "keyspace already exists");
 
         U64 offset_bytes = schema.keyspaces_blob.size_bytes;
 
@@ -185,9 +180,9 @@ namespace objstore::schema {
             .offset_in_blob_bytes = offset_bytes,
             .header = KeyspaceHeader{
                 .tombstone = false,
-                .name_length = create.keyspace_name.length,
+                .name_length = create.name.length,
             },
-            .name = AutoString8(create.keyspace_name),
+            .name = AutoString8(create.name),
         };
         KeyspaceStorage& ks_storage_ref = push_back(schema.storage.keyspaces, move(ks_storage));
 
@@ -226,34 +221,37 @@ namespace objstore::schema {
         return false;
     }
 
-    Table* create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
-        if (Table* tbl = read_table_impl(schema, ks, create.table_name); tbl != nullptr) {
-            if (create.if_not_exists) {
-                return tbl;
-            } else {
-                return nullptr;
-            }
-        }
-
-        // check column schema contains one primary key
+    static Optional<U64> get_primary_key_col_idx(const CreateTable& create) {
         bool has_primary_key = false;
         U64 primary_col_idx = 0;
-        for (U64 col_idx = 0; col_idx < create.columns.length; col_idx++) {
-            const auto& create_col = create.columns[col_idx];
+        for (U64 col_idx = 0; col_idx < create.column_definitions.length; col_idx++) {
+            const auto& col_def = create.column_definitions[col_idx];
 
             // @todo error code/message
-            if (has_primary_key && create_col.is_primary_key) {
-                return nullptr;
+            if (has_primary_key && col_def.primary_key) {
+                return {};
             }
 
-            if (create_col.is_primary_key) {
+            if (col_def.primary_key) {
                 primary_col_idx = col_idx;
                 has_primary_key = true;
             }
         }
         if (!has_primary_key) {
-            return nullptr;
+            return {};
         }
+        return primary_col_idx;
+    }
+
+    Table* create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
+        assert_true_not_implemented(create.options.value.length == 0);
+        assert_true_not_implemented(!create.primary_key);
+        assert_true(read_table_impl(schema, ks, create.name.table_name) == nullptr, "table already exists");
+
+        auto primary_key_col_idx_opt = get_primary_key_col_idx(create);
+        if (!primary_key_col_idx_opt) // @todo error code/message
+            return nullptr;
+        U64 primary_key_col_idx = *primary_key_col_idx_opt;
         
         U64 btree_page = btree::create_paged(*schema.tables_blob.pager, sizeof(U64));
         
@@ -263,11 +261,11 @@ namespace objstore::schema {
             .offset_in_blob_bytes = offset_bytes,
             .header = TableHeader{
                 .tombstone = false,
-                .name_length = create.table_name.length,
+                .name_length = create.name.table_name.length,
                 .keyspace_idx = ks.idx,
                 .btree_page = btree_page,
             },
-            .name = AutoString8(create.table_name),
+            .name = AutoString8(create.name.table_name),
         };
         TableStorage& tbl_storage_ref = push_back(schema.storage.tables, move(tbl_storage));
 
@@ -286,17 +284,29 @@ namespace objstore::schema {
             .idx = schema.storage.tables.length-1,
             .tombstone = tbl_storage_ref.header.tombstone,
             .name = tbl_storage_ref.name,
-            .primary_col_idx = primary_col_idx,
+            .primary_col_idx = primary_key_col_idx,
             .btree = btree::BTreePaged(schema.tables_blob.pager, tbl_storage_ref.header.btree_page),
         };
         
         Table& tbl_ref = push_back(ks.tbls, move(tbl));
 
-        for (auto& create_col : create.columns) {
-            Column* col_ref = create_column(schema, tbl_ref, create_col);
+        for (U64 col_def_idx = 0; col_def_idx < create.column_definitions.length; col_def_idx++) {
+            auto& col_def = create.column_definitions[col_def_idx];
 
-            if (col_ref == nullptr) {
-                assert_not_implemented("handle failure to create column during table creation");
+            if (Column* col = read_column_impl(schema, tbl, col_def.name.identifier); col != nullptr) {
+                // @todo hard delete
+                delete_table(schema, ks, create.name.table_name);
+                // @todo error code/message
+                return nullptr;
+            }
+
+            Column* col_ref = create_column(schema, tbl_ref, col_def);
+
+            if (col_ref == nullptr)  {
+                // @todo hard delete
+                delete_table(schema, ks, create.name.table_name);
+                // @todo error code/message
+                return nullptr;
             }
         }
 
@@ -319,10 +329,10 @@ namespace objstore::schema {
         return false;
     }
 
-    Column* create_column(Schema& schema, Table& tbl, const CreateColumn& create) {
-        if (Column* col = read_column_impl(schema, tbl, create.name); col != nullptr) {
-            return nullptr;
-        }
+    Column* create_column(Schema& schema, Table& tbl, const ColumnDefinition& create) {
+        assert_true_not_implemented(!create._static);
+        assert_true_not_implemented(!create.mask);
+        assert_true(read_column_impl(schema, tbl, create.name.identifier) == nullptr, "column already exists");
 
         U64 offset_bytes = schema.columns_blob.size_bytes;
 
@@ -330,11 +340,11 @@ namespace objstore::schema {
             .offset_in_blob_bytes = offset_bytes,
             .header = ColumnHeader{
                 .tombstone = false,
-                .name_length = create.name.length,
-                .type = create.type,
+                .name_length = create.name.identifier.length,
+                .type = create.cql_type,
                 .table_idx = tbl.idx,
             },
-            .name = AutoString8(create.name),
+            .name = AutoString8(create.name.identifier),
         };
         ColumnStorage& col_storage_ref = push_back(schema.storage.columns, move(col_storage));
 

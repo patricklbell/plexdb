@@ -356,6 +356,12 @@ export namespace plexdb {
         Pair(A first, B second) : first(first), second(second) {}
     };
 
+    template<typename T> struct IsPairHelper                        { static constexpr bool is = false; };
+    template<typename U, typename V> struct IsPairHelper<Pair<U,V>> { static constexpr bool is = true;  };
+
+    template<typename T>
+    concept IsPair = IsPairHelper<T>::is;
+
     // ========================================================================
     // exchange and swap
     // ========================================================================

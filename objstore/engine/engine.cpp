@@ -14,12 +14,21 @@ namespace objstore::engine {
     // column iterator
     // ========================================================================
     ColumnIterator columns_begin(Pager* pager, const schema::Table* table, U64 row_page) {
+        DynamicArray<bool> active_cols(table->cols.length);
+        blob::BlobDynamicPaged row_blob(pager, row_page);
+        U64 offset = 0;
+        auto read = [&offset, &row_blob](U8* out_value, U64 size) {
+            blob::get(row_blob, out_value, size, offset);
+            offset += size;
+        };
+        types::read_col_mask(read, [&active_cols](U64 idx) { active_cols[idx] = true; });
         return ColumnIterator{
             .pager = pager,
             .table = table,
             .row_page = row_page,
             .col_idx = 0,
-            .row_offset_bytes = 0,
+            .row_offset_bytes = offset,
+            .active_cols = move(active_cols),
         };
     }
 
@@ -41,25 +50,31 @@ namespace objstore::engine {
         return it.table->cols.length;
     }
 
-    dtype::ReadValue read_value(ColumnIterator& it) {
+    types::ReadValue read_value(ColumnIterator& it) {
+        if (it.col_idx < it.active_cols.length && !it.active_cols[it.col_idx]) {
+            auto null_read = [](U8* out, U64 size) { for (U64 i = 0; i < size; i++) out[i] = 0; };
+            return types::read_specific(null_read, it.table->cols[it.col_idx].type);
+        }
         blob::BlobDynamicPaged row_blob(it.pager, it.row_page);
         U64 offset = it.row_offset_bytes;
         auto read = [&offset, &row_blob](U8* out_value, U64 size) {
             blob::get(row_blob, out_value, size, offset);
             offset += size;
         };
-        return dtype::read_specific(read, it.table->cols[it.col_idx].type);
+        return types::read_specific(read, it.table->cols[it.col_idx].type);
     }
 
     ColumnIterator& ColumnIterator::operator++() {
-        blob::BlobDynamicPaged row_blob(pager, row_page);
-        U64 offset = row_offset_bytes;
-        auto skip = [&offset, &row_blob](U8* out_value, U64 size) {
-            blob::get(row_blob, out_value, size, offset);
-            offset += size;
-        };
-        dtype::read_specific(skip, table->cols[col_idx].type);
-        row_offset_bytes = offset;
+        if (col_idx < active_cols.length && active_cols[col_idx]) {
+            blob::BlobDynamicPaged row_blob(pager, row_page);
+            U64 offset = row_offset_bytes;
+            auto skip = [&offset, &row_blob](U8* out_value, U64 size) {
+                blob::get(row_blob, out_value, size, offset);
+                offset += size;
+            };
+            types::read_specific(skip, table->cols[col_idx].type);
+            row_offset_bytes = offset;
+        }
         ++col_idx;
         return *this;
     }
@@ -99,46 +114,46 @@ namespace objstore::engine {
         vr.keyspace = "system";
         vr.table = "local";
 
-        push_back(vr.columns, VirtualColumn{"key", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"bootstrapped", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"broadcast_address", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"broadcast_port", dtype::make_native(DType::int_)});
-        push_back(vr.columns, VirtualColumn{"cluster_name", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"cql_version", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"data_center", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"host_id", dtype::make_native(DType::uuid)});
-        push_back(vr.columns, VirtualColumn{"listen_address", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"listen_port", dtype::make_native(DType::int_)});
-        push_back(vr.columns, VirtualColumn{"native_protocol_version", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"partitioner", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"rack", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"release_version", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"rpc_address", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"rpc_port", dtype::make_native(DType::int_)});
-        push_back(vr.columns, VirtualColumn{"schema_version", dtype::make_native(DType::uuid)});
-        push_back(vr.columns, VirtualColumn{"tokens", dtype::make_set(DType::text)});
+        push_back(vr.columns, VirtualColumn{"key", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"bootstrapped", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"broadcast_address", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"broadcast_port", types::make_native(types::int_)});
+        push_back(vr.columns, VirtualColumn{"cluster_name", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"cql_version", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"data_center", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"host_id", types::make_native(types::uuid)});
+        push_back(vr.columns, VirtualColumn{"listen_address", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"listen_port", types::make_native(types::int_)});
+        push_back(vr.columns, VirtualColumn{"native_protocol_version", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"partitioner", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"rack", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"release_version", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"rpc_address", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"rpc_port", types::make_native(types::int_)});
+        push_back(vr.columns, VirtualColumn{"schema_version", types::make_native(types::uuid)});
+        push_back(vr.columns, VirtualColumn{"tokens", types::make_set(types::text)});
 
         const U8 uuid_bytes[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
 
         VirtualRow row;
-        push_back(row.values, dtype::ReadValue{"local"_as});
-        push_back(row.values, dtype::ReadValue{"COMPLETED"_as});
-        push_back(row.values, dtype::ReadValue{"127.0.0.1"_as});
-        push_back(row.values, dtype::ReadValue{S32(7000)});
-        push_back(row.values, dtype::ReadValue{"objstore"_as});
-        push_back(row.values, dtype::ReadValue{"3.4.7"_as});
-        push_back(row.values, dtype::ReadValue{"datacenter1"_as});
-        push_back(row.values, dtype::ReadValue{AutoString8{uuid_bytes, 16}});
-        push_back(row.values, dtype::ReadValue{"127.0.0.1"_as});
-        push_back(row.values, dtype::ReadValue{S32(7000)});
-        push_back(row.values, dtype::ReadValue{"4"_as});
-        push_back(row.values, dtype::ReadValue{"org.apache.cassandra.dht.Murmur3Partitioner"_as});
-        push_back(row.values, dtype::ReadValue{"rack1"_as});
-        push_back(row.values, dtype::ReadValue{"3.11.19"_as}); // @note last version in 3.x, before system_virtual
-        push_back(row.values, dtype::ReadValue{"127.0.0.1"_as});
-        push_back(row.values, dtype::ReadValue{S32(9042)});
-        push_back(row.values, dtype::ReadValue{AutoString8{uuid_bytes, 16}}); 
-        push_back(row.values, dtype::ReadValue{DynamicSet<AutoString8>{{"0"_as}}});
+        push_back(row.values, types::ReadValue{"local"_as});
+        push_back(row.values, types::ReadValue{"COMPLETED"_as});
+        push_back(row.values, types::ReadValue{"127.0.0.1"_as});
+        push_back(row.values, types::ReadValue{S32(7000)});
+        push_back(row.values, types::ReadValue{"objstore"_as});
+        push_back(row.values, types::ReadValue{"3.4.7"_as});
+        push_back(row.values, types::ReadValue{"datacenter1"_as});
+        push_back(row.values, types::ReadValue{AutoString8{uuid_bytes, 16}});
+        push_back(row.values, types::ReadValue{"127.0.0.1"_as});
+        push_back(row.values, types::ReadValue{S32(7000)});
+        push_back(row.values, types::ReadValue{"4"_as});
+        push_back(row.values, types::ReadValue{"org.apache.cassandra.dht.Murmur3Partitioner"_as});
+        push_back(row.values, types::ReadValue{"rack1"_as});
+        push_back(row.values, types::ReadValue{"3.11.19"_as}); // @note last version in 3.x, before system_virtual
+        push_back(row.values, types::ReadValue{"127.0.0.1"_as});
+        push_back(row.values, types::ReadValue{S32(9042)});
+        push_back(row.values, types::ReadValue{AutoString8{uuid_bytes, 16}}); 
+        push_back(row.values, types::ReadValue{DynamicSet<AutoString8>{{"0"_as}}});
         push_back(vr.rows, move(row));
 
         return vr;
@@ -149,15 +164,15 @@ namespace objstore::engine {
         vr.keyspace = "system";
         vr.table = "peers";
 
-        push_back(vr.columns, VirtualColumn{"peer", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"data_center", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"host_id", dtype::make_native(DType::uuid)});
-        push_back(vr.columns, VirtualColumn{"preferred_ip", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"rack", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"release_version", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"rpc_address", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"schema_version", dtype::make_native(DType::uuid)});
-        push_back(vr.columns, VirtualColumn{"tokens", dtype::make_set(DType::text)});
+        push_back(vr.columns, VirtualColumn{"peer", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"data_center", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"host_id", types::make_native(types::uuid)});
+        push_back(vr.columns, VirtualColumn{"preferred_ip", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"rack", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"release_version", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"rpc_address", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"schema_version", types::make_native(types::uuid)});
+        push_back(vr.columns, VirtualColumn{"tokens", types::make_set(types::text)});
 
         return vr;
     }
@@ -167,18 +182,18 @@ namespace objstore::engine {
         vr.keyspace = "system";
         vr.table = "peers_v2";
 
-        push_back(vr.columns, VirtualColumn{"peer", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"peer_port", dtype::make_native(DType::int_)});
-        push_back(vr.columns, VirtualColumn{"data_center", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"host_id", dtype::make_native(DType::uuid)});
-        push_back(vr.columns, VirtualColumn{"native_address", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"native_port", dtype::make_native(DType::int_)});
-        push_back(vr.columns, VirtualColumn{"preferred_ip", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"preferred_port", dtype::make_native(DType::int_)});
-        push_back(vr.columns, VirtualColumn{"rack", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"release_version", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"schema_version", dtype::make_native(DType::uuid)});
-        push_back(vr.columns, VirtualColumn{"tokens", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"peer", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"peer_port", types::make_native(types::int_)});
+        push_back(vr.columns, VirtualColumn{"data_center", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"host_id", types::make_native(types::uuid)});
+        push_back(vr.columns, VirtualColumn{"native_address", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"native_port", types::make_native(types::int_)});
+        push_back(vr.columns, VirtualColumn{"preferred_ip", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"preferred_port", types::make_native(types::int_)});
+        push_back(vr.columns, VirtualColumn{"rack", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"release_version", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"schema_version", types::make_native(types::uuid)});
+        push_back(vr.columns, VirtualColumn{"tokens", types::make_native(types::text)});
 
         return vr;
     }
@@ -188,16 +203,16 @@ namespace objstore::engine {
         vr.keyspace = "system_schema";
         vr.table = "keyspaces";
 
-        push_back(vr.columns, VirtualColumn{"keyspace_name", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"durable_writes", dtype::make_native(DType::boolean)});
-        push_back(vr.columns, VirtualColumn{"replication", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"keyspace_name", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"durable_writes", types::make_native(types::boolean)});
+        push_back(vr.columns, VirtualColumn{"replication", types::make_native(types::text)});
 
         for (auto& ks : schema.keyspaces) {
             if (ks.tombstone) continue;
             VirtualRow row;
-            push_back(row.values, dtype::ReadValue{AutoString8(ks.name)});
-            push_back(row.values, dtype::ReadValue{U8(1)});
-            push_back(row.values, dtype::ReadValue{"{'class': 'SimpleStrategy', 'replication_factor': '1'}"_as});
+            push_back(row.values, types::ReadValue{AutoString8(ks.name)});
+            push_back(row.values, types::ReadValue{U8(1)});
+            push_back(row.values, types::ReadValue{"{'class': 'SimpleStrategy', 'replication_factor': '1'}"_as});
             push_back(vr.rows, move(row));
         }
 
@@ -209,24 +224,24 @@ namespace objstore::engine {
         vr.keyspace = "system_schema";
         vr.table = "tables";
 
-        push_back(vr.columns, VirtualColumn{"keyspace_name", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"table_name", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"bloom_filter_fp_chance", dtype::make_native(DType::double_)});
-        push_back(vr.columns, VirtualColumn{"comment", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"default_time_to_live", dtype::make_native(DType::int_)});
-        push_back(vr.columns, VirtualColumn{"gc_grace_seconds", dtype::make_native(DType::int_)});
+        push_back(vr.columns, VirtualColumn{"keyspace_name", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"table_name", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"bloom_filter_fp_chance", types::make_native(types::double_)});
+        push_back(vr.columns, VirtualColumn{"comment", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"default_time_to_live", types::make_native(types::int_)});
+        push_back(vr.columns, VirtualColumn{"gc_grace_seconds", types::make_native(types::int_)});
 
         for (auto& ks : schema.keyspaces) {
             if (ks.tombstone) continue;
             for (auto& tbl : ks.tbls) {
                 if (tbl.tombstone) continue;
                 VirtualRow row;
-                push_back(row.values, dtype::ReadValue{AutoString8(ks.name)});
-                push_back(row.values, dtype::ReadValue{AutoString8(tbl.name)});
-                push_back(row.values, dtype::ReadValue{F64(0.01)});
-                push_back(row.values, dtype::ReadValue{""_as});
-                push_back(row.values, dtype::ReadValue{S32(0)});
-                push_back(row.values, dtype::ReadValue{S32(864000)});
+                push_back(row.values, types::ReadValue{AutoString8(ks.name)});
+                push_back(row.values, types::ReadValue{AutoString8(tbl.name)});
+                push_back(row.values, types::ReadValue{F64(0.01)});
+                push_back(row.values, types::ReadValue{""_as});
+                push_back(row.values, types::ReadValue{S32(0)});
+                push_back(row.values, types::ReadValue{S32(864000)});
                 push_back(vr.rows, move(row));
             }
         }
@@ -239,13 +254,13 @@ namespace objstore::engine {
         vr.keyspace = "system_schema";
         vr.table = "columns";
 
-        push_back(vr.columns, VirtualColumn{"keyspace_name", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"table_name", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"column_name", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"clustering_order", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"kind", dtype::make_native(DType::text)});
-        push_back(vr.columns, VirtualColumn{"position", dtype::make_native(DType::int_)});
-        push_back(vr.columns, VirtualColumn{"type", dtype::make_native(DType::text)});
+        push_back(vr.columns, VirtualColumn{"keyspace_name", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"table_name", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"column_name", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"clustering_order", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"kind", types::make_native(types::text)});
+        push_back(vr.columns, VirtualColumn{"position", types::make_native(types::int_)});
+        push_back(vr.columns, VirtualColumn{"type", types::make_native(types::text)});
 
         for (auto& ks : schema.keyspaces) {
             if (ks.tombstone) continue;
@@ -256,14 +271,14 @@ namespace objstore::engine {
                     auto& col = tbl.cols[ci];
                     if (col.tombstone) continue;
                     VirtualRow row;
-                    push_back(row.values, dtype::ReadValue{AutoString8(ks.name)});
-                    push_back(row.values, dtype::ReadValue{AutoString8(tbl.name)});
-                    push_back(row.values, dtype::ReadValue{AutoString8(col.name)});
-                    push_back(row.values, dtype::ReadValue{"none"_as});
+                    push_back(row.values, types::ReadValue{AutoString8(ks.name)});
+                    push_back(row.values, types::ReadValue{AutoString8(tbl.name)});
+                    push_back(row.values, types::ReadValue{AutoString8(col.name)});
+                    push_back(row.values, types::ReadValue{"none"_as});
                     bool is_partition_key = (ci == tbl.primary_col_idx);
-                    push_back(row.values, dtype::ReadValue{is_partition_key ? "partition_key"_as : "regular"_as});
-                    push_back(row.values, dtype::ReadValue{S32(is_partition_key ? 0 : pos++)});
-                    push_back(row.values, dtype::ReadValue{AutoString8(dtype::to_str(col.type))});
+                    push_back(row.values, types::ReadValue{is_partition_key ? "partition_key"_as : "regular"_as});
+                    push_back(row.values, types::ReadValue{S32(is_partition_key ? 0 : pos++)});
+                    push_back(row.values, types::ReadValue{AutoString8(types::to_str(col.type))});
                     push_back(vr.rows, move(row));
                 }
             }
@@ -289,182 +304,236 @@ namespace objstore::engine {
     // ========================================================================
     // execute
     // ========================================================================
+    static ExecutionResult make_void_success() {
+        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+    }
+    // @note msg should be static storage duration
+    static ExecutionResult make_server_error(const char* msg) {
+        return {.status = ExecutionStatus::ServerError, .message = msg};
+    }
+    static ExecutionResult make_keyspace_already_exists(const String8& keyspace_name) {
+        return {
+            .status = ExecutionStatus::AlreadyExists,
+            .message = "Keyspace already exists",
+            .keyspace = keyspace_name,
+        };
+    }
+    static ExecutionResult make_keyspace_created(const String8& keyspace_name) {
+        return {
+            .status = ExecutionStatus::Success,
+            .kind = ResultKind::SchemaChange,
+            .message = "CREATED",
+            .keyspace = keyspace_name,
+        };
+    }
+    static ExecutionResult make_keyspace_not_found(const String8& keyspace_name) {
+        return {
+            .status = ExecutionStatus::Invalid,
+            .message = "Keyspace does not exist",
+            .keyspace = keyspace_name,
+        };
+    }
+    static ExecutionResult make_use_keyspace(const String8& keyspace_name) {
+        return {.status = ExecutionStatus::Success, .kind = ResultKind::UseKeyspace, .keyspace = keyspace_name};
+    }
+    static ExecutionResult make_table_already_exists(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status = ExecutionStatus::AlreadyExists,
+            .message = "Table already exists",
+            .keyspace = keyspace_name,
+            .table = table_name,
+        };
+    }
+    static ExecutionResult make_table_not_found(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status = ExecutionStatus::Invalid,
+            .message = "Table does not exist",
+            .keyspace = keyspace_name,
+            .table = table_name,
+        };
+    }
+    static ExecutionResult make_table_created(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status = ExecutionStatus::Success,
+            .kind = ResultKind::SchemaChange,
+            .message = "CREATED",
+            .keyspace = keyspace_name,
+            .table = table_name,
+        };
+    }
+    static ExecutionResult make_schema_changed(const String8& keyspace_name) {
+        return {
+            .status = ExecutionStatus::Success,
+            .kind = ResultKind::SchemaChange,
+            .keyspace = keyspace_name,
+        };
+    }
+    static ExecutionResult make_schema_changed(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status = ExecutionStatus::Success,
+            .kind = ResultKind::SchemaChange,
+            .keyspace = keyspace_name,
+            .table = table_name,
+        };
+    }
+    static ExecutionResult make_insert_column_does_not_match_value_count(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status = ExecutionStatus::Invalid,
+            .message = "Column count does not match value count",
+            .keyspace = keyspace_name,
+            .table = table_name,
+        };
+    }
+    static ExecutionResult make_insert_into_deleted_column(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status = ExecutionStatus::Invalid,
+            .message = "Cannot insert into deleted column",
+            .keyspace = keyspace_name,
+            .table = table_name,
+        };
+    }
+    static ExecutionResult make_insert_into_unknown_column(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status = ExecutionStatus::Invalid,
+            .message = "Too many values or unknown column",
+            .keyspace = keyspace_name,
+            .table = table_name,
+        };
+    }
+    static ExecutionResult make_insert_incompatible_literal(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status = ExecutionStatus::Invalid,
+            .message = "Incompatible literal for column type",
+            .keyspace = keyspace_name,
+            .table = table_name,
+        };
+    }
+
     ExecutionResult execute(Engine& engine, const Statement& statement) {
         return visit(statement.value, [&](const auto& stmt) -> ExecutionResult {
             using T = RemoveCVRef<decltype(stmt)>;
 
             if constexpr (SameAs<T, CreateKeyspace>) {
-                if (is_system_keyspace(stmt.keyspace_name)) {
+                if (is_system_keyspace(stmt.name)) {
                     if (stmt.if_not_exists) {
-                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+                        return make_void_success();
                     }
-                    return {
-                        .status = ExecutionStatus::AlreadyExists,
-                        .message = "Keyspace already exists",
-                        .keyspace = stmt.keyspace_name,
-                    };
+                    return make_keyspace_already_exists(stmt.name);
                 }
+
                 if (!stmt.if_not_exists) {
-                    auto existing = schema::read_keyspace(engine.schema, stmt.keyspace_name);
-                    if (existing != nullptr) {
-                        return {
-                            .status = ExecutionStatus::AlreadyExists,
-                            .message = "Keyspace already exists",
-                            .keyspace = stmt.keyspace_name,
-                        };
-                    }
+                    auto existing = schema::read_keyspace(engine.schema, stmt.name);
+                    if (existing != nullptr) return make_keyspace_already_exists(stmt.name);
                 }
 
                 auto ks = schema::create_keyspace(engine.schema, stmt);
                 if (ks == nullptr) {
-                    return {.status = ExecutionStatus::ServerError, .message = "Failed to create keyspace"};
+                    return make_server_error("Failed to create keyspace");
                 }
     
-                return {
-                    .status = ExecutionStatus::Success,
-                    .kind = ResultKind::SchemaChange,
-                    .message = "CREATED",
-                    .keyspace = stmt.keyspace_name,
-                };
+                return make_keyspace_created(stmt.name);
             } else if constexpr (SameAs<T, CreateTable>) {
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
-                if (ks == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Keyspace does not exist",
-                        .keyspace = stmt.keyspace_name,
-                    };
-                }
+                String8 ks_name = static_cast<bool>(stmt.name.keyspace_name) ? String8(*stmt.name.keyspace_name) : engine.current_keyspace;
+                assert_true_not_implemented(!is_system_keyspace(ks_name));
+
+                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                if (ks == nullptr) return make_keyspace_not_found(ks_name);
 
                 if (!stmt.if_not_exists) {
-                    auto existing = schema::read_table(engine.schema, *ks, stmt.table_name);
-                    if (existing != nullptr) {
-                        return {
-                            .status = ExecutionStatus::AlreadyExists,
-                            .message = "Table already exists",
-                            .keyspace = stmt.keyspace_name,
-                            .table = stmt.table_name,
-                        };
-                    }
+                    auto existing = schema::read_table(engine.schema, *ks, stmt.name.table_name);
+                    if (existing != nullptr) return make_table_already_exists(ks_name, stmt.name.table_name);
                 }
     
                 auto tbl = schema::create_table(engine.schema, *ks, stmt);
                 if (tbl == nullptr) {
-                    return {.status = ExecutionStatus::ServerError, .message = "Failed to create table"};
+                    return make_server_error("Failed to create table");
                 }
                 
-                return {
-                    .status = ExecutionStatus::Success,
-                    .kind = ResultKind::SchemaChange,
-                    .message = "CREATED",
-                    .keyspace = stmt.keyspace_name,
-                    .table = stmt.table_name,
-                };
-            } else if constexpr (SameAs<T, InsertInto>) {
-                // @todo implement these features
-                assert_true(stmt.column_names.length == 0, "INSERT with column names not implemented");
-                assert_true(stmt.timestamp == -1, "INSERT with USING TIMESTAMP not implemented");
-                assert_true(stmt.ttl == -1, "INSERT with USING TTL not implemented");
-                assert_true(!stmt.if_not_exists, "INSERT IF NOT EXISTS not implemented");
+                return make_table_created(ks_name, stmt.name.table_name);
+            } else if constexpr (SameAs<T, UseKeyspace>) {
+                if (is_system_keyspace(stmt.keyspace)) {
+                    engine.current_keyspace = stmt.keyspace;
+                    return make_use_keyspace(engine.current_keyspace);
+                }
+                
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace);
+                if (ks == nullptr) return make_keyspace_not_found(stmt.keyspace);
+                engine.current_keyspace = stmt.keyspace;
 
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
+                return make_use_keyspace(engine.current_keyspace);
+            } else if constexpr (SameAs<T, AlterKeyspace>) {
+                assert_true_not_implemented(!is_system_keyspace(stmt.keyspace));
+
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace);
                 if (ks == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Keyspace does not exist",
-                        .keyspace = stmt.keyspace_name,
-                    };
-                }
-    
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
-                if (tbl == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Table does not exist",
-                        .keyspace = stmt.keyspace_name,
-                        .table = stmt.table_name,
-                    };
-                }
-    
-                if (tbl->cols.length != stmt.values.length) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Column count mismatch",
-                        .keyspace = stmt.keyspace_name,
-                        .table = stmt.table_name,
-                    };
+                    if (stmt.if_exists) return make_void_success();
+                    return make_keyspace_not_found(stmt.keyspace);
                 }
 
-                for (U64 idx = 0; idx < tbl->cols.length; idx++) {
-                    const auto& col = tbl->cols[idx];
-                    const auto& value = stmt.values[idx];
+                assert_true_not_implemented(stmt.options.identifier_values.length == 0);
+                
+                return make_schema_changed(stmt.keyspace);
+            } else if constexpr (SameAs<T, DropKeyspace>) {
+                assert_true_not_implemented(!is_system_keyspace(stmt.keyspace));
 
-                    if (!dtype::can_write_generic(value, col.type)) {
-                        return {
-                            .status = ExecutionStatus::Invalid,
-                            .message = "Value does not match its column's type",
-                            .keyspace = stmt.keyspace_name,
-                            .table = stmt.table_name,
-                        };
-                    }
-                }
-    
-                // @todo static blobs/in-tree for fixed column set
-                U64 row_page = blob::create_paged_dynamic(*engine.pager);
-                blob::BlobDynamicPaged row_blob(engine.pager, row_page);
-    
-                U64 row_offset_bytes = 0;
-                auto write = [&row_offset_bytes,&row_blob](const U8* in_value, U64 size) {
-                    blob::insert(row_blob, in_value, size, row_offset_bytes);
-                    row_offset_bytes += size;
-                };
-
-                for (U64 idx = 0; idx < tbl->cols.length; idx++) {
-                    const auto& col = tbl->cols[idx];
-                    const auto& value = stmt.values[idx];
-    
-                    dtype::write_generic(write, value, col.type);
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace);
+                if (ks == nullptr) {
+                    if (stmt.if_exists) return make_void_success();
+                    return make_keyspace_not_found(stmt.keyspace);
                 }
                 
-                // @todo uniqueness check
-                tinsert(tbl->btree, dtype::hash(stmt.values[tbl->primary_col_idx]), row_page);
+                schema::delete_keyspace(engine.schema, stmt.keyspace);
+
+                return make_schema_changed(stmt.keyspace);
+            } else if constexpr (SameAs<T, DropTable>) {
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+                assert_true_not_implemented(!is_system_keyspace(ks_name));
+
+                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                if (ks == nullptr) {
+                    if (stmt.if_exists) return make_void_success();
+                    return make_keyspace_not_found(ks_name);
+                }
+
+                if (!schema::delete_table(engine.schema, *ks, stmt.table.table_name)) {
+                    if (stmt.if_exists) return make_void_success();
+                    return make_table_not_found(ks_name, stmt.table.table_name);
+                }
                 
-                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
-            } else if constexpr (SameAs<T, SelectFrom>) {
-                auto system_vr = try_system_select(engine, stmt.keyspace_name, stmt.table_name);
+                return make_schema_changed(ks_name, stmt.table.table_name);
+            } else if constexpr (SameAs<T, TruncateTable>) {
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+                assert_true_not_implemented(!is_system_keyspace(ks_name));
+
+                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                if (ks == nullptr) return make_keyspace_not_found(ks_name);
+
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name);
+                if (tbl == nullptr) return make_table_not_found(ks_name, stmt.table.table_name);
+                
+                btree::truncate(tbl->btree);
+
+                return make_void_success();
+            } else if constexpr (SameAs<T, Select>) {
+                String8 ks_name = static_cast<bool>(stmt.from.keyspace_name) ? String8(*stmt.from.keyspace_name) : engine.current_keyspace;
+
+                auto system_vr = try_system_select(engine, ks_name, stmt.from.table_name);
                 if (system_vr) {
                     return {
                         .status = ExecutionStatus::Success,
                         .kind = ResultKind::VirtualRows,
-                        .keyspace = stmt.keyspace_name,
-                        .table = stmt.table_name,
+                        .keyspace = ks_name,
+                        .table = stmt.from.table_name,
                         .virtual_rows = move(system_vr),
                     };
                 }
+                assert_true_not_implemented(!is_system_keyspace(ks_name));
 
-                // @todo implement these features
-                assert_true(stmt.column_names.cap == 0, "SELECT with column names not implemented");
-                assert_true(stmt.where.cap == 0, "SELECT with WHERE clause not implemented");
-                assert_true(stmt.limit == -1, "SELECT with LIMIT not implemented");
-
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
-                if (ks == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Keyspace does not exist",
-                        .keyspace = stmt.keyspace_name,
-                    };
-                }
+                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                if (ks == nullptr) return make_keyspace_not_found(ks_name);
     
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
-                if (tbl == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Table does not exist",
-                        .keyspace = stmt.keyspace_name,
-                        .table = stmt.table_name,
-                    };
-                }
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.from.table_name);
+                if (tbl == nullptr) return make_table_not_found(ks_name, stmt.from.table_name);
 
                 RowRange rows{
                     .begin_it = RowIterator{
@@ -486,351 +555,106 @@ namespace objstore::engine {
                 return {
                     .status = ExecutionStatus::Success,
                     .kind = ResultKind::Rows,
-                    .keyspace = stmt.keyspace_name,
-                    .table = stmt.table_name,
+                    .keyspace = ks_name,
+                    .table = stmt.from.table_name,
                     .rows = move(rows),
                 };
-            } else if constexpr (SameAs<T, UseKeyspace>) {
-                if (is_system_keyspace(stmt.keyspace_name)) {
-                    engine.current_keyspace = stmt.keyspace_name;
-                    return {.status = ExecutionStatus::Success, .kind = ResultKind::UseKeyspace, .keyspace = engine.current_keyspace};
-                }
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
-                if (ks == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Keyspace does not exist",
-                        .keyspace = stmt.keyspace_name,
-                    };
-                }
-                engine.current_keyspace = stmt.keyspace_name;
-                return {.status = ExecutionStatus::Success, .kind = ResultKind::UseKeyspace, .keyspace = engine.current_keyspace};
-            } else if constexpr (SameAs<T, AlterKeyspace>) {
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
-                if (ks == nullptr) {
-                    if (stmt.if_exists) {
-                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
-                    }
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Keyspace does not exist",
-                        .keyspace = stmt.keyspace_name,
-                    };
-                }
-                return {
-                    .status = ExecutionStatus::Success,
-                    .kind = ResultKind::SchemaChange,
-                    .keyspace = stmt.keyspace_name,
-                };
-            } else if constexpr (SameAs<T, DropKeyspace>) {
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
-                if (ks == nullptr) {
-                    if (stmt.if_exists) {
-                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
-                    }
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Keyspace does not exist",
-                        .keyspace = stmt.keyspace_name,
-                    };
-                }
-                for (auto& tbl : ks->tbls) {
-                    if (!tbl.tombstone) {
-                        schema::delete_table(engine.schema, *ks, tbl.name);
-                    }
-                }
-                schema::delete_keyspace(engine.schema, stmt.keyspace_name);
-                return {
-                    .status = ExecutionStatus::Success,
-                    .kind = ResultKind::SchemaChange,
-                    .keyspace = stmt.keyspace_name,
-                };
-            } else if constexpr (SameAs<T, AlterTable>) {
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
-                if (ks == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Keyspace does not exist",
-                        .keyspace = stmt.keyspace_name,
-                    };
-                }
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
-                if (tbl == nullptr) {
-                    if (stmt.if_exists) {
-                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
-                    }
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Table does not exist",
-                        .keyspace = stmt.keyspace_name,
-                        .table = stmt.table_name,
-                    };
-                }
-                if (stmt.op == AlterTableOp::add_column) {
-                    for (U64 i = 0; i < stmt.columns.length; i++) {
-                        const auto& col = stmt.columns[i];
-                        CreateColumn create{.name = col.name, .type = col.type, .is_primary_key = false};
-                        if (schema::create_column(engine.schema, *tbl, create) == nullptr) {
-                            return {
-                                .status = ExecutionStatus::Invalid,
-                                .message = "Column already exists",
-                                .keyspace = stmt.keyspace_name,
-                                .table = stmt.table_name,
-                            };
-                        }
-                    }
-                } else if (stmt.op == AlterTableOp::drop_column) {
-                    for (U64 i = 0; i < stmt.columns.length; i++) {
-                        if (!schema::delete_column(engine.schema, *tbl, stmt.columns[i].name)) {
-                            return {
-                                .status = ExecutionStatus::Invalid,
-                                .message = "Column does not exist",
-                                .keyspace = stmt.keyspace_name,
-                                .table = stmt.table_name,
-                            };
-                        }
-                    }
-                } else {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "RENAME COLUMN not supported",
-                        .keyspace = stmt.keyspace_name,
-                        .table = stmt.table_name,
-                    };
-                }
-                return {
-                    .status = ExecutionStatus::Success,
-                    .kind = ResultKind::SchemaChange,
-                    .keyspace = stmt.keyspace_name,
-                    .table = stmt.table_name,
-                };
-            } else if constexpr (SameAs<T, DropTable>) {
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
-                if (ks == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Keyspace does not exist",
-                        .keyspace = stmt.keyspace_name,
-                    };
-                }
-                if (!schema::delete_table(engine.schema, *ks, stmt.table_name)) {
-                    if (stmt.if_exists) {
-                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
-                    }
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Table does not exist",
-                        .keyspace = stmt.keyspace_name,
-                        .table = stmt.table_name,
-                    };
-                }
-                return {
-                    .status = ExecutionStatus::Success,
-                    .kind = ResultKind::SchemaChange,
-                    .keyspace = stmt.keyspace_name,
-                    .table = stmt.table_name,
-                };
-            } else if constexpr (SameAs<T, TruncateTable>) {
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
-                if (ks == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Keyspace does not exist",
-                        .keyspace = stmt.keyspace_name,
-                    };
-                }
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
-                if (tbl == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Table does not exist",
-                        .keyspace = stmt.keyspace_name,
-                        .table = stmt.table_name,
-                    };
-                }
-                btree::truncate(tbl->btree);
-                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
-            } else if constexpr (SameAs<T, Update>) {
-                // @todo implement USING TIMESTAMP, USING TTL, IF EXISTS
-                assert_true(stmt.timestamp == -1, "UPDATE with USING TIMESTAMP not implemented");
-                assert_true(stmt.ttl == -1, "UPDATE with USING TTL not implemented");
-                assert_true(!stmt.if_exists, "UPDATE IF EXISTS not implemented");
+            } else if constexpr (SameAs<T, Insert>) {
+                assert_true_not_implemented(stmt.using_parameters.length == 0);
+                assert_true(static_cast<bool>(stmt.insert_clause), "missing insert clause, this should never happen");
+                
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+                assert_true_not_implemented(!is_system_keyspace(ks_name));
 
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
-                if (ks == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Keyspace does not exist",
-                        .keyspace = stmt.keyspace_name,
-                    };
-                }
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
-                if (tbl == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Table does not exist",
-                        .keyspace = stmt.keyspace_name,
-                        .table = stmt.table_name,
-                    };
-                }
+                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                if (ks == nullptr) return make_keyspace_not_found(ks_name);
 
-                // find primary key equality in WHERE clause
-                const auto& pk_col = tbl->cols[tbl->primary_col_idx];
-                const WhereRelation* pk_where = nullptr;
-                for (U64 i = 0; i < stmt.where.cap; i++) {
-                    if (stmt.where[i].column_name == pk_col.name && stmt.where[i].op == ComparisonOp::eq) {
-                        pk_where = &stmt.where[i];
-                        break;
-                    }
-                }
-                if (pk_where == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "UPDATE requires primary key equality in WHERE clause",
-                    };
-                }
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name);
+                if (tbl == nullptr) return make_table_not_found(ks_name, stmt.table.table_name);
 
-                U64 pk_hash = dtype::hash(pk_where->value);
-                auto row_page_opt = btree::tfind<U64>(tbl->btree, pk_hash);
-                if (!row_page_opt) {
-                    return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
-                }
-                U64 row_page = *row_page_opt;
+                return visit(stmt.insert_clause, [&](const auto& v) -> ExecutionResult {
+                    using T = Decay<decltype(v)>;
 
-                blob::BlobDynamicPaged row_blob(engine.pager, row_page);
+                    if constexpr (SameAs<T, Insert::NamesValues>) {
+                        if (v.names.length != v.values.length) return make_insert_column_does_not_match_value_count(ks->name, tbl->name);
 
-                // read all column values
-                DynamicArray<dtype::ReadValue> read_values{};
-                U64 read_offset = 0;
-                auto read_fn = [&](U8* out, U64 size) {
-                    blob::get(row_blob, out, size, read_offset);
-                    read_offset += size;
-                };
-                for (const auto& col : tbl->cols) {
-                    push_back(read_values, dtype::read_specific(read_fn, col.type));
-                }
+                        auto try_get_names_idx = [&v](const String8& q) -> Optional<U64> {
+                            for (U64 idx = 0; idx < v.names.length ; idx++) {
+                                if (v.names[idx].identifier == q)
+                                    return idx;
+                            }
+                            return {};
+                        };
 
-                // rewrite row applying assignments
-                blob::resize(row_blob, 0);
-                U64 write_offset = 0;
-                auto write_fn = [&](const U8* in, U64 size) {
-                    blob::insert(row_blob, in, size, write_offset);
-                    write_offset += size;
-                };
-                for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                    const auto& col = tbl->cols[ci];
+                        // check columns and build mapping
+                        for (const auto& col : tbl->cols) {
+                            auto names_idx_opt = try_get_names_idx(col.name);
+                            if (names_idx_opt) {
+                                // @todo timestamp
+                                if (col.tombstone) {
+                                    return make_insert_into_deleted_column(ks->name, tbl->name);
+                                }
 
-                    const dtype::WriteValue* updated = nullptr;
-                    for (U64 ai = 0; ai < stmt.assignments.cap; ai++) {
-                        if (stmt.assignments[ai].column_name == col.name) {
-                            updated = &stmt.assignments[ai].value;
-                            break;
-                        }
-                    }
-                    if (updated != nullptr) {
-                        dtype::write_generic(write_fn, *updated, col.type);
-                    } else {
-                        dtype::write_specific(write_fn, read_values[ci], col.type);
-                    }
-                }
-
-                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
-            } else if constexpr (SameAs<T, Delete>) {
-                // @todo implement USING TIMESTAMP
-                assert_true(stmt.timestamp == -1, "DELETE with USING TIMESTAMP not implemented");
-
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace_name);
-                if (ks == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Keyspace does not exist",
-                        .keyspace = stmt.keyspace_name,
-                    };
-                }
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table_name);
-                if (tbl == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "Table does not exist",
-                        .keyspace = stmt.keyspace_name,
-                        .table = stmt.table_name,
-                    };
-                }
-
-                // find primary key equality in WHERE clause
-                const auto& pk_col = tbl->cols[tbl->primary_col_idx];
-                const WhereRelation* pk_where = nullptr;
-                for (U64 i = 0; i < stmt.where.cap; i++) {
-                    if (stmt.where[i].column_name == pk_col.name && stmt.where[i].op == ComparisonOp::eq) {
-                        pk_where = &stmt.where[i];
-                        break;
-                    }
-                }
-                if (pk_where == nullptr) {
-                    return {
-                        .status = ExecutionStatus::Invalid,
-                        .message = "DELETE requires primary key equality in WHERE clause",
-                    };
-                }
-
-                U64 pk_hash = dtype::hash(pk_where->value);
-
-                if (stmt.column_names.cap == 0) {
-                    btree::remove(tbl->btree, pk_hash);
-                } else {
-                    auto row_page_opt = btree::tfind<U64>(tbl->btree, pk_hash);
-                    if (!row_page_opt) {
-                        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
-                    }
-                    U64 row_page = *row_page_opt;
-                    blob::BlobDynamicPaged row_blob(engine.pager, row_page);
-
-                    DynamicArray<dtype::ReadValue> read_values{};
-                    U64 read_offset = 0;
-                    auto read_fn = [&](U8* out, U64 size) {
-                        blob::get(row_blob, out, size, read_offset);
-                        read_offset += size;
-                    };
-                    for (const auto& col : tbl->cols) {
-                        push_back(read_values, dtype::read_specific(read_fn, col.type));
-                    }
-
-                    blob::resize(row_blob, 0);
-                    U64 write_offset = 0;
-                    auto write_fn = [&](const U8* in, U64 size) {
-                        blob::insert(row_blob, in, size, write_offset);
-                        write_offset += size;
-                    };
-                    for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                        const auto& col = tbl->cols[ci];
-                        bool is_deleted = false;
-                        for (U64 di = 0; di < stmt.column_names.cap; di++) {
-                            if (stmt.column_names[di] == col.name) {
-                                is_deleted = true;
-                                break;
+                                const auto& constant = consteval_term_to_constant(v.values[*names_idx_opt]);
+                                if (!types::can_write_constant_value(constant.value, col.type.native.value_dtype))
+                                    return make_insert_incompatible_literal(ks->name, tbl->name);
                             }
                         }
-                        if (is_deleted) {
-                            dtype::write_specific_default(write_fn, col.type);
-                        } else {
-                            dtype::write_specific(write_fn, read_values[ci], col.type);
-                        }
-                    }
-                }
 
-                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
-            } else if constexpr (SameAs<T, Batch>) {
-                for (U64 i = 0; i < stmt.statements.length; i++) {
-                    ExecutionResult result = visit(stmt.statements[i].value, [&](const auto& sub_stmt) -> ExecutionResult {
-                        Statement sub{};
-                        sub.value = sub_stmt;
-                        return execute(engine, sub);
-                    });
-                    if (result.status != ExecutionStatus::Success) {
-                        return result;
+                        // @todo uniqueness check
+                        assert_true_not_implemented(!stmt.if_not_exists);
+
+                        // write new values
+                        // @todo avoid copying by having separate read/write pages help in transactions
+                        {
+                            // @todo static blobs/in-tree for fixed column set
+                            U64 row_page = blob::create_paged_dynamic(*engine.pager);
+                            blob::BlobDynamicPaged row_blob(engine.pager, row_page);
+
+                            U64 row_offset_bytes = 0;
+                            auto write = [&row_offset_bytes,&row_blob](const U8* in_value, U64 size) {
+                                blob::insert(row_blob, in_value, size, row_offset_bytes);
+                                row_offset_bytes += size;
+                            };
+
+                            types::write_col_mask(write, [&](U64 col_idx) { return static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name)); }, tbl->cols.length);
+
+                            for (const auto& col : tbl->cols) {
+                                auto names_idx_opt = try_get_names_idx(col.name);
+                                if (names_idx_opt) {
+                                    const auto& constant = consteval_term_to_constant(v.values[*names_idx_opt]);
+                                    types::write_constant_value(write, constant.value, col.type.native.value_dtype);
+                                }
+                            }
+
+                            const auto& pk_col = tbl->cols[tbl->primary_col_idx];
+                            auto pk_idx_opt = try_get_names_idx(pk_col.name);
+                            assert_true(static_cast<bool>(pk_idx_opt), "primary key column must be provided in INSERT");
+                            const auto& pk_constant = consteval_term_to_constant(v.values[*pk_idx_opt]);
+                            U64 pk_key = types::hash_constant_value(pk_constant.value);
+                            tinsert(tbl->btree, pk_key, row_page);
+                        }
+                        
+                        return make_void_success();
+                    } else if constexpr (SameAs<T, Insert::JsonClause>) {
+                        assert_not_implemented();
+                        return ExecutionResult{};
+                    } else {
+                        static_assert(!SameAs<T,T>);
                     }
-                }
-                return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+                });
+            } else if constexpr (SameAs<T, Update>) {
+                assert_not_implemented();
+                return ExecutionResult{};
+            } else if constexpr (SameAs<T, Delete>) {
+                assert_not_implemented();
+                return ExecutionResult{};
+            } else if constexpr (SameAs<T, AlterTable>) {
+                assert_not_implemented();
+                return ExecutionResult{};
+            } else if constexpr (SameAs<T, Batch>) {
+                assert_not_implemented();
+                return ExecutionResult{};
             } else {
                 static_assert(false, "Unhandled statement type in engine::execute");
             }

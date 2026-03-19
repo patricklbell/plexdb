@@ -35,22 +35,6 @@ include(FetchContent)
 include(FindPkgConfig)
 pkg_check_modules(liburing REQUIRED IMPORTED_TARGET GLOBAL liburing>=2.0)
 
-FetchContent_Declare(llhttp
-    URL "https://github.com/nodejs/llhttp/archive/refs/tags/release/v8.1.0.tar.gz"
-)
-
-FetchContent_MakeAvailable(llhttp)
-
-add_library(llhttp STATIC
-    ${llhttp_SOURCE_DIR}/src/api.c
-    ${llhttp_SOURCE_DIR}/src/http.c
-    ${llhttp_SOURCE_DIR}/src/llhttp.c
-)
-
-target_include_directories(llhttp PUBLIC
-    ${llhttp_SOURCE_DIR}/include
-)
-
 FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
 FetchContent_MakeAvailable(lexy)
 
@@ -69,7 +53,7 @@ endif()
 add_library(objstore_modules STATIC)
 add_library(plexdb::objstore_modules ALIAS objstore_modules)
 
-target_compile_features(objstore_modules PUBLIC cxx_std_20)
+target_compile_features(objstore_modules PUBLIC cxx_std_23)
 set_target_properties(objstore_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(objstore_modules PRIVATE
@@ -81,7 +65,7 @@ target_sources(objstore_modules
         FILE_SET CXX_MODULES 
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
-            engine/dtype.cppm
+            engine/types.cppm
             engine/engine.cppm
             engine/schema.cppm
             engine/statements.cppm
@@ -90,7 +74,6 @@ target_sources(objstore_modules
             tcp/tcp.cppm
             tcp/tcp.detail.cppm
             tcp/tcp.types.cppm
-            http/http.cppm
             native/native.cppm
             repl/repl.cppm
 )
@@ -106,7 +89,7 @@ target_link_libraries(objstore_modules
 add_library(objstore STATIC)
 add_library(plexdb::objstore ALIAS objstore)
 
-target_compile_features(objstore PUBLIC cxx_std_20)
+target_compile_features(objstore PUBLIC cxx_std_23)
 set_target_properties(objstore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(objstore PRIVATE
@@ -121,7 +104,6 @@ target_sources(objstore
         parsers/parsers.cpp
         tcp/tcp.detail.cpp
         tcp/tcp.types.cpp
-        http/http.cpp
         native/native.cpp
         repl/repl.cpp
 )
@@ -131,7 +113,6 @@ target_link_libraries(objstore
         plexdb::objstore_modules
     PRIVATE
         PkgConfig::liburing
-        llhttp
         foonathan::lexy::core
         foonathan::lexy::ext
 )
@@ -141,7 +122,7 @@ target_link_libraries(objstore
 # =============================================================================
 if(PLEXDB_LOG_ENABLED)
     add_library(objstore_log_file SHARED)
-    target_compile_features(objstore_log_file PRIVATE cxx_std_20)
+    target_compile_features(objstore_log_file PRIVATE cxx_std_23)
 
     target_sources(objstore_log_file
         PRIVATE

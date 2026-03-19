@@ -15,7 +15,7 @@ export namespace objstore::schema {
     struct Column {
         bool tombstone;
         String8 name;
-        const CDType type;
+        const CqlType type;
     };
     
     struct Table {
@@ -53,7 +53,7 @@ export namespace objstore::schema {
     struct ColumnHeader {
         bool tombstone;
         U64 name_length;
-        CDType type;
+        CqlType type;
         U64 table_idx;
     };
     #pragma pack(pop)
@@ -105,7 +105,7 @@ export namespace objstore::schema {
     Table* read_table(Schema& schema, Keyspace& ks, String8 name);
     bool delete_table(Schema& schema, Keyspace& ks, String8 name);
 
-    Column* create_column(Schema& schema, Table& tbl, const CreateColumn& create);
+    Column* create_column(Schema& schema, Table& tbl, const ColumnDefinition& create);
     Column* read_column(Schema& schema, Table& tbl, String8 name);
     bool delete_column(Schema& schema, Table& tbl, String8 name);
 }

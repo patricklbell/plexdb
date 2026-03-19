@@ -87,7 +87,7 @@ namespace {
         AutoString8 result;
         for (const auto& chunk : req.connection->chunk_chain.chunks) {
             for (int i = 0; i < chunk.data.length; i++) {
-                result.push_back(chunk.data.ptr[i]);
+                push_back(result, chunk.data.ptr[i]);
             }
         }
         return result;

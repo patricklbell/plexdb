@@ -8,7 +8,7 @@ import plexdb.os.core;
 
 export namespace plexdb {
     // ========================================================================
-    // dynamic array
+    // array
     // ========================================================================
     constexpr U64 DYNAMIC_ARRAY_INITIAL_CAPACITY = 4;
     constexpr U64 DYNAMIC_ARRAY_CAPACITY_GROWTH_RATE = 2;
@@ -116,9 +116,6 @@ export namespace plexdb {
             return ptr[index];
         }
 
-        // stl helpers
-        void push_back(const T& value) { plexdb::push_back(*this, value); }
-
         DynamicArray(std::initializer_list<T> init) {
             reserve(*this, init.size());
             for (const T& v : init)
@@ -217,6 +214,25 @@ export namespace plexdb {
         arr.length = 0;
     }
 
+    // @warn @perf requires shifting all subsequent entries by copy constructing each time, generally use a linked list instead
+    template <typename T, typename Size, typename... Args>
+        requires TriviallyCopyable<T>
+    T& insert(DynamicArray<T,Size>& arr, U64 idx, Args&&... args) {
+        // @todo avoid unnecessary double move construct
+        reserve_for_push(arr);
+        
+        ++arr.length;
+        for (Size i = arr.length - 1; i > idx; --i) {
+            new (arr.ptr + i) T(move(arr.ptr[i - 1]));
+            arr.ptr[i - 1].~T();
+        }
+
+        new (arr.ptr + idx) T(forward<Args>(args)...);
+
+        return *(arr.ptr + idx);
+    }
+
+
     // ========================================================================
     // map
     // ========================================================================
@@ -233,8 +249,8 @@ export namespace plexdb {
     template<typename K, typename V>
     void reserve_for_push(DynamicMap<K,V>& map);
 
-    template<typename K, typename V>
-    V& insert(DynamicMap<K,V>& map, const K& key, const V& value);
+    template<typename K, typename V, typename KArgs, typename VArgs>
+    V& insert(DynamicMap<K,V>& map, KArgs&& key, VArgs&& value);
 
     template<typename K, typename V>
     struct DynamicMap {
@@ -356,7 +372,7 @@ export namespace plexdb {
             for (U64 j = 0; j < bucket.length; j++) {
                 const Pair<K,V>& p = bucket[j];
                 U64 new_idx = hash(p.first) % new_slot_count;
-                new_slots[new_idx].push_back(Pair<K,V>(p.first, p.second));
+                push_back(new_slots[new_idx], Pair<K,V>(p.first, p.second));
             }
         }
 
@@ -427,8 +443,8 @@ export namespace plexdb {
         return &map.slots[slot_idx][pair_idx];
     }
 
-    template<typename K, typename V>
-    V& insert(DynamicMap<K,V>& map, const K& key, const V& value) {
+    template<typename K, typename V, typename KArgs, typename VArgs>
+    V& insert(DynamicMap<K,V>& map, KArgs&& key, VArgs&& value) {
         U64 slot_idx, pair_idx;
         if (find_slot_and_pair(map, key, slot_idx, pair_idx)) {
             map.slots[slot_idx][pair_idx].second = value;
@@ -438,21 +454,36 @@ export namespace plexdb {
         reserve_for_push(map);
         slot_idx = hash(key) % map.slots.length;
         DynamicArray<Pair<K,V>>& bucket = map.slots[slot_idx];
-        push_back(bucket, Pair<K,V>(key, value));
+        emplace_back(bucket, forward<KArgs>(key), forward<VArgs>(value));
         return bucket[bucket.length - 1].second;
     }
 
+    template<typename K, typename V>
+    const K& extract_key(const Pair<K,V>& p) {
+        return p.first;
+    }
+
+    template<typename K, typename V>
+    const K& extract_key(const K& key, const V&) {
+        return key;
+    }
+
+    template<typename K, typename V>
+    const K& extract_key(const K& key) {
+        return key;
+    }
+
     template<typename K, typename V, typename... Args>
-    V& emplace(DynamicMap<K,V>& map, const K& key, Args&&... args) {
+    V& emplace(DynamicMap<K,V>& map, Args&&... args) {
         U64 slot_idx, pair_idx;
-        if (find_slot_and_pair(map, key, slot_idx, pair_idx)) {
+        if (find_slot_and_pair(map, extract_key(forward<Args>(args)...), slot_idx, pair_idx)) {
             return map.slots[slot_idx][pair_idx].second;
         }
 
         reserve_for_push(map);
-        slot_idx = hash(key) % map.slots.length;
+        slot_idx = hash(extract_key(forward<Args>(args)...)) % map.slots.length;
         DynamicArray<Pair<K,V>>& bucket = map.slots[slot_idx];
-        push_back(bucket, Pair<K,V>(key, V(Forward<Args>(args)...)));
+        emplace_back(bucket, forward<Args>(args)...);
         return bucket[bucket.length - 1].second;
     }
 
@@ -677,7 +708,7 @@ export namespace plexdb {
     }
 
     // ========================================================================
-    // Container type concepts
+    // types
     // ========================================================================
     template<typename T> struct IsDynamicArrayHelper                  { static constexpr bool value = false; };
     template<typename T> struct IsDynamicArrayHelper<DynamicArray<T>> { static constexpr bool value = true;  };
@@ -689,4 +720,57 @@ export namespace plexdb {
     template<typename T> concept IsDynamicArray = IsDynamicArrayHelper<T>::value;
     template<typename T> concept IsDynamicSet   = IsDynamicSetHelper<T>::value;
     template<typename T> concept IsDynamicMap   = IsDynamicMapHelper<T>::value;
+
+    // array
+    template<typename List, typename = void>
+    struct ExpandDynamicArrayHelper;
+
+    template<typename... Ts>
+    struct ExpandDynamicArrayHelper<TypeList<Ts...>> {
+        using type = TypeList<DynamicArray<Ts>...>;
+    };
+
+    template<typename Ts>
+    using ExpandDynamicArray = ExpandDynamicArrayHelper<Ts>::type;
+
+    // map
+    template<typename K, typename ValueList>
+    struct ExpandDynamicMapValuesHelper;
+
+    template<typename K, typename... Vs>
+    struct ExpandDynamicMapValuesHelper<K, TypeList<Vs...>> {
+        using type = TypeList<DynamicMap<K, Vs>...>;
+    };
+
+    template<typename Ks, typename Vs>
+    struct ExpandDynamicMapHelper;
+
+    template<typename K1, typename... Ks, typename Vs>
+    struct ExpandDynamicMapHelper<TypeList<K1, Ks...>, Vs> {
+    private:
+        using K1Maps = typename ExpandDynamicMapValuesHelper<K1, Vs>::type;
+        using K2NMaps = typename ExpandDynamicMapHelper<TypeList<Ks...>, Vs>::type;
+    public:
+        using type = Concat<K1Maps, K2NMaps>;
+    };
+
+    template<typename Vs>
+    struct ExpandDynamicMapHelper<TypeList<>, Vs> {
+        using type = TypeList<>;
+    };
+
+    template<typename Ks, typename Vs>
+    using ExpandDynamicMap = ExpandDynamicMapHelper<Ks, Vs>::type;
+
+    // set
+    template<typename List, typename = void>
+    struct ExpandDynamicSetHelper;
+
+    template<typename... Ts>
+    struct ExpandDynamicSetHelper<TypeList<Ts...>> {
+        using type = TypeList<DynamicSet<Ts>...>;
+    };
+
+    template<typename Ts>
+    using ExpandDynamicSet = ExpandDynamicSetHelper<Ts>::type;
 }

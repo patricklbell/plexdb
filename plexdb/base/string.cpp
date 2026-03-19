@@ -136,13 +136,6 @@ namespace plexdb {
         return result | (result == 0);
     }
 
-    void AutoString8::push_back(const char& c) {
-        plexdb::push_back(*this, c);
-    }
-    void AutoString8::append(const char* first, const char* last) {
-        plexdb::append(*this, first, last);
-    }
-
     void resize(AutoString8& str, U64 length) {
         if (str.length >= length) {
             return;
@@ -184,6 +177,13 @@ namespace plexdb {
 
     void append(AutoString8& str, String8 s) {
         append(str, s.data, s.data + s.length);
+    }
+
+    void to_lowercase_inplace(AutoString8& str) {
+        for (U64 i = 0; i < str.length; i++) {
+            char c = str.c_str[i];
+            str.c_str[i] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
+        }
     }
 
     AutoString8 operator+(const String8& lhs, const String8& rhs) {

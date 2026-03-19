@@ -179,9 +179,6 @@ export namespace plexdb {
         // @todo
         constexpr bool operator==(const CappedArray& other) const = delete;
         constexpr bool operator!=(const CappedArray& other) const = delete;
-
-        // stl helpers
-        T& push_back(const T& value) { return plexdb::push_back(*this, value); }
     };
 
     template<typename T, U64 N>

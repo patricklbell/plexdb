@@ -190,7 +190,7 @@ export namespace plexdb {
             return *this;
         }
 
-        explicit operator bool() {
+        explicit operator bool() const {
             return this->index != invalid_index;
         }
     };
@@ -213,6 +213,17 @@ export namespace plexdb {
         assert_true(type_matches_tag<T>(u), "reading wrong type from tagged union");
         return *reinterpret_cast<const T*>(&u.storage);
     }
+
+    template<typename... Ts>
+    struct ExpandTaggedUnionHelper;
+
+    template<typename... Ts>
+    struct ExpandTaggedUnionHelper<TypeList<Ts...>> {
+        using type = TaggedUnion<Ts...>;
+    };
+
+    template<typename Ts>
+    using ExpandTaggedUnion = ExpandTaggedUnionHelper<Ts>::type;
 }
 
 namespace plexdb {

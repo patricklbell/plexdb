@@ -78,7 +78,7 @@ namespace objstore::repl {
             String8 pending_input(input_buf, n);
 
             while (true) {
-                if (!parsers::cql::is_complete(pending_input)) {
+                if (!find(pending_input, ';')) {
                     break;
                 }
 
@@ -117,7 +117,7 @@ namespace objstore::repl {
                         U64 col_idx = 0;
                         for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col, ++col_idx) {
                             os::stream_write(ostream, col_idx == 0 ? " " : " | ");
-                            AutoString8 val_str = dtype::to_str(engine::read_value(col), engine::column(col).type);
+                            AutoString8 val_str = types::to_str(engine::read_value(col), engine::column(col).type);
                             os::stream_write(ostream, val_str.c_str, val_str.length);
                         }
                         os::stream_write(ostream, "\n");
@@ -141,7 +141,7 @@ namespace objstore::repl {
                     for (U64 ri = 0; ri < vr.rows.length; ri++) {
                         for (U64 ci = 0; ci < vr.columns.length; ci++) {
                             os::stream_write(ostream, ci == 0 ? " " : " | ");
-                            AutoString8 val_str = dtype::to_str(vr.rows[ri].values[ci], vr.columns[ci].type);
+                            AutoString8 val_str = types::to_str(vr.rows[ri].values[ci], vr.columns[ci].type);
                             os::stream_write(ostream, val_str.c_str, val_str.length);
                         }
                         os::stream_write(ostream, "\n");

@@ -31,7 +31,7 @@ endif()
 add_library(plexdb_modules STATIC)
 add_library(plexdb::plexdb_modules ALIAS plexdb_modules)
 
-target_compile_features(plexdb_modules PUBLIC cxx_std_20)
+target_compile_features(plexdb_modules PUBLIC cxx_std_23)
 set_target_properties(plexdb_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(plexdb_modules PRIVATE
@@ -66,6 +66,7 @@ target_sources(plexdb_modules
             btree/btree.types.cppm
             os/containers.cppm
             os/core.cppm
+            os/dynamic_tagged_union.cppm
             third_party/xxhash/xxhash.cppm
             os/function.cppm
             os/os.cppm
@@ -83,7 +84,7 @@ target_sources(plexdb_modules
 add_library(plexdb STATIC)
 add_library(plexdb::plexdb ALIAS plexdb)
 
-target_compile_features(plexdb PUBLIC cxx_std_20)
+target_compile_features(plexdb PUBLIC cxx_std_23)
 set_target_properties(plexdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(plexdb PRIVATE
