@@ -3,6 +3,7 @@
 
 import plexdb.base;
 import plexdb.tagged_union;
+import plexdb.os.dynamic_tagged_union;
 
 import objstore.parsers;
 import objstore.engine.statements;
