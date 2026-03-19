@@ -207,7 +207,7 @@ if(BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
     )
     file(GLOB_RECURSE OBJSTORE_TEST_MODULE_SOURCES CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/**/*.helper.cppm"
+        "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cppm"
     )
     target_sources(objstore_tests
         PRIVATE
