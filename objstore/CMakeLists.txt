@@ -146,6 +146,19 @@ if(PLEXDB_LOG_ENABLED)
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../plexdb/log
     )
+
+    add_library(objstore_log_dashboard SHARED)
+    target_compile_features(objstore_log_dashboard PRIVATE cxx_std_20)
+
+    target_sources(objstore_log_dashboard
+        PRIVATE
+            plugins/log_dashboard/log_dashboard_plugin.cpp
+    )
+
+    target_include_directories(objstore_log_dashboard
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../plexdb/log
+    )
 endif()
 
 # =============================================================================

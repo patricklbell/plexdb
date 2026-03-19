@@ -13,6 +13,7 @@ import plexdb.base;
 //   1. Record the failure with FAIL_CHECK (non-throwing).
 //   2. If PLEXDB_TEST_SCOPE() was used, longjmp back to exit the test case.
 // ============================================================================
+
 namespace {
 
 struct AssertRecovery {

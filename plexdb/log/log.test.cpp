@@ -20,12 +20,16 @@ namespace {
         unsigned message_count = 0;
         unsigned stat_count    = 0;
         unsigned meta_count    = 0;
+        unsigned producer_meta_count = 0;
         uint32_t last_level    = 0;
         int64_t  last_stat_val = 0;
         uint32_t last_stat_id  = 0;
         uint32_t last_meta_producer = 0;
         uint32_t last_meta_stat_id  = 0;
         const char* last_meta_name  = nullptr;
+        uint32_t last_pmeta_producer = 0;
+        const char* last_pmeta_key   = nullptr;
+        const char* last_pmeta_value = nullptr;
     };
 
     void test_on_event(const PlexdbLogEvent* event, void* ctx) {
@@ -46,6 +50,12 @@ namespace {
                 c->last_meta_stat_id  = event->stat_meta.stat_id;
                 c->last_meta_name     = event->stat_meta.name;
                 break;
+            case PLEXDB_LOG_PRODUCER_META:
+                c->producer_meta_count++;
+                c->last_pmeta_producer = event->producer_meta.producer_id;
+                c->last_pmeta_key      = event->producer_meta.key;
+                c->last_pmeta_value    = event->producer_meta.value;
+                break;
             default:
                 break;
         }
@@ -53,9 +63,7 @@ namespace {
 }
 
 TEST_CASE("fire_message with log level", "[plexdb.log]") {
-    if constexpr (!enabled) {
-        SKIP("logging disabled");
-    }
+    if constexpr (!enabled) { return; }
 
     TestConsumer tc{};
     plexdb_log_register_consumer(test_on_event, &tc);
@@ -84,9 +92,7 @@ TEST_CASE("fire_message with log level", "[plexdb.log]") {
 }
 
 TEST_CASE("fire_stat delivers structured metrics", "[plexdb.log]") {
-    if constexpr (!enabled) {
-        SKIP("logging disabled");
-    }
+    if constexpr (!enabled) { return; }
 
     TestConsumer tc{};
     plexdb_log_register_consumer(test_on_event, &tc);
@@ -107,9 +113,7 @@ TEST_CASE("fire_stat delivers structured metrics", "[plexdb.log]") {
 }
 
 TEST_CASE("fire_stat_meta delivers metadata", "[plexdb.log]") {
-    if constexpr (!enabled) {
-        SKIP("logging disabled");
-    }
+    if constexpr (!enabled) { return; }
 
     TestConsumer tc{};
     plexdb_log_register_consumer(test_on_event, &tc);
@@ -126,6 +130,28 @@ TEST_CASE("fire_stat_meta delivers metadata", "[plexdb.log]") {
     CHECK(tc.meta_count == 2);
     CHECK(tc.last_meta_stat_id == 2);
     CHECK(std::string(tc.last_meta_name) == "latency_ns");
+
+    plexdb_log_unregister_consumer(test_on_event, &tc);
+}
+
+TEST_CASE("fire_producer_meta delivers producer metadata", "[plexdb.log]") {
+    if constexpr (!enabled) { return; }
+
+    TestConsumer tc{};
+    plexdb_log_register_consumer(test_on_event, &tc);
+
+    Producer p{"test_pmeta"};
+
+    fire_producer_meta(p.id, "module", "pager");
+    CHECK(tc.producer_meta_count == 1);
+    CHECK(tc.last_pmeta_producer == p.id);
+    CHECK(std::string(tc.last_pmeta_key) == "module");
+    CHECK(std::string(tc.last_pmeta_value) == "pager");
+
+    fire_producer_meta(p.id, "version", "1.0");
+    CHECK(tc.producer_meta_count == 2);
+    CHECK(std::string(tc.last_pmeta_key) == "version");
+    CHECK(std::string(tc.last_pmeta_value) == "1.0");
 
     plexdb_log_unregister_consumer(test_on_event, &tc);
 }

@@ -1,11 +1,9 @@
 // Log-file plugin: writes structured plexdb log events to a text file.
-// Handles PLEXDB_LOG_PRODUCER_REGISTERED (records producer names) and
-// PLEXDB_LOG_MESSAGE (appends "[producer] text" lines).  Uses STL since
-// plugins are not subject to the no-STL rule.
+// Handles all event types with human-readable formatting.
 //
 // Configuration (environment variables):
 //   PLEXDB_LOG_FILE   – destination path  (default: plexdb.log)
-//   PLEXDB_LOG_BATCH  – lines per flush   (default: 64)
+//   PLEXDB_LOG_BATCH  – lines per flush   (default: 1)
 
 #include "log_abi.h"
 
@@ -29,159 +27,181 @@ std::string current_local_datetime() {
     return std::format("{:%Y-%m-%d %H:%M:%S}", zt.get_local_time());
 }
 
-constexpr std::string DEFAULT_PLEXDB_LOG_FILE = "plexdb.log";
+constexpr const char* DEFAULT_PLEXDB_LOG_FILE = "plexdb.log";
 constexpr size_t DEFAULT_PLEXDB_LOG_BATCH = 1;
 
-struct State {
+struct FilePluginState {
     std::unordered_map<uint32_t, std::string>                producers;
     std::map<std::pair<uint32_t,uint32_t>, std::string>      stat_names;
     std::vector<std::string>                                 buffer;
-    std::FILE*                                               file  = nullptr;
+    std::FILE*                                               file;
     std::mutex                                               mtx;
-    size_t                                                   batch = DEFAULT_PLEXDB_LOG_BATCH;
-
-    State() {
-        const char* path_cstr = std::getenv("PLEXDB_LOG_FILE");
-        std::string path = (!path_cstr) ? DEFAULT_PLEXDB_LOG_FILE : std::string(path_cstr);
-
-        const char* batch_env = std::getenv("PLEXDB_LOG_BATCH");
-        if (batch_env) {
-            size_t v = static_cast<size_t>(std::atol(batch_env));
-            if (v > 0) {
-                batch = v;
-            }
-        }
-
-        file = std::fopen(path.c_str(), "a");
-    }
-
-    ~State() {
-        flush();
-        if (file) std::fclose(file);
-    }
-
-    void on_producer_registered(uint32_t id, const char* name) {
-        std::lock_guard<std::mutex> guard(mtx);
-        producers[id] = name;
-    }
-
-    void on_message(uint32_t producer_id, uint32_t level, const char* text, size_t len) {
-        static constexpr const char* level_tags[] = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"};
-        constexpr size_t n_levels = sizeof(level_tags) / sizeof(level_tags[0]);
-        const char* tag = (level < n_levels) ? level_tags[level] : "???";
-
-        std::lock_guard<std::mutex> guard(mtx);
-        std::string line = "";
-        auto it = producers.find(producer_id);
-        if (it != producers.end()) {
-            line += '[' + it->second + "] ";
-        }
-        line += '[' + current_local_datetime()  + "] ";
-        line += '[';
-        line += tag;
-        line += "] ";
-
-        line.append(text, len);
-        buffer.push_back(std::move(line));
-        if (buffer.size() >= batch) {
-            flush_locked();
-        }
-    }
-
-    void on_stat(uint32_t producer_id, uint32_t stat_id, int64_t value) {
-        std::lock_guard<std::mutex> guard(mtx);
-        std::string line = "";
-        auto it = producers.find(producer_id);
-        if (it != producers.end()) {
-            line += '[' + it->second + "] ";
-        }
-        line += '[' + current_local_datetime()  + "] ";
-
-        auto sit = stat_names.find({producer_id, stat_id});
-        if (sit != stat_names.end()) {
-            line += "[STAT:" + sit->second + "] " + std::to_string(value);
-        } else {
-            line += "[STAT] id=" + std::to_string(stat_id) + " value=" + std::to_string(value);
-        }
-
-        buffer.push_back(std::move(line));
-        if (buffer.size() >= batch) {
-            flush_locked();
-        }
-    }
-
-    void on_stat_meta(uint32_t producer_id, uint32_t stat_id, const char* name) {
-        std::lock_guard<std::mutex> guard(mtx);
-        stat_names[{producer_id, stat_id}] = name;
-    }
-
-    void flush() {
-        std::lock_guard<std::mutex> guard(mtx);
-        flush_locked();
-    }
-
-private:
-    void flush_locked() {
-        if (!file || buffer.empty()) {
-            return;
-        }
-
-        for (const auto& entry : buffer) {
-            std::fwrite(entry.data(), 1, entry.size(), file);
-            std::fputc('\n', file);
-        }
-        std::fflush(file);
-        buffer.clear();
-    }
+    size_t                                                   batch;
 };
 
-State* g_state = nullptr;
+FilePluginState* g_state = nullptr;
 
+// ============================================================================
+// buffer management
+// ============================================================================
+void flush_buffer(FilePluginState* s) {
+    if (!s->file || s->buffer.empty()) return;
+    for (const auto& entry : s->buffer) {
+        std::fwrite(entry.data(), 1, entry.size(), s->file);
+        std::fputc('\n', s->file);
+    }
+    std::fflush(s->file);
+    s->buffer.clear();
+}
+
+void append_line(FilePluginState* s, std::string line) {
+    s->buffer.push_back(std::move(line));
+    if (s->buffer.size() >= s->batch) {
+        flush_buffer(s);
+    }
+}
+
+std::string producer_prefix(FilePluginState* s, uint32_t producer_id) {
+    std::string prefix;
+    auto it = s->producers.find(producer_id);
+    if (it != s->producers.end()) {
+        prefix += '[' + it->second + "] ";
+    }
+    prefix += '[' + current_local_datetime() + "] ";
+    return prefix;
+}
+
+// ============================================================================
+// event handlers
+// ============================================================================
+void handle_producer_registered(FilePluginState* s, uint32_t id, const char* name) {
+    std::lock_guard<std::mutex> guard(s->mtx);
+    s->producers[id] = name;
+}
+
+void handle_producer_meta(FilePluginState* s, uint32_t producer_id, const char* key, const char* value) {
+    std::lock_guard<std::mutex> guard(s->mtx);
+    std::string line = producer_prefix(s, producer_id);
+    line += "[META] ";
+    line += key;
+    line += "=";
+    line += value;
+    append_line(s, std::move(line));
+}
+
+void handle_message(FilePluginState* s, uint32_t producer_id, uint32_t level,
+                    const char* text, size_t len) {
+    static constexpr const char* level_tags[] = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"};
+    constexpr size_t n_levels = sizeof(level_tags) / sizeof(level_tags[0]);
+    const char* tag = (level < n_levels) ? level_tags[level] : "???";
+
+    std::lock_guard<std::mutex> guard(s->mtx);
+    std::string line = producer_prefix(s, producer_id);
+    line += '[';
+    line += tag;
+    line += "] ";
+    line.append(text, len);
+    append_line(s, std::move(line));
+}
+
+void handle_stat(FilePluginState* s, uint32_t producer_id, uint32_t stat_id, int64_t value) {
+    std::lock_guard<std::mutex> guard(s->mtx);
+    std::string line = producer_prefix(s, producer_id);
+
+    auto sit = s->stat_names.find({producer_id, stat_id});
+    if (sit != s->stat_names.end()) {
+        line += "[STAT:" + sit->second + "] " + std::to_string(value);
+    } else {
+        line += "[STAT] id=" + std::to_string(stat_id) + " value=" + std::to_string(value);
+    }
+    append_line(s, std::move(line));
+}
+
+void handle_stat_meta(FilePluginState* s, uint32_t producer_id, uint32_t stat_id, const char* name) {
+    std::lock_guard<std::mutex> guard(s->mtx);
+    s->stat_names[{producer_id, stat_id}] = name;
+}
+
+// ============================================================================
+// consumer callback
+// ============================================================================
 void on_event(const PlexdbLogEvent* event, void* ctx) {
-    auto* state = static_cast<State*>(ctx);
+    auto* s = static_cast<FilePluginState*>(ctx);
     switch (event->type) {
-        case PLEXDB_LOG_PRODUCER_REGISTERED:{
-            state->on_producer_registered(
+        case PLEXDB_LOG_PRODUCER_REGISTERED:
+            handle_producer_registered(s,
                 event->producer_registered.producer_id,
                 event->producer_registered.name);
-        }break;
-        case PLEXDB_LOG_MESSAGE:{
-            state->on_message(
+            break;
+        case PLEXDB_LOG_PRODUCER_META:
+            handle_producer_meta(s,
+                event->producer_meta.producer_id,
+                event->producer_meta.key,
+                event->producer_meta.value);
+            break;
+        case PLEXDB_LOG_MESSAGE:
+            handle_message(s,
                 event->message.producer_id,
                 event->message.level,
                 event->message.text,
                 event->message.text_len);
-        }break;
-        case PLEXDB_LOG_STAT:{
-            state->on_stat(
+            break;
+        case PLEXDB_LOG_STAT:
+            handle_stat(s,
                 event->stat.producer_id,
                 event->stat.stat_id,
                 event->stat.value);
-        }break;
-        case PLEXDB_LOG_STAT_META:{
-            state->on_stat_meta(
+            break;
+        case PLEXDB_LOG_STAT_META:
+            handle_stat_meta(s,
                 event->stat_meta.producer_id,
                 event->stat_meta.stat_id,
                 event->stat_meta.name);
-        }break;
+            break;
+        default:
+            break;
     }
+}
+
+// ============================================================================
+// lifecycle
+// ============================================================================
+FilePluginState* file_plugin_init() {
+    const char* path_cstr = std::getenv("PLEXDB_LOG_FILE");
+    std::string path = (!path_cstr) ? DEFAULT_PLEXDB_LOG_FILE : std::string(path_cstr);
+
+    size_t batch = DEFAULT_PLEXDB_LOG_BATCH;
+    const char* batch_env = std::getenv("PLEXDB_LOG_BATCH");
+    if (batch_env) {
+        size_t v = static_cast<size_t>(std::atol(batch_env));
+        if (v > 0) batch = v;
+    }
+
+    auto* s = new FilePluginState{};
+    s->file  = std::fopen(path.c_str(), "a");
+    s->batch = batch;
+    return s;
+}
+
+void file_plugin_fini(FilePluginState* s) {
+    if (!s) return;
+    flush_buffer(s);
+    if (s->file) std::fclose(s->file);
+    delete s;
 }
 
 } // namespace
 
 __attribute__((constructor))
 static void init() {
-    g_state = new State();
+    g_state = file_plugin_init();
     plexdb_log_register_consumer(on_event, g_state);
 }
 
 __attribute__((destructor))
 static void fini() {
-    if (!g_state) {
-        return;
-    }
-
+    if (!g_state) return;
     plexdb_log_unregister_consumer(on_event, g_state);
-    delete g_state;
+    file_plugin_fini(g_state);
     g_state = nullptr;
 }

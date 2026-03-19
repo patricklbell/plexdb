@@ -101,4 +101,13 @@ export namespace plexdb::log {
             dispatch(e);
         }
     }
+
+    inline void fire_producer_meta(uint32_t producer_id, const char* key, const char* value) {
+        if constexpr (enabled) {
+            PlexdbLogEvent e{};
+            e.type = PLEXDB_LOG_PRODUCER_META;
+            e.producer_meta = {producer_id, key, value};
+            dispatch(e);
+        }
+    }
 }
