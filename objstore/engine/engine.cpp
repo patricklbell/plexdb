@@ -305,7 +305,7 @@ namespace objstore::engine {
                 VirtualRows vr;
                 vr.keyspace = "system_schema";
                 vr.table = table;
-                push_back(vr.columns, VirtualColumn{"keyspace_name", dtype::make_native(DType::text)});
+                push_back(vr.columns, VirtualColumn{"keyspace_name", types::make_native(NativeType::text)});
                 return vr;
             }
         }
