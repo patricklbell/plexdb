@@ -297,6 +297,17 @@ namespace objstore::engine {
             if (table == "keyspaces") return make_schema_keyspaces(engine.schema);
             if (table == "tables")    return make_schema_tables(engine.schema);
             if (table == "columns")   return make_schema_columns(engine.schema);
+            // Return empty result sets for system_schema tables queried by
+            // drivers during metadata sync that we do not populate.
+            if (table == "indexes" || table == "triggers" || table == "types" ||
+                table == "functions" || table == "aggregates" || table == "views" ||
+                table == "vertices" || table == "edges") {
+                VirtualRows vr;
+                vr.keyspace = "system_schema";
+                vr.table = table;
+                push_back(vr.columns, VirtualColumn{"keyspace_name", types::make_native(NativeType::text)});
+                return vr;
+            }
         }
         return {};
     }

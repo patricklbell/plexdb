@@ -473,10 +473,12 @@ namespace objstore::native {
             case opcode::OPTIONS: {
                 auto frame = make_native_frame(conn, &chunk, write, opcode::SUPPORTED, stream);
                 // [string multimap]: n pairs of ([string] key, [string list] values)
-                append_be_u16(frame, 1);
+                append_be_u16(frame, 2);
                 append_cql_string(frame, "CQL_VERSION");
                 append_be_u16(frame, 1);
                 append_cql_string(frame, "3.0.0");
+                append_cql_string(frame, "COMPRESSION");
+                append_be_u16(frame, 0); // no compression algorithms supported
             } break;
 
             case opcode::QUERY: {
@@ -583,21 +585,22 @@ export namespace objstore::native {
                     push_back(state.recv_buf, chunk.data.ptr[i]);
             }
 
-            // Process one complete frame (if available)
-            if (state.recv_buf.length >= FRAME_HEADER_SIZE) {
+            // Process all complete frames in the buffer
+            while (state.recv_buf.length >= FRAME_HEADER_SIZE) {
                 const U8* hdr = state.recv_buf.ptr;
                 S32 body_len = read_be_s32(hdr + 5);
 
-                if (body_len >= 0 && state.recv_buf.length >= FRAME_HEADER_SIZE + U64(body_len)) {
-                    handle_frame(state, engine, req.connection, req.write, hdr, hdr + FRAME_HEADER_SIZE, body_len);
+                if (body_len < 0 || state.recv_buf.length < FRAME_HEADER_SIZE + U64(body_len))
+                    break;
 
-                    // Remove the consumed frame from the front of recv_buf
-                    U64 frame_size = FRAME_HEADER_SIZE + U64(body_len);
-                    U64 remaining  = state.recv_buf.length - frame_size;
-                    if (remaining > 0)
-                        os::memory_move(state.recv_buf.ptr, state.recv_buf.ptr + frame_size, remaining);
-                    state.recv_buf.length = remaining;
-                }
+                handle_frame(state, engine, req.connection, req.write, hdr, hdr + FRAME_HEADER_SIZE, body_len);
+
+                // Remove the consumed frame from the front of recv_buf
+                U64 frame_size = FRAME_HEADER_SIZE + U64(body_len);
+                U64 remaining  = state.recv_buf.length - frame_size;
+                if (remaining > 0)
+                    os::memory_move(state.recv_buf.ptr, state.recv_buf.ptr + frame_size, remaining);
+                state.recv_buf.length = remaining;
             }
 
             // Always release the chunk chain; unprocessed data is in recv_buf

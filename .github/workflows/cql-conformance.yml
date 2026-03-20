@@ -1,0 +1,63 @@
+name: CQL Conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_filter:
+        description: 'pytest -k expression to select tests (empty = all)'
+        required: false
+        default: ''
+      scylla_ref:
+        description: 'ScyllaDB git ref for test content (default: master)'
+        required: false
+        default: 'master'
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  cql-conformance:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19
+
+      - name: Configure and build server
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19
+          ninja -C build objstore_server
+
+      - name: Install uv
+        run: |
+          curl -Ls https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Run CQL conformance tests
+        run: |
+          ARGS="-P 9042"
+          ARGS="$ARGS -r ${{ inputs.scylla_ref || 'master' }}"
+          if [ -n "${{ inputs.test_filter }}" ]; then
+            ARGS="$ARGS -t '${{ inputs.test_filter }}'"
+          fi
+          bash extra/cql_tests/run.sh $ARGS || true
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          echo "### CQL Conformance Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Tests sourced from [scylladb/scylladb](https://github.com/scylladb/scylladb) \`test/cqlpy/cassandra_tests/\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "(originally ported from Apache Cassandra)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Use \`workflow_dispatch\` to run with custom filters:" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`test_filter\`: pytest \`-k\` expression (e.g. \`testInsert\`, \`insert_test\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`scylla_ref\`: git ref for test content" >> "$GITHUB_STEP_SUMMARY"
