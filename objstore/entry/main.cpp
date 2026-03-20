@@ -13,7 +13,7 @@ using namespace objstore;
 using namespace plexdb;
 
 void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-    println("assert failed with message \"", msg, "\"");
+    println("Assert failed \"", msg, "\" at ", function_name, " in ", file_name, ":", to_str(line_number));
     
     #if PLEXDB_DEBUG
         PLEXDB_TRAP;

@@ -9,6 +9,7 @@ import plexdb.base;
 import plexdb.arena;
 import plexdb.tagged_union;
 import objstore.tcp.types;
+import objstore.log;
 
 using namespace plexdb;
 
@@ -39,6 +40,7 @@ namespace objstore::tcp {
         assert_true(static_cast<bool>(ring), "cannot listen to invalid uring");
 
         Stats stats;
+        objstore::log::db_connection_max(MAX_CONCURRENT_CONNECTIONS);
 
         MapFixedSentinel<os::Handle, Connection, 2_u64*MAX_CONCURRENT_CONNECTIONS> client_to_connection;
         DynamicArray<BufferInfo> buffer_infos{ring.buffer_count};
@@ -59,6 +61,7 @@ namespace objstore::tcp {
 
                 remove_it(client_to_connection, it);
                 stats.active_connections--;
+                objstore::log::db_connection_count(stats.active_connections);
                 if (is_server_side_initiating) {
                     uring::sqe_push_close(ring, client);
                 }
@@ -169,6 +172,8 @@ namespace objstore::tcp {
             connection.client = accept.client;
             connection.chunk_chain.chunk_size = ring.buffer_size;
             stats.total_connections++;
+            stats.active_connections++;
+            objstore::log::db_connection_count(stats.active_connections);
 
             // notify
             on_open_callback(&connection);
@@ -243,6 +248,7 @@ namespace objstore::tcp {
         const os::Notifier& interrupt, volatile bool& should_exit
     ) {
         Stats stats;
+        objstore::log::db_connection_max(MAX_CONCURRENT_CONNECTIONS);
 
         // @note server socket must be non-blocking for poll-based accept
         os::socket_set_option(socket, os::SocketOption::NonBlocking, true);
@@ -311,6 +317,7 @@ namespace objstore::tcp {
                 
                 acquire_buffer(buffer_infos[free_buffer_idx], client);
                 stats.active_connections++;
+                objstore::log::db_connection_count(stats.active_connections);
             }
 
             // read from active clients
@@ -344,6 +351,7 @@ namespace objstore::tcp {
                     os::socket_close(client);
                     swap_remove(active_clients, i);
                     stats.active_connections--;
+                    objstore::log::db_connection_count(stats.active_connections);
                     continue;
                 }
 
@@ -370,6 +378,7 @@ namespace objstore::tcp {
                         os::socket_close(client);
                         swap_remove(active_clients, i);
                         stats.active_connections--;
+                        objstore::log::db_connection_count(stats.active_connections);
                         continue;
                     }break;
                 }

@@ -85,7 +85,7 @@ namespace objstore::repl {
                 Optional<U64> semi_idx_opt = find(pending_input, ';');
                 String8 stmt_input{pending_input.data, (static_cast<bool>(semi_idx_opt)) ? (*semi_idx_opt + 1) : 0};
 
-                auto stmt_opt = parsers::cql::parse(stmt_input, false);
+                auto stmt_opt = parsers::cql::parse(stmt_input);
                 if (!stmt_opt) {
                     os::stream_write(ostream, "ERROR: Failed to parse CQL\n");
                     pending_input = AutoString8{};

@@ -90,17 +90,26 @@ void handle_producer_meta(FilePluginState* s, uint32_t producer_id, const char* 
 }
 
 void handle_message(FilePluginState* s, uint32_t producer_id, uint32_t level,
-                    const char* text, size_t len) {
+                    const char* text, size_t text_len, const char* id, size_t id_len) {
     static constexpr const char* level_tags[] = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"};
     constexpr size_t n_levels = sizeof(level_tags) / sizeof(level_tags[0]);
     const char* tag = (level < n_levels) ? level_tags[level] : "???";
 
     std::lock_guard<std::mutex> guard(s->mtx);
     std::string line = producer_prefix(s, producer_id);
-    line += '[';
+
+    line += "["; 
     line += tag;
-    line += "] ";
-    line.append(text, len);
+
+    if (id != nullptr && id_len != 0) {
+        line += ":";
+        line.append(id, id_len);
+        line += + "] ";
+    } else {
+        line += "]";
+    }
+    
+    line.append(text, text_len);
     append_line(s, std::move(line));
 }
 
@@ -112,7 +121,7 @@ void handle_stat(FilePluginState* s, uint32_t producer_id, uint32_t stat_id, int
     if (sit != s->stat_names.end()) {
         line += "[STAT:" + sit->second + "] " + std::to_string(value);
     } else {
-        line += "[STAT] id=" + std::to_string(stat_id) + " value=" + std::to_string(value);
+        line += "[STAT|" + std::to_string(stat_id) + "] " + std::to_string(value);
     }
     append_line(s, std::move(line));
 }
@@ -144,7 +153,9 @@ void on_event(const PlexdbLogEvent* event, void* ctx) {
                 event->message.producer_id,
                 event->message.level,
                 event->message.text,
-                event->message.text_len);
+                event->message.text_len,
+                event->message.message_id,
+                event->message.message_len);
             break;
         case PLEXDB_LOG_STAT:
             handle_stat(s,

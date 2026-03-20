@@ -73,6 +73,7 @@ target_sources(plexdb_modules
             os/signal.cppm
             os/socket.cppm
             os/sysinfo.cppm
+            os/time.cppm
             os/uring.cppm
             pager/pager.cppm
             threads/threads.cppm
@@ -112,6 +113,7 @@ target_sources(plexdb
         os/signal.cpp
         os/socket.cpp
         os/sysinfo.cpp
+        os/time.cpp
         os/uring.cpp
         pager/pager.cpp
         threads/threads.cpp
@@ -130,7 +132,7 @@ if(BUILD_TESTS)
         FetchContent_Declare(
             Catch2
             GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-            GIT_TAG        v3.11.0
+            GIT_TAG        v3.13.0
         )
         FetchContent_MakeAvailable(Catch2)
     endif()

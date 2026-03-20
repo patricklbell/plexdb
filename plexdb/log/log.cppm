@@ -3,9 +3,13 @@ module;
 
 export module plexdb.log;
 
+import plexdb.base.string;
+
 namespace plexdb::log {
     uint32_t internal_register_producer(const char* name);
     void     internal_unregister_producer(uint32_t id);
+    uint32_t internal_register_stat(uint32_t producer_id, uint32_t stat_type, const char* name);
+    void     internal_unregister_stat(uint32_t producer_id, uint32_t stat_id);
     void     dispatch(const PlexdbLogEvent& event);
 }
 
@@ -41,42 +45,98 @@ export namespace plexdb::log {
 
     // ========================================================================
     // producer
-    //   registers itself on construction, deregisters on destruction.
-    //   The ID is auto-assigned by register_producer to avoid collisions.
-    //   When disabled, construction/destruction are no-ops and id is 0.
+    //   @note lazy registration: ID is assigned on first use, not at construction.
+    //   Construction order between producers and stats does not matter.
+    //   When a consumer registers, all known producers are replayed (catch-up).
     // ========================================================================
     class Producer {
     public:
-        uint32_t id;
+        mutable uint32_t id;
+        const char* name;
 
-        Producer(const char* name) : id(0) {
-            if constexpr (enabled)
-                id = internal_register_producer(name);
-        }
+        Producer(const char* name) : id(0), name(name) {}
         ~Producer() {
             if constexpr (enabled)
-                internal_unregister_producer(id);
+                if (id) internal_unregister_producer(id);
         }
 
         Producer(const Producer&)            = delete;
         Producer& operator=(const Producer&) = delete;
     };
 
+    inline void ensure_registered(const Producer& p) {
+        if constexpr (enabled) {
+            if (p.id == 0)
+                p.id = internal_register_producer(p.name);
+        }
+    }
+
+    // ========================================================================
+    // stat types
+    // ========================================================================
+    enum class StatType : uint32_t {
+        Counter = PLEXDB_STAT_COUNTER,  // monotonically increasing cumulative value
+        Gauge   = PLEXDB_STAT_GAUGE,    // point-in-time measurement
+    };
+
+    // ========================================================================
+    // stat
+    //   @note lazy registration: producer and stat are both registered on first fire.
+    //   Construction order does not matter.
+    //   When a consumer registers, all known stats are replayed (catch-up).
+    // ========================================================================
+    class Stat {
+    public:
+        const Producer* producer;
+        mutable uint32_t id;
+        const char* name;
+        StatType type;
+
+        Stat(const Producer* producer, const char* name, StatType type = StatType::Gauge)
+            : producer(producer), id(0), name(name), type(type) {}
+        ~Stat() {
+            if constexpr (enabled)
+                if (id) internal_unregister_stat(producer->id, id);
+        }
+
+        Stat(const Stat&)            = delete;
+        Stat& operator=(const Stat&) = delete;
+    };
+
+    inline void ensure_registered(const Stat& s) {
+        if constexpr (enabled) {
+            ensure_registered(*s.producer);
+            if (s.id == 0)
+                s.id = internal_register_stat(s.producer->id, static_cast<uint32_t>(s.type), s.name);
+        }
+    }
+
     // ========================================================================
     // messaging
     //   zero-overhead when disabled via if constexpr.
     // ========================================================================
-    inline void fire_message(uint32_t producer_id, Level level, const char* text, size_t text_len) {
+    inline void message(const Producer& producer, Level level, const String8& text) {
         if constexpr (enabled) {
+            ensure_registered(producer);
             PlexdbLogEvent e{};
             e.type    = PLEXDB_LOG_MESSAGE;
-            e.message = {producer_id, static_cast<uint32_t>(level), text, text_len};
+            e.message = {producer.id, static_cast<uint32_t>(level), text.data, text.length, nullptr, 0};
             dispatch(e);
         }
     }
 
-    inline void fire_message(uint32_t producer_id, const char* text, size_t text_len) {
-        fire_message(producer_id, Level::Info, text, text_len);
+    inline void message(const Producer& producer, Level level, const String8& text, const String8& message_id) {
+        if constexpr (enabled) {
+            ensure_registered(producer);
+            PlexdbLogEvent e{};
+            e.type    = PLEXDB_LOG_MESSAGE;
+            e.message = {producer.id, static_cast<uint32_t>(level), text.data, text.length, message_id.data, message_id.length};
+            dispatch(e);
+        }
+    }
+
+    inline void message(const Producer& producer, const String8& text) {
+        message(producer, Level::Info, text);
     }
 
     // ========================================================================
@@ -84,30 +144,14 @@ export namespace plexdb::log {
     //   zero-overhead structured numeric events for realtime metrics.
     //   no string formatting overhead — consumers read the value directly.
     // ========================================================================
-    inline void fire_stat_meta(uint32_t producer_id, uint32_t stat_id, const char* name) {
+    inline void stat(const Stat& s, int64_t value) {
         if constexpr (enabled) {
-            PlexdbLogEvent e{};
-            e.type = PLEXDB_LOG_STAT_META;
-            e.stat_meta = {producer_id, stat_id, name};
-            dispatch(e);
-        }
-    }
-
-    inline void fire_stat(uint32_t producer_id, uint32_t stat_id, int64_t value) {
-        if constexpr (enabled) {
+            ensure_registered(s);
             PlexdbLogEvent e{};
             e.type = PLEXDB_LOG_STAT;
-            e.stat = {producer_id, stat_id, value};
+            e.stat = {s.producer->id, s.id, value};
             dispatch(e);
         }
     }
 
-    inline void fire_producer_meta(uint32_t producer_id, const char* key, const char* value) {
-        if constexpr (enabled) {
-            PlexdbLogEvent e{};
-            e.type = PLEXDB_LOG_PRODUCER_META;
-            e.producer_meta = {producer_id, key, value};
-            dispatch(e);
-        }
-    }
 }

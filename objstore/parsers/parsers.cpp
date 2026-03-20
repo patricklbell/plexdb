@@ -54,7 +54,7 @@ namespace {
                               error.message());
                 }
 
-                fn(msg.c_str, msg.length);
+                fn(msg);
                 ++_count;
             }
 
@@ -69,8 +69,6 @@ namespace {
             return _sink{0, fn};
         }
     };
-
-    using LogErrorCallback = ErrorCallback<decltype(&objstore::log::cql_parse_error)>;
 }
 
 namespace objstore::parsers::cql {
@@ -1645,8 +1643,8 @@ namespace objstore::parsers::cql {
         };
     }
 
-    Optional<Statement> parse(String8 bytes, bool report_errors) {
-        log::cql_parse_query(bytes);
+    Optional<Statement> parse(String8 bytes, void(*error_fn)(const String8& error)) {
+        log::db_query_text(bytes);
 
         auto input = lexy::string_input<lexy::ascii_encoding>(bytes.data, bytes.length);
 
@@ -1656,21 +1654,6 @@ namespace objstore::parsers::cql {
             return {};
         };
 
-        if (report_errors) return try_parse(LogErrorCallback{log::cql_parse_error});
-        return try_parse(lexy::noop);
-    }
-
-    Optional<Statement> parse(String8 bytes, void(*error_fn)(const char*, size_t)) {
-        log::cql_parse_query(bytes);
-
-        auto input = lexy::string_input<lexy::ascii_encoding>(bytes.data, bytes.length);
-
-        auto try_parse = [&](auto callback) -> Optional<Statement> {
-            auto result = lexy::parse<grammar::statement>(input, callback);
-            if (result.has_value()) return result.value();
-            return {};
-        };
-
-        return try_parse(ErrorCallback<void(*)(const char*, size_t)>{error_fn});
+        return try_parse(ErrorCallback<void(*)(const String8& error)>{error_fn});
     }
 }

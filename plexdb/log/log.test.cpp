@@ -3,6 +3,7 @@
 
 #include <string>
 
+import plexdb.base;
 import plexdb.log;
 
 using namespace plexdb::log;
@@ -20,24 +21,29 @@ namespace {
         unsigned message_count = 0;
         unsigned stat_count    = 0;
         unsigned meta_count    = 0;
-        unsigned producer_meta_count = 0;
+        unsigned producer_registered_count = 0;
         uint32_t last_level    = 0;
         int64_t  last_stat_val = 0;
         uint32_t last_stat_id  = 0;
         uint32_t last_meta_producer = 0;
         uint32_t last_meta_stat_id  = 0;
+        uint32_t last_meta_stat_type = 0;
         const char* last_meta_name  = nullptr;
-        uint32_t last_pmeta_producer = 0;
-        const char* last_pmeta_key   = nullptr;
-        const char* last_pmeta_value = nullptr;
+        const char* last_producer_name = nullptr;
+        const char* last_message_id = nullptr;
     };
 
     void test_on_event(const PlexdbLogEvent* event, void* ctx) {
         auto* c = static_cast<TestConsumer*>(ctx);
         switch (event->type) {
+            case PLEXDB_LOG_PRODUCER_REGISTERED:
+                c->producer_registered_count++;
+                c->last_producer_name = event->producer_registered.name;
+                break;
             case PLEXDB_LOG_MESSAGE:
                 c->message_count++;
                 c->last_level = event->message.level;
+                c->last_message_id = event->message.message_id;
                 break;
             case PLEXDB_LOG_STAT:
                 c->stat_count++;
@@ -46,15 +52,10 @@ namespace {
                 break;
             case PLEXDB_LOG_STAT_META:
                 c->meta_count++;
-                c->last_meta_producer = event->stat_meta.producer_id;
-                c->last_meta_stat_id  = event->stat_meta.stat_id;
-                c->last_meta_name     = event->stat_meta.name;
-                break;
-            case PLEXDB_LOG_PRODUCER_META:
-                c->producer_meta_count++;
-                c->last_pmeta_producer = event->producer_meta.producer_id;
-                c->last_pmeta_key      = event->producer_meta.key;
-                c->last_pmeta_value    = event->producer_meta.value;
+                c->last_meta_producer  = event->stat_meta.producer_id;
+                c->last_meta_stat_id   = event->stat_meta.stat_id;
+                c->last_meta_stat_type = event->stat_meta.stat_type;
+                c->last_meta_name      = event->stat_meta.name;
                 break;
             default:
                 break;
@@ -62,7 +63,7 @@ namespace {
     }
 }
 
-TEST_CASE("fire_message with log level", "[plexdb.log]") {
+TEST_CASE("message with log level", "[plexdb.log]") {
     if constexpr (!enabled) { return; }
 
     TestConsumer tc{};
@@ -71,19 +72,19 @@ TEST_CASE("fire_message with log level", "[plexdb.log]") {
     Producer p{"test_level"};
 
     SECTION("default level is Info") {
-        fire_message(p.id, "hello", 5);
+        message(p, "hello");
         CHECK(tc.message_count == 1);
         CHECK(tc.last_level == static_cast<uint32_t>(Level::Info));
     }
 
     SECTION("explicit Error level") {
-        fire_message(p.id, Level::Error, "fail", 4);
+        message(p, Level::Error, "fail");
         CHECK(tc.message_count == 1);
         CHECK(tc.last_level == static_cast<uint32_t>(Level::Error));
     }
 
     SECTION("explicit Trace level") {
-        fire_message(p.id, Level::Trace, "trace", 5);
+        message(p, Level::Trace, "trace");
         CHECK(tc.message_count == 1);
         CHECK(tc.last_level == static_cast<uint32_t>(Level::Trace));
     }
@@ -91,67 +92,128 @@ TEST_CASE("fire_message with log level", "[plexdb.log]") {
     plexdb_log_unregister_consumer(test_on_event, &tc);
 }
 
-TEST_CASE("fire_stat delivers structured metrics", "[plexdb.log]") {
+TEST_CASE("stat delivers structured metrics", "[plexdb.log]") {
     if constexpr (!enabled) { return; }
 
     TestConsumer tc{};
     plexdb_log_register_consumer(test_on_event, &tc);
 
     Producer p{"test_stat"};
+    Stat s1{&p, "requests"};
+    Stat s2{&p, "latency"};
 
-    fire_stat(p.id, 42, 1000);
+    stat(s1, 1000);
     CHECK(tc.stat_count == 1);
-    CHECK(tc.last_stat_id == 42);
+    CHECK(tc.last_stat_id == s1.id);
     CHECK(tc.last_stat_val == 1000);
 
-    fire_stat(p.id, 7, -99);
+    stat(s2, -99);
     CHECK(tc.stat_count == 2);
-    CHECK(tc.last_stat_id == 7);
+    CHECK(tc.last_stat_id == s2.id);
     CHECK(tc.last_stat_val == -99);
 
     plexdb_log_unregister_consumer(test_on_event, &tc);
 }
 
-TEST_CASE("fire_stat_meta delivers metadata", "[plexdb.log]") {
+TEST_CASE("stat registration fires stat_meta", "[plexdb.log]") {
     if constexpr (!enabled) { return; }
 
     TestConsumer tc{};
     plexdb_log_register_consumer(test_on_event, &tc);
 
     Producer p{"test_meta"};
+    Stat s{&p, "requests_per_sec"};
 
-    fire_stat_meta(p.id, 1, "requests_per_sec");
+    stat(s, 42);
     CHECK(tc.meta_count == 1);
     CHECK(tc.last_meta_producer == p.id);
-    CHECK(tc.last_meta_stat_id == 1);
+    CHECK(tc.last_meta_stat_id == s.id);
     CHECK(std::string(tc.last_meta_name) == "requests_per_sec");
-
-    fire_stat_meta(p.id, 2, "latency_ns");
-    CHECK(tc.meta_count == 2);
-    CHECK(tc.last_meta_stat_id == 2);
-    CHECK(std::string(tc.last_meta_name) == "latency_ns");
+    CHECK(tc.last_meta_stat_type == PLEXDB_STAT_GAUGE);
 
     plexdb_log_unregister_consumer(test_on_event, &tc);
 }
 
-TEST_CASE("fire_producer_meta delivers producer metadata", "[plexdb.log]") {
+TEST_CASE("stat type counter and gauge", "[plexdb.log]") {
     if constexpr (!enabled) { return; }
 
     TestConsumer tc{};
     plexdb_log_register_consumer(test_on_event, &tc);
 
-    Producer p{"test_pmeta"};
+    Producer p{"test_types"};
+    Stat counter{&p, "total_requests", StatType::Counter};
+    Stat gauge{&p, "active_connections", StatType::Gauge};
 
-    fire_producer_meta(p.id, "module", "pager");
-    CHECK(tc.producer_meta_count == 1);
-    CHECK(tc.last_pmeta_producer == p.id);
-    CHECK(std::string(tc.last_pmeta_key) == "module");
-    CHECK(std::string(tc.last_pmeta_value) == "pager");
+    stat(counter, 5);
+    CHECK(tc.meta_count >= 1);
+    CHECK(tc.last_meta_stat_type == PLEXDB_STAT_COUNTER);
+    CHECK(std::string(tc.last_meta_name) == "total_requests");
 
-    fire_producer_meta(p.id, "version", "1.0");
-    CHECK(tc.producer_meta_count == 2);
-    CHECK(std::string(tc.last_pmeta_key) == "version");
-    CHECK(std::string(tc.last_pmeta_value) == "1.0");
+    stat(gauge, 10);
+    CHECK(tc.last_meta_stat_type == PLEXDB_STAT_GAUGE);
+    CHECK(std::string(tc.last_meta_name) == "active_connections");
+
+    plexdb_log_unregister_consumer(test_on_event, &tc);
+}
+
+TEST_CASE("lazy producer registration", "[plexdb.log]") {
+    if constexpr (!enabled) { return; }
+
+    Producer p{"lazy_producer"};
+    CHECK(p.id == 0);
+
+    TestConsumer tc{};
+    plexdb_log_register_consumer(test_on_event, &tc);
+
+    message(p, "hello");
+    CHECK(p.id != 0);
+    CHECK(tc.message_count == 1);
+
+    plexdb_log_unregister_consumer(test_on_event, &tc);
+}
+
+TEST_CASE("message with message_id", "[plexdb.log]") {
+    if constexpr (!enabled) { return; }
+
+    TestConsumer tc{};
+    plexdb_log_register_consumer(test_on_event, &tc);
+
+    Producer p{"test_msg_id"};
+
+    SECTION("message_id is null by default") {
+        message(p, Level::Info, "hello");
+        CHECK(tc.message_count == 1);
+        CHECK(tc.last_message_id == nullptr);
+    }
+
+    SECTION("message_id is propagated") {
+        message(p, Level::Debug, "SELECT 1", "query.text");
+        CHECK(tc.message_count == 1);
+        CHECK(tc.last_level == static_cast<uint32_t>(Level::Debug));
+        CHECK(std::string(tc.last_message_id) == "query.text");
+    }
+
+    plexdb_log_unregister_consumer(test_on_event, &tc);
+}
+
+TEST_CASE("stat and producer catch-up on consumer registration", "[plexdb.log]") {
+    if constexpr (!enabled) { return; }
+
+    Producer p{"catchup_producer"};
+    Stat s{&p, "catchup_stat"};
+
+    // Force registration before consumer exists
+    stat(s, 100);
+    CHECK(p.id != 0);
+    CHECK(s.id != 0);
+
+    // Register consumer after producer+stat already registered
+    TestConsumer tc{};
+    plexdb_log_register_consumer(test_on_event, &tc);
+
+    // Catch-up should replay producer registration and stat meta
+    CHECK(tc.producer_registered_count >= 1);
+    CHECK(tc.meta_count >= 1);
 
     plexdb_log_unregister_consumer(test_on_event, &tc);
 }
