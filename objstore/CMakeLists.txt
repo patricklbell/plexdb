@@ -118,24 +118,6 @@ target_link_libraries(objstore
 )
 
 # =============================================================================
-# Plugins
-# =============================================================================
-if(PLEXDB_LOG_ENABLED)
-    add_library(objstore_log_file SHARED)
-    target_compile_features(objstore_log_file PRIVATE cxx_std_23)
-
-    target_sources(objstore_log_file
-        PRIVATE
-            plugins/log_file/log_file_plugin.cpp
-    )
-
-    target_include_directories(objstore_log_file
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/../plexdb/log
-    )
-endif()
-
-# =============================================================================
 # Executables
 # =============================================================================
 if(OBJSTORE_BUILD_SERVER)
@@ -170,7 +152,7 @@ if(BUILD_TESTS)
         FetchContent_Declare(
             Catch2
             GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-            GIT_TAG        v3.11.0
+            GIT_TAG        v3.13.0
         )
         FetchContent_MakeAvailable(Catch2)
     endif()
@@ -181,7 +163,7 @@ if(BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
     )
     file(GLOB_RECURSE OBJSTORE_TEST_MODULE_SOURCES CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/**/*.helper.cppm"
+        "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cppm"
     )
     target_sources(objstore_tests
         PRIVATE
@@ -195,6 +177,7 @@ if(BUILD_TESTS)
 
     target_include_directories(objstore_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+        ${CMAKE_CURRENT_SOURCE_DIR}/../plexdb/log
     )
 
     target_link_libraries(objstore_tests

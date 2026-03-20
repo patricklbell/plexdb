@@ -10,9 +10,25 @@ extern "C" {
 // ============================================================================
 // data types
 // ============================================================================
+typedef enum PlexdbLogLevel : uint32_t {
+    PLEXDB_LOG_TRACE = 0,
+    PLEXDB_LOG_DEBUG = 1,
+    PLEXDB_LOG_INFO  = 2,
+    PLEXDB_LOG_WARN  = 3,
+    PLEXDB_LOG_ERROR = 4,
+} PlexdbLogLevel;
+
+typedef enum PlexdbStatType : uint32_t {
+    PLEXDB_STAT_COUNTER = 0,  // monotonically increasing cumulative value
+    PLEXDB_STAT_GAUGE   = 1,  // point-in-time measurement that can go up/down
+} PlexdbStatType;
+
 typedef enum PlexdbLogEventType : uint32_t {
     PLEXDB_LOG_PRODUCER_REGISTERED = 1,  // producer announces itself
     PLEXDB_LOG_MESSAGE             = 2,  // generic string message
+    PLEXDB_LOG_STAT                = 3,  // structured numeric stat
+    PLEXDB_LOG_STAT_META           = 4,  // stat metadata (name, type for producer+stat_id pair)
+    PLEXDB_LOG_PRODUCER_META       = 5,  // producer metadata (key-value pair for a producer)
 } PlexdbLogEventType;
 
 typedef struct {
@@ -22,10 +38,31 @@ typedef struct {
 
 typedef struct {
     uint32_t    producer_id;
-    uint32_t    _pad;   // @padding
+    uint32_t    level;      // PlexdbLogLevel
     const char* text;
     size_t      text_len;
+    const char* message_id; // semantic key (e.g. "query.text"), NULL if unset
+    size_t      message_len;
 } PlexdbLogMessage;
+
+typedef struct {
+    uint32_t    producer_id;
+    uint32_t    stat_id;
+    int64_t     value;
+} PlexdbLogStat;
+
+typedef struct {
+    uint32_t    producer_id;
+    uint32_t    stat_id;
+    uint32_t    stat_type;  // PlexdbStatType
+    const char* name;
+} PlexdbLogStatMeta;
+
+typedef struct {
+    uint32_t    producer_id;
+    const char* key;
+    const char* value;
+} PlexdbLogProducerMeta;
 
 // @note fat struct with a type tag and union payload
 typedef struct {
@@ -34,6 +71,9 @@ typedef struct {
     union {
         PlexdbLogProducerRegistered producer_registered;
         PlexdbLogMessage            message;
+        PlexdbLogStat               stat;
+        PlexdbLogStatMeta           stat_meta;
+        PlexdbLogProducerMeta       producer_meta;
     };
 } PlexdbLogEvent;
 
@@ -49,9 +89,10 @@ typedef void (*PlexdbLogConsumerFn)(const PlexdbLogEvent* event, void* ctx);
 // @note Load-order contract: plugins MUST be loaded before main() starts
 //   (e.g. via LD_PRELOAD). A consumer only observes messages fired after
 //   plexdb_log_register_consumer returns. No buffering is performed.
-//   PLEXDB_LOG_PRODUCER_REGISTERED catch-up IS provided: all producers that
-//   registered before the consumer is added are replayed immediately, so the
-//   consumer always has a complete view of producer IDs and names.
+//   PLEXDB_LOG_PRODUCER_REGISTERED and PLEXDB_LOG_STAT_META catch-up IS
+//   provided: all producers and stats that registered before the consumer
+//   is added are replayed immediately, so the consumer always has a
+//   complete view of producer IDs, names, and stat metadata.
 void plexdb_log_register_consumer(PlexdbLogConsumerFn fn, void* ctx);
 void plexdb_log_unregister_consumer(PlexdbLogConsumerFn fn, void* ctx);
 

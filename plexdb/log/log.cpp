@@ -8,6 +8,7 @@ namespace plexdb::log {
     #ifdef PLEXDB_LOG_ENABLED
         constexpr unsigned MAX_CONSUMERS = 16;
         constexpr unsigned MAX_PRODUCERS = 32;
+        constexpr unsigned MAX_STATS     = 64;
 
         struct ConsumerEntry {
             PlexdbLogConsumerFn fn;
@@ -19,11 +20,21 @@ namespace plexdb::log {
             const char* name;
         };
 
+        struct StatInfo {
+            uint32_t    producer_id;
+            uint32_t    stat_id;
+            uint32_t    stat_type;
+            const char* name;
+        };
+
         static ConsumerEntry consumers[MAX_CONSUMERS];
         static unsigned      consumer_count = 0;
 
         static ProducerInfo  known_producers[MAX_PRODUCERS];
         static unsigned      producer_count = 0;
+
+        static StatInfo      known_stats[MAX_STATS];
+        static unsigned      stat_count = 0;
 
         // ========================================================================
 
@@ -32,7 +43,6 @@ namespace plexdb::log {
                 consumers[i].fn(&event, consumers[i].ctx);
         }
 
-        // Auto-assigns an ID, stores producer, fires to all current consumers.
         uint32_t internal_register_producer(const char* name) {
             static uint32_t next_id = 1;
             uint32_t id = next_id++;
@@ -56,10 +66,32 @@ namespace plexdb::log {
             }
         }
 
+        uint32_t internal_register_stat(uint32_t producer_id, uint32_t stat_type, const char* name) {
+            static uint32_t next_stat_id = 1;
+            uint32_t sid = next_stat_id++;
+
+            if (stat_count < MAX_STATS)
+                known_stats[stat_count++] = {producer_id, sid, stat_type, name};
+
+            PlexdbLogEvent e{};
+            e.type = PLEXDB_LOG_STAT_META;
+            e.stat_meta = {producer_id, sid, stat_type, name};
+            dispatch(e);
+            return sid;
+        }
+
+        void internal_unregister_stat(uint32_t producer_id, uint32_t stat_id) {
+            for (unsigned i = 0; i < stat_count; ++i) {
+                if (known_stats[i].producer_id == producer_id && known_stats[i].stat_id == stat_id) {
+                    known_stats[i] = known_stats[--stat_count];
+                    return;
+                }
+            }
+        }
+
         // Adds the consumer and replays PLEXDB_LOG_PRODUCER_REGISTERED for every
-        // producer registered so far (catch-up). Messages fired before this call
-        // are not buffered and will not be replayed — see load-order contract in
-        // log_abi.h.
+        // producer and PLEXDB_LOG_STAT_META for every stat registered so far
+        // (catch-up).
         static void register_consumer(PlexdbLogConsumerFn fn, void* ctx) {
             if (consumer_count >= MAX_CONSUMERS) return;
             consumers[consumer_count++] = {fn, ctx};
@@ -68,6 +100,14 @@ namespace plexdb::log {
                 PlexdbLogEvent e{};
                 e.type = PLEXDB_LOG_PRODUCER_REGISTERED;
                 e.producer_registered = {known_producers[i].id, known_producers[i].name};
+                fn(&e, ctx);
+            }
+
+            for (unsigned i = 0; i < stat_count; ++i) {
+                PlexdbLogEvent e{};
+                e.type = PLEXDB_LOG_STAT_META;
+                e.stat_meta = {known_stats[i].producer_id, known_stats[i].stat_id,
+                               known_stats[i].stat_type, known_stats[i].name};
                 fn(&e, ctx);
             }
         }
@@ -84,6 +124,8 @@ namespace plexdb::log {
         void dispatch(const PlexdbLogEvent&) {}
         uint32_t internal_register_producer(const char*) { return 0; }
         void internal_unregister_producer(uint32_t) {}
+        uint32_t internal_register_stat(uint32_t, uint32_t, const char*) { return 0; }
+        void internal_unregister_stat(uint32_t, uint32_t) {}
     #endif
 }
 

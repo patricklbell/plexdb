@@ -53,14 +53,14 @@ struct AssertHandlerInstaller {
 };
 static AssertHandlerInstaller g_assert_install;
 
-} // namespace
+}
 
 // Usage: place PLEXDB_TEST_SCOPE() at the top of a TEST_CASE or SECTION body.
 // If a plexdb assertion fires, the failure is recorded and the scope returns.
 #define PLEXDB_TEST_SCOPE()                                                     \
     do {                                                                        \
         g_recovery.active = true;                                               \
-        if (setjmp(g_recovery.buf) != 0) {                                     \
+        if (setjmp(g_recovery.buf) != 0) {                                      \
             FAIL_CHECK("Assert failed \"" << g_recovery.msg << "\" at "         \
                        << g_recovery.func << " in " << g_recovery.file << ":"   \
                        << g_recovery.line);                                     \

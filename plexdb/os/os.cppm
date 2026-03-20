@@ -6,3 +6,4 @@ export import plexdb.os.function;
 export import plexdb.os.socket;
 export import plexdb.os.sysinfo;
 export import plexdb.os.signal;
+export import plexdb.os.time;

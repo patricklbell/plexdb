@@ -13,6 +13,7 @@ import objstore.tcp;
 import objstore.parsers;
 import objstore.engine;
 import objstore.engine.statements;
+import objstore.log;
 
 using namespace plexdb;
 using namespace objstore;
@@ -479,6 +480,7 @@ namespace objstore::native {
             } break;
 
             case opcode::QUERY: {
+                S64 t0 = os::monotonic_us();
                 const U8* p = body;
                 String8 query = read_cql_long_string(p, body_end);
                 // Remaining bytes are query parameters (consistency, flags, etc.) - ignored
@@ -487,6 +489,7 @@ namespace objstore::native {
                 if (!cql_opt) {
                     auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
                     append_error_body(frame, engine::ExecutionStatus::SyntaxError, "Failed to parse CQL");
+                    objstore::log::db_operation_duration(os::monotonic_us() - t0);
                     break;
                 }
 
@@ -496,6 +499,7 @@ namespace objstore::native {
                     auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
                     String8 msg = result.message.length ? result.message : engine::to_str(result.status);
                     append_error_body(frame, result.status, msg);
+                    objstore::log::db_operation_duration(os::monotonic_us() - t0);
                     break;
                 }
 
@@ -521,13 +525,16 @@ namespace objstore::native {
                         assert_true(tbl != nullptr, "table not found for rows result");
                         auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
                         append_result_rows(frame, result, tbl);
+                        objstore::log::db_response_returned_rows(btree::size(tbl->btree));
                     }break;
                     case engine::ResultKind::VirtualRows:{
                         assert_true(result.virtual_rows.has_value(), "virtual rows missing");
                         auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
                         append_result_virtual_rows(frame, *result.virtual_rows);
+                        objstore::log::db_response_returned_rows(result.virtual_rows->rows.length);
                     }break;
                 }
+                objstore::log::db_operation_duration(os::monotonic_us() - t0);
             } break;
 
             case opcode::REGISTER: {
