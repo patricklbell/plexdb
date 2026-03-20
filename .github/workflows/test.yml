@@ -16,13 +16,28 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 \
+            libgrpc++-dev libprotobuf-dev protobuf-compiler protobuf-compiler-grpc
 
       - name: Configure
         run: cmake -B build -G Ninja -DBUILD_TESTS=ON -DPLEXDB_LOG_ENABLED=ON -DPLEXDB_DEBUG=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
 
       - name: Build
         run: ninja -C build
+
+      - name: Build OTLP plugin
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+          ninja -C build
+        working-directory: objstore/plugins/log_otel
+      
+      - name: Build file plugin
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+          ninja -C build
+        working-directory: objstore/plugins/log_file
 
       - name: Run plexdb tests
         run: ./build/plexdb/plexdb_tests --skip-benchmarks

@@ -15,7 +15,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 \
+            libgrpc++-dev libprotobuf-dev protobuf-compiler protobuf-compiler-grpc
 
       - name: Configure
         run: |
@@ -41,9 +42,19 @@ jobs:
           cp macros/macros.h pkg/plexdb/macros/
           tar -czf plexdb-linux-x64.tar.gz -C pkg plexdb
 
+      - name: Build OTLP plugin
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+          ninja -C build
+        working-directory: objstore/plugins/log_otel
+
       - name: Package objstore
         run: |
           cp build/objstore/objstore_server objstore-linux-x64
+
+      - name: Package OTLP plugin
+        run: cp objstore/plugins/log_otel/build/libobjstore_log_otel.so .
 
       - name: Upload objstore
         uses: actions/upload-artifact@v4
@@ -56,6 +67,12 @@ jobs:
         with:
           name: plexdb-linux-x64
           path: plexdb-linux-x64.tar.gz
+
+      - name: Upload OTLP plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: libobjstore_log_otel
+          path: libobjstore_log_otel.so
 
   release:
     needs: build
@@ -74,9 +91,15 @@ jobs:
         with:
           name: plexdb-linux-x64
 
+      - name: Download OTLP plugin
+        uses: actions/download-artifact@v4
+        with:
+          name: libobjstore_log_otel
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             objstore-linux-x64
             plexdb-linux-x64.tar.gz
+            libobjstore_log_otel.so

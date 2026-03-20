@@ -26,4 +26,4 @@
 - Stat types: `StatType::Counter` for monotonically increasing cumulative values, `StatType::Gauge` for point-in-time measurements. Default is `Gauge`.
 - When a consumer registers, all known producers and stat metadata (including stat types) are replayed (catch-up), so the consumer always has a complete view.
 - The plugin system (`plexdb/log/log_abi.h`) allows custom consumers. Register via `plexdb_log_register_consumer` to filter or redirect logs. See `objstore/plugins/log_file/log_file_plugin.cpp` for a reference plugin.
-- The OTLP plugin (`objstore/plugins/log_otel/log_otel_plugin.cpp`) exports metrics via OpenTelemetry (OTLP/HTTP JSON).
+- The OTLP plugin (`objstore/plugins/log_otel/log_otel_plugin.cpp`) exports metrics via OpenTelemetry (OTLP/gRPC). Built as a standalone project in `objstore/plugins/log_otel/`; load via `LD_PRELOAD`. Uses plaintext gRPC (`use_ssl_credentials = false`).
