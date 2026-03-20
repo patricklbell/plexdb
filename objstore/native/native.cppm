@@ -1,13 +1,16 @@
 module;
 #include "macros.h"
+#include "plexdb_coro.h"
 
 export module objstore.native;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.os.uring;
 import plexdb.os.containers;
 import plexdb.btree;
 import plexdb.tagged_union;
+import plexdb.coro;
 
 import objstore.tcp;
 import objstore.parsers;
@@ -309,22 +312,21 @@ namespace objstore::native {
     // ========================================================================
     // Response frame builder
     // ========================================================================
-    // Reserves FRAME_HEADER_SIZE bytes at the front of the chunk buffer, writes
-    // the body after, and fills in the 9-byte header when the BufferedString8 flushes.
-    inline auto make_native_frame(tcp::Connection* conn, tcp::Chunk* chunk, tcp::AsyncWriteFunctor* write, U8 op, S16 stream) {
-        assert_true(chunk->buffer_idx >= 0, "cannot use large chunk for native response");
-
-        U64 chunk_size = conn->chunk_chain.chunk_size;
+    // Writes the response body into the caller-supplied registered buffer,
+    // filling in the 9-byte CQL frame header when the BufferedString8 flushes.
+    inline auto make_native_frame(tcp::CoroConnectionIO* io, U32 buffer_idx, U8 op, S16 stream) {
+        U8*  buf         = io->buffer_ptr(buffer_idx);
+        U64  buffer_size = io->buffer_size();
 
         return BufferedString8(
             TArrayView<char>(
-                reinterpret_cast<char*>(chunk->data.ptr + FRAME_HEADER_SIZE),
-                chunk_size - FRAME_HEADER_SIZE
+                reinterpret_cast<char*>(buf + FRAME_HEADER_SIZE),
+                buffer_size - FRAME_HEADER_SIZE
             ),
-            [=](const char* data, U64 length, bool is_final) {
-                assert_true_not_implemented(is_final, "native response body too large for chunk buffer");
+            [=](const char* /*data*/, U64 length, bool is_final) {
+                assert_true_not_implemented(is_final, "native response body too large for buffer");
 
-                U8* hdr = chunk->data.ptr;
+                U8* hdr = buf;
                 hdr[0] = RESPONSE_VERSION;
                 hdr[1] = 0x00;  // flags
                 hdr[2] = U8(U16(stream) >> 8);
@@ -336,7 +338,7 @@ namespace objstore::native {
                 hdr[7] = U8(body_len >> 8);
                 hdr[8] = U8(body_len);
 
-                (*write)(conn, chunk->buffer_idx, 0, FRAME_HEADER_SIZE + U32(length));
+                io->send(buffer_idx, 0, FRAME_HEADER_SIZE + U32(length));
             }
         );
     }
@@ -422,8 +424,8 @@ namespace objstore::native {
     void handle_frame(
         NativeState& state,
         engine::Engine& engine,
-        tcp::Connection* conn,
-        tcp::AsyncWriteFunctor* write,
+        tcp::CoroConnectionIO* io,
+        U32 buffer_idx,
         const U8* header,
         const U8* body,
         S32 body_len
@@ -431,18 +433,17 @@ namespace objstore::native {
         S16 stream  = read_be_s16(header + 2);
         U8  op      = header[4];
 
-        tcp::Chunk& chunk = *front(conn->chunk_chain.chunks);
         const U8* body_end = body + body_len;
 
         switch (op) {
             case opcode::STARTUP: {
                 state.startup_done = true;
-                auto frame = make_native_frame(conn, &chunk, write, opcode::READY, stream);
+                auto frame = make_native_frame(io, buffer_idx, opcode::READY, stream);
                 // empty body
             } break;
 
             case opcode::OPTIONS: {
-                auto frame = make_native_frame(conn, &chunk, write, opcode::SUPPORTED, stream);
+                auto frame = make_native_frame(io, buffer_idx, opcode::SUPPORTED, stream);
                 // [string multimap]: n pairs of ([string] key, [string list] values)
                 append_be_u16(frame, 1);
                 append_cql_string(frame, "CQL_VERSION");
@@ -457,7 +458,7 @@ namespace objstore::native {
 
                 auto cql_opt = parsers::cql::parse(query);
                 if (!cql_opt) {
-                    auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
+                    auto frame = make_native_frame(io, buffer_idx, opcode::ERROR, stream);
                     append_error_body(frame, engine::ExecutionStatus::SyntaxError, "Failed to parse CQL");
                     break;
                 }
@@ -465,7 +466,7 @@ namespace objstore::native {
                 engine::ExecutionResult result = engine::execute(engine, *cql_opt);
 
                 if (result.status != engine::ExecutionStatus::Success) {
-                    auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
+                    auto frame = make_native_frame(io, buffer_idx, opcode::ERROR, stream);
                     String8 msg = result.message.length ? result.message : engine::to_str(result.status);
                     append_error_body(frame, result.status, msg);
                     break;
@@ -473,17 +474,17 @@ namespace objstore::native {
 
                 switch (result.kind) {
                     case engine::ResultKind::Void:{
-                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                        auto frame = make_native_frame(io, buffer_idx, opcode::RESULT, stream);
                         append_result_void(frame);
                     }break;
                     case engine::ResultKind::SchemaChange:{
                         String8 change_type = result.message.length ? result.message : "UPDATED";
                         String8 target      = result.table.length   ? "TABLE"        : "KEYSPACE";
-                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                        auto frame = make_native_frame(io, buffer_idx, opcode::RESULT, stream);
                         append_result_schema_change(frame, change_type, target, result.keyspace, result.table);
                     }break;
                     case engine::ResultKind::UseKeyspace:{
-                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                        auto frame = make_native_frame(io, buffer_idx, opcode::RESULT, stream);
                         append_result_set_keyspace(frame, result.keyspace);
                     }break;
                     case engine::ResultKind::Rows:{
@@ -491,12 +492,12 @@ namespace objstore::native {
                         assert_true(ks != nullptr, "keyspace not found for rows result");
                         auto tbl = schema::read_table(engine.schema, *ks, result.table);
                         assert_true(tbl != nullptr, "table not found for rows result");
-                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                        auto frame = make_native_frame(io, buffer_idx, opcode::RESULT, stream);
                         append_result_rows(frame, result, tbl);
                     }break;
                     case engine::ResultKind::VirtualRows:{
                         assert_true(result.virtual_rows.has_value(), "virtual rows missing");
-                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
+                        auto frame = make_native_frame(io, buffer_idx, opcode::RESULT, stream);
                         append_result_virtual_rows(frame, *result.virtual_rows);
                     }break;
                 }
@@ -504,7 +505,7 @@ namespace objstore::native {
 
             case opcode::REGISTER: {
                 // Ignore event registration, respond with READY
-                auto frame = make_native_frame(conn, &chunk, write, opcode::READY, stream);
+                auto frame = make_native_frame(io, buffer_idx, opcode::READY, stream);
             } break;
 
             case opcode::PREPARE: {
@@ -520,7 +521,7 @@ namespace objstore::native {
             } break;
 
             default: {
-                auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
+                auto frame = make_native_frame(io, buffer_idx, opcode::ERROR, stream);
                 append_error_body(frame, engine::ExecutionStatus::Invalid, "Unknown opcode");
             } break;
         }
@@ -537,43 +538,51 @@ export namespace objstore::native {
     Optional<String8> run(U16 port, os::Notifier& signal_pipe, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback) {
         MapFixedSentinel<os::Handle, NativeState, 2_u64*tcp::MAX_CONCURRENT_CONNECTIONS> client_to_state;
 
-        const auto on_chunk = [&engine, &client_to_state](const tcp::Request& req) -> tcp::RequestStatus {
-            NativeState& state = find_or_insert(client_to_state, req.connection->client);
+        auto on_connection = [&](tcp::CoroConnectionIO& io) -> coro::Task {
+            NativeState& state = find_or_insert(client_to_state, io.connection->client);
 
-            // @todo async, proper chunk chaining
-            // Append all new data from the chunk chain to our receive buffer.
-            // Since we always return Handled, the chain contains only data from the current read.
-            for (tcp::Chunk& chunk : req.connection->chunk_chain.chunks) {
-                for (U64 i = 0; i < chunk.data.length; i++)
-                    push_back(state.recv_buf, chunk.data.ptr[i]);
-            }
+            while (true) {
+                auto recv_result = co_await io.recv();
 
-            // Process one complete frame (if available)
-            if (state.recv_buf.length >= FRAME_HEADER_SIZE) {
-                const U8* hdr = state.recv_buf.ptr;
-                S32 body_len = read_be_s32(hdr + 5);
+                if (!recv_result.valid()) {
+                    try_remove(client_to_state, io.connection->client);
+                    co_return;
+                }
 
-                if (body_len >= 0 && state.recv_buf.length >= FRAME_HEADER_SIZE + U64(body_len)) {
-                    handle_frame(state, engine, req.connection, req.write, hdr, hdr + FRAME_HEADER_SIZE, body_len);
+                // Append recv data to our frame-reassembly buffer.
+                for (int i = 0; i < recv_result.byte_count; i++)
+                    push_back(state.recv_buf, recv_result.data[i]);
 
-                    // Remove the consumed frame from the front of recv_buf
-                    U64 frame_size = FRAME_HEADER_SIZE + U64(body_len);
-                    U64 remaining  = state.recv_buf.length - frame_size;
-                    if (remaining > 0)
-                        os::memory_move(state.recv_buf.ptr, state.recv_buf.ptr + frame_size, remaining);
-                    state.recv_buf.length = remaining;
+                // Process one complete CQL frame if available.
+                if (state.recv_buf.length >= FRAME_HEADER_SIZE) {
+                    const U8* hdr     = state.recv_buf.ptr;
+                    S32       body_len = read_be_s32(hdr + 5);
+
+                    if (body_len >= 0 &&
+                        state.recv_buf.length >= FRAME_HEADER_SIZE + U64(body_len))
+                    {
+                        // Reuse the recv buffer for the response: data has been
+                        // copied to recv_buf so the registered buffer is free.
+                        handle_frame(state, engine, &io, recv_result.buffer_idx,
+                                     hdr, hdr + FRAME_HEADER_SIZE, body_len);
+
+                        U64 frame_size = FRAME_HEADER_SIZE + U64(body_len);
+                        U64 remaining  = state.recv_buf.length - frame_size;
+                        if (remaining > 0)
+                            os::memory_move(state.recv_buf.ptr,
+                                            state.recv_buf.ptr + frame_size, remaining);
+                        state.recv_buf.length = remaining;
+
+                        // buffer_idx is now in-flight for the send; the write
+                        // completion handler in listen() releases it.
+                    } else {
+                        // Incomplete frame — release buffer and wait for more data.
+                        io.release_recv(recv_result.buffer_idx);
+                    }
+                } else {
+                    io.release_recv(recv_result.buffer_idx);
                 }
             }
-
-            // Always release the chunk chain; unprocessed data is in recv_buf
-            return tcp::RequestStatus::Handled;
-        };
-
-        const auto on_open  = [](tcp::Connection*) {};
-
-        const auto on_close = [&client_to_state](tcp::Connection* connection) {
-            if (connection != nullptr)
-                try_remove(client_to_state, connection->client);
         };
 
         {
@@ -587,13 +596,22 @@ export namespace objstore::native {
             if (!os::socket_listen(socket, 128))
                 return {"failed to listen on server socket"};
 
+            auto ring_settings = uring::get_ring_settings();
+            if (!ring_settings->recommended)
+                return {"io_uring not available"};
+
+            uring::Ring ring{
+                socket,
+                ring_settings->recommended_queue_depth,
+                ring_settings->recommended_buffer_size,
+                ring_settings->recommended_buffer_count
+            };
+            if (!ring)
+                return {"failed to create io_uring ring"};
+
             on_ready_callback();
 
-            tcp::listen(
-                socket,
-                on_chunk, on_open, on_close,
-                signal_pipe, should_exit
-            );
+            tcp::listen(ring, on_connection, signal_pipe, should_exit);
 
             return {};
         }

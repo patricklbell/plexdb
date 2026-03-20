@@ -1,6 +1,6 @@
 module;
 #include "macros.h"
-#include <coroutine>
+#include "plexdb_coro.h"
 
 export module plexdb.coro;
 

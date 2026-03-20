@@ -56,6 +56,10 @@ export namespace plexdb::uring {
 
     U8* get_buffer_ptr(Ring& ring, U32 buffer_idx);
 
+    // Returns the io_uring file descriptor so callers can add it to a Poll set
+    // and be woken when completions are ready.
+    os::Handle ring_fd(const Ring& ring);
+
     // ========================================================================
     // completion queue entry
     // ========================================================================

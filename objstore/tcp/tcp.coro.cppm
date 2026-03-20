@@ -1,6 +1,6 @@
 module;
 #include "macros.h"
-#include <coroutine>
+#include "plexdb_coro.h"
 
 export module objstore.tcp.coro;
 
@@ -216,6 +216,30 @@ export namespace objstore::tcp {
             if (buffer_idx != CORO_INVALID_BUFFER_IDX)
                 (*buffer_infos)[buffer_idx].client = os::zero_handle();
         }
+
+        // ----------------------------------------------------------------
+        // acquire_write_buffer
+        //   Claim a free registered buffer for writing a response.
+        //   Returns CORO_INVALID_BUFFER_IDX if no buffer is available.
+        //   Caller must call send() with the returned buffer_idx (which
+        //   releases the buffer on write completion), or call release_recv()
+        //   to release it manually if the send is cancelled.
+        // ----------------------------------------------------------------
+        U32 acquire_write_buffer() noexcept {
+            U32 idx = coro_get_free_buffer(
+                *next_free_buffer_idx, *buffer_infos,
+                ring->buffer_count);
+            if (idx == CORO_INVALID_BUFFER_IDX) return CORO_INVALID_BUFFER_IDX;
+            (*buffer_infos)[idx].client = connection->client;
+            return idx;
+        }
+
+        // Pointer to the start of a registered buffer.
+        U8* buffer_ptr(U32 buffer_idx) const noexcept {
+            return uring::get_buffer_ptr(*ring, buffer_idx);
+        }
+
+        U64 buffer_size() const noexcept { return ring->buffer_size; }
     };
 
     // ========================================================================
@@ -227,19 +251,17 @@ export namespace objstore::tcp {
     };
 
     // ========================================================================
-    // listen_coro
+    // listen
     //   Event loop that drives connection coroutines via io_uring.
-    //   Replaces the on_chunk / on_open / on_close triple with a single
-    //   coroutine per connection.
+    //   Each accepted connection spawns one coroutine via on_connection.
     //
-    //   @note The existing io_uring ring setup and SQE/CQE machinery is
-    //         preserved.  Only the dispatch layer changes: CoroEvent CQEs
-    //         are forwarded directly to the waiting IoAwaitable.
+    //   @note The io_uring ring setup and SQE/CQE machinery is preserved.
+    //         CoroEvent CQEs are forwarded directly to the waiting IoAwaitable.
     //
     //   @note Maximum in-flight IO is implicitly capped by
     //         MAX_CONCURRENT_CONNECTIONS (one recv per connection).
     // ========================================================================
-    Stats listen_coro(
+    Stats listen(
         uring::Ring& ring,
         const OnConnectionCoro auto& on_connection,
         const os::Notifier& interrupt,
@@ -368,6 +390,7 @@ export namespace objstore::tcp {
         os::Poll poll{};
         poll_unblock_on(poll, interrupt);
         poll_unblock_on(poll, ring.server);
+        poll_unblock_on(poll, uring::ring_fd(ring));  // wake on io_uring completions
 
         uring::sqe_push_multishot_accept(ring);
 

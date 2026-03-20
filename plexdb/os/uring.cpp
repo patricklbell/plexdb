@@ -258,6 +258,12 @@ namespace plexdb::uring {
             return this->ring_vptr != nullptr;
         }
 
+        os::Handle ring_fd(const Ring& ring) {
+            assert_true(static_cast<bool>(ring), "invalid ring");
+            auto* uring_ring = static_cast<io_uring*>(ring.ring_vptr);
+            return fd_to_handle(uring_ring->ring_fd);
+        }
+
         // ========================================================================
         // completion queue entry
         // ========================================================================
@@ -549,6 +555,11 @@ namespace plexdb::uring {
 
         Ring::operator bool() const {
             return false;
+        }
+
+        os::Handle ring_fd(const Ring& /*ring*/) {
+            assert_always_true(false, "io_uring not available on this platform");
+            return os::zero_handle();
         }
 
         // ========================================================================

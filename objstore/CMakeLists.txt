@@ -121,7 +121,6 @@ target_sources(objstore
         log/log.cpp
         parsers/parsers.cpp
         tcp/tcp.detail.cpp
-        tcp/tcp.types.cpp
         http/http.cpp
         native/native.cpp
         repl/repl.cpp
