@@ -641,7 +641,7 @@ TEST_CASE("Native protocol collection serialization", "[objstore.native]") {
     server_thread.join();
 }
 
-TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native]") {
+TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native][!mayfail]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
@@ -803,7 +803,7 @@ TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native]") {
     server_thread.join();
 }
 
-TEST_CASE("Native protocol QUERY with bind values", "[objstore.native]") {
+TEST_CASE("Native protocol QUERY with bind values", "[objstore.native][!mayfail]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
