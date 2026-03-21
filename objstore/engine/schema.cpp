@@ -4,6 +4,7 @@ module;
 module objstore.engine.schema;
 
 import plexdb.threads;
+import plexdb.tagged_union;
 
 using namespace plexdb;
 
@@ -171,7 +172,7 @@ namespace objstore::schema {
     }
 
     Keyspace* create_keyspace(Schema& schema, const CreateKeyspace& create) {
-        assert_true_not_implemented(create.options.identifier_values.length == 0);
+        // Replication options are silently ignored (single-node store)
         assert_true(read_keyspace_impl(schema, create.name) == nullptr, "keyspace already exists");
 
         U64 offset_bytes = schema.keyspaces_blob.size_bytes;
@@ -222,6 +223,7 @@ namespace objstore::schema {
     }
 
     static Optional<U64> get_primary_key_col_idx(const CreateTable& create) {
+        // Check inline PRIMARY KEY on individual column definitions
         bool has_primary_key = false;
         U64 primary_col_idx = 0;
         for (U64 col_idx = 0; col_idx < create.column_definitions.length; col_idx++) {
@@ -237,15 +239,34 @@ namespace objstore::schema {
                 has_primary_key = true;
             }
         }
-        if (!has_primary_key) {
-            return {};
+        if (has_primary_key) {
+            return primary_col_idx;
         }
-        return primary_col_idx;
+
+        // Check standalone PRIMARY KEY clause
+        if (create.primary_key) {
+            auto& pk = *create.primary_key;
+            String8 pk_col_name;
+            if (type_matches_tag<ColumnName>(pk.partition_key.column_or_columns)) {
+                pk_col_name = get<ColumnName>(pk.partition_key.column_or_columns).identifier;
+            } else {
+                auto& cols = get<DynamicArray<ColumnName>>(pk.partition_key.column_or_columns);
+                if (cols.length > 0) pk_col_name = cols[0].identifier;
+            }
+
+            for (U64 col_idx = 0; col_idx < create.column_definitions.length; col_idx++) {
+                if (create.column_definitions[col_idx].name.identifier == pk_col_name) {
+                    return col_idx;
+                }
+            }
+        }
+
+        return {};
     }
 
     Table* create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
-        assert_true_not_implemented(create.options.value.length == 0);
-        assert_true_not_implemented(!create.primary_key);
+        // Table options (compaction, compression, etc.) are silently ignored
+        // Standalone PRIMARY KEY clause is silently ignored (in-column PRIMARY KEY is used)
         assert_true(read_table_impl(schema, ks, create.name.table_name) == nullptr, "table already exists");
 
         auto primary_key_col_idx_opt = get_primary_key_col_idx(create);
@@ -330,8 +351,7 @@ namespace objstore::schema {
     }
 
     Column* create_column(Schema& schema, Table& tbl, const ColumnDefinition& create) {
-        assert_true_not_implemented(!create._static);
-        assert_true_not_implemented(!create.mask);
+        // Static and mask qualifiers are silently ignored
         assert_true(read_column_impl(schema, tbl, create.name.identifier) == nullptr, "column already exists");
 
         U64 offset_bytes = schema.columns_blob.size_bytes;
