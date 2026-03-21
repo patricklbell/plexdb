@@ -597,6 +597,7 @@ namespace objstore::engine {
         const auto& nv = get<Insert::NamesValues>(stmt.insert_clause);
 
         for (U64 i = 0; i < nv.values.length; i++) {
+            // @todo nested bind markers (e.g. in a function argument)
             if (type_matches_tag<BindMarker>(nv.values[i].value)) {
                 String8 col_name = nv.names[i].identifier;
                 CqlType col_type = types::make_native(types::text);
@@ -647,14 +648,19 @@ namespace objstore::engine {
         return { .status = ExecutionStatus::Success, .id = query_hash, .entry = &entry };
     }
 
+    // @note @warn MOVES from bound_values
     static void bind_values_to_statement(Statement& stmt, DynamicArray<Constant>& bound_values) {
         visit(stmt.value, [&](auto& s) {
             using T = RemoveCVRef<decltype(s)>;
             if constexpr (SameAs<T, Insert>) {
-                if (!type_matches_tag<Insert::NamesValues>(s.insert_clause)) return;
+                if (!type_matches_tag<Insert::NamesValues>(s.insert_clause)) {
+                    return;
+                }
+                
                 auto& nv = get<Insert::NamesValues>(s.insert_clause);
                 U64 bind_idx = 0;
                 for (U64 i = 0; i < nv.values.length && bind_idx < bound_values.length; i++) {
+                    // @todo nested bind makrers
                     if (type_matches_tag<BindMarker>(nv.values[i].value)) {
                         nv.values[i].value = move(bound_values[bind_idx]);
                         bind_idx++;
@@ -664,6 +670,7 @@ namespace objstore::engine {
         });
     }
 
+    // @note takes rvalue ref to ensure bound_values can be moved
     ExecutionResult execute_prepared(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values) {
         auto* entry = find(engine.prepared_cache, prepared_id);
         if (entry == nullptr) {
