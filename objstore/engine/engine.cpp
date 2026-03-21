@@ -1,6 +1,8 @@
 module objstore.engine;
 
 import plexdb.os;
+import plexdb.os.dynamic_tagged_union;
+import objstore.parsers;
 
 namespace objstore::engine {
     Engine::Engine(Pager* in_pager) : schema(in_pager, in_pager->header.root_page), pager(in_pager) {}
@@ -576,5 +578,110 @@ namespace objstore::engine {
                 static_assert(false, "Unhandled statement type in engine::execute");
             }
         });
+    }
+
+    // ========================================================================
+    // prepared statements
+    // ========================================================================
+    static bool collect_bind_variables_insert(Engine& engine, const Insert& stmt, PreparedEntry& entry) {
+        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+        entry.keyspace = AutoString8(ks_name);
+        entry.table = AutoString8(stmt.table.table_name);
+
+        auto ks = schema::read_keyspace(engine.schema, ks_name);
+        if (ks == nullptr) return false;
+        auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name);
+        if (tbl == nullptr) return false;
+
+        if (!type_matches_tag<Insert::NamesValues>(stmt.insert_clause)) return false;
+        const auto& nv = get<Insert::NamesValues>(stmt.insert_clause);
+
+        for (U64 i = 0; i < nv.values.length; i++) {
+            if (type_matches_tag<BindMarker>(nv.values[i].value)) {
+                String8 col_name = nv.names[i].identifier;
+                CqlType col_type = types::make_native(types::text);
+
+                for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                    if (tbl->cols[ci].name == col_name) {
+                        col_type = tbl->cols[ci].type;
+                        break;
+                    }
+                }
+
+                BindVariableSpec spec;
+                spec.name = AutoString8(col_name);
+                spec.type = col_type;
+                push_back(entry.bind_variables, move(spec));
+
+                if (tbl->primary_col_idx < tbl->cols.length && tbl->cols[tbl->primary_col_idx].name == col_name) {
+                    entry.pk_index = S32(entry.bind_variables.length - 1);
+                }
+            }
+        }
+        return true;
+    }
+
+    PrepareResult prepare(Engine& engine, String8 query) {
+        U64 query_hash = hash(query);
+
+        auto* existing = find(engine.prepared_cache, query_hash);
+        if (existing != nullptr) {
+            return { .status = ExecutionStatus::Success, .id = query_hash, .entry = existing };
+        }
+
+        auto cql_opt = parsers::cql::parse(query);
+        if (!cql_opt) {
+            return { .status = ExecutionStatus::SyntaxError, .message = "Failed to parse CQL" };
+        }
+
+        auto& entry = insert(engine.prepared_cache, query_hash);
+        entry.query_string = AutoString8(query);
+
+        visit(cql_opt->value, [&](const auto& stmt) {
+            using T = RemoveCVRef<decltype(stmt)>;
+            if constexpr (SameAs<T, Insert>) {
+                collect_bind_variables_insert(engine, stmt, entry);
+            }
+        });
+
+        return { .status = ExecutionStatus::Success, .id = query_hash, .entry = &entry };
+    }
+
+    static void bind_values_to_statement(Statement& stmt, DynamicArray<Constant>& bound_values) {
+        visit(stmt.value, [&](auto& s) {
+            using T = RemoveCVRef<decltype(s)>;
+            if constexpr (SameAs<T, Insert>) {
+                if (!type_matches_tag<Insert::NamesValues>(s.insert_clause)) return;
+                auto& nv = get<Insert::NamesValues>(s.insert_clause);
+                U64 bind_idx = 0;
+                for (U64 i = 0; i < nv.values.length && bind_idx < bound_values.length; i++) {
+                    if (type_matches_tag<BindMarker>(nv.values[i].value)) {
+                        nv.values[i].value = move(bound_values[bind_idx]);
+                        bind_idx++;
+                    }
+                }
+            }
+        });
+    }
+
+    ExecutionResult execute_prepared(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values) {
+        auto* entry = find(engine.prepared_cache, prepared_id);
+        if (entry == nullptr) {
+            return {
+                .status = ExecutionStatus::Invalid,
+                .message = "Prepared statement not found",
+            };
+        }
+
+        auto cql_opt = parsers::cql::parse(String8(entry->query_string));
+        if (!cql_opt) {
+            return {
+                .status = ExecutionStatus::ServerError,
+                .message = "Failed to re-parse prepared query",
+            };
+        }
+
+        bind_values_to_statement(*cql_opt, bound_values);
+        return execute(engine, *cql_opt);
     }
 }

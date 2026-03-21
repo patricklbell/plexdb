@@ -9,6 +9,7 @@ import objstore.engine.statements;
 import plexdb.base;
 import plexdb.os;
 import plexdb.tagged_union;
+import plexdb.os.dynamic_tagged_union;
 import plexdb.pager;
 import plexdb.blob;
 import plexdb.btree;
@@ -16,10 +17,29 @@ import plexdb.btree;
 using namespace plexdb;
 
 export namespace objstore::engine {
+    // ========================================================================
+    // prepared statement cache
+    // ========================================================================
+    struct BindVariableSpec {
+        AutoString8 name;
+        CqlType type;
+    };
+
+    struct PreparedEntry {
+        AutoString8 query_string;
+        AutoString8 keyspace;
+        AutoString8 table;
+        DynamicArray<BindVariableSpec> bind_variables;
+        S32 pk_index = -1;
+    };
+
+    constexpr U64 MAX_PREPARED_STATEMENTS = 1024;
+
     struct Engine {
         Pager* pager;
         schema::Schema schema;
         AutoString8 current_keyspace{""};
+        MapFixedSentinel<U64, PreparedEntry, MAX_PREPARED_STATEMENTS> prepared_cache;
 
         Engine(Pager* in_pager);
     };
@@ -121,4 +141,17 @@ export namespace objstore::engine {
     };
 
     ExecutionResult execute(Engine& engine, const Statement& statement);
+
+    // ========================================================================
+    // prepared statements
+    // ========================================================================
+    struct PrepareResult {
+        ExecutionStatus status = ExecutionStatus::Success;
+        String8 message = "";
+        U64 id = 0;
+        PreparedEntry* entry = nullptr;
+    };
+
+    PrepareResult prepare(Engine& engine, String8 query);
+    ExecutionResult execute_prepared(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values);
 }
