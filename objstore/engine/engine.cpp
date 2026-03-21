@@ -621,10 +621,15 @@ namespace objstore::engine {
     }
 
     static void bind_values_to_statement(Statement& stmt, DynamicArray<Constant>& bound_values) {
+        if (bound_values.length == 0)
+            return;
+
         visit(stmt.value, [&](auto& s) {
             using T = RemoveCVRef<decltype(s)>;
             if constexpr (SameAs<T, Insert>) {
-                if (!type_matches_tag<Insert::NamesValues>(s.insert_clause)) return;
+                if (!type_matches_tag<Insert::NamesValues>(s.insert_clause))
+                    return;
+
                 auto& nv = get<Insert::NamesValues>(s.insert_clause);
                 U64 bind_idx = 0;
                 for (U64 i = 0; i < nv.values.length && bind_idx < bound_values.length; i++) {
@@ -638,7 +643,7 @@ namespace objstore::engine {
         });
     }
 
-    ExecutionResult execute_with_values(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values) {
+    ExecutionResult execute(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values) {
         bind_values_to_statement(statement, bound_values);
         return execute(engine, statement);
     }
@@ -686,11 +691,11 @@ namespace objstore::engine {
         return { .status = ExecutionStatus::Success, .id = query_hash, .entry = &entry };
     }
 
-    PreparedEntry* find_prepared(Engine& engine, U64 prepared_id) {
+    PreparedEntry* try_get_prepared(Engine& engine, U64 prepared_id) {
         return find(engine.prepared_cache, prepared_id);
     }
 
-    ExecutionResult execute_prepared(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values) {
+    ExecutionResult execute(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values) {
         auto* entry = find(engine.prepared_cache, prepared_id);
         if (entry == nullptr) {
             return { .status = ExecutionStatus::Invalid, .message = "Prepared statement not found" };
@@ -701,6 +706,6 @@ namespace objstore::engine {
             return { .status = ExecutionStatus::ServerError, .message = "Failed to re-parse prepared query" };
         }
 
-        return execute_with_values(engine, *cql_opt, move(bound_values));
+        return execute(engine, *cql_opt, move(bound_values));
     }
 }

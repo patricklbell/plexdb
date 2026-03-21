@@ -623,51 +623,50 @@ namespace objstore::native {
         }
     }
 
-    // ========================================================================
-    // Query parameter reading
-    // ========================================================================
-    DynamicArray<Constant> read_query_parameter_values(
-        const U8*& p, const U8* end,
-        const DynamicArray<engine::BindVariableSpec>& bind_specs
-    ) {
+    // @todo user input error handling
+    DynamicArray<Constant> read_query_parameter_values(const U8*& p, const U8* end, const DynamicArray<engine::BindVariableSpec>& bind_specs) {
         DynamicArray<Constant> bound_values;
         if (p + 2 > end) return bound_values;
-        p += 2; // skip consistency [short]
+        p += 2; // skip consistency [short] @todo
         if (p >= end) return bound_values;
 
         U8 flags = *p++;
         if (!(flags & 0x01)) return bound_values;
 
-        assert_true(p + 2 <= end, "truncated values count");
+        assert_true_not_implemented(p + 2 <= end, "error handling for truncated values count not implemented");
         U16 n_values = read_be_u16(p);
         p += 2;
 
         if (flags & 0x40) {
-            for (U64 bi = 0; bi < bind_specs.length; bi++)
+            for (U64 bi = 0; bi < bind_specs.length; bi++) {
                 push_back(bound_values, Constant{.value = Null{}});
-            for (U16 i = 0; i < n_values && p < end; i++) {
+            }
+            for (U16 value_idx = 0; value_idx < n_values && p < end; value_idx++) {
                 String8 name = read_cql_string(p, end);
-                NativeType dtype = types::text;
-                U64 target_idx = bind_specs.length;
-                for (U64 bi = 0; bi < bind_specs.length; bi++) {
-                    if (bind_specs[bi].name == name) {
-                        dtype = bind_specs[bi].type.native.value_dtype;
-                        target_idx = bi;
+                
+                // linear search @todo fixed hash map?
+                NativeType dtype;
+                U64 bind_spec_idx = bind_specs.length;
+                for (U64 idx = 0; idx < bind_specs.length; idx++) {
+                    if (bind_specs[idx].name == name) {
+                        dtype = bind_specs[idx].type.native.value_dtype;
+                        bind_spec_idx = idx;
                         break;
                     }
                 }
-                Constant val = read_cql_value_as_constant(p, end, dtype);
-                if (target_idx < bind_specs.length)
-                    bound_values[target_idx] = move(val);
+
+                assert_true_not_implemented(bind_spec_idx < bind_specs.length, "error handling for invalid bind specification not implemented");
+                bound_values[bind_spec_idx] = read_cql_value_as_constant(p, end, dtype);
             }
         } else {
-            for (U16 i = 0; i < n_values && p < end; i++) {
-                NativeType dtype = (i < bind_specs.length)
-                    ? bind_specs[i].type.native.value_dtype
-                    : types::text;
+            for (U16 bind_spec_idx = 0; bind_spec_idx < n_values && p < end; bind_spec_idx++) {
+                assert_true_not_implemented(bind_spec_idx < bind_specs.length, "error handling for invalid bind specification not implemented");
+
+                NativeType dtype = bind_specs[bind_spec_idx].type.native.value_dtype;
                 push_back(bound_values, read_cql_value_as_constant(p, end, dtype));
             }
         }
+
         return bound_values;
     }
 
@@ -733,6 +732,7 @@ namespace objstore::native {
 
     // ========================================================================
     // Frame dispatcher
+    //   @todo add asserts for unhandled features
     // ========================================================================
     void handle_frame(
         NativeState& state,
@@ -749,9 +749,11 @@ namespace objstore::native {
         tcp::Chunk& chunk = *front(conn->chunk_chain.chunks);
         const U8* body_end = body + body_len;
 
-        log::native_info(fmt("RX frame: op=%02x(%s) stream=%d body_len=%d hdr=%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+        log::native_info(fmt(
+            "RX frame: op=%02x(%s) stream=%d body_len=%d hdr=%02x%02x%02x%02x%02x%02x%02x%02x%02x",
             op, (const char*)op_codes_to_str(op), (int)(S16)stream, body_len,
-            header[0],header[1],header[2],header[3],header[4],header[5],header[6],header[7],header[8]));
+            header[0],header[1],header[2],header[3],header[4],header[5],header[6],header[7],header[8]
+        ));
 
         switch (op) {
             case op_codes::STARTUP: {
@@ -776,7 +778,7 @@ namespace objstore::native {
                 append_be_u16(frame, 1);
                 append_cql_string(frame, "3.0.0");
                 append_cql_string(frame, "COMPRESSION");
-                append_be_u16(frame, 0); // no compression algorithms supported
+                append_be_u16(frame, 0);
             } break;
 
             case op_codes::QUERY: {
@@ -794,9 +796,7 @@ namespace objstore::native {
 
                 auto bind_specs = engine::collect_bind_variables(engine, *cql_opt);
                 auto bound_values = read_query_parameter_values(p, body_end, bind_specs);
-                engine::ExecutionResult result = bound_values.length > 0
-                    ? engine::execute_with_values(engine, *cql_opt, move(bound_values))
-                    : engine::execute(engine, *cql_opt);
+                engine::ExecutionResult result = engine::execute(engine, *cql_opt, move(bound_values));
 
                 if (send_error_if_failed(result, conn, &chunk, write, stream)) {
                     objstore::log::db_operation_duration(os::monotonic_us() - t0);
@@ -808,7 +808,7 @@ namespace objstore::native {
             } break;
 
             case op_codes::REGISTER: {
-                // Ignore event registration, respond with READY
+                // ignore event registration, respond with READY @todo
                 auto frame = make_native_frame(conn, &chunk, write, op_codes::READY, stream);
             } break;
 
@@ -841,7 +841,7 @@ namespace objstore::native {
                 for (U16 i = 0; i < id_len && i < 8; i++)
                     prepared_id = (prepared_id << 8) | U64(id_data[i]);
 
-                auto* entry = engine::find_prepared(engine, prepared_id);
+                auto* entry = engine::try_get_prepared(engine, prepared_id);
                 if (entry == nullptr) {
                     auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
                     append_error_body(frame, engine::ExecutionStatus::Invalid, "Prepared statement not found (unprepared)");
@@ -850,7 +850,7 @@ namespace objstore::native {
                 }
 
                 auto bound_values = read_query_parameter_values(p, body_end, entry->bind_variables);
-                engine::ExecutionResult result = engine::execute_prepared(engine, prepared_id, move(bound_values));
+                engine::ExecutionResult result = engine::execute(engine, prepared_id, move(bound_values));
 
                 if (send_error_if_failed(result, conn, &chunk, write, stream)) {
                     objstore::log::db_operation_duration(os::monotonic_us() - t0);
@@ -867,7 +867,7 @@ namespace objstore::native {
 
             default: {
                 auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
-                append_error_body(frame, engine::ExecutionStatus::Invalid, "Unknown op_codes");
+                append_error_body(frame, engine::ExecutionStatus::Invalid, "Unknown op code");
             } break;
         }
     }

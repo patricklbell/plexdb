@@ -33,8 +33,12 @@ export namespace objstore::engine {
         S32 pk_index = -1;
     };
 
+    // @todo determine what the correct strategy is here
     constexpr U64 MAX_PREPARED_STATEMENTS = 1024;
 
+    // ========================================================================
+    // engine
+    // ========================================================================
     struct Engine {
         Pager* pager;
         schema::Schema schema;
@@ -54,7 +58,6 @@ export namespace objstore::engine {
         Invalid         = 0x2200,  // Syntactically correct but invalid
         ConfigError     = 0x2300,  // Configuration issue
         AlreadyExists   = 0x2400,  // Keyspace/table already exists
-        NotImplemented  = 0x2500,  // Feature not implemented
     };
 
     constexpr String8 to_str(ExecutionStatus status) {
@@ -66,7 +69,6 @@ export namespace objstore::engine {
             case ExecutionStatus::Invalid:        return "INVALID";
             case ExecutionStatus::ConfigError:    return "CONFIG_ERROR";
             case ExecutionStatus::AlreadyExists:  return "ALREADY_EXISTS";
-            case ExecutionStatus::NotImplemented: return "NOT_IMPLEMENTED";
         }
         return "UNKNOWN";
     }
@@ -141,12 +143,13 @@ export namespace objstore::engine {
     };
 
     ExecutionResult execute(Engine& engine, const Statement& statement);
+    ExecutionResult execute(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values);
+    ExecutionResult execute(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values);
 
     // ========================================================================
     // bind variables
     // ========================================================================
     DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement);
-    ExecutionResult execute_with_values(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values);
 
     // ========================================================================
     // prepared statements
@@ -159,6 +162,5 @@ export namespace objstore::engine {
     };
 
     PrepareResult prepare(Engine& engine, String8 query);
-    PreparedEntry* find_prepared(Engine& engine, U64 prepared_id);
-    ExecutionResult execute_prepared(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values);
+    PreparedEntry* try_get_prepared(Engine& engine, U64 prepared_id);
 }
