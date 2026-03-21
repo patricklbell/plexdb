@@ -8,6 +8,7 @@ import plexdb.os;
 import plexdb.os.containers;
 import plexdb.btree;
 import plexdb.tagged_union;
+import plexdb.os.dynamic_tagged_union;
 
 import objstore.tcp;
 import objstore.parsers;
@@ -65,6 +66,7 @@ namespace objstore::native {
         constexpr S32 VOID          = 0x0001;
         constexpr S32 ROWS          = 0x0002;
         constexpr S32 SET_KEYSPACE  = 0x0003;
+        constexpr S32 PREPARED      = 0x0004;
         constexpr S32 SCHEMA_CHANGE = 0x0005;
     }
 
@@ -136,9 +138,16 @@ namespace objstore::native {
     U16 read_be_u16(const U8* p);
     S16 read_be_s16(const U8* p);
     S32 read_be_s32(const U8* p);
+    S64 read_be_s64(const U8* p);
 
     // Read [long string]: [int] n + n bytes
     String8 read_cql_long_string(const U8*& p, const U8* end);
+
+    // Read [string]: [short] n + n bytes
+    String8 read_cql_string(const U8*& p, const U8* end);
+
+    // Read [short bytes]: [short] n + n bytes, returns length and sets out_data
+    U16 read_cql_short_bytes(const U8*& p, const U8* end, const U8*& out_data);
 
     template<BufferedString8Flush F>
     inline void append_be_u8(BufferedString8<F>& buf, U8 v) {
@@ -165,6 +174,14 @@ namespace objstore::native {
         append_be_u16(buf, U16(s.length));
         for (U64 i = 0; i < s.length; i++)
             append_be_u8(buf, U8(s.data[i]));
+    }
+
+    // Write [short bytes]: [short] n + bytes
+    template<BufferedString8Flush F>
+    inline void append_cql_short_bytes(BufferedString8<F>& buf, const U8* data, U16 n) {
+        append_be_u16(buf, n);
+        for (U16 i = 0; i < n; i++)
+            append_be_u8(buf, data[i]);
     }
 
     // Write [bytes]: [int] n + bytes  (n < 0 = null)
@@ -517,8 +534,205 @@ namespace objstore::native {
         }
     }
 
+    template<BufferedString8Flush F>
+    void append_result_prepared(BufferedString8<F>& buf, U64 id, engine::PreparedEntry& entry) {
+        append_be_s32(buf, result_codes::PREPARED);
+
+        // [short bytes] id - encode the U64 hash as 8 bytes
+        U8 id_bytes[8];
+        for (int i = 7; i >= 0; i--) { id_bytes[i] = U8(id); id >>= 8; }
+        append_cql_short_bytes(buf, id_bytes, 8);
+
+        // prepared metadata (describes bind variables)
+        S32 flags = 0x0001; // Global_tables_spec
+        append_be_s32(buf, flags);
+        append_be_s32(buf, S32(entry.bind_variables.length));
+
+        // pk_count and pk_indices
+        S32 pk_count = (entry.pk_index >= 0) ? 1 : 0;
+        append_be_s32(buf, pk_count);
+        if (pk_count > 0) {
+            append_be_u16(buf, U16(entry.pk_index));
+        }
+
+        // Global_tables_spec: keyspace + table
+        append_cql_string(buf, String8(entry.keyspace));
+        append_cql_string(buf, String8(entry.table));
+
+        // column specs for bind variables
+        for (U64 i = 0; i < entry.bind_variables.length; i++) {
+            append_cql_string(buf, String8(entry.bind_variables[i].name));
+            append_type_codes_option(buf, entry.bind_variables[i].type);
+        }
+
+        // result metadata (for INSERT: no columns)
+        S32 result_flags = 0x0004; // No_metadata
+        append_be_s32(buf, result_flags);
+        append_be_s32(buf, 0); // columns_count = 0
+    }
+
+    Constant read_cql_value_as_constant(const U8*& p, const U8* end, NativeType dtype) {
+        assert_true(p + 4 <= end, "truncated value length");
+        S32 len = read_be_s32(p);
+        p += 4;
+        if (len < 0) return Constant{.value = Null{}};
+        assert_true(p + len <= end, "value body truncated");
+        const U8* val = p;
+        p += len;
+
+        switch (dtype) {
+            case types::text: case types::ascii: case types::varchar:
+                return Constant{.value = AutoString8(val, U64(len))};
+            case types::int_: {
+                assert_true(len == 4, "int value must be 4 bytes");
+                S64 v = S64(S32((U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3])));
+                return Constant{.value = v};
+            }
+            case types::bigint: case types::timestamp: case types::counter: case types::time: {
+                assert_true(len == 8, "bigint value must be 8 bytes");
+                S64 v = read_be_s64(val);
+                return Constant{.value = v};
+            }
+            case types::smallint: {
+                assert_true(len == 2, "smallint value must be 2 bytes");
+                S64 v = S64(S16((U16(val[0]) << 8) | U16(val[1])));
+                return Constant{.value = v};
+            }
+            case types::double_: {
+                assert_true(len == 8, "double value must be 8 bytes");
+                U64 bits = (U64(val[0]) << 56) | (U64(val[1]) << 48) | (U64(val[2]) << 40) | (U64(val[3]) << 32) |
+                           (U64(val[4]) << 24) | (U64(val[5]) << 16) | (U64(val[6]) << 8) | U64(val[7]);
+                F64 d;
+                os::memory_copy(&d, &bits, sizeof(d));
+                return Constant{.value = d};
+            }
+            case types::float_: {
+                assert_true(len == 4, "float value must be 4 bytes");
+                U32 bits = (U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3]);
+                F32 f;
+                os::memory_copy(&f, &bits, sizeof(f));
+                return Constant{.value = F64(f)};
+            }
+            case types::boolean: {
+                assert_true(len == 1, "boolean value must be 1 byte");
+                return Constant{.value = bool(val[0])};
+            }
+            default:
+                assert_not_implemented("unsupported native type for bind value");
+                return Constant{.value = Null{}};
+        }
+    }
+
+    // @todo user input error handling
+    DynamicArray<Constant> read_query_parameter_values(const U8*& p, const U8* end, const DynamicArray<engine::BindVariableSpec>& bind_specs) {
+        DynamicArray<Constant> bound_values;
+        if (p + 2 > end) return bound_values;
+        p += 2; // skip consistency [short] @todo
+        if (p >= end) return bound_values;
+
+        U8 flags = *p++;
+        if (!(flags & 0x01)) return bound_values;
+
+        assert_true_not_implemented(p + 2 <= end, "error handling for truncated values count not implemented");
+        U16 n_values = read_be_u16(p);
+        p += 2;
+
+        if (flags & 0x40) {
+            for (U64 bi = 0; bi < bind_specs.length; bi++) {
+                push_back(bound_values, Constant{.value = Null{}});
+            }
+            for (U16 value_idx = 0; value_idx < n_values && p < end; value_idx++) {
+                String8 name = read_cql_string(p, end);
+                
+                // linear search @todo fixed hash map?
+                NativeType dtype;
+                U64 bind_spec_idx = bind_specs.length;
+                for (U64 idx = 0; idx < bind_specs.length; idx++) {
+                    if (bind_specs[idx].name == name) {
+                        dtype = bind_specs[idx].type.native.value_dtype;
+                        bind_spec_idx = idx;
+                        break;
+                    }
+                }
+
+                assert_true_not_implemented(bind_spec_idx < bind_specs.length, "error handling for invalid bind specification not implemented");
+                bound_values[bind_spec_idx] = read_cql_value_as_constant(p, end, dtype);
+            }
+        } else {
+            for (U16 bind_spec_idx = 0; bind_spec_idx < n_values && p < end; bind_spec_idx++) {
+                assert_true_not_implemented(bind_spec_idx < bind_specs.length, "error handling for invalid bind specification not implemented");
+
+                NativeType dtype = bind_specs[bind_spec_idx].type.native.value_dtype;
+                push_back(bound_values, read_cql_value_as_constant(p, end, dtype));
+            }
+        }
+
+        return bound_values;
+    }
+
+    // ========================================================================
+    // Shared result writing
+    // ========================================================================
+    bool send_error_if_failed(
+        engine::ExecutionResult& result,
+        tcp::Connection* conn,
+        tcp::Chunk* chunk,
+        tcp::AsyncWriteFunctor* write,
+        S16 stream
+    ) {
+        if (result.status != engine::ExecutionStatus::Success) {
+            auto frame = make_native_frame(conn, chunk, write, op_codes::ERROR, stream);
+            String8 msg = result.message.length ? result.message : engine::to_str(result.status);
+            append_error_body(frame, result.status, msg);
+            return true;
+        }
+        return false;
+    }
+
+    void send_execution_result(
+        engine::ExecutionResult& result,
+        engine::Engine& engine,
+        tcp::Connection* conn,
+        tcp::Chunk* chunk,
+        tcp::AsyncWriteFunctor* write,
+        S16 stream
+    ) {
+        switch (result.kind) {
+            case engine::ResultKind::Void:{
+                auto frame = make_native_frame(conn, chunk, write, op_codes::RESULT, stream);
+                append_result_void(frame);
+            }break;
+            case engine::ResultKind::SchemaChange:{
+                String8 change_type = result.message.length ? result.message : "UPDATED";
+                String8 target      = result.table.length   ? "TABLE"        : "KEYSPACE";
+                auto frame = make_native_frame(conn, chunk, write, op_codes::RESULT, stream);
+                append_result_schema_change(frame, change_type, target, result.keyspace, result.table);
+            }break;
+            case engine::ResultKind::UseKeyspace:{
+                auto frame = make_native_frame(conn, chunk, write, op_codes::RESULT, stream);
+                append_result_set_keyspace(frame, result.keyspace);
+            }break;
+            case engine::ResultKind::Rows:{
+                auto ks = schema::read_keyspace(engine.schema, result.keyspace);
+                assert_true(ks != nullptr, "keyspace not found for rows result");
+                auto tbl = schema::read_table(engine.schema, *ks, result.table);
+                assert_true(tbl != nullptr, "table not found for rows result");
+                auto frame = make_native_frame(conn, chunk, write, op_codes::RESULT, stream);
+                append_result_rows(frame, result, tbl);
+                objstore::log::db_response_returned_rows(btree::size(tbl->btree));
+            }break;
+            case engine::ResultKind::VirtualRows:{
+                assert_true(result.virtual_rows.has_value(), "virtual rows missing");
+                auto frame = make_native_frame(conn, chunk, write, op_codes::RESULT, stream);
+                append_result_virtual_rows(frame, *result.virtual_rows);
+                objstore::log::db_response_returned_rows(result.virtual_rows->rows.length);
+            }break;
+        }
+    }
+
     // ========================================================================
     // Frame dispatcher
+    //   @todo add asserts for unhandled features
     // ========================================================================
     void handle_frame(
         NativeState& state,
@@ -535,12 +749,22 @@ namespace objstore::native {
         tcp::Chunk& chunk = *front(conn->chunk_chain.chunks);
         const U8* body_end = body + body_len;
 
-        log::native_info(fmt("RX frame: op=%02x(%s) stream=%d body_len=%d hdr=%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+        log::native_info(fmt(
+            "RX frame: op=%02x(%s) stream=%d body_len=%d hdr=%02x%02x%02x%02x%02x%02x%02x%02x%02x",
             op, (const char*)op_codes_to_str(op), (int)(S16)stream, body_len,
-            header[0],header[1],header[2],header[3],header[4],header[5],header[6],header[7],header[8]));
+            header[0],header[1],header[2],header[3],header[4],header[5],header[6],header[7],header[8]
+        ));
 
         switch (op) {
             case op_codes::STARTUP: {
+                U8 version = header[0] & 0x7F;
+                if (version != 0x04 && version != 0x03) {
+                    // Respond with protocol error (code 0x000A) to force version downgrade
+                    auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
+                    append_be_s32(frame, 0x000A);
+                    append_cql_string(frame, "Invalid or unsupported protocol version (4)");
+                    break;
+                }
                 state.startup_done = true;
                 auto frame = make_native_frame(conn, &chunk, write, op_codes::READY, stream);
                 // empty body
@@ -554,14 +778,13 @@ namespace objstore::native {
                 append_be_u16(frame, 1);
                 append_cql_string(frame, "3.0.0");
                 append_cql_string(frame, "COMPRESSION");
-                append_be_u16(frame, 0); // no compression algorithms supported
+                append_be_u16(frame, 0);
             } break;
 
             case op_codes::QUERY: {
                 S64 t0 = os::monotonic_us();
                 const U8* p = body;
                 String8 query = read_cql_long_string(p, body_end);
-                // Remaining bytes are query parameters (consistency, flags, etc.) - ignored
 
                 auto cql_opt = parsers::cql::parse(query);
                 if (!cql_opt) {
@@ -571,8 +794,30 @@ namespace objstore::native {
                     break;
                 }
 
-                engine::ExecutionResult result = engine::execute(engine, *cql_opt);
+                auto bind_specs = engine::collect_bind_variables(engine, *cql_opt);
+                auto bound_values = read_query_parameter_values(p, body_end, bind_specs);
+                engine::ExecutionResult result = engine::execute(engine, *cql_opt, move(bound_values));
 
+                if (send_error_if_failed(result, conn, &chunk, write, stream)) {
+                    objstore::log::db_operation_duration(os::monotonic_us() - t0);
+                    break;
+                }
+
+                send_execution_result(result, engine, conn, &chunk, write, stream);
+                objstore::log::db_operation_duration(os::monotonic_us() - t0);
+            } break;
+
+            case op_codes::REGISTER: {
+                // ignore event registration, respond with READY @todo
+                auto frame = make_native_frame(conn, &chunk, write, op_codes::READY, stream);
+            } break;
+
+            case op_codes::PREPARE: {
+                S64 t0 = os::monotonic_us();
+                const U8* p = body;
+                String8 query = read_cql_long_string(p, body_end);
+
+                auto result = engine::prepare(engine, query);
                 if (result.status != engine::ExecutionStatus::Success) {
                     auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
                     String8 msg = result.message.length ? result.message : engine::to_str(result.status);
@@ -581,51 +826,39 @@ namespace objstore::native {
                     break;
                 }
 
-                switch (result.kind) {
-                    case engine::ResultKind::Void:{
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_void(frame);
-                    }break;
-                    case engine::ResultKind::SchemaChange:{
-                        String8 change_type = result.message.length ? result.message : "UPDATED";
-                        String8 target      = result.table.length   ? "TABLE"        : "KEYSPACE";
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_schema_change(frame, change_type, target, result.keyspace, result.table);
-                    }break;
-                    case engine::ResultKind::UseKeyspace:{
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_set_keyspace(frame, result.keyspace);
-                    }break;
-                    case engine::ResultKind::Rows:{
-                        auto ks = schema::read_keyspace(engine.schema, result.keyspace);
-                        assert_true(ks != nullptr, "keyspace not found for rows result");
-                        auto tbl = schema::read_table(engine.schema, *ks, result.table);
-                        assert_true(tbl != nullptr, "table not found for rows result");
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_rows(frame, result, tbl);
-                        objstore::log::db_response_returned_rows(btree::size(tbl->btree));
-                    }break;
-                    case engine::ResultKind::VirtualRows:{
-                        assert_true(result.virtual_rows.has_value(), "virtual rows missing");
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_virtual_rows(frame, *result.virtual_rows);
-                        objstore::log::db_response_returned_rows(result.virtual_rows->rows.length);
-                    }break;
-                }
+                auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
+                append_result_prepared(frame, result.id, *result.entry);
                 objstore::log::db_operation_duration(os::monotonic_us() - t0);
             } break;
 
-            case op_codes::REGISTER: {
-                // Ignore event registration, respond with READY
-                auto frame = make_native_frame(conn, &chunk, write, op_codes::READY, stream);
-            } break;
-
-            case op_codes::PREPARE: {
-                assert_true_not_implemented(false, "PREPARE not implemented");
-            } break;
-
             case op_codes::EXECUTE: {
-                assert_true_not_implemented(false, "EXECUTE not implemented");
+                S64 t0 = os::monotonic_us();
+                const U8* p = body;
+
+                const U8* id_data = nullptr;
+                U16 id_len = read_cql_short_bytes(p, body_end, id_data);
+                U64 prepared_id = 0;
+                for (U16 i = 0; i < id_len && i < 8; i++)
+                    prepared_id = (prepared_id << 8) | U64(id_data[i]);
+
+                auto* entry = engine::try_get_prepared(engine, prepared_id);
+                if (entry == nullptr) {
+                    auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
+                    append_error_body(frame, engine::ExecutionStatus::Invalid, "Prepared statement not found (unprepared)");
+                    objstore::log::db_operation_duration(os::monotonic_us() - t0);
+                    break;
+                }
+
+                auto bound_values = read_query_parameter_values(p, body_end, entry->bind_variables);
+                engine::ExecutionResult result = engine::execute(engine, prepared_id, move(bound_values));
+
+                if (send_error_if_failed(result, conn, &chunk, write, stream)) {
+                    objstore::log::db_operation_duration(os::monotonic_us() - t0);
+                    break;
+                }
+
+                send_execution_result(result, engine, conn, &chunk, write, stream);
+                objstore::log::db_operation_duration(os::monotonic_us() - t0);
             } break;
 
             case op_codes::BATCH: {
@@ -634,7 +867,7 @@ namespace objstore::native {
 
             default: {
                 auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
-                append_error_body(frame, engine::ExecutionStatus::Invalid, "Unknown op_codes");
+                append_error_body(frame, engine::ExecutionStatus::Invalid, "Unknown op code");
             } break;
         }
     }

@@ -640,3 +640,264 @@ TEST_CASE("Native protocol collection serialization", "[objstore.native]") {
     os::signal_notify_safe(signal_pipe);
     server_thread.join();
 }
+
+TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    os::Notifier signal_pipe;
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+
+    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        U64 page_size = 4_kb;
+        pager::create(db_file, page_size);
+        Pager pager{db_file};
+        engine::create_database(pager);
+        engine::Engine engine{&pager};
+        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            server_ready.release();
+        });
+    });
+
+    server_ready.acquire();
+    Socket client{socket_open()};
+    socket_set_timeout(client, 2000);
+    REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+
+    send_frame(client, make_startup());
+    REQUIRE(recv_frame(client).opcode == 0x02);
+
+    // Setup keyspace and table
+    send_frame(client, make_query("CREATE KEYSPACE prep_ks;"));
+    REQUIRE(recv_frame(client).opcode == 0x08);
+
+    send_frame(client, make_query("CREATE TABLE prep_ks.data (id int PRIMARY KEY, name text, score double);"));
+    REQUIRE(recv_frame(client).opcode == 0x08);
+
+    // PREPARE an INSERT statement with bind markers
+    {
+        Bytes b;
+        b.cql_long_string("INSERT INTO prep_ks.data (id, name, score) VALUES (?, ?, ?)");
+        b.prepend_header(0x09, 1);  // PREPARE opcode
+        send_frame(client, b);
+
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);  // RESULT
+        REQUIRE(result_kind(resp) == 0x0004);  // Prepared
+        CHECK(resp.body.size() > 8);  // has prepared id and metadata
+
+        // Extract the prepared id (after [int] kind): [short] id_len + id_bytes
+        const uint8_t* p = resp.body.data() + 4;
+        uint16_t id_len = (uint16_t(p[0]) << 8) | p[1];
+        CHECK(id_len == 8);
+        std::vector<uint8_t> prepared_id(p + 2, p + 2 + id_len);
+
+        // EXECUTE the prepared statement with bound values
+        {
+            Bytes ex;
+            // [short bytes] id
+            ex.u16(uint16_t(prepared_id.size()));
+            for (auto byte : prepared_id) ex.u8(byte);
+            // query parameters
+            ex.u16(0x0001); // consistency = ONE
+            ex.u8(0x01);    // flags: Values
+            ex.u16(3);      // n_values = 3
+
+            // value 0: int 42 (4 bytes BE)
+            ex.s32(4);
+            ex.u8(0); ex.u8(0); ex.u8(0); ex.u8(42);
+
+            // value 1: text "Alice" (5 bytes)
+            ex.s32(5);
+            ex.u8('A'); ex.u8('l'); ex.u8('i'); ex.u8('c'); ex.u8('e');
+
+            // value 2: double 99.5 (8 bytes BE IEEE 754)
+            ex.s32(8);
+            uint64_t dbl_bits;
+            double dbl_val = 99.5;
+            memcpy(&dbl_bits, &dbl_val, sizeof(dbl_bits));
+            for (int i = 7; i >= 0; i--) ex.u8(uint8_t(dbl_bits >> (i * 8)));
+
+            ex.prepend_header(0x0A, 2);  // EXECUTE opcode
+            send_frame(client, ex);
+
+            auto exec_resp = recv_frame(client);
+            REQUIRE(exec_resp.opcode == 0x08);  // RESULT
+            CHECK(result_kind(exec_resp) == 0x0001);  // Void
+        }
+
+        // Verify data was inserted by querying
+        send_frame(client, make_query("SELECT * FROM prep_ks.data;"));
+        auto select_resp = recv_frame(client);
+        REQUIRE(select_resp.opcode == 0x08);
+        CHECK(result_kind(select_resp) == 0x0002);  // Rows
+        CHECK(body_contains(select_resp, "Alice"));
+    }
+
+    // PREPARE with named bind markers, then EXECUTE with values in a different order
+    {
+        Bytes b;
+        b.cql_long_string("INSERT INTO prep_ks.data (id, name, score) VALUES (:id, :name, :score)");
+        b.prepend_header(0x09, 3);  // PREPARE opcode
+        send_frame(client, b);
+
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);  // RESULT
+        REQUIRE(result_kind(resp) == 0x0004);  // Prepared
+
+        // Extract the prepared id
+        const uint8_t* p = resp.body.data() + 4;
+        uint16_t id_len = (uint16_t(p[0]) << 8) | p[1];
+        CHECK(id_len == 8);
+        std::vector<uint8_t> prepared_id(p + 2, p + 2 + id_len);
+
+        // EXECUTE with named values in REVERSED order (score, name, id)
+        {
+            Bytes ex;
+            // [short bytes] id
+            ex.u16(uint16_t(prepared_id.size()));
+            for (auto byte : prepared_id) ex.u8(byte);
+            // query parameters
+            ex.u16(0x0001); // consistency = ONE
+            ex.u8(0x41);    // flags: Values (0x01) | Named values (0x40)
+            ex.u16(3);      // n_values = 3
+
+            // Named value 1: "score" = 77.7 (sent first, but should go to third bind position)
+            ex.cql_string("score");
+            ex.s32(8);
+            uint64_t dbl_bits;
+            double dbl_val = 77.7;
+            memcpy(&dbl_bits, &dbl_val, sizeof(dbl_bits));
+            for (int i = 7; i >= 0; i--) ex.u8(uint8_t(dbl_bits >> (i * 8)));
+
+            // Named value 2: "name" = "Bob" (sent second, but should go to second bind position)
+            ex.cql_string("name");
+            ex.s32(3);
+            ex.u8('B'); ex.u8('o'); ex.u8('b');
+
+            // Named value 3: "id" = 99 (sent last, but should go to first bind position)
+            ex.cql_string("id");
+            ex.s32(4);
+            ex.u8(0); ex.u8(0); ex.u8(0); ex.u8(99);
+
+            ex.prepend_header(0x0A, 4);  // EXECUTE opcode
+            send_frame(client, ex);
+
+            auto exec_resp = recv_frame(client);
+            REQUIRE(exec_resp.opcode == 0x08);  // RESULT
+            CHECK(result_kind(exec_resp) == 0x0001);  // Void
+        }
+
+        // Verify data was inserted correctly (names matched to correct columns)
+        send_frame(client, make_query("SELECT * FROM prep_ks.data WHERE id = 99;"));
+        auto select_resp = recv_frame(client);
+        REQUIRE(select_resp.opcode == 0x08);
+        CHECK(result_kind(select_resp) == 0x0002);  // Rows
+        CHECK(body_contains(select_resp, "Bob"));
+    }
+
+    exit_signal = true;
+    os::signal_notify_safe(signal_pipe);
+    server_thread.join();
+}
+
+TEST_CASE("Native protocol QUERY with bind values", "[objstore.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    os::Notifier signal_pipe;
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+
+    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        U64 page_size = 4_kb;
+        pager::create(db_file, page_size);
+        Pager pager{db_file};
+        engine::create_database(pager);
+        engine::Engine engine{&pager};
+        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            server_ready.release();
+        });
+    });
+
+    server_ready.acquire();
+    Socket client{socket_open()};
+    socket_set_timeout(client, 2000);
+    REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+
+    send_frame(client, make_startup());
+    REQUIRE(recv_frame(client).opcode == 0x02);
+
+    send_frame(client, make_query("CREATE KEYSPACE qbind_ks;"));
+    REQUIRE(recv_frame(client).opcode == 0x08);
+    send_frame(client, make_query("CREATE TABLE qbind_ks.items (id int PRIMARY KEY, label text, weight double);"));
+    REQUIRE(recv_frame(client).opcode == 0x08);
+
+    SECTION("positional bind values") {
+        Bytes b;
+        b.cql_long_string("INSERT INTO qbind_ks.items (id, label, weight) VALUES (?, ?, ?)");
+        b.u16(0x0001); // consistency = ONE
+        b.u8(0x01);    // flags: Values
+        b.u16(3);      // n_values = 3
+        // int 7
+        b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(7);
+        // text "Gadget"
+        b.s32(6); b.u8('G'); b.u8('a'); b.u8('d'); b.u8('g'); b.u8('e'); b.u8('t');
+        // double 3.14
+        b.s32(8);
+        uint64_t dbl_bits; double dbl_val = 3.14;
+        memcpy(&dbl_bits, &dbl_val, sizeof(dbl_bits));
+        for (int i = 7; i >= 0; i--) b.u8(uint8_t(dbl_bits >> (i * 8)));
+        b.prepend_header(0x07, 1);
+        send_frame(client, b);
+
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0001); // Void
+
+        send_frame(client, make_query("SELECT * FROM qbind_ks.items;"));
+        auto sel = recv_frame(client);
+        REQUIRE(sel.opcode == 0x08);
+        CHECK(result_kind(sel) == 0x0002); // Rows
+        CHECK(body_contains(sel, "Gadget"));
+    }
+
+    SECTION("named bind values") {
+        Bytes b;
+        b.cql_long_string("INSERT INTO qbind_ks.items (id, label, weight) VALUES (:id, :label, :weight)");
+        b.u16(0x0001); // consistency = ONE
+        b.u8(0x41);    // flags: Values | Named values
+        b.u16(3);      // n_values = 3
+        // weight first (out of order)
+        b.cql_string("weight");
+        b.s32(8);
+        uint64_t dbl_bits; double dbl_val = 2.71;
+        memcpy(&dbl_bits, &dbl_val, sizeof(dbl_bits));
+        for (int i = 7; i >= 0; i--) b.u8(uint8_t(dbl_bits >> (i * 8)));
+        // id second
+        b.cql_string("id");
+        b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(13);
+        // label last
+        b.cql_string("label");
+        b.s32(5); b.u8('G'); b.u8('i'); b.u8('z'); b.u8('m'); b.u8('o');
+        b.prepend_header(0x07, 2);
+        send_frame(client, b);
+
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0001); // Void
+
+        send_frame(client, make_query("SELECT * FROM qbind_ks.items WHERE id = 13;"));
+        auto sel = recv_frame(client);
+        REQUIRE(sel.opcode == 0x08);
+        CHECK(result_kind(sel) == 0x0002); // Rows
+        CHECK(body_contains(sel, "Gizmo"));
+    }
+
+    exit_signal = true;
+    os::signal_notify_safe(signal_pipe);
+    server_thread.join();
+}
