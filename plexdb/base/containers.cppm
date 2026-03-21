@@ -77,6 +77,13 @@ export namespace plexdb {
                 values[i] = static_cast<T&&>(other.values[i]);
         }
 
+        template<typename... Ts>
+        constexpr Array(Ts... args) {
+            static_assert(sizeof...(Ts) <= N, "Too many elements for Array");
+            U64 i = 0;
+            ((values[i++] = args), ...);
+        }
+
         // ====================================================================
         // Assignment
         // ====================================================================

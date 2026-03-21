@@ -55,7 +55,8 @@ class ServerManager:
         os.close(fd)
         os.remove(self._db)
         self._proc = subprocess.Popen(
-            [self.binary, self._db, "--port", str(self.port)],
+            # @todo remove no-uring
+            [self.binary, self._db, "--port", str(self.port), "--no-uring"],
         )
         _wait_for_port(self.host, self.port)
 

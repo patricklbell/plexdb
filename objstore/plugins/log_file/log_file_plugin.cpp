@@ -2,8 +2,10 @@
 // Handles all event types with human-readable formatting.
 //
 // Configuration (environment variables):
-//   PLEXDB_LOG_FILE   – destination path  (default: plexdb.log)
-//   PLEXDB_LOG_BATCH  – lines per flush   (default: 1)
+//   PLEXDB_LOG_FILE    – destination path  (default: plexdb.log)
+//   PLEXDB_LOG_BATCH   – lines per flush   (default: 1)
+//   PLEXDB_LOG_STDERR  – also mirror output to stderr if set
+//   PLEXDB_LOG_STDOUT  – also mirror output to stdout if set (ignored if PLEXDB_LOG_STDERR is set)
 
 #include "log_abi.h"
 
@@ -35,6 +37,7 @@ struct FilePluginState {
     std::map<std::pair<uint32_t,uint32_t>, std::string>      stat_names;
     std::vector<std::string>                                 buffer;
     std::FILE*                                               file;
+    std::FILE*                                               mirror;  // stderr or stdout, nullptr if not set
     std::mutex                                               mtx;
     size_t                                                   batch;
 };
@@ -45,12 +48,19 @@ FilePluginState* g_state = nullptr;
 // buffer management
 // ============================================================================
 void flush_buffer(FilePluginState* s) {
-    if (!s->file || s->buffer.empty()) return;
+    if (s->buffer.empty()) return;
     for (const auto& entry : s->buffer) {
-        std::fwrite(entry.data(), 1, entry.size(), s->file);
-        std::fputc('\n', s->file);
+        if (s->file) {
+            std::fwrite(entry.data(), 1, entry.size(), s->file);
+            std::fputc('\n', s->file);
+        }
+        if (s->mirror) {
+            std::fwrite(entry.data(), 1, entry.size(), s->mirror);
+            std::fputc('\n', s->mirror);
+        }
     }
-    std::fflush(s->file);
+    if (s->file)   std::fflush(s->file);
+    if (s->mirror) std::fflush(s->mirror);
     s->buffer.clear();
 }
 
@@ -106,7 +116,7 @@ void handle_message(FilePluginState* s, uint32_t producer_id, uint32_t level,
         line.append(id, id_len);
         line += + "] ";
     } else {
-        line += "]";
+        line += "] ";
     }
     
     line.append(text, text_len);
@@ -188,9 +198,14 @@ FilePluginState* file_plugin_init() {
         if (v > 0) batch = v;
     }
 
+    const char* stderr_env = std::getenv("PLEXDB_LOG_STDERR");
+    const char* stdout_env = std::getenv("PLEXDB_LOG_STDOUT");
+    std::FILE* mirror = stderr_env ? stderr : (stdout_env ? stdout : nullptr);
+
     auto* s = new FilePluginState{};
-    s->file  = std::fopen(path.c_str(), "a");
-    s->batch = batch;
+    s->file   = std::fopen(path.c_str(), "a");
+    s->mirror = mirror;
+    s->batch  = batch;
     return s;
 }
 

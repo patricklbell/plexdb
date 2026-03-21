@@ -6,8 +6,8 @@ import plexdb.pager;
 import plexdb.blob;
 import plexdb.btree;
 
-import objstore.engine.dtype;
 import objstore.engine.statements;
+import objstore.engine.types;
 
 using namespace plexdb;
 

@@ -359,6 +359,8 @@ export namespace plexdb {
 
     template<typename K, typename V>
     void rehash(DynamicMap<K,V>& map, U64 new_slot_count) {
+        assert_true(new_slot_count != 0, "zero rehash not allowed");
+
         DynamicArray<DynamicArray<Pair<K,V>>> old_slots = map.slots;
 
         DynamicArray<DynamicArray<Pair<K,V>>> new_slots;
@@ -397,6 +399,7 @@ export namespace plexdb {
 
     template<typename K, typename V>
     bool find_slot_and_pair(const DynamicMap<K,V>& map, const K& key, U64& slot_idx, U64& pair_idx) {
+        if (map.slots.length == 0) return false;
         slot_idx = hash(key) % map.slots.length;
         const DynamicArray<Pair<K,V>>& bucket = map.slots[slot_idx];
         for (U64 i = 0; i < bucket.length; i++) {
@@ -657,6 +660,8 @@ export namespace plexdb {
 
     template<typename K>
     void rehash(DynamicSet<K>& set, U64 new_slot_count) {
+        assert_true(new_slot_count != 0, "zero rehash not allowed");
+        
         DynamicArray<DynamicArray<K>> old_slots = move(set.slots);
         DynamicArray<DynamicArray<K>> new_slots;
         resize(new_slots, new_slot_count);

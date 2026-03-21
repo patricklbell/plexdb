@@ -1,4 +1,4 @@
-export module objstore.engine.dtype;
+export module objstore.engine.types;
 
 import plexdb.base;
 import plexdb.os;
@@ -32,7 +32,7 @@ export namespace objstore {
         vector,
     };
 
-    enum class ClassType : U8 {
+    enum class CollectionType : U8 {
         native,
         list,
         map,
@@ -40,42 +40,32 @@ export namespace objstore {
         vector,
     };
 
-    union CqlType {
-        struct base {
-            ClassType ctype;
-        } base;
-        struct native {
-            ClassType ctype;
-            NativeType value_dtype;
-        } native;
-        struct list {
-            ClassType ctype;
-            NativeType element_dtype;
-        } list;
-        struct set {
-            ClassType ctype;
-            NativeType key_dtype;
-        } set;
-        struct map {
-            ClassType ctype;
-            NativeType key_dtype;
-            NativeType value_dtype;
-        } map;
-        struct vector {
-            ClassType ctype;
-            NativeType element_dtype;
-            U64 count;
-        } vector_;
+    struct CqlType {
+        CollectionType ctype;
+        
+        struct Native { NativeType value_dtype;                       };
+        struct List   { NativeType element_dtype;                     };
+        struct Set    { NativeType key_dtype;                         };
+        struct Map    { NativeType key_dtype; NativeType value_dtype; };
+        struct Vector { NativeType element_dtype; U64 count;          };
+
+        union {
+            struct Native native;
+            struct List list;
+            struct Set set;
+            struct Map map;
+            struct Vector vector;
+        };
     };
 
     constexpr bool operator==(CqlType a, CqlType b) {
-        if (a.base.ctype != b.base.ctype) return false;
-        switch (a.base.ctype) {
-            case ClassType::native: return a.native.value_dtype == b.native.value_dtype;
-            case ClassType::list:   return a.list.element_dtype == b.list.element_dtype;
-            case ClassType::set:    return a.set.key_dtype == b.set.key_dtype;
-            case ClassType::map:    return a.map.key_dtype == b.map.key_dtype && a.map.value_dtype == b.map.value_dtype;
-            case ClassType::vector: return a.vector_.element_dtype == b.vector_.element_dtype && a.vector_.count == b.vector_.count;
+        if (a.ctype != b.ctype) return false;
+        switch (a.ctype) {
+            case CollectionType::native: return a.native.value_dtype == b.native.value_dtype;
+            case CollectionType::list:   return a.list.element_dtype == b.list.element_dtype;
+            case CollectionType::set:    return a.set.key_dtype == b.set.key_dtype;
+            case CollectionType::map:    return a.map.key_dtype == b.map.key_dtype && a.map.value_dtype == b.map.value_dtype;
+            case CollectionType::vector: return a.vector.element_dtype == b.vector.element_dtype && a.vector.count == b.vector.count;
         }
         return false;
     }
@@ -83,13 +73,38 @@ export namespace objstore {
     namespace types {
         using enum NativeType;
 
-        constexpr CqlType make_native(NativeType d)               { return CqlType{.native = {ClassType::native, d}}; }
-        constexpr CqlType make_list(NativeType el)                { return CqlType{.list   = {ClassType::list,   el}}; }
-        constexpr CqlType make_set(NativeType key)                { return CqlType{.set    = {ClassType::set,    key}}; }
-        constexpr CqlType make_map(NativeType key, NativeType val)     { return CqlType{.map    = {ClassType::map,    key, val}}; }
+        constexpr CqlType make_native(NativeType d) {
+            CqlType t{.ctype = CollectionType::native};
+            t.native = CqlType::Native{ .value_dtype = d };
+            return t;
+        }
 
-        // @todo read UDT
-        using ReadNativeTypes = TypeList<AutoString8, S64, S32, S16, U8, F64, F32>;
+        constexpr CqlType make_list(NativeType el) {
+            CqlType t{.ctype = CollectionType::list};
+            t.list = CqlType::List{ .element_dtype = el };
+            return t;
+        }
+
+        constexpr CqlType make_set(NativeType key) {
+            CqlType t{.ctype = CollectionType::set};
+            t.set = CqlType::Set{ .key_dtype = key };
+            return t;
+        }
+
+        constexpr CqlType make_map(NativeType key, NativeType val) {
+            CqlType t{.ctype = CollectionType::map};
+            t.map = CqlType::Map{ .key_dtype = key, .value_dtype = val };
+            return t;
+        }
+
+        constexpr CqlType make_vector(NativeType el, U64 count) {
+            CqlType t{.ctype = CollectionType::vector};
+            t.vector = CqlType::Vector{ .element_dtype = el, .count = count };
+            return t;
+        }
+
+        // @todo support UDTs
+        using ReadNativeTypes = TypeList<AutoString8, Array<U8, 16>, S64, S32, S16, U8, F64, F32>;
         using ReadTypes = Concat<
             ReadNativeTypes,
             ExpandDynamicArray<ReadNativeTypes>,
@@ -126,16 +141,17 @@ export namespace objstore {
             return "unknown";
         }
         inline AutoString8 to_str(CqlType cdtype) {
-            switch (cdtype.base.ctype) {
-                case ClassType::native: return AutoString8(to_str(cdtype.native.value_dtype));
-                case ClassType::list:   return "list["_as + to_str(cdtype.list.element_dtype) + "]";
-                case ClassType::set:    return "set["_as + to_str(cdtype.set.key_dtype) + "]";
-                case ClassType::map:    return "map["_as + to_str(cdtype.map.key_dtype) + ", " + to_str(cdtype.map.value_dtype) + "]";
-                case ClassType::vector: return "vector["_as + to_str(cdtype.vector_.element_dtype) + "]";
+            switch (cdtype.ctype) {
+                case CollectionType::native: return AutoString8(to_str(cdtype.native.value_dtype));
+                case CollectionType::list:   return "list["_as + to_str(cdtype.list.element_dtype) + "]";
+                case CollectionType::set:    return "set["_as + to_str(cdtype.set.key_dtype) + "]";
+                case CollectionType::map:    return "map["_as + to_str(cdtype.map.key_dtype) + ", " + to_str(cdtype.map.value_dtype) + "]";
+                case CollectionType::vector: return "vector["_as + to_str(cdtype.vector.element_dtype) + "]";
             }
             return "unknown"_as;
         }
         
+        // @todo check all valid conversions
         template<typename T>
         bool can_write_generic(NativeType dtype) {
             if constexpr (Either<RemoveCV<T>, String8, AutoString8>) {
@@ -167,9 +183,7 @@ export namespace objstore {
         // @todo avoid copy for zero init
         void write_specific_default(const Write auto& w, NativeType dtype) {
             switch (dtype) {
-                case types::text:
-                case types::timestamp:
-                case types::uuid:{
+                case types::text:{
                     U64 length = 0_u64;
                     w(reinterpret_cast<const U8*>(&length), sizeof(length));
                 }break;
@@ -198,6 +212,8 @@ export namespace objstore {
                     F64 double_ = 0_f64;
                     w(reinterpret_cast<const U8*>(&double_), sizeof(double_));
                 }break;
+                case types::timestamp:
+                case types::uuid:
                 case types::ascii:
                 case types::blob:
                 case types::date:
@@ -209,20 +225,21 @@ export namespace objstore {
                 case types::tinyint:
                 case types::varchar:
                 case types::varint:
-                case types::vector:
-                    break;
+                case types::vector:{
+                    assert_not_implemented();
+                }break;
             }
         }
 
         void write_specific_default(const Write auto& w, CqlType cdtype) {
-            switch (cdtype.base.ctype) {
-                case ClassType::native:{
+            switch (cdtype.ctype) {
+                case CollectionType::native:{
                     write_specific_default(w, cdtype.native.value_dtype);
                 }break;
-                case ClassType::list:
-                case ClassType::set:
-                case ClassType::map:
-                case ClassType::vector:{
+                case CollectionType::list:
+                case CollectionType::set:
+                case CollectionType::map:
+                case CollectionType::vector:{
                     U64 length = 0_u64;
                     w(reinterpret_cast<const U8*>(&length), sizeof(length));
                 }break;
@@ -233,57 +250,55 @@ export namespace objstore {
         void write_generic(const Write auto& w, const T& src, NativeType dtype) {
             if constexpr (SameAs<T, AutoString8>) {
                 switch (dtype) {
-                    case types::text:
-                    case types::timestamp:
-                    case types::uuid:{
+                    case NativeType::text:{
                         w(reinterpret_cast<const U8*>(&src.length), sizeof(src.length));
                         w(reinterpret_cast<const U8*>(src.c_str), src.length);
                     }break;
-                    default:{ assert_true(false, "mismatch between underlying type and dtype"); }break;
+                    default:{ assert_true(false, "mismatch between underlying type or conversion not implemented and dtype"); }break;
                 }
             } else if constexpr (SameAs<T, S64>) {
                 switch (dtype) {
-                    case types::smallint:{
+                    case NativeType::smallint:{
                         S16 smallint = static_cast<S16>(src);
                         w(reinterpret_cast<const U8*>(&smallint), sizeof(smallint));
                     }break;
-                    case types::int_:{
+                    case NativeType::int_:{
                         S32 int_ = static_cast<S32>(src);
                         w(reinterpret_cast<const U8*>(&int_), sizeof(int_));
                     }break;
-                    case types::counter:
-                    case types::bigint:{
+                    case NativeType::timestamp:
+                    case NativeType::counter:
+                    case NativeType::bigint:{
                         S64 bigint = static_cast<S64>(src);
                         w(reinterpret_cast<const U8*>(&bigint), sizeof(bigint));
                     }break;
-                    default:{ assert_true(false, "mismatch between underlying type and dtype"); }break;
+                    default:{ assert_true(false, "mismatch between underlying type and dtype or conversion not implemented"); }break;
                 }
             } else if constexpr (SameAs<T, bool>) {
                 switch (dtype) {
-                    case types::boolean:{
+                    case NativeType::boolean:{
                         U8 boolean = static_cast<U8>(src);
                         w(reinterpret_cast<const U8*>(&boolean), sizeof(boolean));
                     }break;
-                    default:{ assert_true(false, "mismatch between underlying type and dtype"); }break;
+                    default:{ assert_true(false, "mismatch between underlying type and dtype or conversion not implemented"); }break;
                 }
             } else if constexpr (SameAs<T, F64>) {
                 switch (dtype) {
-                    case types::float_:{
+                    case NativeType::float_:{
                         F32 float_ = static_cast<F32>(src);
                         w(reinterpret_cast<const U8*>(&float_), sizeof(float_));
                     }break;
-                    case types::double_:{
+                    case NativeType::double_:{
                         F64 double_ = static_cast<F64>(src);
                         w(reinterpret_cast<const U8*>(&double_), sizeof(double_));
                     }break;
-                    default:{ assert_true(false, "mismatch between underlying type and dtype"); }break;
+                    default:{ assert_true(false, "mismatch between underlying type and dtype or conversion not implemented"); }break;
                 }
             } else {
                 static_assert(!SameAs<T,T>, "missing underlying type case");
             }
         }
 
-        // @note these accept any TaggedUnion containing primitive types (e.g. Constant.value)
         template<typename TU>
         bool can_write_constant_value(const TU& value, NativeType dtype) {
             return visit(value, [&](const auto& cv) -> bool {
@@ -291,6 +306,7 @@ export namespace objstore {
                 if constexpr (Either<CT, S64, AutoString8, F64, bool>) {
                     return can_write_generic<CT>(dtype);
                 }
+                // @todo
                 return false;
             });
         }
@@ -302,6 +318,7 @@ export namespace objstore {
                 if constexpr (Either<CT, S64, AutoString8, F64, bool>) {
                     write_generic(w, cv, dtype);
                 }
+                // @todo
             });
         }
 
@@ -317,33 +334,37 @@ export namespace objstore {
 
         template<typename T>
         bool can_write_specific(NativeType dtype) {
-            if constexpr (Either<RemoveCV<T>, AutoString8>) {
-                return dtype == types::text || dtype == types::timestamp || dtype == types::uuid;
-            }
-            if constexpr (Either<RemoveCV<T>, S16>) { return dtype == types::smallint; }
-            if constexpr (Either<RemoveCV<T>, S32>) { return dtype == types::int_; }
-            if constexpr (Either<RemoveCV<T>, S64>) { return dtype == types::bigint || dtype == types::counter; }
-            if constexpr (Either<RemoveCV<T>, U8>)  { return dtype == types::boolean; }
-            if constexpr (Either<RemoveCV<T>, F32>) { return dtype == types::float_; }
-            if constexpr (Either<RemoveCV<T>, F64>) { return dtype == types::double_; }
+            if constexpr (Either<RemoveCV<T>, AutoString8>) { return dtype == types::text; }
+            else if constexpr (Either<RemoveCV<T>, S16>) { return dtype == types::smallint; }
+            else if constexpr (Either<RemoveCV<T>, S32>) { return dtype == types::int_; }
+            else if constexpr (Either<RemoveCV<T>, S64>) { return dtype == types::bigint || dtype == types::timestamp || dtype == types::counter; }
+            else if constexpr (Either<RemoveCV<T>, U8>)  { return dtype == types::boolean; }
+            else if constexpr (Either<RemoveCV<T>, F32>) { return dtype == types::float_; }
+            else if constexpr (Either<RemoveCV<T>, F64>) { return dtype == types::double_; }
+            else if constexpr (Either<RemoveCV<T>, Array<U8,16>>) { return dtype == types::uuid; }
+            else { static_assert(!SameAs<T,T>, "missing type case"); }
+
             return false;
         }
 
         bool can_write_specific(const ReadValue& src, CqlType cdtype) {
             return visit(src, [&cdtype](const auto& v) -> bool {
                 using T = Decay<decltype(v)>;
-                if constexpr (IsDynamicMap<T>) {
-                    if (cdtype.base.ctype != ClassType::map) return false;
+
+                if constexpr (IsInTypeList<T, types::ReadNativeTypes>) {
+                    return cdtype.ctype == CollectionType::native && can_write_specific<T>(cdtype.native.value_dtype);
+                } else if constexpr (IsDynamicMap<T>) {
+                    if (cdtype.ctype != CollectionType::map) return false;
                     return can_write_specific<typename T::Key>(cdtype.map.key_dtype) &&
                            can_write_specific<typename T::Value>(cdtype.map.value_dtype);
                 } else if constexpr (IsDynamicSet<T>) {
-                    if (cdtype.base.ctype != ClassType::set) return false;
+                    if (cdtype.ctype != CollectionType::set) return false;
                     return can_write_specific<typename T::Key>(cdtype.set.key_dtype);
                 } else if constexpr (IsDynamicArray<T>) {
-                    if (cdtype.base.ctype != ClassType::list) return false;
+                    if (cdtype.ctype != CollectionType::list) return false;
                     return can_write_specific<typename T::Element>(cdtype.list.element_dtype);
                 } else {
-                    return cdtype.base.ctype == ClassType::native && can_write_specific<T>(cdtype.native.value_dtype);
+                    static_assert(!SameAs<T,T>, "missing type case");
                 }
             });
         }
@@ -364,7 +385,13 @@ export namespace objstore {
             visit(src, [&cdtype, &w](auto& v) {
                 using T = Decay<decltype(v)>;
 
-                if constexpr (IsDynamicMap<T>) {
+                if constexpr (IsInTypeList<T, types::ReadNativeTypes>) {
+                    assert_true(cdtype.ctype == CollectionType::native, "static value type requires ctype native, this should never happen");
+
+                    write_specific(w, v, cdtype.native.value_dtype);
+                } else if constexpr (IsDynamicMap<T>) {
+                    assert_true(cdtype.ctype == CollectionType::map, "static value type requires ctype map, this should never happen");
+
                     U64 len = length(v);
                     w(reinterpret_cast<const U8*>(&len), sizeof(len));
                     for (auto it = v.begin(); it != v.end(); ++it) {
@@ -372,15 +399,19 @@ export namespace objstore {
                         write_specific(w, (*it).second, cdtype.map.value_dtype);
                     }
                 } else if constexpr (IsDynamicSet<T>) {
+                    assert_true(cdtype.ctype == CollectionType::set, "static value type requires ctype set, this should never happen");
+
                     U64 len = length(v);
                     w(reinterpret_cast<const U8*>(&len), sizeof(len));
                     for (auto it = v.begin(); it != v.end(); ++it)
                         write_specific(w, *it, cdtype.set.key_dtype);
                 } else if constexpr (IsDynamicArray<T>) {
+                    assert_true(cdtype.ctype == CollectionType::list || cdtype.ctype == CollectionType::vector, "static value type requires ctype list/vector, this should never happen");
+
                     w(reinterpret_cast<const U8*>(&v.length), sizeof(v.length));
                     for (const auto& el: v) write_specific(w, el, cdtype.list.element_dtype);
                 } else {
-                    write_specific(w, v, cdtype.native.value_dtype);
+                    static_assert(!SameAs<T,T>, "unhandled read value type");
                 }
             });
         }
@@ -431,9 +462,7 @@ export namespace objstore {
     
         ReadValue read_specific(const Read auto& r, NativeType dtype) {
             switch (dtype) {
-                case types::text:
-                case types::uuid:
-                case types::timestamp:{
+                case types::text:{
                     U64 length;
                     r(reinterpret_cast<U8*>(&length), sizeof(length));
 
@@ -455,6 +484,7 @@ export namespace objstore {
                     return {move(value)};
                 }break;
                 case types::counter:
+                case types::timestamp:
                 case types::bigint:{
                     S64 value;
                     r(reinterpret_cast<U8*>(&value), sizeof(value));
@@ -479,6 +509,7 @@ export namespace objstore {
     
                     return {move(value)};
                 }break;
+                case types::uuid:
                 case types::ascii:
                 case types::blob:
                 case types::date:
@@ -490,18 +521,20 @@ export namespace objstore {
                 case types::tinyint:
                 case types::varchar:
                 case types::varint:
-                case types::vector:
-                    break;
+                case types::vector:{
+                    assert_not_implemented();
+                }
             }
-            assert_true(false, "unsupported native type for read");
+
+            assert_true(false, "invalid native type for read");
             return {};
         }
 
         ReadValue read_specific(const Read auto& r, CqlType cdtype) {
-            switch (cdtype.base.ctype) {
-                case ClassType::native:
+            switch (cdtype.ctype) {
+                case CollectionType::native:
                     return read_specific(r, cdtype.native.value_dtype);
-                case ClassType::list: {
+                case CollectionType::list: {
                     U64 length;
                     r(reinterpret_cast<U8*>(&length), sizeof(length));
                     auto read_arr = [&]<typename El>() -> ReadValue {
@@ -511,15 +544,16 @@ export namespace objstore {
                         return {move(arr)};
                     };
                     switch (cdtype.list.element_dtype) {
-                        case types::text: case types::uuid: case types::timestamp:
-                            return read_arr.template operator()<AutoString8>();
-                        case types::smallint:  return read_arr.template operator()<S16>();
-                        case types::int_:      return read_arr.template operator()<S32>();
-                        case types::bigint: case types::counter:
-                                               return read_arr.template operator()<S64>();
-                        case types::boolean:   return read_arr.template operator()<U8>();
-                        case types::float_:    return read_arr.template operator()<F32>();
-                        case types::double_:   return read_arr.template operator()<F64>();
+                        case types::text:       return read_arr.template operator()<AutoString8>();
+                        case types::smallint:   return read_arr.template operator()<S16>();
+                        case types::int_:       return read_arr.template operator()<S32>();
+                        case types::bigint:
+                        case types::timestamp:
+                        case types::counter:    return read_arr.template operator()<S64>();
+                        case types::boolean:    return read_arr.template operator()<U8>();
+                        case types::float_:     return read_arr.template operator()<F32>();
+                        case types::double_:    return read_arr.template operator()<F64>();
+                        case types::uuid:
                         case types::ascii:
                         case types::blob:
                         case types::date:
@@ -531,13 +565,13 @@ export namespace objstore {
                         case types::tinyint:
                         case types::varchar:
                         case types::varint:
-                        case types::vector:
-                            break;
+                        case types::vector:     assert_not_implemented(); return {};
                     }
-                    assert_true(false, "unsupported native type for list read");
+
+                    assert_true(false, "invalid native type for list read");
                     return {};
                 } break;
-                case ClassType::set: {
+                case CollectionType::set: {
                     U64 length;
                     r(reinterpret_cast<U8*>(&length), sizeof(length));
                     auto read_set = [&]<typename K>() -> ReadValue {
@@ -547,15 +581,16 @@ export namespace objstore {
                         return {move(s)};
                     };
                     switch (cdtype.set.key_dtype) {
-                        case types::text: case types::uuid: case types::timestamp:
-                            return read_set.template operator()<AutoString8>();
-                        case types::smallint:  return read_set.template operator()<S16>();
-                        case types::int_:      return read_set.template operator()<S32>();
-                        case types::bigint: case types::counter:
-                                               return read_set.template operator()<S64>();
-                        case types::boolean:   return read_set.template operator()<U8>();
-                        case types::float_:    return read_set.template operator()<F32>();
-                        case types::double_:   return read_set.template operator()<F64>();
+                        case types::text:       return read_set.template operator()<AutoString8>();
+                        case types::smallint:   return read_set.template operator()<S16>();
+                        case types::int_:       return read_set.template operator()<S32>();
+                        case types::bigint:
+                        case types::timestamp:
+                        case types::counter:    return read_set.template operator()<S64>();
+                        case types::boolean:    return read_set.template operator()<U8>();
+                        case types::float_:     return read_set.template operator()<F32>();
+                        case types::double_:    return read_set.template operator()<F64>();
+                        case types::uuid:
                         case types::ascii:
                         case types::blob:
                         case types::date:
@@ -567,13 +602,13 @@ export namespace objstore {
                         case types::tinyint:
                         case types::varchar:
                         case types::varint:
-                        case types::vector:
-                            break;
+                        case types::vector:     assert_not_implemented(); return {};
                     }
-                    assert_true(false, "unsupported native type for set read");
+
+                    assert_true(false, "invalid native type for set read");
                     return {};
                 } break;
-                case ClassType::map: {
+                case CollectionType::map: {
                     U64 length;
                     r(reinterpret_cast<U8*>(&length), sizeof(length));
                     auto read_map_kv = [&]<typename K, typename V>() -> ReadValue {
@@ -587,16 +622,16 @@ export namespace objstore {
                     };
                     auto read_map_v = [&]<typename K>(NativeType val_dtype) -> ReadValue {
                         switch (val_dtype) {
-                            case types::text:
-                            case types::uuid:
-                            case types::timestamp:  return read_map_kv.template operator()<K, AutoString8>();
+                            case types::text:       return read_map_kv.template operator()<K, AutoString8>();
                             case types::smallint:   return read_map_kv.template operator()<K, S16>();
                             case types::int_:       return read_map_kv.template operator()<K, S32>();
                             case types::bigint:
+                            case types::timestamp:
                             case types::counter:    return read_map_kv.template operator()<K, S64>();
                             case types::boolean:    return read_map_kv.template operator()<K, U8>();
                             case types::float_:     return read_map_kv.template operator()<K, F32>();
                             case types::double_:    return read_map_kv.template operator()<K, F64>();
+                            case types::uuid:
                             case types::ascii:
                             case types::blob:
                             case types::date:
@@ -608,20 +643,22 @@ export namespace objstore {
                             case types::tinyint:
                             case types::varchar:
                             case types::varint:
-                            case types::vector:     assert_true(false, "unsupported native type for read_map_v"); return {};
+                            case types::vector:     assert_not_implemented(); return {};
                         }
+                        assert_true(false, "invalid native type for map value read");
+                        return {};
                     };
                     switch (cdtype.map.key_dtype) {
-                        case types::text:
-                        case types::uuid:
-                        case types::timestamp:  return read_map_v.template operator()<AutoString8>(cdtype.map.value_dtype);
+                        case types::text:       return read_map_v.template operator()<AutoString8>(cdtype.map.value_dtype);
                         case types::smallint:   return read_map_v.template operator()<S16>(cdtype.map.value_dtype);
                         case types::int_:       return read_map_v.template operator()<S32>(cdtype.map.value_dtype);
                         case types::bigint:
+                        case types::timestamp:
                         case types::counter:    return read_map_v.template operator()<S64>(cdtype.map.value_dtype);
                         case types::boolean:    return read_map_v.template operator()<U8>(cdtype.map.value_dtype);
                         case types::float_:     return read_map_v.template operator()<F32>(cdtype.map.value_dtype);
                         case types::double_:    return read_map_v.template operator()<F64>(cdtype.map.value_dtype);
+                        case types::uuid:
                         case types::ascii:
                         case types::blob:
                         case types::date:
@@ -633,21 +670,22 @@ export namespace objstore {
                         case types::tinyint:
                         case types::varchar:
                         case types::varint:
-                        case types::vector:     assert_true(false, "unsupported native type for map key read"); return {};
+                        case types::vector:     assert_not_implemented(); return {};
                     }
+                    assert_true(false, "invalid native type for map key read");
+                    return {};
                 } break;
-                case ClassType::vector:
-                    break;
+                case CollectionType::vector:{
+                    assert_not_implemented();
+                }break;
             }
-            assert_true(false, "unsupported class type for read_specific");
+            assert_true(false, "invalid collection type");
             return {};
         }
 
         AutoString8 to_str(ReadValue value, NativeType dtype) {
             switch (dtype) {
-                case types::text:
-                case types::uuid:
-                case types::timestamp:{
+                case types::text:{
                     return get<AutoString8>(value);
                 }break;
                 case types::smallint:{
@@ -657,6 +695,7 @@ export namespace objstore {
                     return plexdb::to_str(get<S32>(value));
                 }break;
                 case types::counter:
+                case types::timestamp:
                 case types::bigint:{
                     return plexdb::to_str(get<S64>(value));
                 }break;
@@ -669,6 +708,7 @@ export namespace objstore {
                 case types::double_:{
                     return plexdb::to_str(get<F64>(value));
                 }break;
+                case types::uuid:
                 case types::ascii:
                 case types::blob:
                 case types::date:
@@ -687,7 +727,7 @@ export namespace objstore {
         }
 
         AutoString8 to_str(ReadValue value, CqlType cdtype) {
-            if (cdtype.base.ctype == ClassType::native)
+            if (cdtype.ctype == CollectionType::native)
                 return to_str(value, cdtype.native.value_dtype);
             return visit(value, [&cdtype](auto& v) -> AutoString8 {
                 using T = Decay<decltype(v)>;

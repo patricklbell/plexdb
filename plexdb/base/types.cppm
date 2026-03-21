@@ -824,6 +824,14 @@ namespace plexdb {
     export template<typename... Ts>
     struct TypeList {};
 
+    export template<typename T, typename... Ts>
+    constexpr bool is_in_type_list(TypeList<Ts...>*) {
+        return (SameAs<T, Ts> || ...);
+    }
+
+    export template<typename T, typename List>
+    concept IsInTypeList = is_in_type_list<T>((List*)nullptr);
+
     template<typename... Lists>
     struct ConcatHelper;
 

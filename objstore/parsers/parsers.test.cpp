@@ -7,7 +7,7 @@ import plexdb.os.dynamic_tagged_union;
 
 import objstore.parsers;
 import objstore.engine.statements;
-import objstore.engine.dtype;
+import objstore.engine.types;
 
 using namespace plexdb;
 using namespace objstore;

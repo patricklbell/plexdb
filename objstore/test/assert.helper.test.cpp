@@ -37,8 +37,7 @@ void catch2_assert_handler(const char* msg, const char* file_name,
         g_recovery.active = false;
         std::longjmp(g_recovery.buf, 1);
     }
-    FAIL_CHECK("Assert failed \"" << msg << "\" at " << function_name
-               << " in " << file_name << ":" << line_number);
+    FAIL_CHECK("Assert failed \"" << msg << "\" at " << function_name << " in " << file_name << ":" << line_number);
 }
 
 struct AssertListener : Catch::EventListenerBase {

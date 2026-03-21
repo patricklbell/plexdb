@@ -3,7 +3,7 @@ export module objstore.parsers;
 import plexdb.base;
 import plexdb.log;
 import plexdb.tagged_union;
-import objstore.engine.dtype;
+import objstore.engine.types;
 import objstore.engine.statements;
 import objstore.log;
 

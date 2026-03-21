@@ -65,10 +65,12 @@ target_sources(objstore_modules
         FILE_SET CXX_MODULES 
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
-            engine/types.cppm
             engine/engine.cppm
             engine/schema.cppm
+            engine/system_schema.cppm
             engine/statements.cppm
+            engine/types.cppm
+            engine/virtual_table.cppm
             log/log.cppm
             parsers/parsers.cppm
             tcp/tcp.cppm
@@ -100,6 +102,7 @@ target_sources(objstore
     PRIVATE
         engine/engine.cpp
         engine/schema.cpp
+        engine/system_schema.cpp
         log/log.cpp
         parsers/parsers.cpp
         tcp/tcp.detail.cpp

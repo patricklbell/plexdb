@@ -133,8 +133,6 @@ namespace objstore::engine {
         push_back(vr.columns, VirtualColumn{"schema_version", types::make_native(types::uuid)});
         push_back(vr.columns, VirtualColumn{"tokens", types::make_set(types::text)});
 
-        const U8 uuid_bytes[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-
         VirtualRow row;
         push_back(row.values, types::ReadValue{"local"_as});
         push_back(row.values, types::ReadValue{"COMPLETED"_as});
@@ -143,7 +141,7 @@ namespace objstore::engine {
         push_back(row.values, types::ReadValue{"objstore"_as});
         push_back(row.values, types::ReadValue{"3.4.7"_as});
         push_back(row.values, types::ReadValue{"datacenter1"_as});
-        push_back(row.values, types::ReadValue{AutoString8{uuid_bytes, 16}});
+        push_back(row.values, types::ReadValue{Array<U8,16>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}});
         push_back(row.values, types::ReadValue{"127.0.0.1"_as});
         push_back(row.values, types::ReadValue{S32(7000)});
         push_back(row.values, types::ReadValue{"4"_as});
@@ -152,7 +150,7 @@ namespace objstore::engine {
         push_back(row.values, types::ReadValue{"3.11.19"_as}); // @note last version in 3.x, before system_virtual
         push_back(row.values, types::ReadValue{"127.0.0.1"_as});
         push_back(row.values, types::ReadValue{S32(9042)});
-        push_back(row.values, types::ReadValue{AutoString8{uuid_bytes, 16}}); 
+        push_back(row.values, types::ReadValue{Array<U8,16>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}}); 
         push_back(row.values, types::ReadValue{DynamicSet<AutoString8>{{"0"_as}}});
         push_back(vr.rows, move(row));
 
@@ -198,95 +196,7 @@ namespace objstore::engine {
         return vr;
     }
 
-    VirtualRows make_schema_keyspaces(schema::Schema& schema) {
-        VirtualRows vr;
-        vr.keyspace = "system_schema";
-        vr.table = "keyspaces";
-
-        push_back(vr.columns, VirtualColumn{"keyspace_name", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"durable_writes", types::make_native(types::boolean)});
-        push_back(vr.columns, VirtualColumn{"replication", types::make_native(types::text)});
-
-        for (auto& ks : schema.keyspaces) {
-            if (ks.tombstone) continue;
-            VirtualRow row;
-            push_back(row.values, types::ReadValue{AutoString8(ks.name)});
-            push_back(row.values, types::ReadValue{U8(1)});
-            push_back(row.values, types::ReadValue{"{'class': 'SimpleStrategy', 'replication_factor': '1'}"_as});
-            push_back(vr.rows, move(row));
-        }
-
-        return vr;
-    }
-
-    VirtualRows make_schema_tables(schema::Schema& schema) {
-        VirtualRows vr;
-        vr.keyspace = "system_schema";
-        vr.table = "tables";
-
-        push_back(vr.columns, VirtualColumn{"keyspace_name", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"table_name", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"bloom_filter_fp_chance", types::make_native(types::double_)});
-        push_back(vr.columns, VirtualColumn{"comment", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"default_time_to_live", types::make_native(types::int_)});
-        push_back(vr.columns, VirtualColumn{"gc_grace_seconds", types::make_native(types::int_)});
-
-        for (auto& ks : schema.keyspaces) {
-            if (ks.tombstone) continue;
-            for (auto& tbl : ks.tbls) {
-                if (tbl.tombstone) continue;
-                VirtualRow row;
-                push_back(row.values, types::ReadValue{AutoString8(ks.name)});
-                push_back(row.values, types::ReadValue{AutoString8(tbl.name)});
-                push_back(row.values, types::ReadValue{F64(0.01)});
-                push_back(row.values, types::ReadValue{""_as});
-                push_back(row.values, types::ReadValue{S32(0)});
-                push_back(row.values, types::ReadValue{S32(864000)});
-                push_back(vr.rows, move(row));
-            }
-        }
-
-        return vr;
-    }
-
-    VirtualRows make_schema_columns(schema::Schema& schema) {
-        VirtualRows vr;
-        vr.keyspace = "system_schema";
-        vr.table = "columns";
-
-        push_back(vr.columns, VirtualColumn{"keyspace_name", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"table_name", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"column_name", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"clustering_order", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"kind", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"position", types::make_native(types::int_)});
-        push_back(vr.columns, VirtualColumn{"type", types::make_native(types::text)});
-
-        for (auto& ks : schema.keyspaces) {
-            if (ks.tombstone) continue;
-            for (auto& tbl : ks.tbls) {
-                if (tbl.tombstone) continue;
-                S32 pos = 0;
-                for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                    auto& col = tbl.cols[ci];
-                    if (col.tombstone) continue;
-                    VirtualRow row;
-                    push_back(row.values, types::ReadValue{AutoString8(ks.name)});
-                    push_back(row.values, types::ReadValue{AutoString8(tbl.name)});
-                    push_back(row.values, types::ReadValue{AutoString8(col.name)});
-                    push_back(row.values, types::ReadValue{"none"_as});
-                    bool is_partition_key = (ci == tbl.primary_col_idx);
-                    push_back(row.values, types::ReadValue{is_partition_key ? "partition_key"_as : "regular"_as});
-                    push_back(row.values, types::ReadValue{S32(is_partition_key ? 0 : pos++)});
-                    push_back(row.values, types::ReadValue{AutoString8(types::to_str(col.type))});
-                    push_back(vr.rows, move(row));
-                }
-            }
-        }
-
-        return vr;
-    }
-
+    // @todo in cassandra the schema is stored in the database directly, this is probably a good idea in future
     Optional<VirtualRows> try_system_select(Engine& engine, String8 keyspace, String8 table) {
         if (keyspace == "system") {
             if (table == "local")     return make_system_local();
@@ -294,20 +204,16 @@ namespace objstore::engine {
             if (table == "peers_v2")  return make_system_peers_v2();
         }
         if (keyspace == "system_schema") {
-            if (table == "keyspaces") return make_schema_keyspaces(engine.schema);
-            if (table == "tables")    return make_schema_tables(engine.schema);
-            if (table == "columns")   return make_schema_columns(engine.schema);
-            // Return empty result sets for system_schema tables queried by
-            // drivers during metadata sync that we do not populate.
-            if (table == "indexes" || table == "triggers" || table == "types" ||
-                table == "functions" || table == "aggregates" || table == "views" ||
-                table == "vertices" || table == "edges") {
-                VirtualRows vr;
-                vr.keyspace = "system_schema";
-                vr.table = table;
-                push_back(vr.columns, VirtualColumn{"keyspace_name", types::make_native(NativeType::text)});
-                return vr;
-            }
+            if (table == "keyspaces")        return make_schema_keyspaces(engine.schema);
+            if (table == "tables")           return make_schema_tables(engine.schema);
+            if (table == "columns")          return make_schema_columns(engine.schema);
+            if (table == "views")            return make_schema_views(engine.schema);
+            if (table == "indexes")          return make_schema_indexes(engine.schema);
+            if (table == "triggers")         return make_schema_triggers(engine.schema);
+            if (table == "dropped_columns")  return make_schema_dropped_columns(engine.schema);
+            if (table == "types")            return make_schema_types(engine.schema);
+            if (table == "functions")        return make_schema_functions(engine.schema);
+            if (table == "aggregates")       return make_schema_aggregates(engine.schema);
         }
         return {};
     }

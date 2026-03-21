@@ -1,7 +1,9 @@
 export module objstore.engine;
 
-export import objstore.engine.dtype;
+export import objstore.engine.types;
 export import objstore.engine.schema;
+export import objstore.engine.system_schema;
+export import objstore.engine.virtual_table;
 import objstore.engine.statements;
 
 import plexdb.base;
@@ -56,25 +58,6 @@ export namespace objstore::engine {
         VirtualRows,    // Virtual/system table result (not backed by storage)
         SchemaChange,   // CREATE/DROP/ALTER result
         UseKeyspace,    // USE keyspace
-    };
-
-    // ========================================================================
-    // virtual rows (for system/virtual tables not backed by storage)
-    // ========================================================================
-    struct VirtualColumn {
-        String8 name;
-        CqlType type;
-    };
-
-    struct VirtualRow {
-        DynamicArray<types::ReadValue> values;
-    };
-
-    struct VirtualRows {
-        String8 keyspace;
-        String8 table;
-        DynamicArray<VirtualColumn> columns;
-        DynamicArray<VirtualRow> rows;
     };
 
     // ========================================================================

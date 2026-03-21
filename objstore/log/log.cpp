@@ -16,6 +16,18 @@ namespace objstore::log {
         plexdb::log::message(otlp_db_producer, plexdb::log::Level::Debug, query, "query.text");
     }
 
+    plexdb::log::Producer objstore_native{"objstore::native"};
+
+    void native_info(const plexdb::String8& info) {
+        plexdb::log::message(objstore_native, plexdb::log::Level::Info, info);
+    }
+
+    plexdb::log::Producer objstore_tcp{"objstore::tcp"};
+
+    void tcp_warn(const plexdb::String8& info) {
+        plexdb::log::message(objstore_tcp, plexdb::log::Level::Warn, info);
+    }
+
     plexdb::log::Stat stat_connection_count{&otlp_db_producer, "client.connection.count", plexdb::log::StatType::Gauge};
     plexdb::log::Stat stat_connection_max{&otlp_db_producer, "client.connection.max", plexdb::log::StatType::Gauge};
     plexdb::log::Stat stat_operation_duration{&otlp_db_producer, "client.operation.duration", plexdb::log::StatType::Gauge};
