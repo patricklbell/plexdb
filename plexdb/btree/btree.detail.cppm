@@ -380,6 +380,10 @@ export namespace plexdb::btree {
         auto t_header = scope(t);
         const auto& h = *read_header(t_header);
 
+        if (h.size == 0) {
+            return IteratorImpl{};
+        }
+
         NodeRef n_ref = h.root;
         for (CountType depth = 0; depth < h.depth; depth++) {
             auto t_node = scope(t);

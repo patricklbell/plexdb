@@ -223,7 +223,6 @@ namespace objstore::schema {
     }
 
     static Optional<U64> get_primary_key_col_idx(const CreateTable& create) {
-        // Check inline PRIMARY KEY on individual column definitions
         bool has_primary_key = false;
         U64 primary_col_idx = 0;
         for (U64 col_idx = 0; col_idx < create.column_definitions.length; col_idx++) {
@@ -243,7 +242,6 @@ namespace objstore::schema {
             return primary_col_idx;
         }
 
-        // Check standalone PRIMARY KEY clause
         if (create.primary_key) {
             auto& pk = *create.primary_key;
             assert_true_not_implemented(pk.clustering_columns.length == 0, "clustering columns in standalone PRIMARY KEY");

@@ -452,16 +452,6 @@ namespace objstore::engine {
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.from.table_name);
                 if (tbl == nullptr) return make_table_not_found(ks_name, stmt.from.table_name);
 
-                // Empty table: return empty result set without iterating
-                if (btree::size(tbl->btree) == 0) {
-                    return {
-                        .status = ExecutionStatus::Success,
-                        .kind = ResultKind::Rows,
-                        .keyspace = ks_name,
-                        .table = stmt.from.table_name,
-                    };
-                }
-
                 RowRange rows{
                     .begin_it = RowIterator{
                         .pager = engine.pager,

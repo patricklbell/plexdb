@@ -483,12 +483,14 @@ namespace objstore::native {
             append_type_codes_option(buf, tbl->cols[ci].type);
         }
 
+        // @todo size for WHERE queries
         append_be_s32(buf, S32(btree::size(tbl->btree)));
 
         if (result.rows.has_value()) {
             for (auto& row = result.rows->begin(); row != result.rows->end(); ++row) {
-                for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col)
+                for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col) {
                     append_cql_value(buf, engine::read_value(col), engine::column(col).type);
+                }
             }
         }
     }
