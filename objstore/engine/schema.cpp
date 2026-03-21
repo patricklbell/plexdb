@@ -172,7 +172,7 @@ namespace objstore::schema {
     }
 
     Keyspace* create_keyspace(Schema& schema, const CreateKeyspace& create) {
-        // Replication options are silently ignored (single-node store)
+        assert_true_not_implemented(create.options.identifier_values.length == 0);
         assert_true(read_keyspace_impl(schema, create.name) == nullptr, "keyspace already exists");
 
         U64 offset_bytes = schema.keyspaces_blob.size_bytes;
@@ -246,11 +246,13 @@ namespace objstore::schema {
         // Check standalone PRIMARY KEY clause
         if (create.primary_key) {
             auto& pk = *create.primary_key;
+            assert_true_not_implemented(pk.clustering_columns.length == 0, "clustering columns in standalone PRIMARY KEY");
             String8 pk_col_name;
             if (type_matches_tag<ColumnName>(pk.partition_key.column_or_columns)) {
                 pk_col_name = get<ColumnName>(pk.partition_key.column_or_columns).identifier;
             } else {
                 auto& cols = get<DynamicArray<ColumnName>>(pk.partition_key.column_or_columns);
+                assert_true_not_implemented(cols.length == 1, "composite partition key in standalone PRIMARY KEY");
                 if (cols.length > 0) pk_col_name = cols[0].identifier;
             }
 
@@ -265,8 +267,7 @@ namespace objstore::schema {
     }
 
     Table* create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
-        // Table options (compaction, compression, etc.) are silently ignored
-        // Standalone PRIMARY KEY clause is silently ignored (in-column PRIMARY KEY is used)
+        assert_true_not_implemented(create.options.value.length == 0);
         assert_true(read_table_impl(schema, ks, create.name.table_name) == nullptr, "table already exists");
 
         auto primary_key_col_idx_opt = get_primary_key_col_idx(create);
@@ -351,7 +352,8 @@ namespace objstore::schema {
     }
 
     Column* create_column(Schema& schema, Table& tbl, const ColumnDefinition& create) {
-        // Static and mask qualifiers are silently ignored
+        assert_true_not_implemented(!create._static);
+        assert_true_not_implemented(!create.mask);
         assert_true(read_column_impl(schema, tbl, create.name.identifier) == nullptr, "column already exists");
 
         U64 offset_bytes = schema.columns_blob.size_bytes;

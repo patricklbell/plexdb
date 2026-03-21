@@ -448,11 +448,7 @@ export namespace objstore {
     };
 
     const Constant& consteval_term_to_constant(const Term& term) {
-        assert_true(type_matches_tag<Constant>(term.value), "only constant terms are supported");
+        assert_true_not_implemented(type_matches_tag<Constant>(term.value), "only constant terms are supported");
         return get<Constant>(term.value);
-    }
-
-    bool term_is_constant(const Term& term) {
-        return type_matches_tag<Constant>(term.value);
     }
 }

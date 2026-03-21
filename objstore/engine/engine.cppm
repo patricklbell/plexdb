@@ -28,26 +28,25 @@ export namespace objstore::engine {
 
     enum class ExecutionStatus : U16 {
         Success         = 0x0000,
-        ServerError     = 0x0000,  // Unexpected server-side error (CQL native protocol: Server error)
+        ServerError     = 0x0001,  // Unexpected server-side error
         SyntaxError     = 0x2000,  // Query has syntax error
         Unauthorized    = 0x2100,  // No permission
         Invalid         = 0x2200,  // Syntactically correct but invalid
         ConfigError     = 0x2300,  // Configuration issue
         AlreadyExists   = 0x2400,  // Keyspace/table already exists
-        // @note mapped to Invalid (0x2200) on the wire; CQL protocol has no NotImplemented code
-        NotImplemented  = 0x2200,  // Feature not implemented
+        NotImplemented  = 0x2500,  // Feature not implemented
     };
 
     constexpr String8 to_str(ExecutionStatus status) {
-        // @note NotImplemented and Invalid share the same wire code
-        if (status == ExecutionStatus::ServerError) return "SERVER_ERROR";
         switch (status) {
             case ExecutionStatus::Success:        return "SUCCESS";
+            case ExecutionStatus::ServerError:    return "SERVER_ERROR";
             case ExecutionStatus::SyntaxError:    return "SYNTAX_ERROR";
             case ExecutionStatus::Unauthorized:   return "UNAUTHORIZED";
             case ExecutionStatus::Invalid:        return "INVALID";
             case ExecutionStatus::ConfigError:    return "CONFIG_ERROR";
             case ExecutionStatus::AlreadyExists:  return "ALREADY_EXISTS";
+            case ExecutionStatus::NotImplemented: return "NOT_IMPLEMENTED";
         }
         return "UNKNOWN";
     }

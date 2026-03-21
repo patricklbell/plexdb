@@ -228,9 +228,6 @@ namespace objstore::engine {
     static ExecutionResult make_server_error(const char* msg) {
         return {.status = ExecutionStatus::ServerError, .message = msg};
     }
-    static ExecutionResult make_not_implemented(const char* msg = "not implemented") {
-        return {.status = ExecutionStatus::NotImplemented, .message = msg};
-    }
     static ExecutionResult make_keyspace_already_exists(const String8& keyspace_name) {
         return {
             .status = ExecutionStatus::AlreadyExists,
@@ -354,7 +351,7 @@ namespace objstore::engine {
                 return make_keyspace_created(stmt.name);
             } else if constexpr (SameAs<T, CreateTable>) {
                 String8 ks_name = static_cast<bool>(stmt.name.keyspace_name) ? String8(*stmt.name.keyspace_name) : engine.current_keyspace;
-                if (is_system_keyspace(ks_name)) return make_not_implemented("cannot modify system keyspace");
+                assert_true_not_implemented(!is_system_keyspace(ks_name));
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name);
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
@@ -382,7 +379,7 @@ namespace objstore::engine {
 
                 return make_use_keyspace(engine.current_keyspace);
             } else if constexpr (SameAs<T, AlterKeyspace>) {
-                if (is_system_keyspace(stmt.keyspace)) return make_not_implemented("cannot modify system keyspace");
+                assert_true_not_implemented(!is_system_keyspace(stmt.keyspace));
 
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace);
                 if (ks == nullptr) {
@@ -390,11 +387,11 @@ namespace objstore::engine {
                     return make_keyspace_not_found(stmt.keyspace);
                 }
 
-                // Keyspace options (replication, etc.) are silently ignored
+                assert_true_not_implemented(stmt.options.identifier_values.length == 0);
                 
                 return make_schema_changed(stmt.keyspace);
             } else if constexpr (SameAs<T, DropKeyspace>) {
-                if (is_system_keyspace(stmt.keyspace)) return make_not_implemented("cannot modify system keyspace");
+                assert_true_not_implemented(!is_system_keyspace(stmt.keyspace));
 
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace);
                 if (ks == nullptr) {
@@ -407,7 +404,7 @@ namespace objstore::engine {
                 return make_schema_changed(stmt.keyspace);
             } else if constexpr (SameAs<T, DropTable>) {
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
-                if (is_system_keyspace(ks_name)) return make_not_implemented("cannot modify system keyspace");
+                assert_true_not_implemented(!is_system_keyspace(ks_name));
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name);
                 if (ks == nullptr) {
@@ -423,7 +420,7 @@ namespace objstore::engine {
                 return make_schema_changed(ks_name, stmt.table.table_name);
             } else if constexpr (SameAs<T, TruncateTable>) {
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
-                if (is_system_keyspace(ks_name)) return make_not_implemented("cannot modify system keyspace");
+                assert_true_not_implemented(!is_system_keyspace(ks_name));
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name);
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
@@ -447,7 +444,7 @@ namespace objstore::engine {
                         .virtual_rows = move(system_vr),
                     };
                 }
-                if (is_system_keyspace(ks_name)) return make_not_implemented("system table not implemented");
+                assert_true_not_implemented(!is_system_keyspace(ks_name));
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name);
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
@@ -490,11 +487,11 @@ namespace objstore::engine {
                     .rows = move(rows),
                 };
             } else if constexpr (SameAs<T, Insert>) {
-                if (stmt.using_parameters.length != 0) return make_not_implemented("USING parameters not implemented");
+                assert_true_not_implemented(stmt.using_parameters.length == 0);
                 assert_true(static_cast<bool>(stmt.insert_clause), "missing insert clause, this should never happen");
                 
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
-                if (is_system_keyspace(ks_name)) return make_not_implemented("cannot modify system keyspace");
+                assert_true_not_implemented(!is_system_keyspace(ks_name));
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name);
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
@@ -525,8 +522,6 @@ namespace objstore::engine {
                                     return make_insert_into_deleted_column(ks->name, tbl->name);
                                 }
 
-                                if (!term_is_constant(v.values[*names_idx_opt]))
-                                    return make_not_implemented("only constant terms are supported in INSERT");
                                 const auto& constant = consteval_term_to_constant(v.values[*names_idx_opt]);
                                 if (!types::can_write_constant_value(constant.value, col.type.native.value_dtype))
                                     return make_insert_incompatible_literal(ks->name, tbl->name);
@@ -534,7 +529,7 @@ namespace objstore::engine {
                         }
 
                         // @todo uniqueness check
-                        if (stmt.if_not_exists) return make_not_implemented("IF NOT EXISTS not implemented");
+                        assert_true_not_implemented(!stmt.if_not_exists);
 
                         // write new values
                         // @todo avoid copying by having separate read/write pages help in transactions
@@ -562,8 +557,6 @@ namespace objstore::engine {
                             const auto& pk_col = tbl->cols[tbl->primary_col_idx];
                             auto pk_idx_opt = try_get_names_idx(pk_col.name);
                             assert_true(static_cast<bool>(pk_idx_opt), "primary key column must be provided in INSERT");
-                            if (!term_is_constant(v.values[*pk_idx_opt]))
-                                return make_not_implemented("only constant terms are supported in INSERT");
                             const auto& pk_constant = consteval_term_to_constant(v.values[*pk_idx_opt]);
                             U64 pk_key = types::hash_constant_value(pk_constant.value);
                             tinsert(tbl->btree, pk_key, row_page);
@@ -571,19 +564,24 @@ namespace objstore::engine {
                         
                         return make_void_success();
                     } else if constexpr (SameAs<T, Insert::JsonClause>) {
-                        return make_not_implemented("INSERT JSON not implemented");
+                        assert_not_implemented();
+                        return ExecutionResult{};
                     } else {
                         static_assert(!SameAs<T,T>);
                     }
                 });
             } else if constexpr (SameAs<T, Update>) {
-                return make_not_implemented("UPDATE not implemented");
+                assert_not_implemented();
+                return ExecutionResult{};
             } else if constexpr (SameAs<T, Delete>) {
-                return make_not_implemented("DELETE not implemented");
+                assert_not_implemented();
+                return ExecutionResult{};
             } else if constexpr (SameAs<T, AlterTable>) {
-                return make_not_implemented("ALTER TABLE not implemented");
+                assert_not_implemented();
+                return ExecutionResult{};
             } else if constexpr (SameAs<T, Batch>) {
-                return make_not_implemented("BATCH not implemented");
+                assert_not_implemented();
+                return ExecutionResult{};
             } else {
                 static_assert(false, "Unhandled statement type in engine::execute");
             }

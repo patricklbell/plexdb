@@ -40,14 +40,23 @@ cat /tmp/cql_logs/server.log
 
 ## Error categories
 
-Tests fail with these error types (from most to least common):
+Tests fail when the server crashes on an `assert_not_implemented` or
+`assert_true_not_implemented` call. The conftest.py detects the crash, restarts
+the server, and the next test continues. The server log (`-L <dir>`) shows the
+assert message for each crash.
 
-| Error | Meaning | Fix area |
-|-------|---------|----------|
+Common assert messages (check `server.log`):
+
+| Assert message | Meaning | Fix area |
+|----------------|---------|----------|
+| `"clustering columns in standalone PRIMARY KEY"` | Clustering columns not yet supported | `schema.cpp` table creation |
 | `"PREPARE not implemented"` | Prepared statements not supported | `native.cppm` PREPARE handler |
-| `"Failed to parse CQL"` | CQL syntax not handled by parser | `parsers/parsers.cpp` lexy grammar |
-| `"X not implemented"` | Feature recognized but unimplemented | `engine.cpp` execute function |
-| `AssertionError` | Test ran but produced wrong results | Engine logic / data handling |
+| `"frozen types"` | Frozen collection types not supported | `parsers.cpp` type grammar |
+| `"not implemented" at create_table` | Table options not supported | `schema.cpp` create_table |
+| `"only constant terms are supported"` | Non-constant terms (e.g. function calls) | `statements.cppm` |
+| `"composite partition key"` | Multi-column partition keys not supported | `schema.cpp` get_primary_key_col_idx |
+| `"not implemented" at Update/Delete/...` | Statement type not implemented | `engine.cpp` execute |
+| `"Failed to parse CQL"` | CQL syntax not handled by parser (non-crash) | `parsers/parsers.cpp` lexy grammar |
 
 ## Architecture
 
@@ -111,11 +120,11 @@ bash extra/cql_tests/run.sh
 ### 4. Rules
 
 - **Never remove existing passing tests.** Run the C++ test suite after every change.
-- **Keep the server alive.** Convert `assert_not_implemented` calls to proper error
-  responses (`make_not_implemented(...)` or `append_error_body(...)`) rather than
-  crashing.
-- **Error codes must be valid CQL native protocol codes.** The cassandra-driver
-  parses error codes; codes `0x2400` (AlreadyExists) and `0x2500` (Unprepared)
-  have special body formats. Use `0x2200` (Invalid) for not-implemented errors.
+- **Keep `assert_not_implemented` calls.** The server should crash with a meaningful
+  message when it encounters input it cannot handle. The conftest.py detects crashes
+  and restarts the server for each test. To fix a test, implement the feature so the
+  assert is no longer reached — do not convert asserts to error responses.
+- **Check `server.log` for crash reasons.** Use `-L /tmp/cql_logs` and read
+  `server.log` to see which assert fired for each failing test.
 - **Test with `--no-uring`.** There is a known io_uring async write issue; all
   conformance tests run with `--no-uring` (set in `conftest.py`).

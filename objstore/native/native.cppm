@@ -619,18 +619,15 @@ namespace objstore::native {
             } break;
 
             case op_codes::PREPARE: {
-                auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
-                append_error_body(frame, engine::ExecutionStatus::NotImplemented, "PREPARE not implemented");
+                assert_true_not_implemented(false, "PREPARE not implemented");
             } break;
 
             case op_codes::EXECUTE: {
-                auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
-                append_error_body(frame, engine::ExecutionStatus::NotImplemented, "EXECUTE not implemented");
+                assert_true_not_implemented(false, "EXECUTE not implemented");
             } break;
 
             case op_codes::BATCH: {
-                auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
-                append_error_body(frame, engine::ExecutionStatus::NotImplemented, "BATCH not implemented");
+                assert_true_not_implemented(false, "BATCH not implemented");
             } break;
 
             default: {
