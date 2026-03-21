@@ -648,6 +648,10 @@ namespace objstore::engine {
         return { .status = ExecutionStatus::Success, .id = query_hash, .entry = &entry };
     }
 
+    PreparedEntry* find_prepared(Engine& engine, U64 prepared_id) {
+        return find(engine.prepared_cache, prepared_id);
+    }
+
     // @note @warn MOVES from bound_values
     static void bind_values_to_statement(Statement& stmt, DynamicArray<Constant>& bound_values) {
         visit(stmt.value, [&](auto& s) {

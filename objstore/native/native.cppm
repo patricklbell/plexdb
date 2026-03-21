@@ -625,6 +625,67 @@ namespace objstore::native {
     }
 
     // ========================================================================
+    // Shared result writing
+    // ========================================================================
+    // Returns true if the result was an error and was handled (caller should break)
+    bool send_error_if_failed(
+        engine::ExecutionResult& result,
+        tcp::Connection* conn,
+        tcp::Chunk* chunk,
+        tcp::AsyncWriteFunctor* write,
+        S16 stream
+    ) {
+        if (result.status != engine::ExecutionStatus::Success) {
+            auto frame = make_native_frame(conn, chunk, write, op_codes::ERROR, stream);
+            String8 msg = result.message.length ? result.message : engine::to_str(result.status);
+            append_error_body(frame, result.status, msg);
+            return true;
+        }
+        return false;
+    }
+
+    void send_execution_result(
+        engine::ExecutionResult& result,
+        engine::Engine& engine,
+        tcp::Connection* conn,
+        tcp::Chunk* chunk,
+        tcp::AsyncWriteFunctor* write,
+        S16 stream
+    ) {
+        switch (result.kind) {
+            case engine::ResultKind::Void:{
+                auto frame = make_native_frame(conn, chunk, write, op_codes::RESULT, stream);
+                append_result_void(frame);
+            }break;
+            case engine::ResultKind::SchemaChange:{
+                String8 change_type = result.message.length ? result.message : "UPDATED";
+                String8 target      = result.table.length   ? "TABLE"        : "KEYSPACE";
+                auto frame = make_native_frame(conn, chunk, write, op_codes::RESULT, stream);
+                append_result_schema_change(frame, change_type, target, result.keyspace, result.table);
+            }break;
+            case engine::ResultKind::UseKeyspace:{
+                auto frame = make_native_frame(conn, chunk, write, op_codes::RESULT, stream);
+                append_result_set_keyspace(frame, result.keyspace);
+            }break;
+            case engine::ResultKind::Rows:{
+                auto ks = schema::read_keyspace(engine.schema, result.keyspace);
+                assert_true(ks != nullptr, "keyspace not found for rows result");
+                auto tbl = schema::read_table(engine.schema, *ks, result.table);
+                assert_true(tbl != nullptr, "table not found for rows result");
+                auto frame = make_native_frame(conn, chunk, write, op_codes::RESULT, stream);
+                append_result_rows(frame, result, tbl);
+                objstore::log::db_response_returned_rows(btree::size(tbl->btree));
+            }break;
+            case engine::ResultKind::VirtualRows:{
+                assert_true(result.virtual_rows.has_value(), "virtual rows missing");
+                auto frame = make_native_frame(conn, chunk, write, op_codes::RESULT, stream);
+                append_result_virtual_rows(frame, *result.virtual_rows);
+                objstore::log::db_response_returned_rows(result.virtual_rows->rows.length);
+            }break;
+        }
+    }
+
+    // ========================================================================
     // Frame dispatcher
     // ========================================================================
     void handle_frame(
@@ -688,45 +749,12 @@ namespace objstore::native {
 
                 engine::ExecutionResult result = engine::execute(engine, *cql_opt);
 
-                if (result.status != engine::ExecutionStatus::Success) {
-                    auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
-                    String8 msg = result.message.length ? result.message : engine::to_str(result.status);
-                    append_error_body(frame, result.status, msg);
+                if (send_error_if_failed(result, conn, &chunk, write, stream)) {
                     objstore::log::db_operation_duration(os::monotonic_us() - t0);
                     break;
                 }
 
-                switch (result.kind) {
-                    case engine::ResultKind::Void:{
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_void(frame);
-                    }break;
-                    case engine::ResultKind::SchemaChange:{
-                        String8 change_type = result.message.length ? result.message : "UPDATED";
-                        String8 target      = result.table.length   ? "TABLE"        : "KEYSPACE";
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_schema_change(frame, change_type, target, result.keyspace, result.table);
-                    }break;
-                    case engine::ResultKind::UseKeyspace:{
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_set_keyspace(frame, result.keyspace);
-                    }break;
-                    case engine::ResultKind::Rows:{
-                        auto ks = schema::read_keyspace(engine.schema, result.keyspace);
-                        assert_true(ks != nullptr, "keyspace not found for rows result");
-                        auto tbl = schema::read_table(engine.schema, *ks, result.table);
-                        assert_true(tbl != nullptr, "table not found for rows result");
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_rows(frame, result, tbl);
-                        objstore::log::db_response_returned_rows(btree::size(tbl->btree));
-                    }break;
-                    case engine::ResultKind::VirtualRows:{
-                        assert_true(result.virtual_rows.has_value(), "virtual rows missing");
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_virtual_rows(frame, *result.virtual_rows);
-                        objstore::log::db_response_returned_rows(result.virtual_rows->rows.length);
-                    }break;
-                }
+                send_execution_result(result, engine, conn, &chunk, write, stream);
                 objstore::log::db_operation_duration(os::monotonic_us() - t0);
             } break;
 
@@ -769,7 +797,7 @@ namespace objstore::native {
                 }
 
                 // Look up the prepared entry to get bind variable types
-                auto* entry = find(engine.prepared_cache, prepared_id);
+                auto* entry = engine::find_prepared(engine, prepared_id);
                 if (entry == nullptr) {
                     auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
                     append_error_body(frame, engine::ExecutionStatus::Invalid, "Prepared statement not found (unprepared)");
@@ -792,17 +820,26 @@ namespace objstore::native {
                             p += 2;
 
                             if (flags & 0x40) { // Named values
+                                // Pre-size with null constants for each bind variable
+                                for (U64 bi = 0; bi < entry->bind_variables.length; bi++) {
+                                    push_back(bound_values, Constant{.value = Null{}});
+                                }
                                 for (U16 i = 0; i < n_values && p < body_end; i++) {
                                     String8 name = read_cql_string(p, body_end);
-                                    // Find the type for this named variable
+                                    // Find the bind variable index and type for this name
                                     NativeType dtype = types::text;
+                                    U64 target_idx = entry->bind_variables.length; // sentinel
                                     for (U64 bi = 0; bi < entry->bind_variables.length; bi++) {
                                         if (entry->bind_variables[bi].name == name) {
                                             dtype = entry->bind_variables[bi].type.native.value_dtype;
+                                            target_idx = bi;
                                             break;
                                         }
                                     }
-                                    push_back(bound_values, read_cql_value_as_constant(p, body_end, dtype));
+                                    Constant val = read_cql_value_as_constant(p, body_end, dtype);
+                                    if (target_idx < entry->bind_variables.length) {
+                                        bound_values[target_idx] = move(val);
+                                    }
                                 }
                             } else { // Positional values
                                 for (U16 i = 0; i < n_values && p < body_end; i++) {
@@ -818,43 +855,12 @@ namespace objstore::native {
 
                 engine::ExecutionResult result = engine::execute_prepared(engine, prepared_id, move(bound_values));
 
-                if (result.status != engine::ExecutionStatus::Success) {
-                    auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
-                    String8 msg = result.message.length ? result.message : engine::to_str(result.status);
-                    append_error_body(frame, result.status, msg);
+                if (send_error_if_failed(result, conn, &chunk, write, stream)) {
                     objstore::log::db_operation_duration(os::monotonic_us() - t0);
                     break;
                 }
 
-                switch (result.kind) {
-                    case engine::ResultKind::Void:{
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_void(frame);
-                    }break;
-                    case engine::ResultKind::SchemaChange:{
-                        String8 change_type = result.message.length ? result.message : "UPDATED";
-                        String8 target      = result.table.length   ? "TABLE"        : "KEYSPACE";
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_schema_change(frame, change_type, target, result.keyspace, result.table);
-                    }break;
-                    case engine::ResultKind::UseKeyspace:{
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_set_keyspace(frame, result.keyspace);
-                    }break;
-                    case engine::ResultKind::Rows:{
-                        auto ks = schema::read_keyspace(engine.schema, result.keyspace);
-                        assert_true(ks != nullptr, "keyspace not found for rows result");
-                        auto tbl = schema::read_table(engine.schema, *ks, result.table);
-                        assert_true(tbl != nullptr, "table not found for rows result");
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_rows(frame, result, tbl);
-                    }break;
-                    case engine::ResultKind::VirtualRows:{
-                        assert_true(result.virtual_rows.has_value(), "virtual rows missing");
-                        auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
-                        append_result_virtual_rows(frame, *result.virtual_rows);
-                    }break;
-                }
+                send_execution_result(result, engine, conn, &chunk, write, stream);
                 objstore::log::db_operation_duration(os::monotonic_us() - t0);
             } break;
 

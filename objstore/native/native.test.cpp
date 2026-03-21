@@ -736,6 +736,68 @@ TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native]") {
         CHECK(body_contains(select_resp, "Alice"));
     }
 
+    // PREPARE with named bind markers, then EXECUTE with values in a different order
+    {
+        Bytes b;
+        b.cql_long_string("INSERT INTO prep_ks.data (id, name, score) VALUES (:id, :name, :score)");
+        b.prepend_header(0x09, 3);  // PREPARE opcode
+        send_frame(client, b);
+
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);  // RESULT
+        REQUIRE(result_kind(resp) == 0x0004);  // Prepared
+
+        // Extract the prepared id
+        const uint8_t* p = resp.body.data() + 4;
+        uint16_t id_len = (uint16_t(p[0]) << 8) | p[1];
+        CHECK(id_len == 8);
+        std::vector<uint8_t> prepared_id(p + 2, p + 2 + id_len);
+
+        // EXECUTE with named values in REVERSED order (score, name, id)
+        {
+            Bytes ex;
+            // [short bytes] id
+            ex.u16(uint16_t(prepared_id.size()));
+            for (auto byte : prepared_id) ex.u8(byte);
+            // query parameters
+            ex.u16(0x0001); // consistency = ONE
+            ex.u8(0x41);    // flags: Values (0x01) | Named values (0x40)
+            ex.u16(3);      // n_values = 3
+
+            // Named value 1: "score" = 77.7 (sent first, but should go to third bind position)
+            ex.cql_string("score");
+            ex.s32(8);
+            uint64_t dbl_bits;
+            double dbl_val = 77.7;
+            memcpy(&dbl_bits, &dbl_val, sizeof(dbl_bits));
+            for (int i = 7; i >= 0; i--) ex.u8(uint8_t(dbl_bits >> (i * 8)));
+
+            // Named value 2: "name" = "Bob" (sent second, but should go to second bind position)
+            ex.cql_string("name");
+            ex.s32(3);
+            ex.u8('B'); ex.u8('o'); ex.u8('b');
+
+            // Named value 3: "id" = 99 (sent last, but should go to first bind position)
+            ex.cql_string("id");
+            ex.s32(4);
+            ex.u8(0); ex.u8(0); ex.u8(0); ex.u8(99);
+
+            ex.prepend_header(0x0A, 4);  // EXECUTE opcode
+            send_frame(client, ex);
+
+            auto exec_resp = recv_frame(client);
+            REQUIRE(exec_resp.opcode == 0x08);  // RESULT
+            CHECK(result_kind(exec_resp) == 0x0001);  // Void
+        }
+
+        // Verify data was inserted correctly (names matched to correct columns)
+        send_frame(client, make_query("SELECT * FROM prep_ks.data WHERE id = 99;"));
+        auto select_resp = recv_frame(client);
+        REQUIRE(select_resp.opcode == 0x08);
+        CHECK(result_kind(select_resp) == 0x0002);  // Rows
+        CHECK(body_contains(select_resp, "Bob"));
+    }
+
     exit_signal = true;
     os::signal_notify_safe(signal_pipe);
     server_thread.join();

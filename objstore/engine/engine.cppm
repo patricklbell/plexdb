@@ -153,5 +153,6 @@ export namespace objstore::engine {
     };
 
     PrepareResult prepare(Engine& engine, String8 query);
+    PreparedEntry* find_prepared(Engine& engine, U64 prepared_id);
     ExecutionResult execute_prepared(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values);
 }
