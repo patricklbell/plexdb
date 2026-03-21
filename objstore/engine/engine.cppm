@@ -143,6 +143,12 @@ export namespace objstore::engine {
     ExecutionResult execute(Engine& engine, const Statement& statement);
 
     // ========================================================================
+    // bind variables
+    // ========================================================================
+    DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement);
+    ExecutionResult execute_with_values(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values);
+
+    // ========================================================================
     // prepared statements
     // ========================================================================
     struct PrepareResult {

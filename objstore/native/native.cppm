@@ -571,7 +571,6 @@ namespace objstore::native {
         append_be_s32(buf, 0); // columns_count = 0
     }
 
-    // Read a CQL binary value ([bytes] format) and convert to a Constant based on NativeType
     Constant read_cql_value_as_constant(const U8*& p, const U8* end, NativeType dtype) {
         assert_true(p + 4 <= end, "truncated value length");
         S32 len = read_be_s32(p);
@@ -625,9 +624,56 @@ namespace objstore::native {
     }
 
     // ========================================================================
+    // Query parameter reading
+    // ========================================================================
+    DynamicArray<Constant> read_query_parameter_values(
+        const U8*& p, const U8* end,
+        const DynamicArray<engine::BindVariableSpec>& bind_specs
+    ) {
+        DynamicArray<Constant> bound_values;
+        if (p + 2 > end) return bound_values;
+        p += 2; // skip consistency [short]
+        if (p >= end) return bound_values;
+
+        U8 flags = *p++;
+        if (!(flags & 0x01)) return bound_values;
+
+        assert_true(p + 2 <= end, "truncated values count");
+        U16 n_values = read_be_u16(p);
+        p += 2;
+
+        if (flags & 0x40) {
+            for (U64 bi = 0; bi < bind_specs.length; bi++)
+                push_back(bound_values, Constant{.value = Null{}});
+            for (U16 i = 0; i < n_values && p < end; i++) {
+                String8 name = read_cql_string(p, end);
+                NativeType dtype = types::text;
+                U64 target_idx = bind_specs.length;
+                for (U64 bi = 0; bi < bind_specs.length; bi++) {
+                    if (bind_specs[bi].name == name) {
+                        dtype = bind_specs[bi].type.native.value_dtype;
+                        target_idx = bi;
+                        break;
+                    }
+                }
+                Constant val = read_cql_value_as_constant(p, end, dtype);
+                if (target_idx < bind_specs.length)
+                    bound_values[target_idx] = move(val);
+            }
+        } else {
+            for (U16 i = 0; i < n_values && p < end; i++) {
+                NativeType dtype = (i < bind_specs.length)
+                    ? bind_specs[i].type.native.value_dtype
+                    : types::text;
+                push_back(bound_values, read_cql_value_as_constant(p, end, dtype));
+            }
+        }
+        return bound_values;
+    }
+
+    // ========================================================================
     // Shared result writing
     // ========================================================================
-    // Returns true if the result was an error and was handled (caller should break)
     bool send_error_if_failed(
         engine::ExecutionResult& result,
         tcp::Connection* conn,
@@ -737,7 +783,6 @@ namespace objstore::native {
                 S64 t0 = os::monotonic_us();
                 const U8* p = body;
                 String8 query = read_cql_long_string(p, body_end);
-                // Remaining bytes are query parameters (consistency, flags, etc.) - ignored
 
                 auto cql_opt = parsers::cql::parse(query);
                 if (!cql_opt) {
@@ -747,7 +792,11 @@ namespace objstore::native {
                     break;
                 }
 
-                engine::ExecutionResult result = engine::execute(engine, *cql_opt);
+                auto bind_specs = engine::collect_bind_variables(engine, *cql_opt);
+                auto bound_values = read_query_parameter_values(p, body_end, bind_specs);
+                engine::ExecutionResult result = bound_values.length > 0
+                    ? engine::execute_with_values(engine, *cql_opt, move(bound_values))
+                    : engine::execute(engine, *cql_opt);
 
                 if (send_error_if_failed(result, conn, &chunk, write, stream)) {
                     objstore::log::db_operation_duration(os::monotonic_us() - t0);
@@ -786,17 +835,12 @@ namespace objstore::native {
                 S64 t0 = os::monotonic_us();
                 const U8* p = body;
 
-                // Read prepared statement id [short bytes]
                 const U8* id_data = nullptr;
                 U16 id_len = read_cql_short_bytes(p, body_end, id_data);
-
-                // Reconstruct the U64 id from 8 bytes big-endian
                 U64 prepared_id = 0;
-                for (U16 i = 0; i < id_len && i < 8; i++) {
+                for (U16 i = 0; i < id_len && i < 8; i++)
                     prepared_id = (prepared_id << 8) | U64(id_data[i]);
-                }
 
-                // Look up the prepared entry to get bind variable types
                 auto* entry = engine::find_prepared(engine, prepared_id);
                 if (entry == nullptr) {
                     auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
@@ -805,54 +849,7 @@ namespace objstore::native {
                     break;
                 }
 
-                // Read query parameters
-                DynamicArray<Constant> bound_values;
-
-                if (p + 2 <= body_end) {
-                    p += 2; // skip consistency [short]
-
-                    if (p < body_end) {
-                        U8 flags = *p++;
-
-                        if (flags & 0x01) { // Values flag
-                            assert_true(p + 2 <= body_end, "truncated values count");
-                            U16 n_values = read_be_u16(p);
-                            p += 2;
-
-                            if (flags & 0x40) { // Named values
-                                // Pre-size with null constants for each bind variable
-                                for (U64 bi = 0; bi < entry->bind_variables.length; bi++) {
-                                    push_back(bound_values, Constant{.value = Null{}});
-                                }
-                                for (U16 i = 0; i < n_values && p < body_end; i++) {
-                                    String8 name = read_cql_string(p, body_end);
-                                    // Find the bind variable index and type for this name
-                                    NativeType dtype = types::text;
-                                    U64 target_idx = entry->bind_variables.length; // sentinel
-                                    for (U64 bi = 0; bi < entry->bind_variables.length; bi++) {
-                                        if (entry->bind_variables[bi].name == name) {
-                                            dtype = entry->bind_variables[bi].type.native.value_dtype;
-                                            target_idx = bi;
-                                            break;
-                                        }
-                                    }
-                                    Constant val = read_cql_value_as_constant(p, body_end, dtype);
-                                    if (target_idx < entry->bind_variables.length) {
-                                        bound_values[target_idx] = move(val);
-                                    }
-                                }
-                            } else { // Positional values
-                                for (U16 i = 0; i < n_values && p < body_end; i++) {
-                                    NativeType dtype = (i < entry->bind_variables.length)
-                                        ? entry->bind_variables[i].type.native.value_dtype
-                                        : types::text;
-                                    push_back(bound_values, read_cql_value_as_constant(p, body_end, dtype));
-                                }
-                            }
-                        }
-                    }
-                }
-
+                auto bound_values = read_query_parameter_values(p, body_end, entry->bind_variables);
                 engine::ExecutionResult result = engine::execute_prepared(engine, prepared_id, move(bound_values));
 
                 if (send_error_if_failed(result, conn, &chunk, write, stream)) {

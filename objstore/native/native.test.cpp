@@ -802,3 +802,102 @@ TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native]") {
     os::signal_notify_safe(signal_pipe);
     server_thread.join();
 }
+
+TEST_CASE("Native protocol QUERY with bind values", "[objstore.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    os::Notifier signal_pipe;
+    std::binary_semaphore server_ready{0};
+    volatile bool exit_signal = false;
+
+    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        U64 page_size = 4_kb;
+        pager::create(db_file, page_size);
+        Pager pager{db_file};
+        engine::create_database(pager);
+        engine::Engine engine{&pager};
+        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+            server_ready.release();
+        });
+    });
+
+    server_ready.acquire();
+    Socket client{socket_open()};
+    socket_set_timeout(client, 2000);
+    REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+
+    send_frame(client, make_startup());
+    REQUIRE(recv_frame(client).opcode == 0x02);
+
+    send_frame(client, make_query("CREATE KEYSPACE qbind_ks;"));
+    REQUIRE(recv_frame(client).opcode == 0x08);
+    send_frame(client, make_query("CREATE TABLE qbind_ks.items (id int PRIMARY KEY, label text, weight double);"));
+    REQUIRE(recv_frame(client).opcode == 0x08);
+
+    SECTION("positional bind values") {
+        Bytes b;
+        b.cql_long_string("INSERT INTO qbind_ks.items (id, label, weight) VALUES (?, ?, ?)");
+        b.u16(0x0001); // consistency = ONE
+        b.u8(0x01);    // flags: Values
+        b.u16(3);      // n_values = 3
+        // int 7
+        b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(7);
+        // text "Gadget"
+        b.s32(6); b.u8('G'); b.u8('a'); b.u8('d'); b.u8('g'); b.u8('e'); b.u8('t');
+        // double 3.14
+        b.s32(8);
+        uint64_t dbl_bits; double dbl_val = 3.14;
+        memcpy(&dbl_bits, &dbl_val, sizeof(dbl_bits));
+        for (int i = 7; i >= 0; i--) b.u8(uint8_t(dbl_bits >> (i * 8)));
+        b.prepend_header(0x07, 1);
+        send_frame(client, b);
+
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0001); // Void
+
+        send_frame(client, make_query("SELECT * FROM qbind_ks.items;"));
+        auto sel = recv_frame(client);
+        REQUIRE(sel.opcode == 0x08);
+        CHECK(result_kind(sel) == 0x0002); // Rows
+        CHECK(body_contains(sel, "Gadget"));
+    }
+
+    SECTION("named bind values") {
+        Bytes b;
+        b.cql_long_string("INSERT INTO qbind_ks.items (id, label, weight) VALUES (:id, :label, :weight)");
+        b.u16(0x0001); // consistency = ONE
+        b.u8(0x41);    // flags: Values | Named values
+        b.u16(3);      // n_values = 3
+        // weight first (out of order)
+        b.cql_string("weight");
+        b.s32(8);
+        uint64_t dbl_bits; double dbl_val = 2.71;
+        memcpy(&dbl_bits, &dbl_val, sizeof(dbl_bits));
+        for (int i = 7; i >= 0; i--) b.u8(uint8_t(dbl_bits >> (i * 8)));
+        // id second
+        b.cql_string("id");
+        b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(13);
+        // label last
+        b.cql_string("label");
+        b.s32(5); b.u8('G'); b.u8('i'); b.u8('z'); b.u8('m'); b.u8('o');
+        b.prepend_header(0x07, 2);
+        send_frame(client, b);
+
+        auto resp = recv_frame(client);
+        REQUIRE(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0001); // Void
+
+        send_frame(client, make_query("SELECT * FROM qbind_ks.items WHERE id = 13;"));
+        auto sel = recv_frame(client);
+        REQUIRE(sel.opcode == 0x08);
+        CHECK(result_kind(sel) == 0x0002); // Rows
+        CHECK(body_contains(sel, "Gizmo"));
+    }
+
+    exit_signal = true;
+    os::signal_notify_safe(signal_pipe);
+    server_thread.join();
+}

@@ -581,47 +581,71 @@ namespace objstore::engine {
     }
 
     // ========================================================================
-    // prepared statements
+    // bind variables
     // ========================================================================
-    static bool collect_bind_variables_insert(Engine& engine, const Insert& stmt, PreparedEntry& entry) {
+    static void collect_bind_variables_insert(Engine& engine, const Insert& stmt, DynamicArray<BindVariableSpec>& out) {
         String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
-        entry.keyspace = AutoString8(ks_name);
-        entry.table = AutoString8(stmt.table.table_name);
-
         auto ks = schema::read_keyspace(engine.schema, ks_name);
-        if (ks == nullptr) return false;
+        if (ks == nullptr) return;
         auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name);
-        if (tbl == nullptr) return false;
+        if (tbl == nullptr) return;
 
-        if (!type_matches_tag<Insert::NamesValues>(stmt.insert_clause)) return false;
+        if (!type_matches_tag<Insert::NamesValues>(stmt.insert_clause)) return;
         const auto& nv = get<Insert::NamesValues>(stmt.insert_clause);
 
         for (U64 i = 0; i < nv.values.length; i++) {
-            // @todo nested bind markers (e.g. in a function argument)
+            // @todo nested bind markers
             if (type_matches_tag<BindMarker>(nv.values[i].value)) {
                 String8 col_name = nv.names[i].identifier;
                 CqlType col_type = types::make_native(types::text);
-
                 for (U64 ci = 0; ci < tbl->cols.length; ci++) {
                     if (tbl->cols[ci].name == col_name) {
                         col_type = tbl->cols[ci].type;
                         break;
                     }
                 }
-
-                BindVariableSpec spec;
-                spec.name = AutoString8(col_name);
-                spec.type = col_type;
-                push_back(entry.bind_variables, move(spec));
-
-                if (tbl->primary_col_idx < tbl->cols.length && tbl->cols[tbl->primary_col_idx].name == col_name) {
-                    entry.pk_index = S32(entry.bind_variables.length - 1);
-                }
+                push_back(out, BindVariableSpec{.name = AutoString8(col_name), .type = col_type});
             }
         }
-        return true;
     }
 
+    DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement) {
+        DynamicArray<BindVariableSpec> result;
+        visit(statement.value, [&](const auto& stmt) {
+            using T = RemoveCVRef<decltype(stmt)>;
+            if constexpr (SameAs<T, Insert>) {
+                collect_bind_variables_insert(engine, stmt, result);
+            }
+        });
+        return result;
+    }
+
+    static void bind_values_to_statement(Statement& stmt, DynamicArray<Constant>& bound_values) {
+        visit(stmt.value, [&](auto& s) {
+            using T = RemoveCVRef<decltype(s)>;
+            if constexpr (SameAs<T, Insert>) {
+                if (!type_matches_tag<Insert::NamesValues>(s.insert_clause)) return;
+                auto& nv = get<Insert::NamesValues>(s.insert_clause);
+                U64 bind_idx = 0;
+                for (U64 i = 0; i < nv.values.length && bind_idx < bound_values.length; i++) {
+                    // @todo nested bind markers
+                    if (type_matches_tag<BindMarker>(nv.values[i].value)) {
+                        nv.values[i].value = move(bound_values[bind_idx]);
+                        bind_idx++;
+                    }
+                }
+            }
+        });
+    }
+
+    ExecutionResult execute_with_values(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values) {
+        bind_values_to_statement(statement, bound_values);
+        return execute(engine, statement);
+    }
+
+    // ========================================================================
+    // prepared statements
+    // ========================================================================
     PrepareResult prepare(Engine& engine, String8 query) {
         U64 query_hash = hash(query);
 
@@ -637,11 +661,25 @@ namespace objstore::engine {
 
         auto& entry = insert(engine.prepared_cache, query_hash);
         entry.query_string = AutoString8(query);
+        entry.bind_variables = collect_bind_variables(engine, *cql_opt);
 
         visit(cql_opt->value, [&](const auto& stmt) {
             using T = RemoveCVRef<decltype(stmt)>;
             if constexpr (SameAs<T, Insert>) {
-                collect_bind_variables_insert(engine, stmt, entry);
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+                entry.keyspace = AutoString8(ks_name);
+                entry.table = AutoString8(stmt.table.table_name);
+
+                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                if (ks == nullptr) return;
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name);
+                if (tbl == nullptr) return;
+                for (U64 i = 0; i < entry.bind_variables.length; i++) {
+                    if (tbl->primary_col_idx < tbl->cols.length && tbl->cols[tbl->primary_col_idx].name == entry.bind_variables[i].name) {
+                        entry.pk_index = S32(i);
+                        break;
+                    }
+                }
             }
         });
 
@@ -652,47 +690,17 @@ namespace objstore::engine {
         return find(engine.prepared_cache, prepared_id);
     }
 
-    // @note @warn MOVES from bound_values
-    static void bind_values_to_statement(Statement& stmt, DynamicArray<Constant>& bound_values) {
-        visit(stmt.value, [&](auto& s) {
-            using T = RemoveCVRef<decltype(s)>;
-            if constexpr (SameAs<T, Insert>) {
-                if (!type_matches_tag<Insert::NamesValues>(s.insert_clause)) {
-                    return;
-                }
-                
-                auto& nv = get<Insert::NamesValues>(s.insert_clause);
-                U64 bind_idx = 0;
-                for (U64 i = 0; i < nv.values.length && bind_idx < bound_values.length; i++) {
-                    // @todo nested bind makrers
-                    if (type_matches_tag<BindMarker>(nv.values[i].value)) {
-                        nv.values[i].value = move(bound_values[bind_idx]);
-                        bind_idx++;
-                    }
-                }
-            }
-        });
-    }
-
-    // @note takes rvalue ref to ensure bound_values can be moved
     ExecutionResult execute_prepared(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values) {
         auto* entry = find(engine.prepared_cache, prepared_id);
         if (entry == nullptr) {
-            return {
-                .status = ExecutionStatus::Invalid,
-                .message = "Prepared statement not found",
-            };
+            return { .status = ExecutionStatus::Invalid, .message = "Prepared statement not found" };
         }
 
         auto cql_opt = parsers::cql::parse(String8(entry->query_string));
         if (!cql_opt) {
-            return {
-                .status = ExecutionStatus::ServerError,
-                .message = "Failed to re-parse prepared query",
-            };
+            return { .status = ExecutionStatus::ServerError, .message = "Failed to re-parse prepared query" };
         }
 
-        bind_values_to_statement(*cql_opt, bound_values);
-        return execute(engine, *cql_opt);
+        return execute_with_values(engine, *cql_opt, move(bound_values));
     }
 }
