@@ -334,15 +334,11 @@ namespace objstore::engine {
 
             if constexpr (SameAs<T, CreateKeyspace>) {
                 if (is_system_keyspace(stmt.name)) {
-                    if (stmt.if_not_exists) {
-                        return make_void_success();
-                    }
-                    return make_keyspace_already_exists(stmt.name);
+                    return (stmt.if_not_exists) ? make_void_success() : make_keyspace_already_exists(stmt.name);
                 }
 
-                if (!stmt.if_not_exists) {
-                    auto existing = schema::read_keyspace(engine.schema, stmt.name);
-                    if (existing != nullptr) return make_keyspace_already_exists(stmt.name);
+                if (auto existing = schema::read_keyspace(engine.schema, stmt.name); existing != nullptr) {
+                    return (stmt.if_not_exists) ? make_void_success() : make_keyspace_already_exists(stmt.name);
                 }
 
                 auto ks = schema::create_keyspace(engine.schema, stmt);
@@ -358,9 +354,8 @@ namespace objstore::engine {
                 auto ks = schema::read_keyspace(engine.schema, ks_name);
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
 
-                if (!stmt.if_not_exists) {
-                    auto existing = schema::read_table(engine.schema, *ks, stmt.name.table_name);
-                    if (existing != nullptr) return make_table_already_exists(ks_name, stmt.name.table_name);
+                if (auto existing = schema::read_table(engine.schema, *ks, stmt.name.table_name); existing != nullptr) {
+                    return (stmt.if_not_exists) ? make_void_success() : make_table_already_exists(ks_name, stmt.name.table_name);
                 }
     
                 auto tbl = schema::create_table(engine.schema, *ks, stmt);
@@ -385,8 +380,7 @@ namespace objstore::engine {
 
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace);
                 if (ks == nullptr) {
-                    if (stmt.if_exists) return make_void_success();
-                    return make_keyspace_not_found(stmt.keyspace);
+                    return (stmt.if_exists) ? make_void_success() :  make_keyspace_not_found(stmt.keyspace);
                 }
 
                 assert_true_not_implemented(stmt.options.identifier_values.length == 0);
@@ -397,8 +391,7 @@ namespace objstore::engine {
 
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace);
                 if (ks == nullptr) {
-                    if (stmt.if_exists) return make_void_success();
-                    return make_keyspace_not_found(stmt.keyspace);
+                    return (stmt.if_exists) ? make_void_success() : make_keyspace_not_found(stmt.keyspace);
                 }
                 
                 schema::delete_keyspace(engine.schema, stmt.keyspace);
@@ -410,8 +403,7 @@ namespace objstore::engine {
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name);
                 if (ks == nullptr) {
-                    if (stmt.if_exists) return make_void_success();
-                    return make_keyspace_not_found(ks_name);
+                    return (stmt.if_exists) ? make_void_success() : make_keyspace_not_found(ks_name);
                 }
 
                 if (!schema::delete_table(engine.schema, *ks, stmt.table.table_name)) {
@@ -453,6 +445,15 @@ namespace objstore::engine {
     
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.from.table_name);
                 if (tbl == nullptr) return make_table_not_found(ks_name, stmt.from.table_name);
+
+                assert_true_not_implemented(!stmt.transform);
+                assert_true_not_implemented(stmt.select.clauses.length == 0);
+                assert_true_not_implemented(!stmt.where);
+                assert_true_not_implemented(!stmt.group_by);
+                assert_true_not_implemented(!stmt.order_by);
+                assert_true_not_implemented(!stmt.per_partition_limit.value);
+                assert_true_not_implemented(!stmt.limit.value);
+                assert_true_not_implemented(!stmt.allow_filtering);
 
                 RowRange rows{
                     .begin_it = RowIterator{

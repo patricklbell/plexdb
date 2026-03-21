@@ -1,16 +1,16 @@
 import sys
 import time
 import random
+import numpy as np
 from cassandra.cluster import Cluster
-
 
 def generate_telemetry(t):
     return {
-        "timestamp": t,
-        "altitude": 0.5 * 9.8 * t**2,
-        "velocity": 9.8 * t,
-        "fuel": max(0, 100 - t * 0.5),
-        "temperature": 20 + 0.1 * t + random.uniform(-1, 1),
+        "timestamp": int(t),
+        "altitude": float(0.5 * 9.8 * t**2),
+        "velocity": float(9.8 * t),
+        "fuel": float(max(0, 100 - t * 0.5)),
+        "temperature": float(20 + 0.1 * t + random.uniform(-1, 1)),
     }
 
 
@@ -54,7 +54,7 @@ def main():
         VALUES (?, ?, ?, ?, ?, ?)
         """)
 
-        for t in range(60):  # simulate 1 minute
+        for t in np.arange(0, 60, 0.1):
             data = generate_telemetry(t)
 
             session.execute(prepared, (
@@ -67,7 +67,7 @@ def main():
             ))
 
             print(f"t={t} altitude={data['altitude']:.1f}m velocity={data['velocity']:.1f}m/s")
-            time.sleep(0.1)
+            time.sleep(0.01)
 
         print("Insert complete.")
 
@@ -75,7 +75,7 @@ def main():
         print("\nQuerying telemetry...")
 
         rows = session.execute("""
-        SELECT * FROM telemetry WHERE rocket_id = 'falcon9-test'
+        SELECT * FROM telemetry
         """)
 
         for row in rows:
@@ -83,7 +83,7 @@ def main():
 
         # --- Simple aggregation (client-side) ---
         rows = session.execute("""
-        SELECT altitude FROM telemetry WHERE rocket_id = 'falcon9-test'
+        SELECT * FROM telemetry
         """)
 
         max_altitude = max(r.altitude for r in rows)

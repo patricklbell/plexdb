@@ -416,7 +416,7 @@ export namespace objstore {
         };
 
         Optional<Transform> transform;
-        Optional<SelectClause> select;
+        SelectClause select;
         TableName from;
         Optional<WhereClause> where;
         Optional<GroupByClause> group_by;

@@ -583,22 +583,22 @@ namespace objstore::native {
         switch (dtype) {
             case types::text: case types::ascii: case types::varchar:
                 return Constant{.value = AutoString8(val, U64(len))};
-            case types::int_: {
+            case types::int_:{
                 assert_true(len == 4, "int value must be 4 bytes");
                 S64 v = S64(S32((U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3])));
                 return Constant{.value = v};
             }
-            case types::bigint: case types::timestamp: case types::counter: case types::time: {
+            case types::bigint: case types::timestamp: case types::counter: case types::time:{
                 assert_true(len == 8, "bigint value must be 8 bytes");
                 S64 v = read_be_s64(val);
                 return Constant{.value = v};
             }
-            case types::smallint: {
+            case types::smallint:{
                 assert_true(len == 2, "smallint value must be 2 bytes");
                 S64 v = S64(S16((U16(val[0]) << 8) | U16(val[1])));
                 return Constant{.value = v};
             }
-            case types::double_: {
+            case types::double_:{
                 assert_true(len == 8, "double value must be 8 bytes");
                 U64 bits = (U64(val[0]) << 56) | (U64(val[1]) << 48) | (U64(val[2]) << 40) | (U64(val[3]) << 32) |
                            (U64(val[4]) << 24) | (U64(val[5]) << 16) | (U64(val[6]) << 8) | U64(val[7]);
@@ -606,14 +606,14 @@ namespace objstore::native {
                 os::memory_copy(&d, &bits, sizeof(d));
                 return Constant{.value = d};
             }
-            case types::float_: {
+            case types::float_:{
                 assert_true(len == 4, "float value must be 4 bytes");
                 U32 bits = (U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3]);
                 F32 f;
                 os::memory_copy(&f, &bits, sizeof(f));
                 return Constant{.value = F64(f)};
             }
-            case types::boolean: {
+            case types::boolean:{
                 assert_true(len == 1, "boolean value must be 1 byte");
                 return Constant{.value = bool(val[0])};
             }
@@ -756,7 +756,7 @@ namespace objstore::native {
         ));
 
         switch (op) {
-            case op_codes::STARTUP: {
+            case op_codes::STARTUP:{
                 U8 version = header[0] & 0x7F;
                 if (version != 0x04 && version != 0x03) {
                     // Respond with protocol error (code 0x000A) to force version downgrade
@@ -768,9 +768,9 @@ namespace objstore::native {
                 state.startup_done = true;
                 auto frame = make_native_frame(conn, &chunk, write, op_codes::READY, stream);
                 // empty body
-            } break;
+            }break;
 
-            case op_codes::OPTIONS: {
+            case op_codes::OPTIONS:{
                 auto frame = make_native_frame(conn, &chunk, write, op_codes::SUPPORTED, stream);
                 // [string multimap]: n pairs of ([string] key, [string list] values)
                 append_be_u16(frame, 2);
@@ -779,9 +779,9 @@ namespace objstore::native {
                 append_cql_string(frame, "3.0.0");
                 append_cql_string(frame, "COMPRESSION");
                 append_be_u16(frame, 0);
-            } break;
+            }break;
 
-            case op_codes::QUERY: {
+            case op_codes::QUERY:{
                 S64 t0 = os::monotonic_us();
                 const U8* p = body;
                 String8 query = read_cql_long_string(p, body_end);
@@ -805,14 +805,14 @@ namespace objstore::native {
 
                 send_execution_result(result, engine, conn, &chunk, write, stream);
                 objstore::log::db_operation_duration(os::monotonic_us() - t0);
-            } break;
+            }break;
 
-            case op_codes::REGISTER: {
+            case op_codes::REGISTER:{
                 // ignore event registration, respond with READY @todo
                 auto frame = make_native_frame(conn, &chunk, write, op_codes::READY, stream);
-            } break;
+            }break;
 
-            case op_codes::PREPARE: {
+            case op_codes::PREPARE:{
                 S64 t0 = os::monotonic_us();
                 const U8* p = body;
                 String8 query = read_cql_long_string(p, body_end);
@@ -829,9 +829,9 @@ namespace objstore::native {
                 auto frame = make_native_frame(conn, &chunk, write, op_codes::RESULT, stream);
                 append_result_prepared(frame, result.id, *result.entry);
                 objstore::log::db_operation_duration(os::monotonic_us() - t0);
-            } break;
+            }break;
 
-            case op_codes::EXECUTE: {
+            case op_codes::EXECUTE:{
                 S64 t0 = os::monotonic_us();
                 const U8* p = body;
 
@@ -859,16 +859,16 @@ namespace objstore::native {
 
                 send_execution_result(result, engine, conn, &chunk, write, stream);
                 objstore::log::db_operation_duration(os::monotonic_us() - t0);
-            } break;
+            }break;
 
-            case op_codes::BATCH: {
+            case op_codes::BATCH:{
                 assert_true_not_implemented(false, "BATCH not implemented");
-            } break;
+            }break;
 
-            default: {
+            default:{
                 auto frame = make_native_frame(conn, &chunk, write, op_codes::ERROR, stream);
                 append_error_body(frame, engine::ExecutionStatus::Invalid, "Unknown op code");
-            } break;
+            }break;
         }
     }
 }
