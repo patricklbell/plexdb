@@ -455,6 +455,16 @@ namespace objstore::engine {
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.from.table_name);
                 if (tbl == nullptr) return make_table_not_found(ks_name, stmt.from.table_name);
 
+                // Empty table: return empty result set without iterating
+                if (btree::size(tbl->btree) == 0) {
+                    return {
+                        .status = ExecutionStatus::Success,
+                        .kind = ResultKind::Rows,
+                        .keyspace = ks_name,
+                        .table = stmt.from.table_name,
+                    };
+                }
+
                 RowRange rows{
                     .begin_it = RowIterator{
                         .pager = engine.pager,
@@ -515,6 +525,8 @@ namespace objstore::engine {
                                     return make_insert_into_deleted_column(ks->name, tbl->name);
                                 }
 
+                                if (!term_is_constant(v.values[*names_idx_opt]))
+                                    return make_not_implemented("only constant terms are supported in INSERT");
                                 const auto& constant = consteval_term_to_constant(v.values[*names_idx_opt]);
                                 if (!types::can_write_constant_value(constant.value, col.type.native.value_dtype))
                                     return make_insert_incompatible_literal(ks->name, tbl->name);
@@ -550,6 +562,8 @@ namespace objstore::engine {
                             const auto& pk_col = tbl->cols[tbl->primary_col_idx];
                             auto pk_idx_opt = try_get_names_idx(pk_col.name);
                             assert_true(static_cast<bool>(pk_idx_opt), "primary key column must be provided in INSERT");
+                            if (!term_is_constant(v.values[*pk_idx_opt]))
+                                return make_not_implemented("only constant terms are supported in INSERT");
                             const auto& pk_constant = consteval_term_to_constant(v.values[*pk_idx_opt]);
                             U64 pk_key = types::hash_constant_value(pk_constant.value);
                             tinsert(tbl->btree, pk_key, row_page);

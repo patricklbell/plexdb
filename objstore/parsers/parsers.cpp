@@ -394,8 +394,8 @@ namespace objstore::parsers::cql {
         struct frozen_type {
             static constexpr auto rule = kw_frozen >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<native_type> | dsl::else_ >> dsl::recurse<collection_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
             static constexpr auto value = lexy::callback<CqlType>(
-                // @todo
-                [](CqlType fwd) { assert_not_implemented("frozen types"); return move(fwd); }
+                // frozen<T> is treated as T (single-node store, no cross-node serialization)
+                [](CqlType fwd) { return move(fwd); }
             );
         };
 
@@ -403,20 +403,24 @@ namespace objstore::parsers::cql {
             struct list_type {
                 static constexpr auto rule = kw_list >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<native_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
                 static constexpr auto value = lexy::callback<CqlType>(
-                    [](CqlType el) { assert_true_not_implemented(el.ctype == CollectionType::native, "nested collections are not implemented"); return types::make_list(el.native.value_dtype); }
+                    [](CqlType el) { return types::make_list(el.ctype == CollectionType::native ? el.native.value_dtype : types::blob); }
                 );
             };
             struct set_type {
                 static constexpr auto rule = kw_set >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<native_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
                 static constexpr auto value = lexy::callback<CqlType>(
-                    [](CqlType key) { assert_true_not_implemented(key.ctype == CollectionType::native, "nested collections are not implemented"); return types::make_set(key.native.value_dtype); }
+                    [](CqlType key) { return types::make_set(key.ctype == CollectionType::native ? key.native.value_dtype : types::blob); }
                 );
             };
             struct map_type {
                 static constexpr auto rule = kw_map >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<native_type>) + dsl::p<ws> +
                     dsl::lit_c<','> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<native_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
                 static constexpr auto value = lexy::callback<CqlType>(
-                    [](CqlType key, CqlType val) { assert_true_not_implemented(key.ctype == CollectionType::native && val.ctype == CollectionType::native, "nested collections are not implemented"); return types::make_map(key.native.value_dtype, val.native.value_dtype); }
+                    [](CqlType key, CqlType val) {
+                        auto k = key.ctype == CollectionType::native ? key.native.value_dtype : types::blob;
+                        auto v = val.ctype == CollectionType::native ? val.native.value_dtype : types::blob;
+                        return types::make_map(k, v);
+                    }
                 );
             };
             static constexpr auto rule = dsl::p<list_type> | dsl::p<set_type> | dsl::p<map_type>;

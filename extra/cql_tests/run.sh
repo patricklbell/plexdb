@@ -14,11 +14,12 @@
 #     -t <expr>    pytest -k expression    (default: run all)
 #     -x           stop on first failure   (pytest -x)
 #     -l           list tests only         (pytest --collect-only)
+#     -L <dir>     write per-session server log to <dir>/server.log
 #     -h           show this help
 #
 # Environment:
 #   CQL_TEST_HOST    override contact point (default: 127.0.0.1)
-#   CQL_TEST_PORT    override port          (default: value of -p)
+#   CQL_TEST_PORT    override port          (default: value of -P)
 #   SCYLLA_REF       same as -r
 
 set -euo pipefail
@@ -32,8 +33,9 @@ SCYLLA_REF="${SCYLLA_REF:-master}"
 PYTEST_K=""
 PYTEST_EXTRA=""
 LIST_ONLY=false
+LOG_DIR=""
 
-while getopts "b:P:r:t:xlh" opt; do
+while getopts "b:P:r:t:xlL:h" opt; do
     case "$opt" in
         b) BINARY="$OPTARG" ;;
         P) PORT="$OPTARG" ;;
@@ -41,8 +43,9 @@ while getopts "b:P:r:t:xlh" opt; do
         t) PYTEST_K="$OPTARG" ;;
         x) PYTEST_EXTRA="$PYTEST_EXTRA -x" ;;
         l) LIST_ONLY=true ;;
+        L) LOG_DIR="$OPTARG" ;;
         h)
-            sed -n '2,22p' "$0" | sed 's/^# \?//'
+            sed -n '2,24p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         *) exit 1 ;;
@@ -173,11 +176,15 @@ echo ""
 echo "════════════════════════════════════════════════════════════"
 echo "  CQL Conformance Tests (scylladb ref: ${SCYLLA_REF})"
 echo "  Server: ${HOST}:${PORT}"
+if [ -n "$LOG_DIR" ]; then
+echo "  Logs:   ${LOG_DIR}/server.log"
+fi
 echo "════════════════════════════════════════════════════════════"
 echo ""
 
 python3 -m pytest "$TESTS_DIR/cassandra_tests/" \
     --host "$HOST" --port "$PORT" --binary "$BINARY" \
+    ${LOG_DIR:+--log-dir "$LOG_DIR"} \
     --override-ini="pythonpath=$PARENT_OF_TESTS" \
     --rootdir="$TESTS_DIR" \
     --confcutdir="$TESTS_DIR" \
