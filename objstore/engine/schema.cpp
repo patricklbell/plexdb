@@ -4,6 +4,7 @@ module;
 module objstore.engine.schema;
 
 import plexdb.threads;
+import plexdb.tagged_union;
 
 using namespace plexdb;
 
@@ -237,15 +238,34 @@ namespace objstore::schema {
                 has_primary_key = true;
             }
         }
-        if (!has_primary_key) {
-            return {};
+        if (has_primary_key) {
+            return primary_col_idx;
         }
-        return primary_col_idx;
+
+        if (create.primary_key) {
+            auto& pk = *create.primary_key;
+            assert_true_not_implemented(pk.clustering_columns.length == 0, "clustering columns in standalone PRIMARY KEY");
+            String8 pk_col_name;
+            if (type_matches_tag<ColumnName>(pk.partition_key.column_or_columns)) {
+                pk_col_name = get<ColumnName>(pk.partition_key.column_or_columns).identifier;
+            } else {
+                auto& cols = get<DynamicArray<ColumnName>>(pk.partition_key.column_or_columns);
+                assert_true_not_implemented(cols.length == 1, "composite partition key in standalone PRIMARY KEY");
+                if (cols.length > 0) pk_col_name = cols[0].identifier;
+            }
+
+            for (U64 col_idx = 0; col_idx < create.column_definitions.length; col_idx++) {
+                if (create.column_definitions[col_idx].name.identifier == pk_col_name) {
+                    return col_idx;
+                }
+            }
+        }
+
+        return {};
     }
 
     Table* create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
         assert_true_not_implemented(create.options.value.length == 0);
-        assert_true_not_implemented(!create.primary_key);
         assert_true(read_table_impl(schema, ks, create.name.table_name) == nullptr, "table already exists");
 
         auto primary_key_col_idx_opt = get_primary_key_col_idx(create);
