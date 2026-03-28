@@ -34,10 +34,11 @@ add_library(plexdb::plexdb_modules ALIAS plexdb_modules)
 target_compile_features(plexdb_modules PUBLIC cxx_std_23)
 set_target_properties(plexdb_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_include_directories(plexdb_modules PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../macros
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
-    ${CMAKE_CURRENT_SOURCE_DIR}/log
+target_include_directories(plexdb_modules
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
+        ${CMAKE_CURRENT_SOURCE_DIR}/log
 )
 
 target_sources(plexdb_modules
@@ -88,10 +89,11 @@ add_library(plexdb::plexdb ALIAS plexdb)
 target_compile_features(plexdb PUBLIC cxx_std_23)
 set_target_properties(plexdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_include_directories(plexdb PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../macros
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
-    ${CMAKE_CURRENT_SOURCE_DIR}/log
+target_include_directories(plexdb
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
+        ${CMAKE_CURRENT_SOURCE_DIR}/log
 )
 
 target_sources(plexdb
@@ -142,10 +144,14 @@ if(BUILD_TESTS)
     file(GLOB_RECURSE PLEXDB_TEST_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
     )
-    target_sources(plexdb_tests PRIVATE ${PLEXDB_TEST_SOURCES})
+    target_sources(plexdb_tests
+        PRIVATE
+            ${PLEXDB_TEST_SOURCES}
+    )
 
-    target_include_directories(plexdb_tests PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/log
+    target_include_directories(plexdb_tests
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/log
     )
 
     target_link_libraries(plexdb_tests

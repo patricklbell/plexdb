@@ -9,3 +9,4 @@ objstore.pid
 **/.venv
 **/node_modules
 **/__pycache__
+.orktree

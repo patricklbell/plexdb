@@ -8,7 +8,6 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # =============================================================================
 include(FetchContent)
 
-# Configure the OTel SDK before fetching
 set(WITH_OTLP_GRPC  ON  CACHE BOOL "" FORCE)
 set(WITH_OTLP_HTTP  OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING   OFF CACHE BOOL "" FORCE)

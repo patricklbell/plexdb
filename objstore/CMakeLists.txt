@@ -17,14 +17,14 @@ if(OBJSTORE_IS_MAIN_PROJECT)
     option(PLEXDB_LOG_ENABLED "Enable structured logging hooks" OFF)
     option(PLEXDB_DEBUG "Build debug checks" ON)
     
-    add_subdirectory(../plexdb plexdb)
-
     if(PLEXDB_LOG_ENABLED)
         add_compile_definitions(PLEXDB_LOG_ENABLED=1)
     endif()
     if(PLEXDB_DEBUG)
         add_compile_definitions(PLEXDB_DEBUG=1)
     endif()
+
+    add_subdirectory(../plexdb plexdb)
 endif()
 
 
@@ -56,8 +56,9 @@ add_library(plexdb::objstore_modules ALIAS objstore_modules)
 target_compile_features(objstore_modules PUBLIC cxx_std_23)
 set_target_properties(objstore_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_include_directories(objstore_modules PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+target_include_directories(objstore_modules
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
 )
 
 target_sources(objstore_modules
