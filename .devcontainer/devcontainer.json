@@ -2,7 +2,7 @@
   "name": "plexdb",
   "dockerComposeFile": "docker-compose.yml",
   "service": "plexdb",
-  "workspaceFolder": "/app",
+  "workspaceFolder": "/workspace",
   "remoteUser": "vscode",
   "shutdownAction": "stopCompose",
   "remoteEnv": {

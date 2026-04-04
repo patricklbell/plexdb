@@ -75,14 +75,28 @@ ARG USERNAME=vscode
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
 
-RUN if getent group $USER_GID >/dev/null 2>&1; then \
-        useradd --uid $USER_UID --gid $USER_GID -m $USERNAME; \
+RUN set -eux; \
+    if getent group "$USER_GID" >/dev/null 2>&1; then \
+        GROUP_NAME=$(getent group "$USER_GID" | cut -d: -f1); \
     else \
-        groupadd --gid $USER_GID $USERNAME \
-        && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME; \
+        GROUP_NAME="$USERNAME"; \
+        groupadd --gid "$USER_GID" "$GROUP_NAME"; \
+    fi; \
+    \
+    if getent passwd "$USER_UID" >/dev/null 2>&1; then \
+        OLD_USER=$(getent passwd "$USER_UID" | cut -d: -f1); \
+        if [ "$OLD_USER" != "$USERNAME" ]; then \
+            # @note will fail if USERNAME already exists with a different uid
+            usermod -l "$USERNAME" "$OLD_USER"; \
+        fi; \
+        \
+        usermod -g "$USER_GID" "$USERNAME"; \
+        usermod -G "" "$USERNAME"; \
+    else \
+        useradd --uid "$USER_UID" --gid "$USER_GID" -m "$USERNAME"; \
     fi
 
-RUN mkdir -p /app && chown $USER_UID:$USER_GID /app
+RUN mkdir -p /workspace && chown $USER_UID:$USER_GID /workspace
 
 USER $USERNAME
 
@@ -92,7 +106,7 @@ ENV SHELL=/bin/bash
 # that would allow the agent to escape the container.
 # Sourced from .bashrc BEFORE the Debian interactive guard so it applies to
 # non-interactive login shells (the way Claude Code and GitHub Copilot invoke bash).
-RUN mkdir -p /home/${USERNAME}/.config && cat << 'HARDEN' > /home/vscode/.config/security-harden.sh
+RUN mkdir -p $HOME/.config && cat << 'HARDEN' > $HOME/.config/security-harden.sh
 # VS Code IPC sockets – can execute commands on the host
 unset VSCODE_IPC_HOOK_CLI
 
@@ -123,8 +137,8 @@ HARDEN
 # Source the hardening script on line 1 of .bashrc, before the interactive guard
 RUN sed -i '1i source ~/.config/security-harden.sh 2>/dev/null || true' ~/.bashrc \
     && sed -i '2i export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc \
-    && mkdir -p /home/vscode/.local/bin
+    && mkdir -p $HOME/.local/bin
 
-WORKDIR /app
+WORKDIR /workspace
 
 CMD ["sleep", "infinity"]
