@@ -80,6 +80,7 @@ target_sources(plexdb_modules
             threads/threads.cppm
             tagged_union/tagged_union.cppm
             log/log.cppm
+            coroutine/coroutine.cppm
 )
 
 # Static library
