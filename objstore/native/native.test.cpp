@@ -164,17 +164,17 @@ TEST_CASE("Native protocol STARTUP handshake", "[objstore.native]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
-    os::Notifier signal_pipe;
+    os::Notifier interrupt_notifier;
     std::binary_semaphore server_ready{0};
-    volatile bool exit_signal = false;
+    volatile bool should_exit = false;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+    std::thread server_thread([port, &interrupt_notifier, &server_ready, &should_exit, &db_file]() {
         U64 page_size = 4_kb;
         pager::create(db_file, page_size);
         Pager pager{db_file};
         engine::create_database(pager);
         engine::Engine engine{&pager};
-        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+        native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
             server_ready.release();
         });
     });
@@ -190,8 +190,8 @@ TEST_CASE("Native protocol STARTUP handshake", "[objstore.native]") {
     CHECK(resp.opcode  == 0x02);  // READY
     CHECK(resp.body_len == 0);
 
-    exit_signal = true;
-    os::signal_notify_safe(signal_pipe);
+    should_exit = true;
+    os::signal_notify_safe(interrupt_notifier);
     server_thread.join();
 }
 
@@ -200,17 +200,17 @@ TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[objstore.native]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
-    os::Notifier signal_pipe;
+    os::Notifier interrupt_notifier;
     std::binary_semaphore server_ready{0};
-    volatile bool exit_signal = false;
+    volatile bool should_exit = false;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+    std::thread server_thread([port, &interrupt_notifier, &server_ready, &should_exit, &db_file]() {
         U64 page_size = 4_kb;
         pager::create(db_file, page_size);
         Pager pager{db_file};
         engine::create_database(pager);
         engine::Engine engine{&pager};
-        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+        native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
             server_ready.release();
         });
     });
@@ -229,8 +229,8 @@ TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[objstore.native]") {
     CHECK(body_contains(resp, "3.0.0"));
     CHECK(body_contains(resp, "COMPRESSION"));
 
-    exit_signal = true;
-    os::signal_notify_safe(signal_pipe);
+    should_exit = true;
+    os::signal_notify_safe(interrupt_notifier);
     server_thread.join();
 }
 
@@ -239,17 +239,17 @@ TEST_CASE("Native protocol CQL DDL and DML operations", "[objstore.native]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
-    os::Notifier signal_pipe;
+    os::Notifier interrupt_notifier;
     std::binary_semaphore server_ready{0};
-    volatile bool exit_signal = false;
+    volatile bool should_exit = false;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+    std::thread server_thread([port, &interrupt_notifier, &server_ready, &should_exit, &db_file]() {
         U64 page_size = 4_kb;
         pager::create(db_file, page_size);
         Pager pager{db_file};
         engine::create_database(pager);
         engine::Engine engine{&pager};
-        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+        native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
             server_ready.release();
         });
     });
@@ -314,8 +314,8 @@ TEST_CASE("Native protocol CQL DDL and DML operations", "[objstore.native]") {
     REQUIRE(resp.opcode == 0x08);
     CHECK(result_kind(resp) == 0x0005);
 
-    exit_signal = true;
-    os::signal_notify_safe(signal_pipe);
+    should_exit = true;
+    os::signal_notify_safe(interrupt_notifier);
     server_thread.join();
 }
 
@@ -324,17 +324,17 @@ TEST_CASE("Native protocol error responses", "[objstore.native]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
-    os::Notifier signal_pipe;
+    os::Notifier interrupt_notifier;
     std::binary_semaphore server_ready{0};
-    volatile bool exit_signal = false;
+    volatile bool should_exit = false;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+    std::thread server_thread([port, &interrupt_notifier, &server_ready, &should_exit, &db_file]() {
         U64 page_size = 4_kb;
         pager::create(db_file, page_size);
         Pager pager{db_file};
         engine::create_database(pager);
         engine::Engine engine{&pager};
-        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+        native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
             server_ready.release();
         });
     });
@@ -358,8 +358,8 @@ TEST_CASE("Native protocol error responses", "[objstore.native]") {
     CHECK(resp.opcode == 0x00);
     CHECK(resp.stream == 42);
 
-    exit_signal = true;
-    os::signal_notify_safe(signal_pipe);
+    should_exit = true;
+    os::signal_notify_safe(interrupt_notifier);
     server_thread.join();
 }
 
@@ -370,17 +370,17 @@ TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") 
     REQUIRE(!os::is_zero_handle(db_file));
 
     {
-        os::Notifier signal_pipe;
+        os::Notifier interrupt_notifier;
         std::binary_semaphore server_ready{0};
-        volatile bool exit_signal = false;
+        volatile bool should_exit = false;
 
-        std::thread srv([port1, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        std::thread srv([port1, &interrupt_notifier, &server_ready, &should_exit, &db_file]() {
             U64 page_size = 4_kb;
             pager::create(db_file, page_size);
             Pager pager{db_file};
             engine::create_database(pager);
             engine::Engine engine{&pager};
-            native::run(port1, signal_pipe, exit_signal, engine, [&server_ready]() {
+            native::run(port1, interrupt_notifier, should_exit, engine, [&server_ready]() {
                 server_ready.release();
             });
         });
@@ -402,20 +402,20 @@ TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") 
         send_frame(client, make_query("INSERT INTO pks.data (id, val) VALUES (99, 'persisted');"));
         REQUIRE(recv_frame(client).opcode == 0x08);
 
-        exit_signal = true;
-        os::signal_notify_safe(signal_pipe);
+        should_exit = true;
+        os::signal_notify_safe(interrupt_notifier);
         srv.join();
     }
 
     {
-        os::Notifier signal_pipe;
+        os::Notifier interrupt_notifier;
         std::binary_semaphore server_ready{0};
-        volatile bool exit_signal = false;
+        volatile bool should_exit = false;
 
-        std::thread srv([port2, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+        std::thread srv([port2, &interrupt_notifier, &server_ready, &should_exit, &db_file]() {
             Pager pager{db_file};
             engine::Engine engine{&pager};
-            native::run(port2, signal_pipe, exit_signal, engine, [&server_ready]() {
+            native::run(port2, interrupt_notifier, should_exit, engine, [&server_ready]() {
                 server_ready.release();
             });
         });
@@ -434,8 +434,8 @@ TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") 
         CHECK(result_kind(resp) == 0x0002);  // Rows
         CHECK(body_contains(resp, "persisted"));
 
-        exit_signal = true;
-        os::signal_notify_safe(signal_pipe);
+        should_exit = true;
+        os::signal_notify_safe(interrupt_notifier);
         srv.join();
     }
 }
@@ -445,17 +445,17 @@ TEST_CASE("Native protocol system.local virtual view", "[objstore.native]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
-    os::Notifier signal_pipe;
+    os::Notifier interrupt_notifier;
     std::binary_semaphore server_ready{0};
-    volatile bool exit_signal = false;
+    volatile bool should_exit = false;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+    std::thread server_thread([port, &interrupt_notifier, &server_ready, &should_exit, &db_file]() {
         U64 page_size = 4_kb;
         pager::create(db_file, page_size);
         Pager pager{db_file};
         engine::create_database(pager);
         engine::Engine engine{&pager};
-        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+        native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
             server_ready.release();
         });
     });
@@ -494,8 +494,8 @@ TEST_CASE("Native protocol system.local virtual view", "[objstore.native]") {
         CHECK(result_kind(resp) == 0x0002);
     }
 
-    exit_signal = true;
-    os::signal_notify_safe(signal_pipe);
+    should_exit = true;
+    os::signal_notify_safe(interrupt_notifier);
     server_thread.join();
 }
 
@@ -504,17 +504,17 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
-    os::Notifier signal_pipe;
+    os::Notifier interrupt_notifier;
     std::binary_semaphore server_ready{0};
-    volatile bool exit_signal = false;
+    volatile bool should_exit = false;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+    std::thread server_thread([port, &interrupt_notifier, &server_ready, &should_exit, &db_file]() {
         U64 page_size = 4_kb;
         pager::create(db_file, page_size);
         Pager pager{db_file};
         engine::create_database(pager);
         engine::Engine engine{&pager};
-        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+        native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
             server_ready.release();
         });
     });
@@ -569,8 +569,8 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
     send_frame(client, make_query("DROP KEYSPACE test_ks;"));
     CHECK(recv_frame(client).opcode == 0x08);
 
-    exit_signal = true;
-    os::signal_notify_safe(signal_pipe);
+    should_exit = true;
+    os::signal_notify_safe(interrupt_notifier);
     server_thread.join();
 }
 
@@ -595,17 +595,17 @@ TEST_CASE("Native protocol collection serialization", "[objstore.native]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
-    os::Notifier signal_pipe;
+    os::Notifier interrupt_notifier;
     std::binary_semaphore server_ready{0};
-    volatile bool exit_signal = false;
+    volatile bool should_exit = false;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+    std::thread server_thread([port, &interrupt_notifier, &server_ready, &should_exit, &db_file]() {
         U64 page_size = 4_kb;
         pager::create(db_file, page_size);
         Pager pager{db_file};
         engine::create_database(pager);
         engine::Engine engine{&pager};
-        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+        native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
             server_ready.release();
         });
     });
@@ -636,8 +636,8 @@ TEST_CASE("Native protocol collection serialization", "[objstore.native]") {
                                          0x30}));
     }
 
-    exit_signal = true;
-    os::signal_notify_safe(signal_pipe);
+    should_exit = true;
+    os::signal_notify_safe(interrupt_notifier);
     server_thread.join();
 }
 
@@ -646,17 +646,17 @@ TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native][!mayfail]") 
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
-    os::Notifier signal_pipe;
+    os::Notifier interrupt_notifier;
     std::binary_semaphore server_ready{0};
-    volatile bool exit_signal = false;
+    volatile bool should_exit = false;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+    std::thread server_thread([port, &interrupt_notifier, &server_ready, &should_exit, &db_file]() {
         U64 page_size = 4_kb;
         pager::create(db_file, page_size);
         Pager pager{db_file};
         engine::create_database(pager);
         engine::Engine engine{&pager};
-        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+        native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
             server_ready.release();
         });
     });
@@ -798,8 +798,8 @@ TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native][!mayfail]") 
         CHECK(body_contains(select_resp, "Bob"));
     }
 
-    exit_signal = true;
-    os::signal_notify_safe(signal_pipe);
+    should_exit = true;
+    os::signal_notify_safe(interrupt_notifier);
     server_thread.join();
 }
 
@@ -808,17 +808,17 @@ TEST_CASE("Native protocol QUERY with bind values", "[objstore.native][!mayfail]
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
-    os::Notifier signal_pipe;
+    os::Notifier interrupt_notifier;
     std::binary_semaphore server_ready{0};
-    volatile bool exit_signal = false;
+    volatile bool should_exit = false;
 
-    std::thread server_thread([port, &signal_pipe, &server_ready, &exit_signal, &db_file]() {
+    std::thread server_thread([port, &interrupt_notifier, &server_ready, &should_exit, &db_file]() {
         U64 page_size = 4_kb;
         pager::create(db_file, page_size);
         Pager pager{db_file};
         engine::create_database(pager);
         engine::Engine engine{&pager};
-        native::run(port, signal_pipe, exit_signal, engine, [&server_ready]() {
+        native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
             server_ready.release();
         });
     });
@@ -897,7 +897,7 @@ TEST_CASE("Native protocol QUERY with bind values", "[objstore.native][!mayfail]
         CHECK(body_contains(sel, "Gizmo"));
     }
 
-    exit_signal = true;
-    os::signal_notify_safe(signal_pipe);
+    should_exit = true;
+    os::signal_notify_safe(interrupt_notifier);
     server_thread.join();
 }

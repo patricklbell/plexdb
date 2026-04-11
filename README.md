@@ -4,12 +4,12 @@
 
 ## Download
 
-Pre-built binaries and the plexdb static library are attached to each [GitHub release](../../releases/latest):
+Pre-built binaries and the core static library are attached to each [GitHub release](../../releases/latest):
 
 | Asset | Description |
 |---|---|
 | `objstore` | Server executable (Linux x86-64) |
-| `plexdb-linux-x64.tar.gz` | Static library + C++20 module sources |
+| `core-linux-x64.tar.gz` | Static library + C++23 module sources |
 | `libobjstore_log_otel.so` | OTLP/gRPC metrics plugin (load via `LD_PRELOAD`) |
 
 ## Usage
@@ -26,7 +26,7 @@ objstore <db_path> [--port|-p <port>] [--repl|-r]
 
 ## Building from source
 
-Requires: CMake ≥ 3.28, liburing ≥ 2.0. Tested with: Ninja, Clang ≥ 19.
+Requires: CMake ≥ 3.28, liburing-devel ≥ 2.0. Tested with: Ninja, Clang ≥ 19.
 
 ```sh
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \

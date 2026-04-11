@@ -26,7 +26,7 @@ jobs:
             libgrpc++-dev libprotobuf-dev protobuf-compiler protobuf-compiler-grpc
 
       - name: Configure CMake
-        run: cmake -B build -G Ninja -DBUILD_TESTS=ON -DPLEXDB_LOG_ENABLED=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+        run: cmake -B build -G Ninja -DPLEXDB_ENABLE_TESTS=ON -DPLEXDB_ENABLE_LOGGING=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
 
       - name: Build
         run: ninja -C build

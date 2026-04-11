@@ -3,6 +3,7 @@
 #include <catch2/reporters/catch_reporter_event_listener.hpp>
 #include <catch2/reporters/catch_reporter_registrars.hpp>
 #include <csetjmp>
+#include <stacktrace>
 
 import plexdb.base;
 
@@ -37,7 +38,8 @@ void catch2_assert_handler(const char* msg, const char* file_name,
         g_recovery.active = false;
         std::longjmp(g_recovery.buf, 1);
     }
-    FAIL_CHECK("Assert failed \"" << msg << "\" at " << function_name << " in " << file_name << ":" << line_number);
+    FAIL_CHECK("Stack trace\n" << std::stacktrace::current() << "\nAssert failed \"" << msg << "\" at " << function_name
+               << " in " << file_name << ":" << line_number);
 }
 
 struct AssertListener : Catch::EventListenerBase {

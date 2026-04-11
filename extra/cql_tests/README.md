@@ -6,7 +6,7 @@ Runs Apache Cassandra CQL tests (ported to Python by ScyllaDB) against `objstore
 
 ```bash
 # Build the server
-cmake -B build -G Ninja -DBUILD_TESTS=ON -DPLEXDB_LOG_ENABLED=ON -DPLEXDB_DEBUG=ON
+cmake -B build -G Ninja -DPLEXDB_ENABLE_TESTS=ON -DPLEXDB_ENABLE_LOGGING=ON -DPLEXDB_DEBUG=ON
 ninja -C build objstore_server
 
 # Run all tests

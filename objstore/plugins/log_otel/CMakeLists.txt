@@ -3,6 +3,11 @@ project(objstore_log_otel)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+list(APPEND CMAKE_MODULE_PATH
+    ${CMAKE_CURRENT_LIST_DIR}/../../../cmake
+)
+include(compiler_config)
+
 # =============================================================================
 # Third party dependencies
 # =============================================================================
@@ -40,7 +45,7 @@ target_sources(objstore_log_otel
 
 target_include_directories(objstore_log_otel
     PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../../plexdb/log
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../../core/log
 )
 
 target_link_libraries(objstore_log_otel

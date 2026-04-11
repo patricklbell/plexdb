@@ -21,6 +21,9 @@ namespace objstore::log {
     void native_info(const plexdb::String8& info) {
         plexdb::log::message(objstore_native, plexdb::log::Level::Info, info);
     }
+    void native_error(const plexdb::String8& error) {
+        plexdb::log::message(objstore_native, plexdb::log::Level::Error, error);
+    }
 
     plexdb::log::Producer objstore_tcp{"objstore::tcp"};
 

@@ -74,33 +74,23 @@ export namespace objstore {
         using enum NativeType;
 
         constexpr CqlType make_native(NativeType d) {
-            CqlType t{.ctype = CollectionType::native};
-            t.native = CqlType::Native{ .value_dtype = d };
-            return t;
+            return CqlType{.ctype = CollectionType::native, .native = {.value_dtype = d}};
         }
 
         constexpr CqlType make_list(NativeType el) {
-            CqlType t{.ctype = CollectionType::list};
-            t.list = CqlType::List{ .element_dtype = el };
-            return t;
+            return CqlType{.ctype = CollectionType::list, .list = {.element_dtype = el}};
         }
 
         constexpr CqlType make_set(NativeType key) {
-            CqlType t{.ctype = CollectionType::set};
-            t.set = CqlType::Set{ .key_dtype = key };
-            return t;
+            return CqlType{.ctype = CollectionType::set, .set = {.key_dtype = key}};
         }
 
         constexpr CqlType make_map(NativeType key, NativeType val) {
-            CqlType t{.ctype = CollectionType::map};
-            t.map = CqlType::Map{ .key_dtype = key, .value_dtype = val };
-            return t;
+            return CqlType{.ctype = CollectionType::map, .map = {.key_dtype = key, .value_dtype = val}};
         }
 
         constexpr CqlType make_vector(NativeType el, U64 count) {
-            CqlType t{.ctype = CollectionType::vector};
-            t.vector = CqlType::Vector{ .element_dtype = el, .count = count };
-            return t;
+            return CqlType{.ctype = CollectionType::vector, .vector = {.element_dtype = el, .count = count}};
         }
 
         // @todo support UDTs
@@ -370,7 +360,7 @@ export namespace objstore {
         }
 
         template<typename T>
-        void write_specific(const Write auto& w, const T& src, NativeType dtype) {
+        void write_specific(const Write auto& w, const T& src, [[maybe_unused]] NativeType dtype) {
             if constexpr (SameAs<T, AutoString8> || SameAs<T, String8>) {
                 String8 s{src};
                 w(reinterpret_cast<const U8*>(&s.length), sizeof(s.length));

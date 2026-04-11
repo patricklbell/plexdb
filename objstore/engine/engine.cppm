@@ -138,8 +138,8 @@ export namespace objstore::engine {
         String8 keyspace = "";
         String8 table = "";
         
-        Optional<RowRange> rows;
-        Optional<VirtualRows> virtual_rows;
+        Optional<RowRange> rows = {};
+        Optional<VirtualRows> virtual_rows = {};
     };
 
     ExecutionResult execute(Engine& engine, const Statement& statement);

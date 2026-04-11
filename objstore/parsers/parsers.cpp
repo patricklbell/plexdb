@@ -182,7 +182,6 @@ namespace objstore::parsers::cql {
         constexpr auto kw_token = LEXY_LIT_CI("token");
         constexpr auto kw_mask = LEXY_LIT_CI("mask");
         constexpr auto kw_masked = LEXY_LIT_CI("masked");
-        constexpr auto kw_unmask = LEXY_LIT_CI("unmask");
 
         struct ws {
             static constexpr auto rule = dsl::whitespace(dsl::ascii::space / dsl::ascii::newline);
@@ -437,7 +436,7 @@ namespace objstore::parsers::cql {
             }();
             static constexpr auto value = lexy::callback<TableName>(
                 [](AutoString8&& a, AutoString8&& b) -> TableName { return {.keyspace_name = move(a), .table_name = move(b)}; },
-                [](AutoString8&& a, lexy::nullopt) -> TableName { return {.table_name = move(a)}; }
+                [](AutoString8&& a, lexy::nullopt) -> TableName { return {.keyspace_name = {}, .table_name = move(a)}; }
             );
         };
 
@@ -478,7 +477,7 @@ namespace objstore::parsers::cql {
             }();
             static constexpr auto value = lexy::callback<Term>(
                 [](AutoString8&& name, lexy::nullopt) -> Term {
-                    return Term{.value = FunctionCall{.identifier = move(name)}};
+                    return Term{.value = FunctionCall{.identifier = move(name), .arguments = {}}};
                 },
                 [](AutoString8&& name, DynamicArray<Term>&& args) -> Term {
                     return Term{.value = FunctionCall{.identifier = move(name), .arguments = move(args)}};
@@ -823,7 +822,7 @@ namespace objstore::parsers::cql {
                 return dsl::p<column_name> + dsl::opt(subscript | field_access);
             }();
             static constexpr auto value = lexy::callback<SimpleSelection>(
-                [](ColumnName&& col, lexy::nullopt) -> SimpleSelection { return {.column = move(col)}; },
+                [](ColumnName&& col, lexy::nullopt) -> SimpleSelection { return {.column = move(col), .access = {}}; },
                 [](ColumnName&& col, Term&& idx) -> SimpleSelection {
                     return {.column = move(col), .access = TaggedUnion<SimpleSelection::Subscript, SimpleSelection::FieldAccess>(SimpleSelection::Subscript{move(idx)})};
                 },
@@ -1177,7 +1176,7 @@ namespace objstore::parsers::cql {
             static constexpr auto rule = kw_add >> dsl::p<ws> + dsl::p<if_not_exists> + dsl::p<ws> + dsl::p<column_definition_list>;
             static constexpr auto value = lexy::callback<AlterTable>(
                 [](bool if_not_exists, DynamicArray<ColumnDefinition>&& cols) -> AlterTable {
-                    return {.alter_table_instruction = AlterTable::AddColumnInstruction{.if_not_exists = if_not_exists, .column_definitions = move(cols)}};
+                    return {.if_exists = {}, .table = {}, .alter_table_instruction = AlterTable::AddColumnInstruction{.if_not_exists = if_not_exists, .column_definitions = move(cols)}};
                 }
             );
         };
@@ -1185,7 +1184,7 @@ namespace objstore::parsers::cql {
             static constexpr auto rule = kw_drop >> dsl::p<ws> + dsl::p<if_exists> + dsl::p<ws> + dsl::p<column_name_list>;
             static constexpr auto value = lexy::callback<AlterTable>(
                 [](bool if_exists, DynamicArray<ColumnName>&& cols) -> AlterTable {
-                    return {.alter_table_instruction = AlterTable::DropColumnInstruction{.if_exists = if_exists, .columns = move(cols)}};
+                    return {.if_exists = {}, .table = {}, .alter_table_instruction = AlterTable::DropColumnInstruction{.if_exists = if_exists, .columns = move(cols)}};
                 }
             );
         };
@@ -1203,7 +1202,7 @@ namespace objstore::parsers::cql {
             }();
             static constexpr auto value = lexy::callback<AlterTable>(
                 [](bool if_exists, DynamicArray<Pair<ColumnName, ColumnName>>&& pairs) -> AlterTable {
-                    return {.alter_table_instruction = AlterTable::RenameColumnInstruction{.if_exists = if_exists, .old_to_new_columns = move(pairs)}};
+                    return {.if_exists = {}, .table = {}, .alter_table_instruction = AlterTable::RenameColumnInstruction{.if_exists = if_exists, .old_to_new_columns = move(pairs)}};
                 }
             );
         };
@@ -1216,10 +1215,10 @@ namespace objstore::parsers::cql {
             }();
             static constexpr auto value = lexy::callback<AlterTable>(
                 [](bool if_exists, ColumnName&& col, ColumnMask&& mask) -> AlterTable {
-                    return {.alter_table_instruction = AlterTable::AlterColumnInstruction{.if_exists = if_exists, .column = move(col), .column_mask = move(mask)}};
+                    return {.if_exists = {}, .table = {}, .alter_table_instruction = AlterTable::AlterColumnInstruction{.if_exists = if_exists, .column = move(col), .column_mask = move(mask)}};
                 },
                 [](bool if_exists, ColumnName&& col) -> AlterTable {
-                    return {.alter_table_instruction = AlterTable::AlterColumnInstruction{.if_exists = if_exists, .column = move(col)}};
+                    return {.if_exists = {}, .table = {}, .alter_table_instruction = AlterTable::AlterColumnInstruction{.if_exists = if_exists, .column = move(col), .column_mask = {}}};
                 }
             );
         };
@@ -1227,7 +1226,7 @@ namespace objstore::parsers::cql {
             static constexpr auto rule = dsl::p<with_options>;
             static constexpr auto value = lexy::callback<AlterTable>(
                 [](Options&& opts) -> AlterTable {
-                    return {.alter_table_instruction = move(opts)};
+                    return {.if_exists = {}, .table = {}, .alter_table_instruction = move(opts)};
                 }
             );
         };
@@ -1463,7 +1462,7 @@ namespace objstore::parsers::cql {
             }();
             static constexpr auto value = lexy::callback<Select::Selector>(
                 [](AutoString8&& name, lexy::nullopt) -> Select::Selector {
-                    return {.value = Select::Function{.function_name = move(name)}};
+                    return {.value = Select::Function{.function_name = move(name), .arguments = {}}};
                 },
                 [](AutoString8&& name, DynamicArray<Select::Selector>&& args) -> Select::Selector {
                     return {.value = Select::Function{.function_name = move(name), .arguments = move(args)}};
@@ -1487,7 +1486,7 @@ namespace objstore::parsers::cql {
                 return dsl::p<selector_rule> + dsl::p<ws> + dsl::opt(kw_as >> dsl::p<ws> + dsl::p<identifier>);
             }();
             static constexpr auto value = lexy::callback<Select::SelectColumn>(
-                [](Select::Selector&& sel, lexy::nullopt) -> Select::SelectColumn { return {.column = move(sel)}; },
+                [](Select::Selector&& sel, lexy::nullopt) -> Select::SelectColumn { return {.column = move(sel), .as = {}}; },
                 [](Select::Selector&& sel, AutoString8&& alias) -> Select::SelectColumn { return {.column = move(sel), .as = move(alias)}; }
             );
         };

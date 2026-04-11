@@ -378,7 +378,7 @@ TEST_CASE("CQL SELECT", "[objstore.cql]") {
     SECTION("select with limit") {
         auto result = cql::parse("SELECT * FROM tbl LIMIT 10;");
         REQUIRE(result.has_value());
-        auto& stmt = get<Select>(result->value);
+        [[maybe_unused]] auto& stmt = get<Select>(result->value);
     }
 
     SECTION("INSERT INTO with negative integers") {
@@ -727,7 +727,7 @@ TEST_CASE("Parse UPDATE statement", "[objstore.parser]") {
         auto result = cql::parse("UPDATE ks.users SET name = 'Alice', age = 30 WHERE id = 1;");
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Update>(result->value));
-        const auto& stmt = get<Update>(result->value);
+        [[maybe_unused]] const auto& stmt = get<Update>(result->value);
         // @todo
     }
 }
@@ -747,7 +747,7 @@ TEST_CASE("Parse DELETE statement", "[objstore.parser]") {
         auto result = cql::parse("DELETE name, age FROM users WHERE id = 1;");
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Delete>(result->value));
-        const auto& stmt = get<Delete>(result->value);
+        [[maybe_unused]] const auto& stmt = get<Delete>(result->value);
         // @todo
     }
 }
@@ -786,7 +786,7 @@ TEST_CASE("Parse SELECT with WHERE and LIMIT", "[objstore.parser]") {
         auto result = cql::parse("SELECT id, name, age FROM ks.users;");
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
-        const auto& stmt = get<Select>(result->value);
+        [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
     }
     
@@ -794,7 +794,7 @@ TEST_CASE("Parse SELECT with WHERE and LIMIT", "[objstore.parser]") {
         auto result = cql::parse("SELECT * FROM ks.users WHERE id = 1 AND name = 'Alice';");
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
-        const auto& stmt = get<Select>(result->value);
+        [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
     }
 }
@@ -834,7 +834,7 @@ TEST_CASE("Parse SELECT with ORDER BY", "[objstore.parser]") {
         auto result = cql::parse("SELECT * FROM ks.users ORDER BY created_at ASC;");
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
-        const auto& stmt = get<Select>(result->value);
+        [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
     }
     
@@ -858,7 +858,7 @@ TEST_CASE("Parse SELECT with ORDER BY", "[objstore.parser]") {
     SECTION("ORDER BY with WHERE and LIMIT") {
         auto result = cql::parse("SELECT * FROM ks.users WHERE id = 1 ORDER BY created_at DESC LIMIT 10;");
         REQUIRE(result.has_value());
-        const auto& stmt = get<Select>(result->value);
+        [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
     }
 }
@@ -887,28 +887,28 @@ TEST_CASE("Parse SELECT with GROUP BY", "[objstore.parser]") {
         auto result = cql::parse("SELECT user_id FROM ks.events GROUP BY user_id;");
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
-        const auto& stmt = get<Select>(result->value);
+        [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
     }
     
     SECTION("GROUP BY multiple columns") {
         auto result = cql::parse("SELECT * FROM ks.events GROUP BY year, month, day;");
         REQUIRE(result.has_value());
-        const auto& stmt = get<Select>(result->value);
+        [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
     }
     
     SECTION("GROUP BY with WHERE and ORDER BY") {
         auto result = cql::parse("SELECT * FROM ks.events WHERE user_id = 1 GROUP BY event_type ORDER BY created_at DESC;");
         REQUIRE(result.has_value());
-        const auto& stmt = get<Select>(result->value);
+        [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
     }
     
     SECTION("GROUP BY with LIMIT and ALLOW FILTERING") {
         auto result = cql::parse("SELECT * FROM ks.events GROUP BY user_id LIMIT 50 ALLOW FILTERING;");
         REQUIRE(result.has_value());
-        const auto& stmt = get<Select>(result->value);
+        [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
     }
 }
@@ -922,7 +922,7 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[objstore.parse
         REQUIRE(ks.options.identifier_values.length == 1);
         REQUIRE(ks.options.identifier_values[0].first == "replication");
         REQUIRE(type_matches_tag<MapLiteral>(ks.options.identifier_values[0].second));
-        const auto& map = get<MapLiteral>(ks.options.identifier_values[0].second);
+        [[maybe_unused]] const auto& map = get<MapLiteral>(ks.options.identifier_values[0].second);
         // @todo
     }
     
@@ -930,7 +930,7 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[objstore.parse
         auto result = cql::parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 3};");
         REQUIRE(result.has_value());
         const auto& ks = get<CreateKeyspace>(result->value);
-        const auto& map = get<MapLiteral>(ks.options.identifier_values[0].second);
+        [[maybe_unused]] const auto& map = get<MapLiteral>(ks.options.identifier_values[0].second);
         // @todo
     }
     
@@ -938,7 +938,7 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[objstore.parse
         auto result = cql::parse("CREATE KEYSPACE ks WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3, 'dc2': 2};");
         REQUIRE(result.has_value());
         const auto& ks = get<CreateKeyspace>(result->value);
-        const auto& map = get<MapLiteral>(ks.options.identifier_values[0].second);
+        [[maybe_unused]] const auto& map = get<MapLiteral>(ks.options.identifier_values[0].second);
         // @todo
     }
     

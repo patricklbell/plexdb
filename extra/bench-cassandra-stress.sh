@@ -40,7 +40,7 @@ if [ ! -f "$BINARY" ]; then
     echo "Build with:" >&2
     echo "  cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \\" >&2
     echo "    -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19 \\" >&2
-    echo "    -DPLEXDB_DEBUG=OFF -DBUILD_TESTS=OFF" >&2
+    echo "    -DPLEXDB_DEBUG=OFF -DPLEXDB_ENABLE_TESTS=OFF" >&2
     echo "  ninja -C build" >&2
     exit 1
 fi

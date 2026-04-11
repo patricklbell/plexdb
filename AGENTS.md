@@ -17,7 +17,7 @@
 - Test executables: `build/plexdb/plexdb_tests`, `build/objstore/objstore_tests`. Use `--skip-benchmarks` for normal runs.
 
 ## Logging & debugging test failures
-- Build with `-DPLEXDB_LOG_ENABLED=ON` to enable the structured logging system.
+- Build with `-DPLEXDB_ENABLE_LOGGING=ON` to enable the structured logging system.
 - All log messages are routed to Catch2's `UNSCOPED_INFO` via the test log consumer (`test/log_consumer_helper.test.cpp`). They appear automatically in the output of any failing test case.
 - The log system uses levels: `Trace`, `Debug`, `Info`, `Warn`, `Error` (see `plexdb::log::Level`).
 - Registration is lazy: `Producer` and `Stat` objects register themselves on first use, so construction order does not matter.

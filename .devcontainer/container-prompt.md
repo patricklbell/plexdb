@@ -19,7 +19,7 @@ Outbound traffic to any other domain is unexpected and likely not needed.
 
 ```sh
 # Configure (Debug)
-cmake -B build -G Ninja -DBUILD_TESTS=ON -DPLEXDB_LOG_ENABLED=ON \
+cmake -B build -G Ninja -DPLEXDB_ENABLE_TESTS=ON -DPLEXDB_ENABLE_LOGGING=ON \
   -DCMAKE_BUILD_TYPE=Debug
 
 # Build everything

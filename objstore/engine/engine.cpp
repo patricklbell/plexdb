@@ -5,7 +5,7 @@ import plexdb.os.dynamic_tagged_union;
 import objstore.parsers;
 
 namespace objstore::engine {
-    Engine::Engine(Pager* in_pager) : schema(in_pager, in_pager->header.root_page), pager(in_pager) {}
+    Engine::Engine(Pager* in_pager) : pager(in_pager), schema(in_pager, in_pager->header.root_page) {}
 
     void create_database(Pager& pager) {
         U64 schema_page = schema::create_schema(pager);
@@ -41,6 +41,7 @@ namespace objstore::engine {
             .row_page = 0,
             .col_idx = table->cols.length,
             .row_offset_bytes = 0,
+            .active_cols = {},
         };
     }
 
@@ -311,7 +312,7 @@ namespace objstore::engine {
             .table = table_name,
         };
     }
-    static ExecutionResult make_insert_into_unknown_column(const String8& keyspace_name, const String8& table_name) {
+    [[maybe_unused]] static ExecutionResult make_insert_into_unknown_column(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::Invalid,
             .message = "Too many values or unknown column",

@@ -3,46 +3,31 @@ cmake_minimum_required(VERSION 3.28)
 # =============================================================================
 # Project setup
 # =============================================================================
-if(NOT DEFINED PROJECT_NAME)
-    set(OBJSTORE_IS_MAIN_PROJECT ON)
-else()
-    set(OBJSTORE_IS_MAIN_PROJECT OFF)
-endif()
-
 project(objstore)
 
-if(OBJSTORE_IS_MAIN_PROJECT)
-    option(BUILD_TESTS "Build unit tests" ON)
-    option(OBJSTORE_BUILD_SERVER "Build objstore server" ON)
-    option(PLEXDB_LOG_ENABLED "Enable structured logging hooks" OFF)
-    option(PLEXDB_DEBUG "Build debug checks" ON)
-    
-    if(PLEXDB_LOG_ENABLED)
-        add_compile_definitions(PLEXDB_LOG_ENABLED=1)
-    endif()
-    if(PLEXDB_DEBUG)
-        add_compile_definitions(PLEXDB_DEBUG=1)
-    endif()
-
-    add_subdirectory(../plexdb plexdb)
+if(NOT TARGET plexdb::core)
+    add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../core)
 endif()
 
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/compiler_config.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/options.cmake)
+
+option(OBJSTORE_ENABLE_SERVER "Build objstore server" ON)
 
 # =============================================================================
 # Third part dependencies
 # =============================================================================
-include(FetchContent)
-include(FindPkgConfig)
-pkg_check_modules(liburing REQUIRED IMPORTED_TARGET GLOBAL liburing>=2.0)
-
-FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
-FetchContent_MakeAvailable(lexy)
-
 set(LEXY_ENCODING_OF_CHAR lexy::ascii)
 set(LEXY_HAS_NTTP ON)
 set(LEXY_HAS_CONSTEVAL ON)
 
-if(!PLEXDB_DEBUG)
+if(NOT TARGET foonathan::lexy)
+    include(FetchContent)
+    FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
+    FetchContent_MakeAvailable(lexy)
+endif()
+
+if(NOT PLEXDB_DEBUG)
     set(LEXY_ENABLE_ASSERT OFF)
 endif()
 
@@ -83,9 +68,9 @@ target_sources(objstore_modules
 
 target_link_libraries(objstore_modules
     PUBLIC
-        plexdb::plexdb
+        plexdb::core
     PRIVATE
-        PkgConfig::liburing
+        plexdb::compiler_config
 )
 
 # Static library
@@ -95,8 +80,9 @@ add_library(plexdb::objstore ALIAS objstore)
 target_compile_features(objstore PUBLIC cxx_std_23)
 set_target_properties(objstore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_include_directories(objstore PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+target_include_directories(objstore
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
 )
 
 target_sources(objstore
@@ -116,7 +102,7 @@ target_link_libraries(objstore
     PUBLIC
         plexdb::objstore_modules
     PRIVATE
-        PkgConfig::liburing
+        plexdb::compiler_config
         foonathan::lexy::core
         foonathan::lexy::ext
 )
@@ -124,7 +110,7 @@ target_link_libraries(objstore
 # =============================================================================
 # Executables
 # =============================================================================
-if(OBJSTORE_BUILD_SERVER)
+if(OBJSTORE_ENABLE_SERVER)
     add_executable(objstore_server)
 
     target_sources(objstore_server
@@ -134,25 +120,23 @@ if(OBJSTORE_BUILD_SERVER)
 
     target_link_libraries(objstore_server
         PRIVATE
+            plexdb::compiler_config
             plexdb::objstore
     )
 
-    target_include_directories(objstore_server PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+    target_include_directories(objstore_server
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../macros
     )
-
-    if(PLEXDB_LOG_ENABLED)
-        target_link_options(objstore_server PRIVATE -rdynamic)
-    endif()
 endif()
 
 # =============================================================================
 # Tests
 # =============================================================================
-if(BUILD_TESTS)
+if(PLEXDB_ENABLE_TESTS)
     # Fetch Catch2 only once (parent scope can override this)
     if(NOT TARGET Catch2::Catch2WithMain)
-        Include(FetchContent)
+        include(FetchContent)
         FetchContent_Declare(
             Catch2
             GIT_REPOSITORY https://github.com/catchorg/Catch2.git
@@ -179,13 +163,16 @@ if(BUILD_TESTS)
                 ${OBJSTORE_TEST_MODULE_SOURCES}
     )
 
-    target_include_directories(objstore_tests PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
-        ${CMAKE_CURRENT_SOURCE_DIR}/../plexdb/log
+    target_include_directories(objstore_tests
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+            ${CMAKE_CURRENT_SOURCE_DIR}/../core/log
     )
 
     target_link_libraries(objstore_tests
         PRIVATE
+            plexdb::compiler_config
+            stdc++exp # std::stacktrace may require link experimental c++ library
             plexdb::objstore
             Catch2::Catch2WithMain
     )

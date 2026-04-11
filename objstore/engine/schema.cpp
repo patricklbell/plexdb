@@ -37,6 +37,9 @@ namespace objstore::schema {
         for (U64 keyspace_offset_bytes = 0; keyspace_offset_bytes < keyspaces_blob.size_bytes;) {
             KeyspaceStorage ks_storage{
                 .offset_in_blob_bytes = keyspace_offset_bytes,
+                .header = {},
+                .name = {},
+                .tables = {},
             };
 
             blob::tget(this->keyspaces_blob, &ks_storage.header, &keyspace_offset_bytes);
@@ -50,6 +53,9 @@ namespace objstore::schema {
         for (U64 table_offset_bytes = 0; table_offset_bytes < tables_blob.size_bytes;) {
             TableStorage tbl_storage{
                 .offset_in_blob_bytes = table_offset_bytes,
+                .header = {},
+                .name = {},
+                .columns = {},
             };
 
             blob::tget(this->tables_blob, &tbl_storage.header, &table_offset_bytes);
@@ -67,6 +73,8 @@ namespace objstore::schema {
         for (U64 column_offset_bytes = 0; column_offset_bytes < columns_blob.size_bytes;) {
             ColumnStorage col_storage{
                 .offset_in_blob_bytes = column_offset_bytes,
+                .header = {},
+                .name = {},
             };
 
             blob::tget(this->columns_blob, &col_storage.header, &column_offset_bytes);
@@ -92,9 +100,8 @@ namespace objstore::schema {
                 .idx = ks_idx,
                 .tombstone = ks_storage.header.tombstone,
                 .name = ks_storage.name,
+                .tbls = {},
             };
-
-            reserve(ks.tbls, ks.tbls.length);
             for (const auto& tbl_idx: ks_storage.tables) {
                 const TableStorage& tbl_storage = this->storage.tables[tbl_idx];
 
@@ -102,6 +109,8 @@ namespace objstore::schema {
                     .idx = tbl_idx,
                     .tombstone = tbl_storage.header.tombstone,
                     .name = tbl_storage.name,
+                    .cols = {},
+                    .primary_col_idx = 0,
                     .btree = btree::BTreePaged(in_pager, tbl_storage.header.btree_page),
                 };
 
@@ -154,7 +163,7 @@ namespace objstore::schema {
         }
         return nullptr;
     }
-    Table* read_table_impl(Schema& schema, Keyspace& ks, String8 name) {
+    Table* read_table_impl([[maybe_unused]] Schema& schema, Keyspace& ks, String8 name) {
         for (auto& tbl : ks.tbls) {
             if (tbl.name == name && !tbl.tombstone) {
                 return &tbl;
@@ -162,7 +171,7 @@ namespace objstore::schema {
         }
         return nullptr;
     }
-    Column* read_column_impl(Schema& schema, Table& tbl, String8 name) {
+    Column* read_column_impl([[maybe_unused]] Schema& schema, Table& tbl, String8 name) {
         for (auto& col : tbl.cols) {
             if (col.name == name && !col.tombstone) {
                 return &col;
@@ -184,6 +193,7 @@ namespace objstore::schema {
                 .name_length = create.name.length,
             },
             .name = AutoString8(create.name),
+            .tables = {},
         };
         KeyspaceStorage& ks_storage_ref = push_back(schema.storage.keyspaces, move(ks_storage));
 
@@ -202,6 +212,7 @@ namespace objstore::schema {
             .idx = schema.storage.keyspaces.length-1,
             .tombstone = ks_storage_ref.header.tombstone,
             .name = ks_storage_ref.name,
+            .tbls = {},
         };
         return &push_back(schema.keyspaces, move(ks));
     }
@@ -286,6 +297,7 @@ namespace objstore::schema {
                 .btree_page = btree_page,
             },
             .name = AutoString8(create.name.table_name),
+            .columns = {},
         };
         TableStorage& tbl_storage_ref = push_back(schema.storage.tables, move(tbl_storage));
 
@@ -304,6 +316,7 @@ namespace objstore::schema {
             .idx = schema.storage.tables.length-1,
             .tombstone = tbl_storage_ref.header.tombstone,
             .name = tbl_storage_ref.name,
+            .cols = {},
             .primary_col_idx = primary_key_col_idx,
             .btree = btree::BTreePaged(schema.tables_blob.pager, tbl_storage_ref.header.btree_page),
         };
