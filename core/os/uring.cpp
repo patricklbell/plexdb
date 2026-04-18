@@ -330,7 +330,7 @@ namespace plexdb::uring {
                     case TYPE_CLOSE:{
                         return CQE{CloseEvent{
                             .error = error,
-                            .client = (error == Error::None) ? fd_to_handle(result) : os::zero_handle(),
+                            .client = (error == Error::None) ? fd_to_handle(static_cast<int>(data)) : os::zero_handle(),
                         }};
                     }break;
                     case TYPE_MASK:{}break;
@@ -393,6 +393,7 @@ namespace plexdb::uring {
             }
 
             int client_fd = handle_to_fd(client);
+            assert_true(client_fd >= 0, "invalid fd, cannot be encoded in io_uring unsigned user data");
             U64 user_data = encode_user_data(TYPE_CLOSE, client_fd);
             
             io_uring_prep_close(sqe, client_fd);
