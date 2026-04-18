@@ -4,24 +4,21 @@ if(NOT TARGET plexdb::compiler_config)
 
     target_compile_options(project_compiler_config INTERFACE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
-        $<$<CXX_COMPILER_ID:MSVC>:/EHs-c->
         $<$<CXX_COMPILER_ID:MSVC>:/GR->
 
         $<$<CXX_COMPILER_ID:GNU>:-Wall>
         $<$<CXX_COMPILER_ID:GNU>:-Wextra>
-        $<$<CXX_COMPILER_ID:GNU>:-fno-exceptions>
         $<$<CXX_COMPILER_ID:GNU>:-fno-rtti>
 
         $<$<CXX_COMPILER_ID:Clang>:-Wall>
         $<$<CXX_COMPILER_ID:Clang>:-Wextra>
         $<$<CXX_COMPILER_ID:Clang>:-Wdangling>
-        $<$<CXX_COMPILER_ID:Clang>:-fno-exceptions>
         $<$<CXX_COMPILER_ID:Clang>:-fno-rtti>
     )
 
     if(PLEXDB_DISABLE_EXCEPTIONS)
         if(PLEXDB_ENABLE_TESTS)
-            message(WARNING "Disabling exceptions AND compiling test may lead to unexpected race conditions")
+            message(WARNING "Disabling exceptions AND compiling tests may lead to unexpected race conditions")
         endif()
         target_compile_options(project_compiler_config INTERFACE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-fno-exceptions>

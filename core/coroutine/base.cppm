@@ -54,7 +54,7 @@ export namespace plexdb::coroutine {
             }
 
             void return_value(T value) { result.emplace(move(value)); }
-            void unhandled_exception() { PLEXDB_TRAP; }
+            void unhandled_exception() { }
         };
 
         bool await_ready() const noexcept { return handle.done(); }
@@ -129,7 +129,7 @@ export namespace plexdb::coroutine {
             }
 
             void return_void() noexcept {}
-            void unhandled_exception() { PLEXDB_TRAP; }
+            void unhandled_exception() { }
         };
 
         bool await_ready() const noexcept { return handle.done(); }
@@ -232,7 +232,7 @@ export namespace plexdb::coroutine {
             }
 
             void return_void() noexcept {}
-            void unhandled_exception() { PLEXDB_TRAP; }
+            void unhandled_exception() { }
         };
 
         struct Iterator {

@@ -11,6 +11,7 @@ import plexdb.base;
 
 namespace {
 
+[[maybe_unused]]
 static std::string filter_stacktrace(const std::stacktrace& st) {
     std::ostringstream oss;
 
@@ -51,8 +52,7 @@ static std::string filter_stacktrace(const std::stacktrace& st) {
 }
 
 void catch2_assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-    FAIL(
-        "Stack trace for assert\n" << filter_stacktrace(std::stacktrace::current()) << "\n" <<
+    FAIL_CHECK(
         "Assert failed \"" << msg << "\" at " << function_name << " in " << file_name << ":" << line_number
     );
 }

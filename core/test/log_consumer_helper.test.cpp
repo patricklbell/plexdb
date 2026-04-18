@@ -15,7 +15,6 @@ namespace {
 // log buffer state — plain struct, manipulated by free functions
 // ============================================================================
 struct LogBuffer {
-    std::vector<std::string>                                   entries;
     std::map<std::pair<uint32_t,uint32_t>, std::string>        stat_names;
     std::map<uint32_t, std::string>                            producer_names;
     std::map<std::pair<uint32_t,std::string>, std::string>     producer_meta;
@@ -25,11 +24,6 @@ struct LogBuffer {
 
 LogBuffer g_log_buffer;
 
-void log_buffer_clear(LogBuffer& lb) {
-    std::lock_guard<std::mutex> g(lb.mtx);
-    lb.entries.clear();
-}
-
 void log_buffer_push_message(LogBuffer& lb, const char* level, const char* text, size_t len) {
     std::lock_guard<std::mutex> g(lb.mtx);
     if (!lb.active) return;
@@ -37,8 +31,7 @@ void log_buffer_push_message(LogBuffer& lb, const char* level, const char* text,
     entry += level;
     entry += "] ";
     entry.append(text, len);
-    lb.entries.push_back(std::move(entry));
-    UNSCOPED_INFO(lb.entries.back());
+    UNSCOPED_INFO(entry);
 }
 
 void log_buffer_push_stat(LogBuffer& lb, uint32_t producer_id, uint32_t stat_id, int64_t value) {
@@ -51,8 +44,7 @@ void log_buffer_push_stat(LogBuffer& lb, uint32_t producer_id, uint32_t stat_id,
     } else {
         entry = "[STAT] id=" + std::to_string(stat_id) + " value=" + std::to_string(value);
     }
-    lb.entries.push_back(std::move(entry));
-    UNSCOPED_INFO(lb.entries.back());
+    UNSCOPED_INFO(entry);
 }
 
 void log_buffer_register_stat_name(LogBuffer& lb, uint32_t producer_id, uint32_t stat_id, const char* name) {
@@ -65,8 +57,7 @@ void log_buffer_register_producer(LogBuffer& lb, uint32_t id, const char* name) 
     lb.producer_names[id] = name;
     if (lb.active) {
         std::string entry = "[PRODUCER] " + std::string(name) + " (id=" + std::to_string(id) + ")";
-        lb.entries.push_back(std::move(entry));
-        UNSCOPED_INFO(lb.entries.back());
+        UNSCOPED_INFO(entry);
     }
 }
 
@@ -76,8 +67,7 @@ void log_buffer_register_producer_meta(LogBuffer& lb, uint32_t producer_id, cons
     if (lb.active) {
         std::string entry = "[PRODUCER_META] id=" + std::to_string(producer_id)
                           + " " + key + "=" + value;
-        lb.entries.push_back(std::move(entry));
-        UNSCOPED_INFO(lb.entries.back());
+        UNSCOPED_INFO(entry);
     }
 }
 
@@ -147,11 +137,9 @@ struct LogListener : Catch::EventListenerBase {
 
     void testCaseStarting(Catch::TestCaseInfo const&) override {
         g_log_buffer.active = true;
-        log_buffer_clear(g_log_buffer);
     }
     void testCaseEnded(Catch::TestCaseStats const&) override {
         g_log_buffer.active = false;
-        log_buffer_clear(g_log_buffer);
     }
 };
 CATCH_REGISTER_LISTENER(LogListener)
