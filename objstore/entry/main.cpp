@@ -4,6 +4,7 @@ import plexdb.base;
 import plexdb.os;
 import plexdb.pager;
 import plexdb.argparse;
+import plexdb.threads;
 
 import objstore.engine;
 import objstore.repl;
@@ -31,6 +32,9 @@ void signal_handler(int) {
 }
 
 int main(int argc, char* argv[]) {
+    plexdb::threads::Context main_thread_ctx{.arenas={},.is_main=true};
+    plexdb::threads::equip(&main_thread_ctx);
+
     os::signal_ignore_pipe();
     set_assert_handler(assert_handler);
     os::signal_register_kill(signal_handler);

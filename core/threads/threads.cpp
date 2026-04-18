@@ -14,6 +14,77 @@ namespace plexdb::threads {
         return thread_local_ctx;
     }
 
+    // ========================================================================
+    // thread
+    // ========================================================================
+    Thread::~Thread() {
+        if (!os::is_zero_handle(handle))
+            os::thread_join(handle);
+    }
+
+    Thread::Thread(Thread&& other) noexcept : handle(other.handle) {
+        other.handle = os::zero_handle();
+    }
+
+    Thread& Thread::operator=(Thread&& other) noexcept {
+        if (this != &other) {
+            if (!os::is_zero_handle(handle))
+                os::thread_join(handle);
+            handle = other.handle;
+            other.handle = os::zero_handle();
+        }
+        return *this;
+    }
+
+    Thread::operator bool() const {
+        return !os::is_zero_handle(handle);
+    }
+
+    static void functor_trampoline(void* raw) {
+        auto* fn = static_cast<AutoFunctor<void()>*>(raw);
+        (*fn)();
+        fn->~AutoFunctor<void()>();
+        os::deallocate(fn);
+    }
+
+    Thread launch(AutoFunctor<void()> fn, const char* name) {
+        auto* heap_fn = reinterpret_cast<AutoFunctor<void()>*>(os::allocate(sizeof(AutoFunctor<void()>)));
+        new (heap_fn) AutoFunctor<void()>(move(fn));
+        Thread t{os::thread_launch(functor_trampoline, heap_fn)};
+        if (name) os::thread_set_name(t.handle, name);
+        return t;
+    }
+
+    // ========================================================================
+    // semaphore
+    // ========================================================================
+    Semaphore::Semaphore(U32 initial_count) : handle(os::semaphore_open(initial_count)) {}
+
+    Semaphore::~Semaphore() {
+        if (!os::is_zero_handle(handle))
+            os::semaphore_close(handle);
+    }
+
+    Semaphore::Semaphore(Semaphore&& other) noexcept : handle(other.handle) {
+        other.handle = os::zero_handle();
+    }
+
+    Semaphore& Semaphore::operator=(Semaphore&& other) noexcept {
+        if (this != &other) {
+            if (!os::is_zero_handle(handle))
+                os::semaphore_close(handle);
+            handle = other.handle;
+            other.handle = os::zero_handle();
+        }
+        return *this;
+    }
+
+    void Semaphore::signal() { os::semaphore_signal(handle); }
+    void Semaphore::wait()   { os::semaphore_wait(handle); }
+
+    // ========================================================================
+    // scratch arena
+    // ========================================================================
     Arena* get_scratch(TArrayView<Arena*,U64> conflicts) {
         Context* ctx = get_context();
         assert_true(ctx != nullptr, "cannot acquire scratch because thread context was not set");

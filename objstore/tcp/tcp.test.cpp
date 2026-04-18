@@ -2,14 +2,14 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <coroutine>
-#include <thread>
 #include <atomic>
-#include <semaphore>
 #include <vector>
+#include <cstring>
 
 import plexdb.base;
 import plexdb.coroutine;
 import plexdb.os;
+import plexdb.threads;
 import plexdb.os.uring;
 import objstore.tcp;
 
@@ -55,17 +55,17 @@ TEST_CASE("receives request", "[objstore.tcp]") {
     bool try_uring = GENERATE(false, true);
     TestServer server(get_unique_port());
 
-    std::binary_semaphore done{0};
+    threads::Semaphore done{0};
     volatile bool should_exit = false;
     AutoString8 received;
 
-    std::thread client_thread([&]() {
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
         {
             Socket client{socket_open()};
             CHECK(socket_connect(client, "127.0.0.1", server.port));
             socket_send_all(client, "HELLO", 5);
         }
-        done.acquire();
+        done.wait();
         should_exit = true;
         server.stop();
     });
@@ -78,23 +78,22 @@ TEST_CASE("receives request", "[objstore.tcp]") {
         received = AutoString8{buf->view.ptr, buf->length};
         tcp::release(req, &*buf);
 
-        done.release();
+        done.signal();
         co_await tcp::close(req);
     }, server.interrupt, should_exit);
 
-    client_thread.join();
     REQUIRE(received == "HELLO");
 }
 
 TEST_CASE("receives large request", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
-    std::binary_semaphore done{0};
+    threads::Semaphore done{0};
     volatile bool should_exit = false;
     U64 total_received = 0;
     constexpr U64 DATA_SIZE = 32 * 1024;
 
-    std::thread client_thread([&]() {
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
         {
             Socket client{socket_open()};
             CHECK(socket_connect(client, "127.0.0.1", server.port));
@@ -102,7 +101,7 @@ TEST_CASE("receives large request", "[objstore.tcp]") {
             for (U64 i = 0; i < DATA_SIZE; i++) data[i] = (char)('A' + (i % 26));
             socket_send_all(client, data.data(), data.size());
         }
-        done.acquire();
+        done.wait();
         should_exit = true;
         server.stop();
     });
@@ -118,29 +117,28 @@ TEST_CASE("receives large request", "[objstore.tcp]") {
             total += buf->length;
         }
         total_received = total;
-        done.release();
+        done.signal();
         co_await tcp::close(req);
     }, server.interrupt, should_exit);
 
-    client_thread.join();
     REQUIRE(total_received >= DATA_SIZE);
 }
 
 TEST_CASE("handles multiple sequential connections", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
-    std::counting_semaphore<16> connection_sem{0};
+    threads::Semaphore connection_sem{0};
     volatile bool should_exit = false;
     std::atomic<int> connection_count{0};
     constexpr int NUM_CONNECTIONS = 5;
 
-    std::thread client_thread([&]() {
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
         for (int i = 0; i < NUM_CONNECTIONS; i++) {
             Socket client{socket_open()};
             CHECK(socket_connect(client, "127.0.0.1", server.port));
             char msg[16]; snprintf(msg, sizeof(msg), "MSG%d", i);
             socket_send_all(client, msg, (int)strlen(msg));
-            connection_sem.acquire();
+            connection_sem.wait();
         }
         should_exit = true;
         server.stop();
@@ -154,27 +152,25 @@ TEST_CASE("handles multiple sequential connections", "[objstore.tcp]") {
         tcp::release(req, &*buf);
 
         connection_count++;
-        connection_sem.release();
+        connection_sem.signal();
         co_await tcp::close(req);
     }, server.interrupt, should_exit);
 
-    client_thread.join();
     REQUIRE(connection_count == NUM_CONNECTIONS);
 }
 
 TEST_CASE("handles concurrent connections", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
-    std::counting_semaphore<16> request_sem{0};
+    threads::Semaphore request_sem{0};
     volatile bool should_exit = false;
     std::atomic<int> request_count{0};
     constexpr int NUM_CLIENTS = 4;
 
-    std::thread client_thread([&]() {
-        std::vector<std::thread> clients;
-        clients.reserve(NUM_CLIENTS);
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
+        threads::Thread clients[NUM_CLIENTS];
         for (int i = 0; i < NUM_CLIENTS; i++) {
-            clients.emplace_back([&server, i]() {
+            clients[i] = threads::launch("tcp-client", [&server, i]() {
                 Socket client{socket_open()};
                 if (socket_connect(client, "127.0.0.1", server.port)) {
                     char msg[16]; snprintf(msg, sizeof(msg), "CLIENT%d", i);
@@ -182,8 +178,8 @@ TEST_CASE("handles concurrent connections", "[objstore.tcp]") {
                 }
             });
         }
-        for (auto& t : clients) t.join();
-        for (int i = 0; i < NUM_CLIENTS; i++) request_sem.acquire();
+        for (auto& t : clients) t = {};
+        for (int i = 0; i < NUM_CLIENTS; i++) request_sem.wait();
         should_exit = true;
         server.stop();
     });
@@ -196,23 +192,22 @@ TEST_CASE("handles concurrent connections", "[objstore.tcp]") {
         tcp::release(req, &*buf);
 
         request_count++;
-        request_sem.release();
+        request_sem.signal();
         co_await tcp::close(req);
     }, server.interrupt, should_exit);
 
-    client_thread.join();
     REQUIRE(request_count == NUM_CLIENTS);
 }
 
 TEST_CASE("handles client disconnect", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
-    std::binary_semaphore done{0};
+    threads::Semaphore done{0};
     volatile bool should_exit = false;
 
-    std::thread client_thread([&]() {
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
         { Socket client{socket_open()}; CHECK(socket_connect(client, "127.0.0.1", server.port)); }
-        done.acquire();
+        done.wait();
         should_exit = true;
         server.stop();
     });
@@ -224,26 +219,24 @@ TEST_CASE("handles client disconnect", "[objstore.tcp]") {
         CHECK(co_await tcp::read(req, &*buf) == Error::ConnectionClosed);
         tcp::release(req, &*buf);
 
-        done.release();
+        done.signal();
         co_await tcp::close(req);
     }, server.interrupt, should_exit);
-
-    client_thread.join();
 }
 
 TEST_CASE("tracks statistics correctly", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
-    std::binary_semaphore done{0};
+    threads::Semaphore done{0};
     volatile bool should_exit = false;
 
-    std::thread client_thread([&]() {
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
         {
             Socket client{socket_open()};
             CHECK(socket_connect(client, "127.0.0.1", server.port));
             socket_send_all(client, "TESTDATA", 8);
         }
-        done.acquire();
+        done.wait();
         should_exit = true;
         server.stop();
     });
@@ -255,11 +248,10 @@ TEST_CASE("tracks statistics correctly", "[objstore.tcp]") {
         CHECK(co_await tcp::read(req, &*buf) == Error::None);
         tcp::release(req, &*buf);
 
-        done.release();
+        done.signal();
         co_await tcp::close(req);
     }, server.interrupt, should_exit);
 
-    client_thread.join();
     REQUIRE(listener.stats.total_connections >= 1);
     REQUIRE(listener.stats.total_bytes_read >= 8);
 }
@@ -267,18 +259,18 @@ TEST_CASE("tracks statistics correctly", "[objstore.tcp]") {
 TEST_CASE("binary data with null bytes", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
-    std::binary_semaphore done{0};
+    threads::Semaphore done{0};
     volatile bool should_exit = false;
     std::vector<U8> received;
 
-    std::thread client_thread([&]() {
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
         {
             Socket client{socket_open()};
             CHECK(socket_connect(client, "127.0.0.1", server.port));
             char binary_data[10] = {0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00};
             socket_send_all(client, binary_data, 10);
         }
-        done.acquire();
+        done.wait();
         should_exit = true;
         server.stop();
     });
@@ -291,11 +283,10 @@ TEST_CASE("binary data with null bytes", "[objstore.tcp]") {
         received.assign(buf->view.ptr, buf->view.ptr + buf->length);
         tcp::release(req, &*buf);
 
-        done.release();
+        done.signal();
         co_await tcp::close(req);
     }, server.interrupt, should_exit);
 
-    client_thread.join();
     REQUIRE(received.size() >= 10);
     REQUIRE(received[0] == 0x01);
     REQUIRE(received[1] == 0x00);

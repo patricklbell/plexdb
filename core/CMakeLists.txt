@@ -72,6 +72,7 @@ target_sources(core_modules
             os/signal.cppm
             os/socket.cppm
             os/sysinfo.cppm
+            os/thread.cppm
             os/time.cppm
             os/uring.cppm
             tagged_union/tagged_union.cppm
@@ -120,6 +121,7 @@ target_sources(core
         os/signal.cpp
         os/socket.cpp
         os/sysinfo.cpp
+        os/thread.cpp
         os/time.cpp
         os/uring.cpp
         pager/pager.cpp
