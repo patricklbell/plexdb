@@ -111,11 +111,11 @@ namespace plexdb::os {
             return fd_to_handle(client_fd);
         }
 
-        SocketResult socket_send(Handle socket, const void* data, S32 length) {
+        SocketResult socket_send(Handle socket, const void* data, U32 length) {
             ssize_t result = ::send(handle_to_fd(socket), data, length, 0);
             
             assert_true(result <= MAX_S32, "send length out of range, this should never happen!");
-            if (result >= 0)                            return {static_cast<S32>(result), SocketError::None};
+            if (result >= 0)                            return {static_cast<U32>(result), SocketError::None};
             int err = errno;
             if (err == EAGAIN || err == EWOULDBLOCK)    return {0, SocketError::WouldBlock};
             if (err == ECONNRESET)                      return {0, SocketError::ConnectionReset};
@@ -123,11 +123,11 @@ namespace plexdb::os {
             return {0, SocketError::Other};
         }
 
-        SocketResult socket_receive(Handle socket, void* data, S32 length) {
+        SocketResult socket_receive(Handle socket, void* data, U32 length) {
             ssize_t result = ::recv(handle_to_fd(socket), data, length, 0);
             
             assert_true(result <= MAX_S32, "send length out of range, this should never happen!");
-            if (result > 0)                             return {static_cast<S32>(result), SocketError::None};
+            if (result > 0)                             return {static_cast<U32>(result), SocketError::None};
             if (result == 0)                            return {0, SocketError::ConnectionClosed};
             int err = errno;
             if (err == EAGAIN || err == EWOULDBLOCK)    return {0, SocketError::WouldBlock};
@@ -136,9 +136,9 @@ namespace plexdb::os {
             return {0, SocketError::Other};
         }
 
-        SocketResult socket_send_all(Handle socket, const void* data, S32 length) {
+        SocketResult socket_send_all(Handle socket, const void* data, U32 length) {
             const U8* ptr = (const U8*)data;
-            S32 total = 0;
+            U32 total = 0;
 
             while (total < length) {
                 SocketResult res = socket_send(socket, ptr, length - total);
@@ -153,9 +153,9 @@ namespace plexdb::os {
             return {total, SocketError::None};
         }
 
-        SocketResult socket_receive_all(Handle socket, void* data, S32 length) {
+        SocketResult socket_receive_all(Handle socket, void* data, U32 length) {
             U8* ptr = (U8*)data;
-            S32 total = 0;
+            U32 total = 0;
 
             while (total < length) {
                 SocketResult res = socket_receive(socket, ptr, length - total);
@@ -248,31 +248,31 @@ namespace plexdb::os {
             return sock_to_handle(client);
         }
 
-        SocketResult socket_send(Handle socket, const void* data, S32 length) {
+        SocketResult socket_send(Handle socket, const void* data, U32 length) {
             int result = ::send(handle_to_sock(socket), (const char*)data, length, 0);
-            if (result >= 0) return {result, SocketError::None};
+            if (result >= 0) return {static_cast<U32>(result), SocketError::None};
             
             int err = WSAGetLastError();
-            if (err == WSAEWOULDBLOCK) return {0, SocketError::WouldBlock};
-            if (err == WSAECONNRESET) return {0, SocketError::ConnectionReset};
+            if (err == WSAEWOULDBLOCK)  return {0, SocketError::WouldBlock};
+            if (err == WSAECONNRESET)   return {0, SocketError::ConnectionReset};
             return {0, SocketError::Other};
         }
 
-        SocketResult socket_receive(Handle socket, void* data, S32 length) {
+        SocketResult socket_receive(Handle socket, void* data, U32 length) {
             int result = ::recv(handle_to_sock(socket), (char*)data, length, 0);
-            if (result > 0) return {result, SocketError::None};
-            if (result == 0) return {0, SocketError::ConnectionClosed};
+            if (result > 0)     return {static_cast<U32>(result), SocketError::None};
+            if (result == 0)    return {0, SocketError::ConnectionClosed};
             
             int err = WSAGetLastError();
-            if (err == WSAEWOULDBLOCK) return {0, SocketError::WouldBlock};
-            if (err == WSAECONNRESET) return {0, SocketError::ConnectionReset};
-            if (err == WSAETIMEDOUT) return {0, SocketError::Timeout};
+            if (err == WSAEWOULDBLOCK)  return {0, SocketError::WouldBlock};
+            if (err == WSAECONNRESET)   return {0, SocketError::ConnectionReset};
+            if (err == WSAETIMEDOUT)    return {0, SocketError::Timeout};
             return {0, SocketError::Other};
         }
 
-        SocketResult socket_send_all(Handle socket, const void* data, S32 length) {
+        SocketResult socket_send_all(Handle socket, const void* data, U32 length) {
             const U8* ptr = (const U8*)data;
-            S32 total = 0;
+            U32 total = 0;
 
             while (total < length) {
                 SocketResult res = socket_send(socket, ptr, length - total);
@@ -281,17 +281,15 @@ namespace plexdb::os {
                 }
                 if (res.bytes > 0) {
                     ptr += res.bytes;
-                    remaining -= res.bytes;
                     total += res.bytes;
                 }
             }
             return {total, SocketError::None};
         }
 
-        SocketResult socket_receive_all(Handle socket, void* data, S32 length) {
+        SocketResult socket_receive_all(Handle socket, void* data, U32 length) {
             U8* ptr = (U8*)data;
-            U64 remaining = length;
-            S32 total = 0;
+            U32 total = 0;
 
             while (total < length) {
                 SocketResult res = socket_receive(socket, ptr, length - total);
@@ -303,7 +301,6 @@ namespace plexdb::os {
                 }
                 if (res.bytes > 0) {
                     ptr += res.bytes;
-                    remaining -= res.bytes;
                     total += res.bytes;
                 }
             }

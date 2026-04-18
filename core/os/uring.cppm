@@ -59,22 +59,34 @@ export namespace plexdb::uring {
     // ========================================================================
     // completion queue entry
     // ========================================================================
+    enum class Error {
+        None = 0,       // success
+        NotFound,       // resource not found
+        Invalid,        // invalid argument
+        IO,             // generic I/O error
+        Unknown         // unmapped or unknown error
+    };
 
     struct ReadEvent {
+        Error error;
         U32 buffer_idx;
-        int bytes_read;
+        U32 bytes_read;
     };
     struct WriteEvent {
+        Error error;
         U32 buffer_idx;
-        int bytes_written;
+        U32 bytes_written;
     };
     struct AcceptEvent {
+        Error error;
         os::Handle client;
     };
     struct MultishotAcceptEvent {
+        Error error;
         os::Handle client;
     };
     struct CloseEvent {
+        Error error;
         os::Handle client;
     };
 

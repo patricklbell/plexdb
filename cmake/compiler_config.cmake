@@ -19,7 +19,10 @@ if(NOT TARGET plexdb::compiler_config)
         $<$<CXX_COMPILER_ID:Clang>:-fno-rtti>
     )
 
-    if (PLEXDB_DISABLE_EXCEPTIONS)
+    if(PLEXDB_DISABLE_EXCEPTIONS)
+        if(PLEXDB_ENABLE_TESTS)
+            message(WARNING "Disabling exceptions AND compiling test may lead to unexpected race conditions")
+        endif()
         target_compile_options(project_compiler_config INTERFACE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-fno-exceptions>
             $<$<CXX_COMPILER_ID:MSVC>:/EHs-c->

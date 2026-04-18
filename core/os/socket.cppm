@@ -21,7 +21,7 @@ export namespace plexdb::os {
     };
 
     struct SocketResult {
-        S32 byte_count;
+        U32 byte_count;
         SocketError error;
     };
 
@@ -34,10 +34,10 @@ export namespace plexdb::os {
     bool   socket_listen(Handle socket, int backlog);
     Handle socket_accept(Handle socket);
 
-    SocketResult socket_send(Handle socket, const void* data, S32 length);
-    SocketResult socket_receive(Handle socket, void* data, S32 length);
-    SocketResult socket_send_all(Handle socket, const void* data, S32 length);
-    SocketResult socket_receive_all(Handle socket, void* data, S32 length);
+    SocketResult socket_send(Handle socket, const void* data, U32 length);
+    SocketResult socket_receive(Handle socket, void* data, U32 length);
+    SocketResult socket_send_all(Handle socket, const void* data, U32 length);
+    SocketResult socket_receive_all(Handle socket, void* data, U32 length);
 
     struct Socket {
         Handle handle = zero_handle();

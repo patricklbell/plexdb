@@ -4,18 +4,18 @@ module;
 module plexdb.threads;
 
 namespace plexdb::threads {
-    thread_static ThreadContext* thread_local_ctx;
+    thread_static Context* thread_local_ctx = nullptr;
     
-    void equip(ThreadContext* in_ctx) {
+    void equip(Context* in_ctx) {
         thread_local_ctx = in_ctx;
     }
 
-    ThreadContext* get_context() {
+    Context* get_context() {
         return thread_local_ctx;
     }
 
     Arena* get_scratch(TArrayView<Arena*,U64> conflicts) {
-        ThreadContext* ctx = get_context();
+        Context* ctx = get_context();
         assert_true(ctx != nullptr, "cannot acquire scratch because thread context was not set");
 
         for (auto& arena : TArrayView(ctx->arenas)) {

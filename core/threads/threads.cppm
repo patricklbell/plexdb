@@ -7,13 +7,13 @@ import plexdb.base;
 import plexdb.arena;
 
 export namespace plexdb::threads {
-    struct ThreadContext {
+    struct Context {
         Arena arenas[2];
     };
     
-    void           equip(ThreadContext* in_ctx);
-    ThreadContext* get_context();
-    Arena*         get_scratch(TArrayView<Arena*,U64> conflicts);
+    void     equip(Context* in_ctx);
+    Context* get_context();
+    Arena*   get_scratch(TArrayView<Arena*,U64> conflicts);
 
     struct Scope {
         Arena* arena;
@@ -32,8 +32,4 @@ export namespace plexdb::threads {
     
     inline Scope scratch(TArrayView<Arena*,U64> conflicts) { return Scope(get_scratch(conflicts)); }
     inline Scope scratch()                                 { return scratch(TArrayView<Arena*,U64>()); }
-}
-
-export namespace plexdb {
-    using ThreadContext = threads::ThreadContext;
 }

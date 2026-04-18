@@ -45,6 +45,7 @@ set_target_properties(objstore_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(objstore_modules
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+        ${CMAKE_CURRENT_SOURCE_DIR}/../test
 )
 
 target_sources(objstore_modules
@@ -150,9 +151,11 @@ if(PLEXDB_ENABLE_TESTS)
     
     file(GLOB_RECURSE OBJSTORE_TEST_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../core/test/*.test.cpp"
     )
     file(GLOB_RECURSE OBJSTORE_TEST_MODULE_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cppm"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../core/test/*.test.cppm"
     )
     target_sources(objstore_tests
         PRIVATE
@@ -168,6 +171,7 @@ if(PLEXDB_ENABLE_TESTS)
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../macros
             ${CMAKE_CURRENT_SOURCE_DIR}/../core/log
+            ${CMAKE_CURRENT_SOURCE_DIR}/../core/test
     )
 
     target_link_libraries(objstore_tests

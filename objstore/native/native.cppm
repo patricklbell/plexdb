@@ -350,7 +350,7 @@ export namespace objstore::native {
                         co_return false;
                     }
                     auto& buffer = *opt_buffer;
-                    if (!co_await tcp::read(req, &buffer)) {
+                    if (auto err = co_await tcp::read(req, &buffer); err != tcp::Error::None) {
                         tcp::release(req, &buffer);
                         co_return false;
                     }

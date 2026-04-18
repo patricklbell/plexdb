@@ -30,6 +30,7 @@ TEST_CASE("descriptive name", "[tag]") {
 
 ## Running Tests
 - Build: `cmake -B build -G Ninja -DPLEXDB_ENABLE_TESTS=ON -DPLEXDB_ENABLE_LOGGING=ON -DPLEXDB_DEBUG=ON && ninja -C build`
+- If `ninja` completes successfully, ignore if it says there is "no work to do" or has incomplete output. It likely succeeded.
 - Run all: `./build/core/core_tests --skip-benchmarks` or `./build/objstore/objstore_tests --skip-benchmarks`
 - Run specific tags: `./build/objstore/objstore_tests --skip-benchmarks "[tagname]"`
 

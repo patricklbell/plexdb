@@ -66,11 +66,12 @@ namespace objstore::tcp {
                     uring::sqe_push_close(ring, client);
                 } else if (connection.waiting_rwc) {
                     // @note coroutine should not r/w/c after this and run to completion
+                    connection.count_rwc = 0;
+                    connection.error_rwc = Error::ConnectionClosed;
                     connection.waiting_rwc.resume();
-                    assert_true(static_cast<bool>(connection.task) && connection.task->done(), "request handler task completed after resuming from close");
+                    assert_true(static_cast<bool>(connection.task) && connection.task->done(), "connection handler task did not complete after resuming from close");
                 }
 
-                // @todo api, currently silently drops handler task for failed read/write
                 connection.task.reset();
                 remove_it(client_to_connection, it);
             }
@@ -89,7 +90,7 @@ namespace objstore::tcp {
             PLEXDB_DEBUG_X(info.buffer_idx = free_buffer_idx;)
 
             return RWBuffer{
-                .view   = TArrayView<U8>(ring.buffers + free_buffer_idx * ring.buffer_size, ring.buffer_size),
+                .view   = TArrayView<U8,U32>(ring.buffers + free_buffer_idx * ring.buffer_size, ring.buffer_size),
                 .length = ring.buffer_size,
                 .idx    = free_buffer_idx,
             };
@@ -100,13 +101,12 @@ namespace objstore::tcp {
             info.client = os::zero_handle();
         }};
 
-        AsyncReadFunctor uring_async_read_functor{[&](Connection* connection, RWBuffer* buffer) -> coroutine::Task<bool> {
+        AsyncReadFunctor uring_async_read_functor{[&](Connection* connection, RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(connection->client), "invalid read on closed connection");
             assert_true(!connection->waiting_rwc, "connection already has coroutine pending, this should never happen!");
             assert_true(buffer_infos[buffer->idx].client == connection->client, "buffer has not been acquire or acquired for a different connection");
 
             U32 byte_offset = buffer->view.ptr - (ring.buffers + buffer->idx*ring.buffer_size);
-            assert_true(buffer->length <= MAX_U32, "read buffer view length too large");
             U32 byte_count = buffer->length;
             
             co_return co_await coroutine::Awaitable{
@@ -114,20 +114,19 @@ namespace objstore::tcp {
                     connection->waiting_rwc = h;
                     uring::sqe_push_read(ring, connection->client, buffer->idx, byte_offset, byte_count);
                 },
-                [&]() -> bool {
+                [&]() -> Error {
                     connection->waiting_rwc = std::coroutine_handle<>{};
-                    buffer->length = max(connection->data_rwc, 0_s64);
-                    return connection->data_rwc > 0; // true = bytes received; false = connection closed/error
+                    buffer->length = connection->count_rwc;
+                    return connection->error_rwc;
                 }
             };
         }};
 
-        AsyncWriteFunctor uring_async_write_functor{[&](Connection* connection, const RWBuffer* buffer) -> coroutine::Task<bool> {
+        AsyncWriteFunctor uring_async_write_functor{[&](Connection* connection, const RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(connection->client), "invalid write on closed connection");
             assert_true(!connection->waiting_rwc, "connection already has coroutine pending, this should never happen!");
 
             U32 byte_offset = buffer->view.ptr - (ring.buffers + buffer->idx*ring.buffer_size);
-            assert_true(buffer->length <= MAX_U32, "write buffer view length too large");
             U32 byte_count = buffer->length;
 
             co_return co_await coroutine::Awaitable{
@@ -135,9 +134,10 @@ namespace objstore::tcp {
                     connection->waiting_rwc = h;
                     uring::sqe_push_write(ring, connection->client, buffer->idx, byte_offset, byte_count);
                 },
-                [&]() -> bool {
+                [&]() -> Error {
                     connection->waiting_rwc = std::coroutine_handle<>{};
-                    return connection->data_rwc == byte_count;
+                    assert_true(connection->error_rwc != Error::None || connection->count_rwc == byte_count, "unexpected/unhandled partial write resumption");
+                    return connection->error_rwc;
                 }
             };
         }};
@@ -160,6 +160,8 @@ namespace objstore::tcp {
         // handlers
         // @note handles client responding to the server's read submission
         auto handle_read_completion = [&](const uring::ReadEvent& read) {
+            assert_true_not_implemented(read.error == uring::Error::None);
+
             BufferInfo& info = buffer_infos[read.buffer_idx];
             PLEXDB_DEBUG_X(assert_true(info.buffer_idx == read.buffer_idx, "buffer info was not written before read completion"));
 
@@ -170,26 +172,33 @@ namespace objstore::tcp {
             if (read.bytes_read > 0)
                 stats.total_bytes_read += read.bytes_read;
 
-            connection->data_rwc = read.bytes_read;
+            connection->error_rwc = Error::None;
+            connection->count_rwc = read.bytes_read;
             connection->waiting_rwc.resume();
         };
 
         // @note handles completion of write from server to client
         auto handle_write_completion = [&](const uring::WriteEvent& write) {
+            assert_true_not_implemented(write.error == uring::Error::None);
+
             BufferInfo& info = buffer_infos[write.buffer_idx];
             PLEXDB_DEBUG_X(assert_true(info.buffer_idx == write.buffer_idx, "buffer info was not written before handler needed it"));
 
             Connection* connection = find(client_to_connection, info.client);
             assert_true(connection != nullptr, "connection dropped before write completion");
 
-            if (write.bytes_written > 0)
+            if (write.bytes_written > 0) {
                 stats.total_bytes_written += write.bytes_written;
+            }
 
-            connection->data_rwc = write.bytes_written;
+            connection->error_rwc = Error::None;
+            connection->count_rwc = write.bytes_written;
             connection->waiting_rwc.resume();
         };
 
         auto handle_accept_completion = [&](const auto& accept) {
+            assert_true_not_implemented(accept.error == uring::Error::None);
+
             using T = RemoveCVRef<decltype(accept)>;
             static_assert(Either<T, uring::AcceptEvent, uring::MultishotAcceptEvent>);
 
@@ -221,6 +230,8 @@ namespace objstore::tcp {
         };
 
         auto handle_close_completion = [&](const uring::CloseEvent& close) {
+            assert_true_not_implemented(close.error == uring::Error::None);
+
             close_and_cleanup(close.client, /*is_in_close_handler*/ true);
         };
 
@@ -338,7 +349,7 @@ namespace objstore::tcp {
             PLEXDB_DEBUG_X(buffer_infos[free].buffer_idx = free;)
 
             return RWBuffer{
-                .view   = TArrayView<U8>(buffer_pool + free * BUFFER_SIZE, BUFFER_SIZE),
+                .view   = TArrayView<U8,U32>(buffer_pool + free * BUFFER_SIZE, BUFFER_SIZE),
                 .length = BUFFER_SIZE,
                 .idx    = free,
             };
@@ -348,75 +359,106 @@ namespace objstore::tcp {
             buffer_infos[buffer->idx].client = os::zero_handle();
         }};
 
-        AsyncReadFunctor socket_read_functor{[&](Connection* connection, RWBuffer* buffer) -> coroutine::Task<bool> {
+        AsyncReadFunctor socket_read_functor{[&](Connection* connection, RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(connection->client), "invalid read on closed connection");
             assert_true(!connection->waiting_rwc, "connection already has coroutine pending, this should never happen!");
             while (true) {
                 auto result = os::socket_receive(connection->client, buffer->view.ptr, buffer->length);
-                if (result.byte_count > 0) {
-                    buffer->length = U64(result.byte_count);
-                    stats.total_bytes_read += U64(result.byte_count);
-                    co_return true;
+                if (result.byte_count > 0 && result.error == os::SocketError::None) {
+                    buffer->length = result.byte_count;
+                    stats.total_bytes_read += result.byte_count;
+                    co_return Error::None;
                 }
 
                 buffer->length = 0;
-                if (result.error == os::SocketError::WouldBlock) {
-                    bool ready = co_await coroutine::Awaitable{
-                        [&](std::coroutine_handle<> h) {
-                            connection->waiting_rwc = h;
-                            find_or_insert(waiting_op, connection->client) = WAIT_READ;
-                        },
-                        [&]() -> bool {
-                            return !os::is_zero_handle(connection->client);
+                switch (result.error) {
+                    case os::SocketError::None:{
+                        assert_true(false, "zero length read with no error condition set, this should never happen!");
+                    }break;
+                    // handle async would block by deferring until poll event resumes this task
+                    case os::SocketError::WouldBlock:{
+                        bool ready = co_await coroutine::Awaitable{
+                            [&](std::coroutine_handle<> h) {
+                                connection->waiting_rwc = h;
+                                find_or_insert(waiting_op, connection->client) = WAIT_READ;
+                            },
+                            [&]() -> bool {
+                                return !os::is_zero_handle(connection->client);
+                            }
+                        };
+                        if (!ready) {
+                            co_return Error::ConnectionClosed;
                         }
-                    };
-                    if (!ready) {
-                        co_return false;
+                        continue;
+                    }break;
+                    case os::SocketError::Timeout:
+                    case os::SocketError::ConnectionClosed:
+                    case os::SocketError::ConnectionRefused:
+                    case os::SocketError::ConnectionReset:{
+                        co_return Error::ConnectionClosed;
                     }
-                    continue;
+                    case os::SocketError::Other:{
+                        co_return Error::Other;
+                    }
                 }
-
-                co_return false;
+                assert_true(false, "unhandled socket error");
+                co_return Error::Other;
             }
         }};
 
-        AsyncWriteFunctor socket_write_functor{[&](Connection* connection, const RWBuffer* buffer) -> coroutine::Task<bool> {
+        AsyncWriteFunctor socket_write_functor{[&](Connection* connection, const RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(connection->client), "invalid write on closed connection");
             assert_true(!connection->waiting_rwc, "connection already has coroutine pending, this should never happen!");
 
             U64 sent = 0;
             while (sent < buffer->length) {
                 auto result = os::socket_send(connection->client, buffer->view.ptr + sent, buffer->length - sent);
-                if (result.byte_count > 0) {
-                    sent += U64(result.byte_count);
-                    stats.total_bytes_written += U64(result.byte_count);
+                if (result.byte_count > 0 && result.error == os::SocketError::None) {
+                    sent += result.byte_count;
+                    stats.total_bytes_written += result.byte_count;
                     continue;
                 }
 
-                if (result.error == os::SocketError::WouldBlock) {
-                    bool ready = co_await coroutine::Awaitable{
-                        [&](std::coroutine_handle<> h) {
-                            connection->waiting_rwc = h;
-                            find_or_insert(waiting_op, connection->client) = WAIT_WRITE;
-                            os::poll_update(poll, connection->client, SOCKET_WRITE_POLL_EVENTS);
-                        },
-                        [&]() -> bool {
-                            if (!os::is_zero_handle(connection->client)) {
+                switch (result.error) {
+                    case os::SocketError::None:{
+                        assert_true(false, "zero length write with no error condition set, this should never happen!");
+                    }break;
+                    // handle async would block by deferring until poll event resumes this task
+                    case os::SocketError::WouldBlock:{
+                        bool ready = co_await coroutine::Awaitable{
+                            [&](std::coroutine_handle<> h) {
+                                connection->waiting_rwc = h;
+                                find_or_insert(waiting_op, connection->client) = WAIT_WRITE;
+                                os::poll_update(poll, connection->client, SOCKET_WRITE_POLL_EVENTS);
+                            },
+                            [&]() -> bool {
+                                if (os::is_zero_handle(connection->client)) {
+                                    return false;
+                                }
                                 os::poll_update(poll, connection->client, SOCKET_DEFAULT_POLL_EVENTS);
+                                return true;
                             }
-                            return !os::is_zero_handle(connection->client);
+                        };
+                        if (!ready) {
+                            co_return Error::ConnectionClosed;
                         }
-                    };
-                    if (!ready) {
-                        co_return false;
+                        continue;
+                    }break;
+                    case os::SocketError::Timeout:
+                    case os::SocketError::ConnectionClosed:
+                    case os::SocketError::ConnectionRefused:
+                    case os::SocketError::ConnectionReset:{
+                        co_return Error::ConnectionClosed;
                     }
-                    continue;
+                    case os::SocketError::Other:{
+                        co_return Error::Other;
+                    }
                 }
-
-                co_return false;
+                assert_true(false, "unhandled socket error");
+                co_return Error::Other;
             }
 
-            co_return true;
+            co_return Error::None;
         }};
 
         AsyncCloseFunctor socket_close_functor{[&](Connection* connection) -> coroutine::Task<> {

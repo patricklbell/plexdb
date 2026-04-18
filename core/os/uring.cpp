@@ -131,7 +131,7 @@ namespace plexdb::uring {
 
     #if CORE_ENABLE_IO_URING
         static int handle_to_fd(os::Handle h) { return static_cast<int>(h.u32[0]); }
-        static os::Handle fd_to_handle(int fd) { return os::Handle{.u32={static_cast<U32>(fd)}}; }
+        static os::Handle fd_to_handle(int fd) { assert_true(fd >= 0, "invalid fd"); return os::Handle{.u32={static_cast<U32>(fd)}}; }
 
         // ========================================================================
         // ring
@@ -273,6 +273,19 @@ namespace plexdb::uring {
             return io_uring_cq_ready(uring_ring);
         }
 
+        static Error map_result_to_error_code(S32 res) {
+            if (res >= 0) {
+                return Error::None;
+            }
+
+            switch (res) {
+                case -ENOENT: return Error::NotFound;
+                case -EINVAL: return Error::Invalid;
+                case -EIO:    return Error::IO;
+                default:      return Error::Unknown;
+            }
+        }
+
         CQE cqe_top(Ring& ring) {
             assert_true(static_cast<bool>(ring), "invalid ring");
             auto* uring_ring = static_cast<io_uring*>(ring.ring_vptr);
@@ -283,30 +296,42 @@ namespace plexdb::uring {
                 EventTypeTag type = decode_type(user_data);
                 U64 data = decode_data(user_data);
                 S32 result = cqe->res;
+                Error error = map_result_to_error_code(result);
 
                 switch (type) {
                     case TYPE_ACCEPT:{
-                        return CQE{AcceptEvent{.client = fd_to_handle(result)}};
+                        return CQE{AcceptEvent{
+                            .error = error,
+                            .client = (error == Error::None) ? fd_to_handle(result) : os::zero_handle(),
+                        }};
                     }break;
                     case TYPE_MULTISHOT_ACCEPT:{
-                        return CQE{MultishotAcceptEvent{.client = fd_to_handle(result)}};
+                        return CQE{MultishotAcceptEvent{
+                            .error = error,
+                            .client = (error == Error::None) ? fd_to_handle(result) : os::zero_handle(),
+                        }};
                     }break;
                     case TYPE_READ:{
                         assert_true(data < ring.buffer_count, "invalid cqe user data");
                         return CQE{ReadEvent{
+                            .error = error,
                             .buffer_idx = static_cast<U32>(data),
-                            .bytes_read = result
+                            .bytes_read = static_cast<U32>(max(result, 0_s32)),
                         }};
                     }break;
                     case TYPE_WRITE:{
                         assert_true(data < ring.buffer_count, "invalid cqe user data");
                         return CQE{WriteEvent{
+                            .error = error,
                             .buffer_idx = static_cast<U32>(data),
-                            .bytes_written = result
+                            .bytes_written = static_cast<U32>(max(result, 0_s32)),
                         }};
                     }break;
                     case TYPE_CLOSE:{
-                        return CQE{CloseEvent{.client = fd_to_handle(static_cast<int>(data))}};
+                        return CQE{CloseEvent{
+                            .error = error,
+                            .client = (error == Error::None) ? fd_to_handle(result) : os::zero_handle(),
+                        }};
                     }break;
                     case TYPE_MASK:{}break;
                     case DATA_MASK:{}break;

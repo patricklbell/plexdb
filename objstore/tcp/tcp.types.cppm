@@ -18,16 +18,23 @@ export namespace objstore::tcp {
     // ========================================================================
     // request handling
     // ========================================================================
+    enum class Error {
+        None = 0,
+        ConnectionClosed,
+        // @todo
+        Other,
+    };
+
     struct RWBuffer {
-        TArrayView<U8,size_t> view{};
+        TArrayView<U8,U32> view{};
         U64 length;
         U64 idx;
     };
 
     using AcquireRWBufferFunctor = AutoFunctor<Optional<RWBuffer>(Connection*)>; // @todo async
     using ReleaseRWBufferFunctor = AutoFunctor<void(Connection*,const RWBuffer*)>;
-    using AsyncReadFunctor = AutoFunctor<coroutine::Task<bool>(Connection*,RWBuffer*)>;
-    using AsyncWriteFunctor = AutoFunctor<coroutine::Task<bool>(Connection*,const RWBuffer*)>;
+    using AsyncReadFunctor = AutoFunctor<coroutine::Task<Error>(Connection*,RWBuffer*)>;
+    using AsyncWriteFunctor = AutoFunctor<coroutine::Task<Error>(Connection*,const RWBuffer*)>;
     using AsyncCloseFunctor = AutoFunctor<coroutine::Task<>(Connection*)>;
 
     struct Request {
@@ -47,14 +54,16 @@ export namespace objstore::tcp {
         Request req;
 
         // preemption state for resuming after r/w/c completes
-        S64 data_rwc;
+        // @warn internal, do not use in connection handler
+        U32 count_rwc;
+        Error error_rwc;
         std::coroutine_handle<> waiting_rwc;
     };
 
     Optional<RWBuffer> acquire(const Request& req) { return (*req.acquire)(req.connection); }
     void release(const Request& req, const RWBuffer* buffer) { return (*req.release)(req.connection, buffer); }
-    coroutine::Task<bool> read(const Request& req, RWBuffer* buffer) { co_return co_await (*req.read)(req.connection, buffer); }
-    coroutine::Task<bool> write(const Request& req, const RWBuffer* buffer) { co_return co_await (*req.write)(req.connection, buffer); }
+    coroutine::Task<Error> read(const Request& req, RWBuffer* buffer) { co_return co_await (*req.read)(req.connection, buffer); }
+    coroutine::Task<Error> write(const Request& req, const RWBuffer* buffer) { co_return co_await (*req.write)(req.connection, buffer); }
     coroutine::Task<> close(const Request& req) { co_return co_await (*req.close)(req.connection); }
     
     template<typename F>

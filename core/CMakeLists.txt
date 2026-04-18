@@ -166,6 +166,7 @@ if(PLEXDB_ENABLE_TESTS)
     target_include_directories(core_tests
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/log
+            ${CMAKE_CURRENT_SOURCE_DIR}/test
     )
 
     target_link_libraries(core_tests
