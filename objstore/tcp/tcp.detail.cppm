@@ -207,15 +207,17 @@ namespace objstore::tcp {
             stats.active_connections++;
             objstore::log::db_connection_count(stats.active_connections);
 
-            // eagerly begin task to handle request
-            connection.task = connection_handler(Request{
+            connection.req = Request{
                 .connection = &connection,
                 .acquire = &uring_acquire_rwbuffer_functor,
                 .release = &uring_release_rwbuffer_functor,
                 .read = &uring_async_read_functor,
                 .write = &uring_async_write_functor,
                 .close = &uring_async_close_functor,
-            });
+            };
+
+            // eagerly begin task to handle request
+            connection.task = connection_handler(connection.req);
         };
 
         auto handle_close_completion = [&](const uring::CloseEvent& close) {
@@ -471,14 +473,16 @@ namespace objstore::tcp {
                         stats.active_connections++;
                         objstore::log::db_connection_count(stats.active_connections);
 
-                        connection.task = connection_handler(Request{
+                        connection.req = Request{
                             .connection = &connection,
                             .acquire    = &socket_acquire_functor,
                             .release    = &socket_release_functor,
                             .read       = &socket_read_functor,
                             .write      = &socket_write_functor,
                             .close      = &socket_close_functor,
-                        });
+                        };
+                        // eagerly begin task to handle connection
+                        connection.task = connection_handler(connection.req);
 
                         if (static_cast<bool>(connection.task) && connection.task->done()) {
                             close_and_cleanup(client);

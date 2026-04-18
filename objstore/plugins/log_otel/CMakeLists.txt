@@ -11,8 +11,6 @@ include(compiler_config)
 # =============================================================================
 # Third party dependencies
 # =============================================================================
-include(FetchContent)
-
 set(WITH_OTLP_GRPC  ON  CACHE BOOL "" FORCE)
 set(WITH_OTLP_HTTP  OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING   OFF CACHE BOOL "" FORCE)
@@ -23,6 +21,8 @@ set(OPENTELEMETRY_INSTALL OFF CACHE BOOL "" FORCE)
 set(WITH_ABI_VERSION_1 OFF CACHE BOOL "" FORCE)
 set(WITH_ABI_VERSION_2 ON CACHE BOOL "" FORCE)
 
+# @todo let parent define targets or use installed version
+include(FetchContent)
 FetchContent_Declare(
     opentelemetry-cpp
     GIT_REPOSITORY https://github.com/open-telemetry/opentelemetry-cpp.git

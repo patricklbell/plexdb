@@ -12,22 +12,11 @@ import plexdb.coroutine;
 using namespace plexdb;
 
 export namespace objstore::tcp {
-    // ========================================================================
-    // connection
-    // ========================================================================
     constexpr int MAX_CONCURRENT_CONNECTIONS = 1000;
-
-    struct Connection {
-        os::Handle client;
-        Optional<coroutine::Task<void, coroutine::Start::Eager>> task;
-        
-        S64 data_rwc;
-        std::coroutine_handle<> waiting_rwc; // bottom-level coroutine waiting for resume after r/w/c completes
-    };
+    struct Connection;
 
     // ========================================================================
     // request handling
-    //   @todo error handling for functors
     // ========================================================================
     struct RWBuffer {
         TArrayView<U8,size_t> view{};
@@ -35,7 +24,7 @@ export namespace objstore::tcp {
         U64 idx;
     };
 
-    using AcquireRWBufferFunctor = AutoFunctor<Optional<RWBuffer>(Connection*)>;
+    using AcquireRWBufferFunctor = AutoFunctor<Optional<RWBuffer>(Connection*)>; // @todo async
     using ReleaseRWBufferFunctor = AutoFunctor<void(Connection*,const RWBuffer*)>;
     using AsyncReadFunctor = AutoFunctor<coroutine::Task<bool>(Connection*,RWBuffer*)>;
     using AsyncWriteFunctor = AutoFunctor<coroutine::Task<bool>(Connection*,const RWBuffer*)>;
@@ -48,6 +37,18 @@ export namespace objstore::tcp {
         AsyncReadFunctor* read;
         AsyncWriteFunctor* write;
         AsyncCloseFunctor* close;
+    };
+
+    struct Connection {
+        os::Handle client;
+        Optional<coroutine::Task<void, coroutine::Start::Eager>> task;
+        // @warn req must be stored here so its lifetime matches the task, making
+        //       const Request& safe across co_awaits
+        Request req;
+
+        // preemption state for resuming after r/w/c completes
+        S64 data_rwc;
+        std::coroutine_handle<> waiting_rwc;
     };
 
     Optional<RWBuffer> acquire(const Request& req) { return (*req.acquire)(req.connection); }

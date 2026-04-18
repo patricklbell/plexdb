@@ -140,7 +140,7 @@ endif()
 # Tests
 # =============================================================================
 if(PLEXDB_ENABLE_TESTS)
-    # Fetch Catch2 only once (parent scope can override this)
+    find_package(Catch2 3.13.0 QUIET)
     if(NOT TARGET Catch2::Catch2WithMain)
         include(FetchContent)
         FetchContent_Declare(

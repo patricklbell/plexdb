@@ -21,6 +21,7 @@ set(LEXY_ENCODING_OF_CHAR lexy::ascii)
 set(LEXY_HAS_NTTP ON)
 set(LEXY_HAS_CONSTEVAL ON)
 
+# @todo use installed library (may require cmake configuration files to be installed)
 if(NOT TARGET foonathan::lexy)
     include(FetchContent)
     FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
@@ -134,7 +135,7 @@ endif()
 # Tests
 # =============================================================================
 if(PLEXDB_ENABLE_TESTS)
-    # Fetch Catch2 only once (parent scope can override this)
+    find_package(Catch2 3.13.0 QUIET)
     if(NOT TARGET Catch2::Catch2WithMain)
         include(FetchContent)
         FetchContent_Declare(

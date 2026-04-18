@@ -118,6 +118,7 @@ export namespace plexdb::coroutine {
 
             auto final_suspend() noexcept {
                 struct Awaiter {
+                    // @note coroutine pauses after final_suspend, meaning ~Task needs to call destroy
                     bool await_ready() noexcept { return false; }
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
                         return h.promise().continuation;
