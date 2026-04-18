@@ -531,6 +531,8 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
             CHECK(result_kind(resp) == 0x0002);
             CHECK(body_contains(resp, "keyspace_name"));
             CHECK(body_contains(resp, "test_ks"));
+            CHECK(body_contains(resp, "system_schema"));
+            CHECK(body_contains(resp, "system"));
         }
 
         // system_schema.tables
@@ -541,6 +543,8 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
             CHECK(result_kind(resp) == 0x0002);
             CHECK(body_contains(resp, "table_name"));
             CHECK(body_contains(resp, "users"));
+            CHECK(body_contains(resp, "keyspaces"));
+            CHECK(body_contains(resp, "local"));
         }
 
         // system_schema.columns
@@ -552,6 +556,7 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
             CHECK(body_contains(resp, "column_name"));
             CHECK(body_contains(resp, "partition_key"));
             CHECK(body_contains(resp, "name"));
+            CHECK(body_contains(resp, "clustering"));
         }
 
         send_frame(client, make_query("DROP TABLE test_ks.users;"));
