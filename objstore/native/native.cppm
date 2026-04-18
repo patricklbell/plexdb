@@ -21,15 +21,12 @@ import objstore.log;
 using namespace plexdb;
 using namespace objstore;
 
-// ============================================================================
-// Private implementation
-// ============================================================================
 namespace objstore::native {
     constexpr U64 FRAME_HEADER_BYTE_COUNT = 9;
     constexpr U8  RESPONSE_VERSION  = 0x84;
 
     // ========================================================================
-    // Protocol
+    // protocol
     // ========================================================================
     namespace op_codes {
         constexpr U8 ERROR         = 0x00;
@@ -121,12 +118,62 @@ namespace objstore::native {
         return 0x0000;
     }
 
+    template <typename T>
+    S32 native_element_byte_size(const NativeType& dtype, const T& value) {
+        using TT = Decay<T>;
+
+        if constexpr (SameAs<TT, S64>) {
+            assert_true(dtype == types::bigint || dtype == types::counter || dtype == types::timestamp || dtype == types::time,
+                        "S64 does not match native type");
+            return 8;
+        } else if constexpr (SameAs<TT, S32>) {
+            assert_true(dtype == types::int_ || dtype == types::float_ || dtype == types::date,
+                        "S32 does not match native type");
+            return 4;
+        } else if constexpr (SameAs<TT, S16>) {
+            assert_true(dtype == types::smallint,
+                        "S16 does not match native type");
+            return 2;
+        } else if constexpr (SameAs<TT, U8>) {
+            assert_true(dtype == types::boolean || dtype == types::tinyint,
+                        "U8 does not match native type");
+            return 1;
+        } else if constexpr (SameAs<TT, F64>) {
+            assert_true(dtype == types::double_,
+                        "F64 does not match native type");
+            return 8;
+        } else if constexpr (SameAs<TT, F32>) {
+            assert_true(dtype == types::float_,
+                        "F32 does not match native type");
+            return 4;
+        } else if constexpr (SameAs<TT, AutoString8>) {
+            assert_true(
+                dtype == types::ascii   ||
+                dtype == types::text    ||
+                dtype == types::varchar ||
+                dtype == types::blob    ||
+                dtype == types::varint  ||
+                dtype == types::decimal ||
+                dtype == types::duration||
+                dtype == types::inet    ||
+                dtype == types::vector,
+                "AutoString8 does not match native type"
+            );
+            return value.length;
+        } else if constexpr (SameAs<TT, Array<U8,16>>) {
+            assert_true(dtype == types::uuid,"Array<U8,16> value does not match NativeType");
+            return 16;
+        } else {
+            static_assert(!SameAs<TT,TT>, "missing native value type");
+        }
+    }
+
     template<typename T> concept IsCqlDA = IsDynamicArray<T>;
     template<typename T> concept IsCqlDS = IsDynamicSet<T>;
     template<typename T> concept IsCqlDM = IsDynamicMap<T>;
 
     // ========================================================================
-    // Read/write helpers
+    // input
     // ========================================================================
     U16 read_be_u16(const U8* p);
     S16 read_be_s16(const U8* p);
@@ -142,44 +189,36 @@ namespace objstore::native {
     // Read [short bytes]: [short] n + n bytes, returns length and sets out_data
     U16 read_cql_short_bytes(const U8*& p, const U8* end, const U8*& out_data);
 
+    Constant read_cql_value_as_constant(const U8*& p, const U8* end, NativeType dtype);
+
     // ========================================================================
-    // NativeFrame — heap-buffered response frame.
-    //   Append helpers write into body (grows as needed).
-    //   co_await commit(frame) writes the 9-byte header + body to TCP in
-    //   registered-buffer-sized chunks, so large responses (many rows) are
-    //   handled correctly without single-buffer overflow.
+    // output
+    //   @note
+    //   frame requires co_await send_native_frame(frame) writes the 9-byte 
+    //   header + body to TCP in and is currently heap buffered.
     // ========================================================================
-    struct NativeFrame {
+    struct Frame {
         DynamicArray<U8> body;
         const tcp::Request* req;
         U8  op;
         S16 stream;
-
-        ~NativeFrame() {
-            assert_true(body.length == 0, "NativeFrame must be co_await committed before going out of scope");
-        }
     };
 
-    inline NativeFrame make_native_frame(const tcp::Request* req, U8 op, S16 stream) {
-        return NativeFrame{.body = {}, .req = req, .op = op, .stream = stream};
-    }
+    Frame make_native_frame(const tcp::Request* req, U8 op, S16 stream);
+    coroutine::Task<> send_native_frame(Frame& f);
 
-    void append_byte(NativeFrame& f, U8 v);
-    void append_bytes(NativeFrame& f, const U8* data, U64 n);
-    // Build the 9-byte CQL frame header, then stream header + body over TCP in chunks.
-    coroutine::Task<> commit(NativeFrame& f);
-    void append_be_u16(NativeFrame& f, U16 v);
-    void append_be_s32(NativeFrame& f, S32 v);
-    // Write [string]: [short] n + bytes
-    void append_cql_string(NativeFrame& f, String8 s);
-    // Write [short bytes]: [short] n + bytes
-    void append_cql_short_bytes(NativeFrame& f, const U8* data, U16 n);
-    // Write [bytes]: [int] n + bytes  (n < 0 = null)
-    void append_cql_bytes_raw(NativeFrame& f, const U8* data, S32 n);
+    void append_byte(Frame& f, U8 v);
+    void append_bytes(Frame& f, const U8* data, U64 n);
+    void append_be_u16(Frame& f, U16 v);
+    void append_be_s32(Frame& f, S32 v);
 
-    // Write a single native element as [bytes] (big-endian, includes the [int] length prefix)
+    void append_cql_string(Frame& f, String8 s);
+    void append_cql_short_bytes(Frame& f, const U8* data, U16 n);
+    void append_cql_bytes_raw(Frame& f, const U8* data, S32 n);
+    void append_cql_value(Frame& f, const types::ReadValue& value, CqlType cdtype);
+
     template<typename T>
-    void append_cql_native_element(NativeFrame& f, const NativeType& dtype, const T& v) {
+    void append_cql_native_element(Frame& f, const NativeType& dtype, const T& v) {
         using TT = Decay<T>;
 
         if constexpr (SameAs<TT, AutoString8>) {
@@ -255,84 +294,25 @@ namespace objstore::native {
         }
     }
 
-    template <typename T>
-    S32 native_element_byte_size(const NativeType& dtype, const T& value) {
-        using TT = Decay<T>;
+    void append_type_codes_option(Frame& f, CqlType cdtype);
+    void append_error_body(Frame& f, engine::ExecutionStatus status, String8 message);
+    void append_result_void(Frame& f);
+    void append_result_set_keyspace(Frame& f, String8 keyspace);
+    void append_result_schema_change(Frame& f, String8 change_type, String8 target, String8 keyspace, String8 table);
+    void append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl);
+    void append_result_virtual_rows(Frame& f, engine::VirtualRows& vr);
+    void append_result_prepared(Frame& f, U64 id, engine::PreparedEntry& entry);
 
-        if constexpr (SameAs<TT, S64>) {
-            assert_true(dtype == types::bigint || dtype == types::counter || dtype == types::timestamp || dtype == types::time,
-                        "S64 does not match native type");
-            return 8;
-        } else if constexpr (SameAs<TT, S32>) {
-            assert_true(dtype == types::int_ || dtype == types::float_ || dtype == types::date,
-                        "S32 does not match native type");
-            return 4;
-        } else if constexpr (SameAs<TT, S16>) {
-            assert_true(dtype == types::smallint,
-                        "S16 does not match native type");
-            return 2;
-        } else if constexpr (SameAs<TT, U8>) {
-            assert_true(dtype == types::boolean || dtype == types::tinyint,
-                        "U8 does not match native type");
-            return 1;
-        } else if constexpr (SameAs<TT, F64>) {
-            assert_true(dtype == types::double_,
-                        "F64 does not match native type");
-            return 8;
-        } else if constexpr (SameAs<TT, F32>) {
-            assert_true(dtype == types::float_,
-                        "F32 does not match native type");
-            return 4;
-        } else if constexpr (SameAs<TT, AutoString8>) {
-            assert_true(
-                dtype == types::ascii   ||
-                dtype == types::text    ||
-                dtype == types::varchar ||
-                dtype == types::blob    ||
-                dtype == types::varint  ||
-                dtype == types::decimal ||
-                dtype == types::duration||
-                dtype == types::inet    ||
-                dtype == types::vector,
-                "AutoString8 does not match native type"
-            );
-            return value.length;
-        } else if constexpr (SameAs<TT, Array<U8,16>>) {
-            assert_true(dtype == types::uuid,"Array<U8,16> value does not match NativeType");
-            return 16;
-        } else {
-            static_assert(!SameAs<TT,TT>, "missing native value type");
-        }
-    }
-
-    // Write an [option] for a column type (§4.2.5.2): [short] type_id + optional nested type(s)
-    void append_type_codes_option(NativeFrame& f, CqlType cdtype);
-
-    // Write a types::ReadValue as CQL binary [bytes] (big-endian network order)
-    void append_cql_value(NativeFrame& f, const types::ReadValue& value, CqlType cdtype);
-
-    // ========================================================================
-    // Body writers for each RESULT/ERROR type
-    // ========================================================================
-    void append_error_body(NativeFrame& f, engine::ExecutionStatus status, String8 message);
-    void append_result_void(NativeFrame& f);
-    void append_result_set_keyspace(NativeFrame& f, String8 keyspace);
-    void append_result_schema_change(NativeFrame& f, String8 change_type, String8 target, String8 keyspace, String8 table);
-    // @note uses btree::size so RowRange is only iterated once (RowRange iterators are not resettable)
-    void append_result_rows(NativeFrame& f, engine::ExecutionResult& result, schema::Table* tbl);
-    void append_result_virtual_rows(NativeFrame& f, engine::VirtualRows& vr);
-    void append_result_prepared(NativeFrame& f, U64 id, engine::PreparedEntry& entry);
-    Constant read_cql_value_as_constant(const U8*& p, const U8* end, NativeType dtype);
-    // @todo user input error handling
     DynamicArray<Constant> read_query_parameter_values(const U8*& p, const U8* end, const DynamicArray<engine::BindVariableSpec>& bind_specs);
     coroutine::Task<bool> send_error_if_failed(engine::ExecutionResult& result, const tcp::Request* req, S16 stream);
     coroutine::Task<> send_execution_result(engine::ExecutionResult& result, engine::Engine& engine, const tcp::Request* req, S16 stream);
+
+    // ========================================================================
+    // handler
+    // ========================================================================
     coroutine::Task<void> frame_handler(engine::Engine& engine, const tcp::Request& req, const U8* header, const U8* body, S32 body_length);
 }
 
-// ============================================================================
-// Public interface
-// ============================================================================
 export namespace objstore::native {
     template<typename F>
     concept OnReady = requires(F f) { f(); };
