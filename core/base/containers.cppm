@@ -77,13 +77,6 @@ export namespace plexdb {
                 values[i] = static_cast<T&&>(other.values[i]);
         }
 
-        template<typename... Ts>
-        constexpr Array(Ts... args) {
-            static_assert(sizeof...(Ts) <= N, "Too many elements for Array");
-            U64 i = 0;
-            ((values[i++] = args), ...);
-        }
-
         // ====================================================================
         // Assignment
         // ====================================================================
@@ -101,6 +94,13 @@ export namespace plexdb {
                     values[i] = static_cast<T&&>(other.values[i]);
             }
             return *this;
+        }
+
+        template<typename... Ts>
+        constexpr Array(Ts... args) {
+            static_assert(sizeof...(Ts) <= N, "Too many elements for Array");
+            U64 i = 0;
+            ((values[i++] = args), ...);
         }
 
         // ====================================================================
@@ -143,6 +143,36 @@ export namespace plexdb {
 
         constexpr bool operator!=(const Array& other) const {
             return !(*this == other);
+        }
+
+        // ====================================================================
+        // Fill
+        // ====================================================================
+        template<typename U>
+        static constexpr Array fill(const U& value) {
+            Array result{};
+            for (U64 i = 0; i < N; ++i) {
+                result.values[i] = value;
+            }
+            return result;
+        }
+
+        template<typename F>
+        static constexpr Array generate(F&& f) {
+            Array result{};
+            for (U64 i = 0; i < N; ++i) {
+                result.values[i] = f(i);
+            }
+            return result;
+        }
+
+        template<typename F>
+        static constexpr Array transform(F&& f) {
+            Array result{};
+            for (U64 i = 0; i < N; ++i) {
+                f(result.values[i]);
+            }
+            return result;
         }
     };
 
@@ -536,20 +566,26 @@ export namespace plexdb {
     // fixed slot map
     // @warn uses 0 as a sentinel value
     // ========================================================================
-    template<typename K, typename V, U64 C>
+    template<typename K, typename V, U64 C, K S = {}>
     struct MapFixedSentinel {
         static_assert(C > 0);
 
-        static constexpr K sentinel{};
-        Array<Pair<K, V>, C> key_values;
+        static constexpr K sentinel = S;
+        
+        // @note need to use transform to avoid non-copyable value
+        Array<Pair<K, V>, C> key_values = Array<Pair<K, V>, C>::transform(
+            [](Pair<K, V>& pair) {
+                pair.first = sentinel;
+            }
+        );
 
         MapFixedSentinel() = default;
 
         struct Iterator {
-            MapFixedSentinel<K,V,C>* map;
+            MapFixedSentinel<K,V,C,S>* map;
             U64 slot_idx;
 
-            Iterator(MapFixedSentinel<K,V,C>* map, U64 idx) : map(map), slot_idx(idx) {
+            Iterator(MapFixedSentinel<K,V,C,S>* map, U64 idx) : map(map), slot_idx(idx) {
                 while (this->slot_idx < C && this->map->key_values[this->slot_idx].first == sentinel) {
                     this->slot_idx++;
                 }
@@ -578,8 +614,8 @@ export namespace plexdb {
         // @todo const iterator
     };
 
-    template<typename K, typename V, U64 C>
-    typename MapFixedSentinel<K,V,C>::Iterator find_it(MapFixedSentinel<K,V,C>& map, const K& key) {
+    template<typename K, typename V, U64 C, K S>
+    typename MapFixedSentinel<K,V,C,S>::Iterator find_it(MapFixedSentinel<K,V,C,S>& map, const K& key) {
         assert_true(key != map.sentinel, "cannot find sentinel in map");
 
         U64 slot_idx = hash(key) % C;
@@ -588,7 +624,7 @@ export namespace plexdb {
         while (slot_idx != end_slot_idx) {
             auto& kv = map.key_values[slot_idx];
             if (kv.first == key) {
-                return typename MapFixedSentinel<K,V,C>::Iterator{&map, slot_idx};
+                return typename MapFixedSentinel<K,V,C,S>::Iterator{&map, slot_idx};
             } else if (kv.first == map.sentinel) {
                 return map.end();
             }
@@ -600,8 +636,8 @@ export namespace plexdb {
         return map.end();
     }
 
-    template<typename K, typename V, U64 C>
-    V* find(MapFixedSentinel<K,V,C>& map, const K& key) {
+    template<typename K, typename V, U64 C, K S>
+    V* find(MapFixedSentinel<K,V,C,S>& map, const K& key) {
         assert_true(key != map.sentinel, "cannot find sentinel in map");
 
         U64 slot_idx = hash(key) % C;
@@ -621,8 +657,8 @@ export namespace plexdb {
         assert_true(false, "fixed sentinel map is full");
         return nullptr;
     }
-    template<typename K, typename V, U64 C>
-    V& insert(MapFixedSentinel<K,V,C>& map, const K& key) {
+    template<typename K, typename V, U64 C, K S>
+    V& insert(MapFixedSentinel<K,V,C,S>& map, const K& key) {
         assert_true(key != map.sentinel, "cannot insert sentinel into map");
 
         U64 slot_idx = hash(key) % C;
@@ -641,16 +677,16 @@ export namespace plexdb {
         assert_true(false, "fixed sentinel map is full");
         return map.key_values[0].second;
     }
-    template<typename K, typename V, U64 C>
-    V& find_or_insert(MapFixedSentinel<K,V,C>& map, const K& key) {
+    template<typename K, typename V, U64 C, K S>
+    V& find_or_insert(MapFixedSentinel<K,V,C,S>& map, const K& key) {
         if (V* value = find(map, key); value != nullptr) {
             return *value;
         } else {
             return insert(map, key);
         }
     }
-    template<typename K, typename V, U64 C>
-    bool try_remove(MapFixedSentinel<K,V,C>& map, const K& key) {
+    template<typename K, typename V, U64 C, K S>
+    bool try_remove(MapFixedSentinel<K,V,C,S>& map, const K& key) {
         assert_true(key != map.sentinel, "cannot remove sentinel from map");
 
         U64 slot_idx = hash(key) % C;
@@ -670,12 +706,12 @@ export namespace plexdb {
 
         return false;
     }
-    template<typename K, typename V, U64 C>
-    void remove(MapFixedSentinel<K,V,C>& map, const K& key) {
+    template<typename K, typename V, U64 C, K S>
+    void remove(MapFixedSentinel<K,V,C,S>& map, const K& key) {
         assert_true(try_remove(map, key) != false, "attempting to remove key which is not present");
     }
-    template<typename K, typename V, U64 C>
-    void remove_it(MapFixedSentinel<K,V,C>& map, const typename MapFixedSentinel<K,V,C>::Iterator& it) {
+    template<typename K, typename V, U64 C, K S>
+    void remove_it(MapFixedSentinel<K,V,C,S>& map, const typename MapFixedSentinel<K,V,C,S>::Iterator& it) {
         assert_true(it.slot_idx >= 0 && it.slot_idx < map.key_values.length, "invalid iterator");
         auto& kv = map.key_values[it.slot_idx];
         kv.first = map.sentinel;
