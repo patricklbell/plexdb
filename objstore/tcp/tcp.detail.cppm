@@ -48,33 +48,36 @@ namespace objstore::tcp {
         objstore::log::db_connection_max(MAX_CONCURRENT_CONNECTIONS);
 
         // state
-        MapFixedSentinel<os::Handle, Connection, 2_u64*MAX_CONCURRENT_CONNECTIONS> client_to_connection;
+        MapFixedSentinel<os::Handle, Connection, 2_u64*MAX_CONCURRENT_CONNECTIONS, os::zero_handle()> client_to_connection;
         DynamicArray<BufferInfo> buffer_infos{ring.buffer_count};
         U32 next_free_buffer_idx = 0;
         
         // helpers
         auto close_and_cleanup = [&](const os::Handle& client, bool is_in_close_handler) {
             auto it = find_it(client_to_connection, client);
-            if (it != client_to_connection.end()) {
-                auto& connection = it->second;
-                connection.client = os::zero_handle(); // @note marks connection as closed
-
-                stats.active_connections--;
-                objstore::log::db_connection_count(stats.active_connections);
-
-                if (!is_in_close_handler) {
-                    uring::sqe_push_close(ring, client);
-                } else if (connection.waiting_rwc) {
-                    // @note coroutine should not r/w/c after this and run to completion
-                    connection.count_rwc = 0;
-                    connection.error_rwc = Error::ConnectionClosed;
-                    connection.waiting_rwc.resume();
-                    assert_true(static_cast<bool>(connection.task) && connection.task->done(), "connection handler task did not complete after resuming from close");
-                }
-
-                connection.task.reset();
-                remove_it(client_to_connection, it);
+            if (it == client_to_connection.end()) {
+                return false;
             }
+
+            auto& connection = it->second;
+            connection.client = os::zero_handle(); // @note marks connection as closed
+
+            stats.active_connections--;
+            objstore::log::db_connection_count(stats.active_connections);
+
+            if (!is_in_close_handler) {
+                uring::sqe_push_close(ring, client);
+            } else if (connection.waiting_rwc) {
+                // @note coroutine should not r/w/c after this and run to completion
+                connection.count_rwc = 0;
+                connection.error_rwc = Error::ConnectionClosed;
+                connection.waiting_rwc.resume();
+                assert_true(static_cast<bool>(connection.task) && connection.task->done(), "connection handler task did not complete after resuming from close");
+            }
+
+            connection.task.reset();
+            remove_it(client_to_connection, it);
+            return true;
         };
 
         // user api
@@ -169,10 +172,9 @@ namespace objstore::tcp {
             assert_true(connection != nullptr, "connection dropped before read completion");
             assert_true(static_cast<bool>(connection->waiting_rwc), "read completion for connection without waiting coroutine, this should never happen!");
 
-            if (read.bytes_read > 0)
-                stats.total_bytes_read += read.bytes_read;
+            stats.total_bytes_read += read.bytes_read;
 
-            connection->error_rwc = Error::None;
+            connection->error_rwc = read.bytes_read == 0 ? Error::ConnectionClosed : Error::None;
             connection->count_rwc = read.bytes_read;
             connection->waiting_rwc.resume();
         };
@@ -187,9 +189,7 @@ namespace objstore::tcp {
             Connection* connection = find(client_to_connection, info.client);
             assert_true(connection != nullptr, "connection dropped before write completion");
 
-            if (write.bytes_written > 0) {
-                stats.total_bytes_written += write.bytes_written;
-            }
+            stats.total_bytes_written += write.bytes_written;
 
             connection->error_rwc = Error::None;
             connection->count_rwc = write.bytes_written;
@@ -373,7 +373,7 @@ namespace objstore::tcp {
                 buffer->length = 0;
                 switch (result.error) {
                     case os::SocketError::None:{
-                        assert_true(false, "zero length read with no error condition set, this should never happen!");
+                        co_return Error::ConnectionClosed; // zero-length read signal connection closed
                     }break;
                     // handle async would block by deferring until poll event resumes this task
                     case os::SocketError::WouldBlock:{
