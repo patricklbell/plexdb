@@ -322,7 +322,9 @@ export namespace objstore::native {
             // process each frame @todo investigate avoiding allocations/copy in favour of direct lock on read buffer
             DynamicArray<U8> frame{};
             while (true) {
-                // @todo avoid allocation for frames which fit in buffer
+                // @perf avoid allocation for frames which fit in buffer
+                // @perf investigate holding one or multiple buffers for during of request
+                // @perf investigate shared read memory outside ring
                 const auto try_append_to_frame = [&]() -> coroutine::Task<bool> {
                     Optional<tcp::RWBuffer> opt_buffer = tcp::acquire(req);
                     if (!opt_buffer) {
@@ -340,23 +342,27 @@ export namespace objstore::native {
                     co_return true;
                 };
 
-                // read frame
-                if (!co_await try_append_to_frame())
-                    break;
+                // read header
+                while (frame.length < FRAME_HEADER_BYTE_COUNT) {
+                    if (!co_await try_append_to_frame())
+                        break;
+                }
+                if (frame.length < FRAME_HEADER_BYTE_COUNT) break;
+
                 S32 body_byte_count = read_be_s32(&frame[5]);
                 U64 frame_byte_count = FRAME_HEADER_BYTE_COUNT + U64(body_byte_count);
+                
+                // read body
                 while (frame.length < frame_byte_count) {
                     if (!co_await try_append_to_frame())
                         break;
                 }
-                if (frame.length < frame_byte_count) {
-                    break;
-                }
+                if (frame.length < frame_byte_count) break;
 
                 // write response
                 co_await frame_handler(engine, req, frame.ptr, &frame.ptr[FRAME_HEADER_BYTE_COUNT], body_byte_count);
 
-                // @note if next frame was partially read, move it to the front
+                // if next frame was partially read, move it to the front
                 if (frame.length > frame_byte_count) {
                     os::memory_copy(frame.ptr, &frame.ptr[frame_byte_count], frame.length - frame_byte_count);
                 }
