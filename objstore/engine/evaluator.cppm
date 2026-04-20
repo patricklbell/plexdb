@@ -1,6 +1,7 @@
 export module objstore.engine.evaluator;
 
 import plexdb.base;
+import plexdb.tagged_union;
 import plexdb.os.containers;
 import plexdb.os.dynamic_tagged_union;
 
