@@ -27,8 +27,7 @@ async function main() {
     section("Keyspace");
 
     await client.execute(
-        `CREATE KEYSPACE IF NOT EXISTS ${KS}` +
-        ` WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`
+        `CREATE KEYSPACE IF NOT EXISTS ${KS}`
     );
     ok("CREATE KEYSPACE");
 
@@ -58,11 +57,8 @@ async function main() {
         [ids[2], "Carol", 35, true],
     ];
 
-    const insert = await client.prepare(
-        `INSERT INTO ${KS}.users (id, name, age, active) VALUES (?, ?, ?, ?)`
-    );
     for (const row of rows) {
-        await client.execute(insert, row, { prepare: false });
+        await client.execute(`INSERT INTO ${KS}.users (id, name, age, active) VALUES (?, ?, ?, ?)`, row, { prepare: true });
     }
     ok(`INSERT ${rows.length} rows (prepared)`);
 

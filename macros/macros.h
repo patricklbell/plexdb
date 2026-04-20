@@ -126,8 +126,10 @@
 
 // utilities
 
-#if defined(PLEXDB_DEBUG)
-    #define PLEXDB_DEBUG 1
+#if !defined(PLEXDB_DEBUG)
+    #define PLEXDB_DEBUG 0
+#endif
+#if PLEXDB_DEBUG
     #define PLEXDB_DEBUG_X(x) x
 #else
     #define PLEXDB_DEBUG_X(x)

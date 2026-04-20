@@ -2,7 +2,9 @@ module objstore.engine;
 
 import plexdb.os;
 import plexdb.os.dynamic_tagged_union;
+
 import objstore.parsers;
+import objstore.engine.evaluator;
 
 namespace objstore::engine {
     Engine::Engine(Pager* in_pager) : pager(in_pager), schema(in_pager, in_pager->header.root_page) {}
@@ -23,7 +25,7 @@ namespace objstore::engine {
             blob::get(row_blob, out_value, size, offset);
             offset += size;
         };
-        types::read_col_mask(read, [&active_cols](U64 idx) { active_cols[idx] = true; });
+        io::read_column_mask(read, [&active_cols](U64 idx) { active_cols[idx] = true; });
         return ColumnIterator{
             .pager = pager,
             .table = table,
@@ -53,10 +55,10 @@ namespace objstore::engine {
         return it.table->cols.length;
     }
 
-    types::ReadValue read_value(ColumnIterator& it) {
+    ColumnValue read_column_value(ColumnIterator& it) {
         if (it.col_idx < it.active_cols.length && !it.active_cols[it.col_idx]) {
             auto null_read = [](U8* out, U64 size) { for (U64 i = 0; i < size; i++) out[i] = 0; };
-            return types::read_specific(null_read, it.table->cols[it.col_idx].type);
+            return io::read_column_value(null_read, it.table->cols[it.col_idx].type);
         }
         blob::BlobDynamicPaged row_blob(it.pager, it.row_page);
         U64 offset = it.row_offset_bytes;
@@ -64,7 +66,7 @@ namespace objstore::engine {
             blob::get(row_blob, out_value, size, offset);
             offset += size;
         };
-        return types::read_specific(read, it.table->cols[it.col_idx].type);
+        return io::read_column_value(read, it.table->cols[it.col_idx].type);
     }
 
     ColumnIterator& ColumnIterator::operator++() {
@@ -75,7 +77,7 @@ namespace objstore::engine {
                 blob::get(row_blob, out_value, size, offset);
                 offset += size;
             };
-            types::read_specific(skip, table->cols[col_idx].type);
+            io::read_column_value(skip, table->cols[col_idx].type);
             row_offset_bytes = offset;
         }
         ++col_idx;
@@ -110,93 +112,6 @@ namespace objstore::engine {
         return ks == "system" || ks == "system_schema" ||
                ks == "system_virtual_schema" || ks == "system_auth" ||
                ks == "system_distributed" || ks == "system_traces";
-    }
-
-    VirtualRows make_system_local() {
-        VirtualRows vr;
-        vr.keyspace = "system";
-        vr.table = "local";
-
-        push_back(vr.columns, VirtualColumn{"key", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"bootstrapped", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"broadcast_address", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"broadcast_port", types::make_native(types::int_)});
-        push_back(vr.columns, VirtualColumn{"cluster_name", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"cql_version", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"data_center", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"host_id", types::make_native(types::uuid)});
-        push_back(vr.columns, VirtualColumn{"listen_address", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"listen_port", types::make_native(types::int_)});
-        push_back(vr.columns, VirtualColumn{"native_protocol_version", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"partitioner", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"rack", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"release_version", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"rpc_address", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"rpc_port", types::make_native(types::int_)});
-        push_back(vr.columns, VirtualColumn{"schema_version", types::make_native(types::uuid)});
-        push_back(vr.columns, VirtualColumn{"tokens", types::make_set(types::text)});
-
-        VirtualRow row;
-        push_back(row.values, types::ReadValue{"local"_as});
-        push_back(row.values, types::ReadValue{"COMPLETED"_as});
-        push_back(row.values, types::ReadValue{"127.0.0.1"_as});
-        push_back(row.values, types::ReadValue{S32(7000)});
-        push_back(row.values, types::ReadValue{"objstore"_as});
-        push_back(row.values, types::ReadValue{"3.4.7"_as});
-        push_back(row.values, types::ReadValue{"datacenter1"_as});
-        push_back(row.values, types::ReadValue{Array<U8,16>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}});
-        push_back(row.values, types::ReadValue{"127.0.0.1"_as});
-        push_back(row.values, types::ReadValue{S32(7000)});
-        push_back(row.values, types::ReadValue{"4"_as});
-        push_back(row.values, types::ReadValue{"org.apache.cassandra.dht.Murmur3Partitioner"_as});
-        push_back(row.values, types::ReadValue{"rack1"_as});
-        push_back(row.values, types::ReadValue{"3.11.19"_as}); // @note last version in 3.x, before system_virtual
-        push_back(row.values, types::ReadValue{"127.0.0.1"_as});
-        push_back(row.values, types::ReadValue{S32(9042)});
-        push_back(row.values, types::ReadValue{Array<U8,16>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}}); 
-        push_back(row.values, types::ReadValue{DynamicSet<AutoString8>{{"0"_as}}});
-        push_back(vr.rows, move(row));
-
-        return vr;
-    }
-
-    VirtualRows make_system_peers() {
-        VirtualRows vr;
-        vr.keyspace = "system";
-        vr.table = "peers";
-
-        push_back(vr.columns, VirtualColumn{"peer", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"data_center", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"host_id", types::make_native(types::uuid)});
-        push_back(vr.columns, VirtualColumn{"preferred_ip", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"rack", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"release_version", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"rpc_address", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"schema_version", types::make_native(types::uuid)});
-        push_back(vr.columns, VirtualColumn{"tokens", types::make_set(types::text)});
-
-        return vr;
-    }
-
-    VirtualRows make_system_peers_v2() {
-        VirtualRows vr;
-        vr.keyspace = "system";
-        vr.table = "peers_v2";
-
-        push_back(vr.columns, VirtualColumn{"peer", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"peer_port", types::make_native(types::int_)});
-        push_back(vr.columns, VirtualColumn{"data_center", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"host_id", types::make_native(types::uuid)});
-        push_back(vr.columns, VirtualColumn{"native_address", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"native_port", types::make_native(types::int_)});
-        push_back(vr.columns, VirtualColumn{"preferred_ip", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"preferred_port", types::make_native(types::int_)});
-        push_back(vr.columns, VirtualColumn{"rack", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"release_version", types::make_native(types::text)});
-        push_back(vr.columns, VirtualColumn{"schema_version", types::make_native(types::uuid)});
-        push_back(vr.columns, VirtualColumn{"tokens", types::make_native(types::text)});
-
-        return vr;
     }
 
     // @todo in cassandra the schema is stored in the database directly, this is probably a good idea in future
@@ -516,8 +431,9 @@ namespace objstore::engine {
                                     return make_insert_into_deleted_column(ks->name, tbl->name);
                                 }
 
-                                const auto& constant = consteval_term_to_constant(v.values[*names_idx_opt]);
-                                if (!types::can_write_constant_value(constant.value, col.type.native.value_dtype))
+                                // @todo avoid copy here and at other evaluate
+                                const auto& eval = evaluate(v.values[*names_idx_opt]);
+                                if (!io::can_cast_cast_write_evaluated_as_column_value(eval, col.type))
                                     return make_insert_incompatible_literal(ks->name, tbl->name);
                             }
                         }
@@ -538,21 +454,21 @@ namespace objstore::engine {
                                 row_offset_bytes += size;
                             };
 
-                            types::write_col_mask(write, [&](U64 col_idx) { return static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name)); }, tbl->cols.length);
+                            io::write_column_mask(write, [&](U64 col_idx) { return static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name)); }, tbl->cols.length);
 
                             for (const auto& col : tbl->cols) {
                                 auto names_idx_opt = try_get_names_idx(col.name);
                                 if (names_idx_opt) {
-                                    const auto& constant = consteval_term_to_constant(v.values[*names_idx_opt]);
-                                    types::write_constant_value(write, constant.value, col.type.native.value_dtype);
+                                    const auto& eval = evaluate(v.values[*names_idx_opt]);
+                                    io::cast_write_evaluated_as_column_value(write, eval, col.type);
                                 }
                             }
 
                             const auto& pk_col = tbl->cols[tbl->primary_col_idx];
                             auto pk_idx_opt = try_get_names_idx(pk_col.name);
                             assert_true(static_cast<bool>(pk_idx_opt), "primary key column must be provided in INSERT");
-                            const auto& pk_constant = consteval_term_to_constant(v.values[*pk_idx_opt]);
-                            U64 pk_key = types::hash_constant_value(pk_constant.value);
+                            const auto& pk_eval = evaluate(v.values[*pk_idx_opt]);
+                            U64 pk_key = hash(pk_eval);
                             tinsert(tbl->btree, pk_key, row_page);
                         }
                         
@@ -599,14 +515,14 @@ namespace objstore::engine {
             // @todo nested bind markers
             if (type_matches_tag<BindMarker>(nv.values[i].value)) {
                 String8 col_name = nv.names[i].identifier;
-                CqlType col_type = types::make_native(types::text);
+                Type col_type = make_basic(BasicType::text);
                 for (U64 ci = 0; ci < tbl->cols.length; ci++) {
                     if (tbl->cols[ci].name == col_name) {
                         col_type = tbl->cols[ci].type;
                         break;
                     }
                 }
-                push_back(out, BindVariableSpec{.name = AutoString8(col_name), .type = col_type});
+                emplace_back(out, BindVariableSpec{.name = AutoString8(col_name), .type = col_type});
             }
         }
     }

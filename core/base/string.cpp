@@ -202,6 +202,14 @@ namespace plexdb {
         return AutoString8(reinterpret_cast<const U8*>(str), len);
     }
 
+    AutoString8 to_str(const String8& x) {
+        return AutoString8{x};
+    }
+
+    AutoString8 to_str(const AutoString8& x) {
+        return x;
+    }
+
     AutoString8 to_str(S64 x) {
         return fmt("%" PRIi64, x);
     }

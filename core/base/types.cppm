@@ -185,7 +185,7 @@ export namespace plexdb {
     // ========================================================================
     // asserts
     // ========================================================================
-    #ifdef PLEXDB_DEBUG
+    #if PLEXDB_DEBUG
         constexpr bool k_assert_enabled = true;
     #else
         constexpr bool k_assert_enabled = false;

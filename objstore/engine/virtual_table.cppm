@@ -4,6 +4,7 @@ import plexdb.base;
 import plexdb.os;
 import plexdb.os.containers;
 
+import objstore.engine.io;
 import objstore.engine.types;
 
 using namespace plexdb;
@@ -11,11 +12,11 @@ using namespace plexdb;
 export namespace objstore::engine {
     struct VirtualColumn {
         String8 name;
-        CqlType type;
+        Type type;
     };
 
     struct VirtualRow {
-        DynamicArray<types::ReadValue> values;
+        DynamicArray<ColumnValue> values;
     };
 
     struct VirtualRows {

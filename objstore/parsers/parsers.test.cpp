@@ -209,15 +209,15 @@ TEST_CASE("CQL INSERT INTO", "[objstore.cql]") {
         REQUIRE(tbl.column_definitions.length == 3);
         
         REQUIRE(tbl.column_definitions[0].name.identifier == "id");
-        REQUIRE(tbl.column_definitions[0].cql_type == types::make_native(NativeType::int_));
+        REQUIRE(tbl.column_definitions[0].type == make_basic(BasicType::int_));
         REQUIRE(tbl.column_definitions[0].primary_key == true);
         
         REQUIRE(tbl.column_definitions[1].name.identifier == "name");
-        REQUIRE(tbl.column_definitions[1].cql_type == types::make_native(NativeType::text));
+        REQUIRE(tbl.column_definitions[1].type == make_basic(BasicType::text));
         REQUIRE(tbl.column_definitions[1].primary_key == false);
         
         REQUIRE(tbl.column_definitions[2].name.identifier == "age");
-        REQUIRE(tbl.column_definitions[2].cql_type == types::make_native(NativeType::int_));
+        REQUIRE(tbl.column_definitions[2].type == make_basic(BasicType::int_));
         REQUIRE(tbl.column_definitions[2].primary_key == false);
     }
     
@@ -241,11 +241,11 @@ TEST_CASE("CQL INSERT INTO", "[objstore.cql]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.column_definitions.length == 5);
-        REQUIRE(tbl.column_definitions[0].cql_type == types::make_native(NativeType::int_));
-        REQUIRE(tbl.column_definitions[1].cql_type == types::make_native(NativeType::text));
-        REQUIRE(tbl.column_definitions[2].cql_type == types::make_native(NativeType::bigint));
-        REQUIRE(tbl.column_definitions[3].cql_type == types::make_native(NativeType::timestamp));
-        REQUIRE(tbl.column_definitions[4].cql_type == types::make_native(NativeType::boolean));
+        REQUIRE(tbl.column_definitions[0].type == make_basic(BasicType::int_));
+        REQUIRE(tbl.column_definitions[1].type == make_basic(BasicType::text));
+        REQUIRE(tbl.column_definitions[2].type == make_basic(BasicType::bigint));
+        REQUIRE(tbl.column_definitions[3].type == make_basic(BasicType::timestamp));
+        REQUIRE(tbl.column_definitions[4].type == make_basic(BasicType::boolean));
     }
     
     SECTION("CREATE TABLE with FLOAT and DOUBLE types") {
@@ -255,8 +255,8 @@ TEST_CASE("CQL INSERT INTO", "[objstore.cql]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.column_definitions.length == 3);
-        REQUIRE(tbl.column_definitions[1].cql_type == types::make_native(NativeType::float_));
-        REQUIRE(tbl.column_definitions[2].cql_type == types::make_native(NativeType::double_));
+        REQUIRE(tbl.column_definitions[1].type == make_basic(BasicType::float_));
+        REQUIRE(tbl.column_definitions[2].type == make_basic(BasicType::double_));
     }
     
     SECTION("CREATE TABLE with UUID type") {
@@ -266,7 +266,7 @@ TEST_CASE("CQL INSERT INTO", "[objstore.cql]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.column_definitions.length == 2);
-        REQUIRE(tbl.column_definitions[0].cql_type == types::make_native(NativeType::uuid));
+        REQUIRE(tbl.column_definitions[0].type == make_basic(BasicType::uuid));
         REQUIRE(tbl.column_definitions[0].primary_key == true);
     }
     

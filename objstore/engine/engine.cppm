@@ -4,7 +4,9 @@ export import objstore.engine.types;
 export import objstore.engine.schema;
 export import objstore.engine.system_schema;
 export import objstore.engine.virtual_table;
+
 import objstore.engine.statements;
+import objstore.engine.io;
 
 import plexdb.base;
 import plexdb.os;
@@ -22,7 +24,7 @@ export namespace objstore::engine {
     // ========================================================================
     struct BindVariableSpec {
         AutoString8 name;
-        CqlType type;
+        Type type;
     };
 
     struct PreparedEntry {
@@ -100,7 +102,7 @@ export namespace objstore::engine {
 
     const schema::Column& column(const ColumnIterator& it);
     U64 column_count(const ColumnIterator& it);
-    types::ReadValue read_value(ColumnIterator& it);
+    ColumnValue read_column_value(ColumnIterator& it);
     ColumnIterator columns_begin(Pager* pager, const schema::Table* table, U64 row_page);
     ColumnIterator columns_end(const schema::Table* table);
 

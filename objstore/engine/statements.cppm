@@ -41,7 +41,8 @@ export namespace objstore {
     // constants
     struct Null {};
     struct UUID {
-        Array<U8, 32> value;
+        static constexpr U64 length = 16_u64;
+        Array<U8, length> value;
     };
     struct Hex {
         DynamicArray<U8> value;
@@ -49,8 +50,9 @@ export namespace objstore {
     struct Blob {
         DynamicArray<U8> value;
     };
+    using ConstantTypes = TypeList<AutoString8, S64, bool, F64, Null, UUID, Hex, Blob>;
     struct Constant {
-        ExpandTaggedUnion<TypeList<AutoString8, S64, bool, F64, Null, UUID, Hex, Blob>> value;
+        ExpandTaggedUnion<ConstantTypes> value;
     };
 
     // literals
@@ -97,7 +99,7 @@ export namespace objstore {
 
     // type hinting
     struct TypeHint {
-        CqlType type;
+        Type type;
         Term operand;
     };
 
@@ -185,7 +187,7 @@ export namespace objstore {
 
     struct ColumnDefinition {
         ColumnName name;
-        CqlType cql_type;
+        Type type;
         bool _static;
         Optional<ColumnMask> mask;
         bool primary_key;
@@ -382,7 +384,7 @@ export namespace objstore {
         };
         struct Cast {
             Selector column;
-            CqlType to;
+            Type to;
         };
         struct Function {
             AutoString8 function_name;
@@ -446,9 +448,4 @@ export namespace objstore {
             Batch
         > value;
     };
-
-    const Constant& consteval_term_to_constant(const Term& term) {
-        assert_true_not_implemented(type_matches_tag<Constant>(term.value), "only constant terms are supported");
-        return get<Constant>(term.value);
-    }
 }

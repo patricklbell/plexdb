@@ -3,8 +3,6 @@ module;
 
 module objstore.native;
 
-import objstore.tcp;
-
 namespace objstore::native {
     // ========================================================================
     // input
@@ -61,7 +59,7 @@ namespace objstore::native {
         return len;
     }
 
-    Constant read_cql_value_as_constant(const U8*& p, const U8* end, NativeType dtype) {
+    Constant read_cql_value_as_constant(const U8*& p, const U8* end, BasicType dtype) {
         assert_true(p + 4 <= end, "truncated value length");
         S32 len = read_be_s32(p);
         p += 4;
@@ -71,24 +69,24 @@ namespace objstore::native {
         p += len;
 
         switch (dtype) {
-            case types::text: case types::ascii: case types::varchar:
+            case BasicType::text: case BasicType::ascii: case BasicType::varchar:
                 return Constant{.value = AutoString8(val, U64(len))};
-            case types::int_:{
+            case BasicType::int_:{
                 assert_true(len == 4, "int value must be 4 bytes");
                 S64 v = S64(S32((U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3])));
                 return Constant{.value = v};
             }
-            case types::bigint: case types::timestamp: case types::counter: case types::time:{
+            case BasicType::bigint: case BasicType::timestamp: case BasicType::counter: case BasicType::time:{
                 assert_true(len == 8, "bigint value must be 8 bytes");
                 S64 v = read_be_s64(val);
                 return Constant{.value = v};
             }
-            case types::smallint:{
+            case BasicType::smallint:{
                 assert_true(len == 2, "smallint value must be 2 bytes");
                 S64 v = S64(S16((U16(val[0]) << 8) | U16(val[1])));
                 return Constant{.value = v};
             }
-            case types::double_:{
+            case BasicType::double_:{
                 assert_true(len == 8, "double value must be 8 bytes");
                 U64 bits = (U64(val[0]) << 56) | (U64(val[1]) << 48) | (U64(val[2]) << 40) | (U64(val[3]) << 32) |
                            (U64(val[4]) << 24) | (U64(val[5]) << 16) | (U64(val[6]) << 8) | U64(val[7]);
@@ -96,16 +94,22 @@ namespace objstore::native {
                 os::memory_copy(&d, &bits, sizeof(d));
                 return Constant{.value = d};
             }
-            case types::float_:{
+            case BasicType::float_:{
                 assert_true(len == 4, "float value must be 4 bytes");
                 U32 bits = (U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3]);
                 F32 fv;
                 os::memory_copy(&fv, &bits, sizeof(fv));
                 return Constant{.value = F64(fv)};
             }
-            case types::boolean:{
+            case BasicType::boolean:{
                 assert_true(len == 1, "boolean value must be 1 byte");
                 return Constant{.value = bool(val[0])};
+            }
+            case BasicType::uuid:{
+                assert_true(len == 16, "boolean value must be 16 bytes");
+                UUID uuid{};
+                os::memory_copy(&uuid.value[0], val, 16);
+                return Constant{.value = uuid};
             }
             default:
                 assert_not_implemented("unsupported native type for bind value");
@@ -134,11 +138,11 @@ namespace objstore::native {
             for (U16 value_idx = 0; value_idx < n_values && p < end; value_idx++) {
                 String8 name = read_cql_string(p, end);
 
-                NativeType dtype{};
+                BasicType dtype{};
                 U64 bind_spec_idx = bind_specs.length;
                 for (U64 idx = 0; idx < bind_specs.length; idx++) {
                     if (bind_specs[idx].name == name) {
-                        dtype = bind_specs[idx].type.native.value_dtype;
+                        dtype = bind_specs[idx].type.basic.value_dtype;
                         bind_spec_idx = idx;
                         break;
                     }
@@ -151,7 +155,7 @@ namespace objstore::native {
             for (U16 bind_spec_idx = 0; bind_spec_idx < n_values && p < end; bind_spec_idx++) {
                 assert_true_not_implemented(bind_spec_idx < bind_specs.length, "error handling for invalid bind specification not implemented");
 
-                NativeType dtype = bind_specs[bind_spec_idx].type.native.value_dtype;
+                BasicType dtype = bind_specs[bind_spec_idx].type.basic.value_dtype;
                 push_back(bound_values, read_cql_value_as_constant(p, end, dtype));
             }
         }
@@ -257,23 +261,23 @@ namespace objstore::native {
             append_bytes(f, data, U64(n));
     }
 
-    void append_type_codes_option(Frame& f, CqlType cdtype) {
+    void append_type_codes_option(Frame& f, Type cdtype) {
         switch (cdtype.ctype) {
-            case CollectionType::native:{
-                append_be_u16(f, native_type_to_type_code(cdtype.native.value_dtype));
+            case CollectionType::basic:{
+                append_be_u16(f, basic_type_to_type_code(cdtype.basic.value_dtype));
             }break;
             case CollectionType::list:{
                 append_be_u16(f, type_codes::List);
-                append_be_u16(f, native_type_to_type_code(cdtype.list.element_dtype));
+                append_be_u16(f, basic_type_to_type_code(cdtype.list.element_dtype));
             }break;
             case CollectionType::set:{
                 append_be_u16(f, type_codes::Set);
-                append_be_u16(f, native_type_to_type_code(cdtype.set.key_dtype));
+                append_be_u16(f, basic_type_to_type_code(cdtype.set.key_dtype));
             }break;
             case CollectionType::map:{
                 append_be_u16(f, type_codes::Map);
-                append_be_u16(f, native_type_to_type_code(cdtype.map.key_dtype));
-                append_be_u16(f, native_type_to_type_code(cdtype.map.value_dtype));
+                append_be_u16(f, basic_type_to_type_code(cdtype.map.key_dtype));
+                append_be_u16(f, basic_type_to_type_code(cdtype.map.value_dtype));
             }break;
             case CollectionType::vector:{
                 assert_not_implemented("native protocol type code for vector collection type is not implemented");
@@ -281,28 +285,29 @@ namespace objstore::native {
         }
     }
 
-    void append_cql_value(Frame& f, const types::ReadValue& value, CqlType cdtype) {
+    void append_cql_value(Frame& f, const ColumnValue& value, Type cdtype) {
         visit(value, [&](const auto& v) {
             using T = Decay<decltype(v)>;
 
-            if constexpr (IsInTypeList<T, types::ReadNativeTypes>) {
-                assert_true(cdtype.ctype == CollectionType::native, "static value type requires ctype native, this should never happen");
-                append_cql_native_element(f, cdtype.native.value_dtype, v);
+            if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
+                assert_true(cdtype.ctype == CollectionType::basic, "static value type requires ctype basic, this should never happen");
+
+                append_cql_basic_element(f, cdtype.basic.value_dtype, v);
             } else if constexpr (IsCqlDM<T>) {
                 assert_true(cdtype.ctype == CollectionType::map, "static value type requires ctype map, this should never happen");
 
                 U64 pair_count = length(v);
                 S32 body = 4;
                 for (auto& it : v) {
-                    body += 4 + native_element_byte_size(cdtype.map.key_dtype, it.first);
-                    body += 4 + native_element_byte_size(cdtype.map.value_dtype, it.second);
+                    body += 4 + basic_element_byte_size(cdtype.map.key_dtype, it.first);
+                    body += 4 + basic_element_byte_size(cdtype.map.value_dtype, it.second);
                 }
 
                 append_be_s32(f, body);
                 append_be_s32(f, S32(pair_count));
                 for (auto& it : v) {
-                    append_cql_native_element(f, cdtype.map.key_dtype, it.first);
-                    append_cql_native_element(f, cdtype.map.value_dtype, it.second);
+                    append_cql_basic_element(f, cdtype.map.key_dtype, it.first);
+                    append_cql_basic_element(f, cdtype.map.value_dtype, it.second);
                 }
 
             } else if constexpr (IsCqlDS<T>) {
@@ -310,11 +315,11 @@ namespace objstore::native {
 
                 U64 elem_count = length(v);
                 S32 body = 4;
-                for (auto& e : v) body += 4 + native_element_byte_size(cdtype.set.key_dtype, e);
+                for (auto& e : v) body += 4 + basic_element_byte_size(cdtype.set.key_dtype, e);
 
                 append_be_s32(f, body);
                 append_be_s32(f, S32(elem_count));
-                for (auto& e : v) append_cql_native_element(f, cdtype.set.key_dtype, e);
+                for (auto& e : v) append_cql_basic_element(f, cdtype.set.key_dtype, e);
 
             } else if constexpr (IsCqlDA<T>) {
                 assert_true(
@@ -326,16 +331,15 @@ namespace objstore::native {
                 S32 body = 4;
                 for (U64 i = 0; i < elem_count; ++i) {
                     auto dtype = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element_dtype : cdtype.list.element_dtype;
-                    body += 4 + native_element_byte_size(dtype, v[i]);
+                    body += 4 + basic_element_byte_size(dtype, v[i]);
                 }
 
                 append_be_s32(f, body);
                 append_be_s32(f, S32(elem_count));
                 for (U64 i = 0; i < elem_count; ++i) {
                     auto dtype = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element_dtype : cdtype.list.element_dtype;
-                    append_cql_native_element(f, dtype, v[i]);
+                    append_cql_basic_element(f, dtype, v[i]);
                 }
-
             } else {
                 static_assert(!SameAs<T, T>, "missing implementation for read value");
             }
@@ -385,7 +389,7 @@ namespace objstore::native {
         if (result.rows.has_value()) {
             for (auto& row = result.rows->begin(); row != result.rows->end(); ++row) {
                 for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col) {
-                    append_cql_value(f, engine::read_value(col), engine::column(col).type);
+                    append_cql_value(f, engine::read_column_value(col), engine::column(col).type);
                 }
             }
         }

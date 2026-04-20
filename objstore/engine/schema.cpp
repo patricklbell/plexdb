@@ -374,7 +374,7 @@ namespace objstore::schema {
             .header = ColumnHeader{
                 .tombstone = false,
                 .name_length = create.name.identifier.length,
-                .type = create.cql_type,
+                .type = create.type,
                 .table_idx = tbl.idx,
             },
             .name = AutoString8(create.name.identifier),

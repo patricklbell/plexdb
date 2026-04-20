@@ -191,7 +191,7 @@ static constexpr auto value = lexy::noop;
 ### `lexy::forward<T>` — pass the single parsed value through
 
 ```cpp
-static constexpr auto value = lexy::forward<CqlType>;
+static constexpr auto value = lexy::forward<Type>;
 ```
 
 ### `lexy::constant(v)` — always produce a fixed value

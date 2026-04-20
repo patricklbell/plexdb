@@ -54,6 +54,8 @@ target_sources(objstore_modules
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
             engine/engine.cppm
+            engine/evaluator.cppm
+            engine/io.cppm
             engine/schema.cppm
             engine/system_schema.cppm
             engine/statements.cppm

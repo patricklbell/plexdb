@@ -16,6 +16,7 @@ import objstore.tcp;
 import objstore.parsers;
 import objstore.engine;
 import objstore.engine.statements;
+import objstore.engine.io;
 import objstore.log;
 
 using namespace plexdb;
@@ -85,86 +86,93 @@ namespace objstore::native {
         constexpr U16 Set       = 0x0022;
     }
 
-    constexpr U16 native_type_to_type_code(NativeType dtype) {
+    constexpr U16 basic_type_to_type_code(BasicType dtype) {
         switch (dtype) {
-            case types::text:       return type_codes::Varchar;
-            case types::uuid:       return type_codes::Uuid;
-            case types::timestamp:  return type_codes::Timestamp;
-            case types::smallint:   return type_codes::Smallint;
-            case types::int_:       return type_codes::Int;
-            case types::bigint:     return type_codes::Bigint;
-            case types::counter:    return type_codes::Counter;
-            case types::boolean:    return type_codes::Boolean;
-            case types::float_:     return type_codes::Float;
-            case types::double_:    return type_codes::Double;
-            case types::ascii:
-            case types::blob:
-            case types::date:
-            case types::decimal:
-            case types::duration:
-            case types::inet:
-            case types::time:
-            case types::timeuuid:
-            case types::tinyint:
-            case types::varchar:
-            case types::varint:
-            case types::vector:{
-                assert_not_implemented("native protocol type code for native type is not implemented");
+            case BasicType::text:       return type_codes::Varchar;
+            case BasicType::uuid:       return type_codes::Uuid;
+            case BasicType::timestamp:  return type_codes::Timestamp;
+            case BasicType::smallint:   return type_codes::Smallint;
+            case BasicType::int_:       return type_codes::Int;
+            case BasicType::bigint:     return type_codes::Bigint;
+            case BasicType::counter:    return type_codes::Counter;
+            case BasicType::boolean:    return type_codes::Boolean;
+            case BasicType::float_:     return type_codes::Float;
+            case BasicType::double_:    return type_codes::Double;
+            case BasicType::ascii:
+            case BasicType::blob:
+            case BasicType::date:
+            case BasicType::decimal:
+            case BasicType::duration:
+            case BasicType::inet:
+            case BasicType::time:
+            case BasicType::timeuuid:
+            case BasicType::tinyint:
+            case BasicType::varchar:
+            case BasicType::varint:
+            case BasicType::vector:
+            case BasicType::hex:{
+                assert_not_implemented("native protocol type code for basic type is not implemented");
                 return 0x0000;
             }break;
         }
 
-        assert_true(false, "invalid native type");
+        assert_true(false, "invalid basic type");
         return 0x0000;
     }
 
     template <typename T>
-    S32 native_element_byte_size(const NativeType& dtype, const T& value) {
+    S32 basic_element_byte_size(const BasicType& dtype, const T& value) {
         using TT = Decay<T>;
 
         if constexpr (SameAs<TT, S64>) {
-            assert_true(dtype == types::bigint || dtype == types::counter || dtype == types::timestamp || dtype == types::time,
-                        "S64 does not match native type");
+            assert_true(dtype == BasicType::bigint || dtype == BasicType::counter || dtype == BasicType::timestamp || dtype == BasicType::time,
+                        "S64 does not match basic type");
             return 8;
         } else if constexpr (SameAs<TT, S32>) {
-            assert_true(dtype == types::int_ || dtype == types::float_ || dtype == types::date,
-                        "S32 does not match native type");
+            assert_true(dtype == BasicType::int_ || dtype == BasicType::float_ || dtype == BasicType::date,
+                        "S32 does not match basic type");
             return 4;
         } else if constexpr (SameAs<TT, S16>) {
-            assert_true(dtype == types::smallint,
-                        "S16 does not match native type");
+            assert_true(dtype == BasicType::smallint,
+                        "S16 does not match basic type");
             return 2;
         } else if constexpr (SameAs<TT, U8>) {
-            assert_true(dtype == types::boolean || dtype == types::tinyint,
-                        "U8 does not match native type");
+            assert_true(dtype == BasicType::boolean || dtype == BasicType::tinyint,
+                        "U8 does not match basic type");
             return 1;
         } else if constexpr (SameAs<TT, F64>) {
-            assert_true(dtype == types::double_,
-                        "F64 does not match native type");
+            assert_true(dtype == BasicType::double_,
+                        "F64 does not match basic type");
             return 8;
         } else if constexpr (SameAs<TT, F32>) {
-            assert_true(dtype == types::float_,
-                        "F32 does not match native type");
+            assert_true(dtype == BasicType::float_,
+                        "F32 does not match basic type");
             return 4;
         } else if constexpr (SameAs<TT, AutoString8>) {
             assert_true(
-                dtype == types::ascii   ||
-                dtype == types::text    ||
-                dtype == types::varchar ||
-                dtype == types::blob    ||
-                dtype == types::varint  ||
-                dtype == types::decimal ||
-                dtype == types::duration||
-                dtype == types::inet    ||
-                dtype == types::vector,
-                "AutoString8 does not match native type"
+                dtype == BasicType::ascii   ||
+                dtype == BasicType::text    ||
+                dtype == BasicType::varchar ||
+                dtype == BasicType::blob    ||
+                dtype == BasicType::varint  ||
+                dtype == BasicType::decimal ||
+                dtype == BasicType::duration||
+                dtype == BasicType::inet    ||
+                dtype == BasicType::vector,
+                "AutoString8 does not match basic type"
             );
             return value.length;
-        } else if constexpr (SameAs<TT, Array<U8,16>>) {
-            assert_true(dtype == types::uuid,"Array<U8,16> value does not match NativeType");
-            return 16;
+        } else if constexpr (SameAs<TT, UUID>) {
+            assert_true(dtype == BasicType::uuid, "UUID value does not match basic type");
+            return UUID::length;
+        } else if constexpr (SameAs<TT, Blob>) {
+            assert_true(dtype == BasicType::blob, "Blob value does not match basic type");
+            return value.value.length;
+        } else if constexpr (SameAs<TT, Hex>) {
+            assert_true(dtype == BasicType::hex, "Hex value does not match basic type");
+            return value.value.length;
         } else {
-            static_assert(!SameAs<TT,TT>, "missing native value type");
+            static_assert(!SameAs<TT,TT>, "missing basic value type");
         }
     }
 
@@ -189,7 +197,7 @@ namespace objstore::native {
     // Read [short bytes]: [short] n + n bytes, returns length and sets out_data
     U16 read_cql_short_bytes(const U8*& p, const U8* end, const U8*& out_data);
 
-    Constant read_cql_value_as_constant(const U8*& p, const U8* end, NativeType dtype);
+    Constant read_cql_value_as_constant(const U8*& p, const U8* end, BasicType dtype);
 
     // ========================================================================
     // output
@@ -215,38 +223,38 @@ namespace objstore::native {
     void append_cql_string(Frame& f, String8 s);
     void append_cql_short_bytes(Frame& f, const U8* data, U16 n);
     void append_cql_bytes_raw(Frame& f, const U8* data, S32 n);
-    void append_cql_value(Frame& f, const types::ReadValue& value, CqlType cdtype);
+    void append_cql_value(Frame& f, const ColumnValue& value, Type cdtype);
 
     template<typename T>
-    void append_cql_native_element(Frame& f, const NativeType& dtype, const T& v) {
+    void append_cql_basic_element(Frame& f, const BasicType& dtype, const T& v) {
         using TT = Decay<T>;
 
         if constexpr (SameAs<TT, AutoString8>) {
             assert_true(
-                dtype == types::ascii   ||
-                dtype == types::text    ||
-                dtype == types::varchar ||
-                dtype == types::blob    ||
-                dtype == types::varint  ||
-                dtype == types::decimal ||
-                dtype == types::duration||
-                dtype == types::inet    ||
-                dtype == types::vector,
-                "AutoString8 value does not match NativeType"
+                dtype == BasicType::ascii   ||
+                dtype == BasicType::text    ||
+                dtype == BasicType::varchar ||
+                dtype == BasicType::blob    ||
+                dtype == BasicType::varint  ||
+                dtype == BasicType::decimal ||
+                dtype == BasicType::duration||
+                dtype == BasicType::inet    ||
+                dtype == BasicType::vector,
+                "AutoString8 value does not match BasicType"
             );
 
             append_cql_bytes_raw(f, reinterpret_cast<const U8*>(v.c_str), S32(v.length));
-        } else if constexpr (SameAs<TT, Array<U8,16>>) {
-            assert_true(dtype == types::uuid,"Array<U8,16> value does not match NativeType");
+        } else if constexpr (SameAs<TT, UUID>) {
+            assert_true(dtype == BasicType::uuid,"UUID value does not match BasicType");
 
-            append_cql_bytes_raw(f, &v.values[0], 16);
+            append_cql_bytes_raw(f, &v.value[0], v.length);
         } else if constexpr (SameAs<TT, S64>) {
             assert_true(
-                dtype == types::bigint ||
-                dtype == types::counter ||
-                dtype == types::timestamp ||
-                dtype == types::time,
-                "S64 value does not match NativeType"
+                dtype == BasicType::bigint ||
+                dtype == BasicType::counter ||
+                dtype == BasicType::timestamp ||
+                dtype == BasicType::time,
+                "S64 value does not match BasicType"
             );
 
             S64 vv = v;
@@ -255,46 +263,47 @@ namespace objstore::native {
             append_cql_bytes_raw(f, data, 8);
         } else if constexpr (SameAs<TT, S32>) {
             assert_true(
-                dtype == types::int_ ||
-                dtype == types::float_ ||
-                dtype == types::date,
-                "S32 value does not match NativeType"
+                dtype == BasicType::int_ ||
+                dtype == BasicType::float_ ||
+                dtype == BasicType::date,
+                "S32 value does not match BasicType"
             );
             U8 data[4] = { U8(U32(v) >> 24), U8(U32(v) >> 16), U8(U32(v) >> 8), U8(U32(v)) };
             append_cql_bytes_raw(f, data, 4);
 
         } else if constexpr (SameAs<TT, S16>) {
-            assert_true(dtype == types::smallint, "S16 value does not match NativeType");
+            assert_true(dtype == BasicType::smallint, "S16 value does not match BasicType");
             U8 data[2] = { U8(U16(v) >> 8), U8(v) };
             append_cql_bytes_raw(f, data, 2);
 
         } else if constexpr (SameAs<TT, U8>) {
             assert_true(
-                dtype == types::boolean ||
-                dtype == types::tinyint,
-                "U8 value does not match NativeType"
+                dtype == BasicType::boolean ||
+                dtype == BasicType::tinyint,
+                "U8 value does not match BasicType"
             );
             append_cql_bytes_raw(f, &v, 1);
 
         } else if constexpr (SameAs<TT, F32>) {
-            assert_true(dtype == types::float_, "F32 value does not match NativeType");
+            assert_true(dtype == BasicType::float_, "F32 value does not match BasicType");
             U32 bits; os::memory_copy(&bits, &v, sizeof(bits));
             U8 data[4] = { U8(bits >> 24), U8(bits >> 16), U8(bits >> 8), U8(bits) };
             append_cql_bytes_raw(f, data, 4);
 
         } else if constexpr (SameAs<TT, F64>) {
-            assert_true(dtype == types::double_, "F64 value does not match NativeType");
+            assert_true(dtype == BasicType::double_, "F64 value does not match BasicType");
             U64 bits; os::memory_copy(&bits, &v, sizeof(bits));
             U8 data[8];
             for (int i = 7; i >= 0; i--) { data[i] = U8(bits); bits >>= 8; }
             append_cql_bytes_raw(f, data, 8);
-
+        } else if constexpr (Either<TT, Hex, Blob>) {
+            assert_not_implemented();
         } else {
-            static_assert(!SameAs<TT, TT>, "append_cql_native_element: unsupported static type");
+            static_assert(!SameAs<TT, TT>, "unsupported static type");
         }
     }
 
-    void append_type_codes_option(Frame& f, CqlType cdtype);
+    void append_type_codes_option(Frame& f, Type cdtype);
     void append_error_body(Frame& f, engine::ExecutionStatus status, String8 message);
     void append_result_void(Frame& f);
     void append_result_set_keyspace(Frame& f, String8 keyspace);

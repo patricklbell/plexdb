@@ -355,28 +355,28 @@ namespace objstore::parsers::cql {
         // ====================================================================
         // data types
         // ====================================================================
-        struct native_type {
-            struct t_ascii     : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("ascii");     static constexpr auto value = lexy::constant(types::make_native(NativeType::ascii)); };
-            struct t_bigint    : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("bigint");    static constexpr auto value = lexy::constant(types::make_native(NativeType::bigint)); };
-            struct t_blob      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("blob");      static constexpr auto value = lexy::constant(types::make_native(NativeType::blob)); };
-            struct t_boolean   : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("boolean");   static constexpr auto value = lexy::constant(types::make_native(NativeType::boolean)); };
-            struct t_counter   : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("counter");   static constexpr auto value = lexy::constant(types::make_native(NativeType::counter)); };
-            struct t_date      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("date");      static constexpr auto value = lexy::constant(types::make_native(NativeType::date)); };
-            struct t_decimal   : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("decimal");   static constexpr auto value = lexy::constant(types::make_native(NativeType::decimal)); };
-            struct t_double    : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("double");    static constexpr auto value = lexy::constant(types::make_native(NativeType::double_)); };
-            struct t_duration  : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("duration");  static constexpr auto value = lexy::constant(types::make_native(NativeType::duration)); };
-            struct t_float     : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("float");     static constexpr auto value = lexy::constant(types::make_native(NativeType::float_)); };
-            struct t_inet      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("inet");      static constexpr auto value = lexy::constant(types::make_native(NativeType::inet)); };
-            struct t_int       : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("int");       static constexpr auto value = lexy::constant(types::make_native(NativeType::int_)); };
-            struct t_smallint  : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("smallint");  static constexpr auto value = lexy::constant(types::make_native(NativeType::smallint)); };
-            struct t_text      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("text");      static constexpr auto value = lexy::constant(types::make_native(NativeType::text)); };
-            struct t_time      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("time");      static constexpr auto value = lexy::constant(types::make_native(NativeType::time)); };
-            struct t_timestamp : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("timestamp"); static constexpr auto value = lexy::constant(types::make_native(NativeType::timestamp)); };
-            struct t_timeuuid  : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("timeuuid");  static constexpr auto value = lexy::constant(types::make_native(NativeType::timeuuid)); };
-            struct t_tinyint   : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("tinyint");   static constexpr auto value = lexy::constant(types::make_native(NativeType::tinyint)); };
-            struct t_uuid      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("uuid");      static constexpr auto value = lexy::constant(types::make_native(NativeType::uuid)); };
-            struct t_varchar   : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("varchar");   static constexpr auto value = lexy::constant(types::make_native(NativeType::varchar)); };
-            struct t_varint    : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("varint");    static constexpr auto value = lexy::constant(types::make_native(NativeType::varint)); };
+        struct basic_type {
+            struct t_ascii     : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("ascii");     static constexpr auto value = lexy::constant(make_basic(BasicType::ascii)); };
+            struct t_bigint    : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("bigint");    static constexpr auto value = lexy::constant(make_basic(BasicType::bigint)); };
+            struct t_blob      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("blob");      static constexpr auto value = lexy::constant(make_basic(BasicType::blob)); };
+            struct t_boolean   : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("boolean");   static constexpr auto value = lexy::constant(make_basic(BasicType::boolean)); };
+            struct t_counter   : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("counter");   static constexpr auto value = lexy::constant(make_basic(BasicType::counter)); };
+            struct t_date      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("date");      static constexpr auto value = lexy::constant(make_basic(BasicType::date)); };
+            struct t_decimal   : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("decimal");   static constexpr auto value = lexy::constant(make_basic(BasicType::decimal)); };
+            struct t_double    : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("double");    static constexpr auto value = lexy::constant(make_basic(BasicType::double_)); };
+            struct t_duration  : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("duration");  static constexpr auto value = lexy::constant(make_basic(BasicType::duration)); };
+            struct t_float     : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("float");     static constexpr auto value = lexy::constant(make_basic(BasicType::float_)); };
+            struct t_inet      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("inet");      static constexpr auto value = lexy::constant(make_basic(BasicType::inet)); };
+            struct t_int       : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("int");       static constexpr auto value = lexy::constant(make_basic(BasicType::int_)); };
+            struct t_smallint  : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("smallint");  static constexpr auto value = lexy::constant(make_basic(BasicType::smallint)); };
+            struct t_text      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("text");      static constexpr auto value = lexy::constant(make_basic(BasicType::text)); };
+            struct t_time      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("time");      static constexpr auto value = lexy::constant(make_basic(BasicType::time)); };
+            struct t_timestamp : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("timestamp"); static constexpr auto value = lexy::constant(make_basic(BasicType::timestamp)); };
+            struct t_timeuuid  : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("timeuuid");  static constexpr auto value = lexy::constant(make_basic(BasicType::timeuuid)); };
+            struct t_tinyint   : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("tinyint");   static constexpr auto value = lexy::constant(make_basic(BasicType::tinyint)); };
+            struct t_uuid      : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("uuid");      static constexpr auto value = lexy::constant(make_basic(BasicType::uuid)); };
+            struct t_varchar   : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("varchar");   static constexpr auto value = lexy::constant(make_basic(BasicType::varchar)); };
+            struct t_varint    : lexy::transparent_production { static constexpr auto rule = LEXY_LIT_CI("varint");    static constexpr auto value = lexy::constant(make_basic(BasicType::varint)); };
 
             // @note order matters: longer prefixes first (timestamp before time, smallint before set, etc.)
             static constexpr auto rule = dsl::p<t_timestamp> | dsl::p<t_timeuuid> | dsl::p<t_tinyint> |
@@ -385,46 +385,46 @@ namespace objstore::parsers::cql {
                 dsl::p<t_double> | dsl::p<t_duration> | dsl::p<t_float> | dsl::p<t_inet> |
                 dsl::p<t_int> | dsl::p<t_smallint> | dsl::p<t_uuid> | dsl::p<t_varchar> |
                 dsl::p<t_varint>;
-            static constexpr auto value = lexy::forward<CqlType>;
+            static constexpr auto value = lexy::forward<Type>;
         };
 
         struct collection_type;
 
         struct frozen_type {
-            static constexpr auto rule = kw_frozen >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<native_type> | dsl::else_ >> dsl::recurse<collection_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
-            static constexpr auto value = lexy::callback<CqlType>(
+            static constexpr auto rule = kw_frozen >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<basic_type> | dsl::else_ >> dsl::recurse<collection_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
+            static constexpr auto value = lexy::callback<Type>(
                 // @todo
-                [](CqlType fwd) { assert_not_implemented("frozen types"); return move(fwd); }
+                [](Type fwd) { assert_not_implemented("frozen types"); return move(fwd); }
             );
         };
 
         struct collection_type {
             struct list_type {
-                static constexpr auto rule = kw_list >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<native_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
-                static constexpr auto value = lexy::callback<CqlType>(
-                    [](CqlType el) { assert_true_not_implemented(el.ctype == CollectionType::native, "nested collections are not implemented"); return types::make_list(el.native.value_dtype); }
+                static constexpr auto rule = kw_list >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
+                static constexpr auto value = lexy::callback<Type>(
+                    [](Type el) { assert_true_not_implemented(el.ctype == CollectionType::basic, "nested collections are not implemented"); return make_list(el.basic.value_dtype); }
                 );
             };
             struct set_type {
-                static constexpr auto rule = kw_set >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<native_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
-                static constexpr auto value = lexy::callback<CqlType>(
-                    [](CqlType key) { assert_true_not_implemented(key.ctype == CollectionType::native, "nested collections are not implemented"); return types::make_set(key.native.value_dtype); }
+                static constexpr auto rule = kw_set >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
+                static constexpr auto value = lexy::callback<Type>(
+                    [](Type key) { assert_true_not_implemented(key.ctype == CollectionType::basic, "nested collections are not implemented"); return make_set(key.basic.value_dtype); }
                 );
             };
             struct map_type {
-                static constexpr auto rule = kw_map >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<native_type>) + dsl::p<ws> +
-                    dsl::lit_c<','> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<native_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
-                static constexpr auto value = lexy::callback<CqlType>(
-                    [](CqlType key, CqlType val) { assert_true_not_implemented(key.ctype == CollectionType::native && val.ctype == CollectionType::native, "nested collections are not implemented"); return types::make_map(key.native.value_dtype, val.native.value_dtype); }
+                static constexpr auto rule = kw_map >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> +
+                    dsl::lit_c<','> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
+                static constexpr auto value = lexy::callback<Type>(
+                    [](Type key, Type val) { assert_true_not_implemented(key.ctype == CollectionType::basic && val.ctype == CollectionType::basic, "nested collections are not implemented"); return make_map(key.basic.value_dtype, val.basic.value_dtype); }
                 );
             };
             static constexpr auto rule = dsl::p<list_type> | dsl::p<set_type> | dsl::p<map_type>;
-            static constexpr auto value = lexy::forward<CqlType>;
+            static constexpr auto value = lexy::forward<Type>;
         };
 
         struct data_type {
-            static constexpr auto rule = dsl::p<frozen_type> | dsl::p<collection_type> | dsl::p<native_type>;
-            static constexpr auto value = lexy::forward<CqlType>;
+            static constexpr auto rule = dsl::p<frozen_type> | dsl::p<collection_type> | dsl::p<basic_type>;
+            static constexpr auto value = lexy::forward<Type>;
         };
 
         // ====================================================================
@@ -556,7 +556,7 @@ namespace objstore::parsers::cql {
                 return type_keyword >> dsl::lit_c<'('> + dsl::p<ws> + dsl::p<data_type> + dsl::p<ws> + dsl::lit_c<')'> + dsl::p<ws> + dsl::recurse<term_expr>;
             }();
             static constexpr auto value = lexy::callback<Term>(
-                [](CqlType type, Term&& operand) -> Term {
+                [](Type type, Term&& operand) -> Term {
                     return Term{.value = TypeHint{.type = type, .operand = move(operand)}};
                 }
             );
@@ -1445,7 +1445,7 @@ namespace objstore::parsers::cql {
                 dsl::recurse<selector_rule> + dsl::p<ws> +
                 kw_as + dsl::p<ws> + dsl::p<data_type> + dsl::p<ws> + dsl::lit_c<')'>;
             static constexpr auto value = lexy::callback<Select::Selector>(
-                [](Select::Selector&& sel, CqlType type) -> Select::Selector {
+                [](Select::Selector&& sel, Type type) -> Select::Selector {
                     return {.value = Select::Cast{.column = move(sel), .to = type}};
                 }
             );

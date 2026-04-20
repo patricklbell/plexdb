@@ -51,10 +51,8 @@ namespace plexdb::os {
     }
 
     void thread_set_name(Handle handle, const char* name) {
-        PLEXDB_DEBUG_X(
-            auto* entity = reinterpret_cast<ThreadEntity*>(handle.u64[0]);
-            pthread_setname_np(entity->pthread, name);
-        )
+        auto* entity = reinterpret_cast<ThreadEntity*>(handle.u64[0]);
+        pthread_setname_np(entity->pthread, name);
     }
 
     void thread_set_affinity(Handle handle, U32 core_id) {

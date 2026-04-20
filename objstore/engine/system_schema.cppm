@@ -21,4 +21,8 @@ export namespace objstore::engine {
     VirtualRows make_schema_types(schema::Schema& schema);
     VirtualRows make_schema_functions(schema::Schema& schema);
     VirtualRows make_schema_aggregates(schema::Schema& schema);
+
+    VirtualRows make_system_local();
+    VirtualRows make_system_peers();
+    VirtualRows make_system_peers_v2();
 }
