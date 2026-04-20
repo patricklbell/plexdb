@@ -3,3 +3,4 @@ scylla_cql_tests/
 .venv/
 __pycache__/
 *.pyc
+*.log

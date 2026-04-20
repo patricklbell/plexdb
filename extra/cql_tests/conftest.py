@@ -10,6 +10,7 @@
 #
 
 import os
+import shlex
 import socket
 import subprocess
 import tempfile
@@ -26,6 +27,8 @@ def pytest_addoption(parser):
                      help="CQL native transport port")
     parser.addoption("--binary", action="store", default=None,
                      help="Path to objstore_server binary; enables auto-restart on crash")
+    parser.addoption("--plugin", action="append", default=[],
+                     help="Path to a plugin .so to load via LD_PRELOAD (may be repeated)")
     parser.addoption("--log-dir", action="store", default=None,
                      help="Directory to write per-test server logs")
 
@@ -44,11 +47,12 @@ def _wait_for_port(host, port, attempts=50, delay=0.2):
 class ServerManager:
     """Manages the objstore_server process lifecycle."""
 
-    def __init__(self, binary, host, port, log_dir=None):
+    def __init__(self, binary, host, port, log_dir=None, plugins=None):
         self.binary = binary
         self.host = host
         self.port = port
         self.log_dir = log_dir
+        self.plugins = plugins or []
         self._proc = None
         self._db = None
         self._log_file = None
@@ -59,23 +63,41 @@ class ServerManager:
         os.close(fd)
         os.remove(self._db)
         env = os.environ.copy()
-        env["PLEXDB_LOG_STDERR"] = "1"
+        env.pop("LD_PRELOAD", None)
+        if not self.plugins:
+            env["PLEXDB_LOG_STDOUT"] = "1"
         if self._log_file is not None:
             self._log_file.close()
             self._log_file = None
-        stderr_target = subprocess.DEVNULL
-        stdout_target = subprocess.DEVNULL
-        cmd = [self.binary, self._db, "--port", str(self.port), "--no-uring"]
+        cmd = [self.binary, self._db, "--port", str(self.port)]
         if self.log_dir:
             os.makedirs(self.log_dir, exist_ok=True)
             log_path = os.path.join(self.log_dir, "server.log")
             self._log_file = open(log_path, "ab", buffering=0)
             stderr_target = self._log_file
             stdout_target = self._log_file
-            # Force line-buffered stdout so logs appear before server is killed
-            cmd = ["stdbuf", "-oL"] + cmd
+            if self.plugins:
+                # Run stdbuf without LD_PRELOAD so it doesn't try to load the plugin
+                # (plugin symbols don't exist in stdbuf). stdbuf will exec sh with
+                # LD_PRELOAD=libstdbuf.so; sh then appends our plugins and execs the
+                # server, which ends up with LD_PRELOAD=libstdbuf.so:plugin.so.
+                plugin_preload = ":".join(self.plugins)
+                server_cmd = " ".join(shlex.quote(c) for c in cmd)
+                shell_script = (
+                    f'LD_PRELOAD="${{LD_PRELOAD:+$LD_PRELOAD:}}{plugin_preload}" '
+                    f'exec {server_cmd}'
+                )
+                cmd = ["stdbuf", "-oL", "sh", "-c", shell_script]
+            else:
+                # Force line-buffered stdout so logs appear before server is killed
+                cmd = ["stdbuf", "-oL"] + cmd
+        else:
+            # No log dir: inherit parent stdout/stderr so crash output is visible
+            stdout_target = None
+            stderr_target = None
+            if self.plugins:
+                env["LD_PRELOAD"] = ":".join(self.plugins)
         self._proc = subprocess.Popen(
-            # @todo remove no-uring
             cmd,
             env=env,
             stderr=stderr_target,
@@ -122,7 +144,8 @@ def server_manager(request):
     host = request.config.getoption("--host")
     port = int(request.config.getoption("--port"))
     log_dir = request.config.getoption("--log-dir")
-    mgr = ServerManager(binary, host, port, log_dir=log_dir)
+    plugins = request.config.getoption("--plugin")
+    mgr = ServerManager(binary, host, port, log_dir=log_dir, plugins=plugins)
     mgr.start()
     yield mgr
     mgr.stop()

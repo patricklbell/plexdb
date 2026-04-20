@@ -9,6 +9,7 @@
 # Usage:
 #   ./extra/cql_tests/run.sh [options]
 #     -b <path>    objstore_server binary  (default: ./build/objstore/objstore_server)
+#     -p <path>    plugin .so              (default: empty)
 #     -P <port>    native protocol port    (default: 9042)
 #     -r <ref>     scylladb git ref/tag    (default: master)
 #     -t <expr>    pytest -k expression    (default: run all)
@@ -28,6 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 BINARY="${BINARY:-$ROOT_DIR/build/objstore/objstore_server}"
+PLUGINS=()
 PORT="${PORT:-9042}"
 SCYLLA_REF="${SCYLLA_REF:-master}"
 PYTEST_K=""
@@ -35,9 +37,10 @@ PYTEST_EXTRA=""
 LIST_ONLY=false
 LOG_DIR=""
 
-while getopts "b:P:r:t:xlL:h" opt; do
+while getopts "b:p:P:r:t:xlL:h" opt; do
     case "$opt" in
         b) BINARY="$OPTARG" ;;
+        p) PLUGINS+=("$OPTARG") ;;
         P) PORT="$OPTARG" ;;
         r) SCYLLA_REF="$OPTARG" ;;
         t) PYTEST_K="$OPTARG" ;;
@@ -45,7 +48,7 @@ while getopts "b:P:r:t:xlL:h" opt; do
         l) LIST_ONLY=true ;;
         L) LOG_DIR="$OPTARG" ;;
         h)
-            sed -n '2,24p' "$0" | sed 's/^# \?//'
+            sed -n '2,25p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         *) exit 1 ;;
@@ -182,8 +185,14 @@ fi
 echo "════════════════════════════════════════════════════════════"
 echo ""
 
+PLUGIN_ARGS=()
+for p in "${PLUGINS[@]}"; do
+    PLUGIN_ARGS+=(--plugin "$p")
+done
+
 python3 -m pytest "$TESTS_DIR/cassandra_tests/" \
     --host "$HOST" --port "$PORT" --binary "$BINARY" \
+    "${PLUGIN_ARGS[@]}" \
     ${LOG_DIR:+--log-dir "$LOG_DIR"} \
     --override-ini="pythonpath=$PARENT_OF_TESTS" \
     --rootdir="$TESTS_DIR" \
