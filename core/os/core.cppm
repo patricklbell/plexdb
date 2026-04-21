@@ -151,12 +151,15 @@ export namespace plexdb::os {
     S32 process_fork();
     // Send signal to process by pid. Returns true on success.
     bool process_kill(S32 pid, S32 signal_number);
-    // Wait for child process. Returns exit status or -signal if killed by signal.
+    // Wait for child process.
+    // Returns: exit code if child exited normally, -signal_number if killed by signal, -1 otherwise.
     S32 process_wait(S32 pid);
     // Returns the current process PID.
     S32 process_get_pid();
     // Terminate immediately without running destructors or atexit handlers.
     void process_exit_immediate(S32 code);
+    // Block until any signal arrives (useful in a signal-killable wait loop).
+    void process_pause();
 
     // ========================================================================
     // streams
