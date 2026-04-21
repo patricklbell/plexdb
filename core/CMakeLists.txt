@@ -77,6 +77,7 @@ target_sources(core_modules
             os/uring.cppm
             tagged_union/tagged_union.cppm
             pager/pager.cppm
+            pager/wal.cppm
             third_party/xxhash/xxhash.cppm
             threads/threads.cppm
 )
@@ -125,6 +126,7 @@ target_sources(core
         os/time.cpp
         os/uring.cpp
         pager/pager.cpp
+        pager/wal.cpp
         threads/threads.cpp
 )
 

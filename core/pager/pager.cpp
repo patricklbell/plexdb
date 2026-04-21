@@ -82,15 +82,44 @@ namespace plexdb::pager {
         return header;
     }
 
+    static void init_read_cache(Pager& pager) {
+        pager.read_cache = os::allocate_zero(get_cache_size(pager)*pager.read_cache_count);
+    }
+
+    // Recover from WAL if committed frames exist.
+    static void maybe_recover_wal(Pager& pager) {
+        if (os::is_zero_handle(pager.wal.file)) return;
+        if (!wal_load(pager.wal, pager.header.page_size)) return;
+        if (!wal_has_committed(pager.wal)) return;
+
+        wal_checkpoint(pager.wal, pager.file, pager.base_offset);
+        wal_reset(pager.wal);
+        // Re-read header after recovery.
+        read_header(pager);
+    }
+
     Pager::Pager(os::Handle file, U64 base_offset, U64 read_cache)
       : file(file), base_offset(base_offset), read_cache_count(read_cache) {
         read_header(*this);
-        this->read_cache = os::allocate_zero(get_cache_size(*this)*this->read_cache_count);
+        init_read_cache(*this);
     }
     Pager::Pager(os::Handle file, const Pager::Header& header, U64 base_offset, U64 read_cache)
        : file(file), base_offset(base_offset), header(header), read_cache_count(read_cache) {
-        this->read_cache = os::allocate_zero(get_cache_size(*this)*this->read_cache_count);
+        init_read_cache(*this);
     }
+
+    Pager::Pager(os::Handle file, os::Handle wal_file, U64 base_offset, U64 read_cache)
+      : file(file), base_offset(base_offset), read_cache_count(read_cache), wal(Wal(wal_file)) {
+        read_header(*this);
+        maybe_recover_wal(*this);
+        init_read_cache(*this);
+    }
+    Pager::Pager(os::Handle file, os::Handle wal_file, const Pager::Header& header, U64 base_offset, U64 read_cache)
+       : file(file), base_offset(base_offset), header(header), read_cache_count(read_cache), wal(Wal(wal_file)) {
+        wal_init(this->wal, header.page_size);
+        init_read_cache(*this);
+    }
+
     Pager::Pager(Pager&& other):
         file(other.file),
         base_offset(other.base_offset),
@@ -99,7 +128,8 @@ namespace plexdb::pager {
         read_cache_count(other.read_cache_count),
         read_cache(other.read_cache),
         write_arena(move(other.write_arena)),
-        write_set(move(other.write_set))
+        write_set(move(other.write_set)),
+        wal(move(other.wal))
     {
         other.file = os::zero_handle();
         other.read_cache = nullptr;
@@ -133,6 +163,7 @@ namespace plexdb::pager {
         read_cache = other.read_cache;
         write_arena = move(other.write_arena);
         write_set = move(other.write_set);
+        wal = move(other.wal);
 
         other.file = os::zero_handle();
         other.read_cache = nullptr;
@@ -179,17 +210,51 @@ namespace plexdb::pager {
     }
 
     void fflush(Pager& pager) {
-        for (auto& idx : pager.write_set) {
-            auto entry = get_cache_entry(pager, idx);
-            assert_true(entry->idx != 0, "header page found in write set");
-            // write as long as page has not already been freed
-            if (idx < pager.header.page_count)
-                write_page(pager, get_cache_data(pager, idx), idx);
-            entry->in_write_set = false;
-        }
-        if (pager.header_in_write_set) {
-            write_header(pager);
-            pager.header_in_write_set = false;
+        bool use_wal = !os::is_zero_handle(pager.wal.file);
+
+        if (use_wal) {
+            // Ensure WAL is initialised for this session.
+            if (pager.wal.header.page_size == 0)
+                wal_init(pager.wal, pager.header.page_size);
+
+            U64 frames_appended = 0;
+            for (auto& idx : pager.write_set) {
+                auto entry = get_cache_entry(pager, idx);
+                assert_true(entry->idx != 0, "header page found in write set");
+                if (idx < pager.header.page_count) {
+                    wal_append_frame(pager.wal, idx, get_cache_data(pager, idx));
+                    frames_appended++;
+                }
+                entry->in_write_set = false;
+            }
+            if (pager.header_in_write_set) {
+                // Pad header to page_size in a temporary buffer.
+                U8* buf = os::allocate_zero(pager.header.page_size);
+                os::memory_copy(buf, &pager.header, sizeof(pager.header));
+                wal_append_frame(pager.wal, MAX_U64, buf);
+                os::deallocate(buf);
+                pager.header_in_write_set = false;
+                frames_appended++;
+            }
+
+            if (frames_appended > 0) {
+                wal_commit(pager.wal);
+                wal_checkpoint(pager.wal, pager.file, pager.base_offset);
+                wal_reset(pager.wal);
+            }
+        } else {
+            for (auto& idx : pager.write_set) {
+                auto entry = get_cache_entry(pager, idx);
+                assert_true(entry->idx != 0, "header page found in write set");
+                // write as long as page has not already been freed
+                if (idx < pager.header.page_count)
+                    write_page(pager, get_cache_data(pager, idx), idx);
+                entry->in_write_set = false;
+            }
+            if (pager.header_in_write_set) {
+                write_header(pager);
+                pager.header_in_write_set = false;
+            }
         }
 
         clear(pager.write_set);

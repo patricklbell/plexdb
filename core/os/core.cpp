@@ -6,6 +6,8 @@ module;
     #include <unistd.h>
     #include <sys/types.h>
     #include <sys/stat.h>
+    #include <sys/wait.h>
+    #include <signal.h>
 #endif
 
 module plexdb.os.core;
@@ -147,6 +149,29 @@ namespace plexdb::os {
         return FileStats{
             .byte_count = static_cast<U64>(stat.st_size),
         };
+    }
+
+    // ========================================================================
+    // process
+    // ========================================================================
+    S32 process_fork() {
+        return static_cast<S32>(fork());
+    }
+    bool process_kill(S32 pid, S32 signal_number) {
+        return kill(static_cast<pid_t>(pid), signal_number) == 0;
+    }
+    S32 process_wait(S32 pid) {
+        int status = 0;
+        waitpid(static_cast<pid_t>(pid), &status, 0);
+        if (WIFEXITED(status))   return WEXITSTATUS(status);
+        if (WIFSIGNALED(status)) return -WTERMSIG(status);
+        return -1;
+    }
+    S32 process_get_pid() {
+        return static_cast<S32>(getpid());
+    }
+    void process_exit_immediate(S32 code) {
+        _exit(static_cast<int>(code));
     }
 
     // ========================================================================
