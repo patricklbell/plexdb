@@ -69,7 +69,8 @@ class ServerManager:
         if self._log_file is not None:
             self._log_file.close()
             self._log_file = None
-        cmd = [self.binary, self._db, "--port", str(self.port)]
+        # @note conformance runs force sync sockets due to known io_uring async write instability.
+        cmd = [self.binary, self._db, "--port", str(self.port), "--no-uring"]
         if self.log_dir:
             os.makedirs(self.log_dir, exist_ok=True)
             log_path = os.path.join(self.log_dir, "server.log")
@@ -277,10 +278,7 @@ _unique_ks.last = 0
 @pytest.fixture(scope="function")
 def test_keyspace(cql, this_dc):
     ks = _unique_ks()
-    cql.execute(
-        f"CREATE KEYSPACE {ks} WITH replication = "
-        f"{{'class': 'SimpleStrategy', 'replication_factor': 1}}"
-    )
+    cql.execute(f"CREATE KEYSPACE {ks}")
     yield ks
     try:
         cql.execute(f"DROP KEYSPACE {ks}")

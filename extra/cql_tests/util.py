@@ -40,9 +40,10 @@ def keyspace_has_tablets(cql, keyspace):
     return False
 
 @contextmanager
-def new_test_keyspace(cql, opts):
+def new_test_keyspace(cql, _opts):
+    # @note keep _opts for upstream helper compatibility; objstore currently creates keyspaces without options.
     keyspace = unique_name()
-    cql.execute("CREATE KEYSPACE " + keyspace + " " + opts)
+    cql.execute("CREATE KEYSPACE " + keyspace)
     try:
         yield keyspace
     finally:
