@@ -1,5 +1,7 @@
 export module plexdb.pager;
 
+export import plexdb.pager.wal;
+
 import plexdb.base;
 import plexdb.os;
 import plexdb.arena;
@@ -42,9 +44,15 @@ export namespace plexdb::pager {
         Arena write_arena;
         Stack<U64> write_set;
 
+        // Optional WAL: when present, fflush writes through WAL before checkpointing.
+        Wal wal;
+
         Pager() = default;
         Pager(os::Handle file, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
         Pager(os::Handle file, const Pager::Header& header, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
+        // WAL-enabled constructors: wal_file must be a valid handle.
+        Pager(os::Handle file, os::Handle wal_file, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
+        Pager(os::Handle file, os::Handle wal_file, const Pager::Header& header, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
         Pager(Pager&& other);
         ~Pager();
 
