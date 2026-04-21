@@ -173,6 +173,9 @@ namespace plexdb::os {
     void process_exit_immediate(S32 code) {
         _exit(static_cast<int>(code));
     }
+    void process_pause() {
+        pause();  // blocks until any signal is delivered
+    }
 
     // ========================================================================
     // streams

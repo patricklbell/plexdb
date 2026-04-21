@@ -41,7 +41,8 @@ namespace plexdb::pager {
     void wal_init(Wal& wal, U64 page_size) {
         assert_true(!os::is_zero_handle(wal.file), "wal_init requires valid file handle");
 
-        // Use current time as the salt source for uniqueness.
+        // @note Use monotonic time XOR address as a non-cryptographic salt for
+        // frame checksum uniqueness within a WAL lifecycle (not for security).
         U64 salt = static_cast<U64>(os::monotonic_us()) ^ (U64)(uintptr_t)(&wal);
 
         wal.header = Wal::Header{
@@ -136,9 +137,8 @@ namespace plexdb::pager {
             assert_true(frame.checksum == expected, "WAL frame checksum mismatch during checkpoint");
 
             if (frame.page_idx == WAL_HEADER_FRAME_IDX) {
-                // Pager header frame: write only sizeof(Pager::Header) bytes.
-                // We don't know the Pager::Header size here, so we write the full
-                // page_size bytes at offset base_offset (header lives at page 0).
+                // Pager header frame: padded to page_size on write, so write the
+                // full buffer here (safe — pager only reads sizeof(Pager::Header) bytes).
                 os::file_write(db_file, Rng1U64{.start=base_offset, .end=base_offset+page_size}, buf);
             } else {
                 U64 db_start = base_offset + page_size * frame.page_idx;

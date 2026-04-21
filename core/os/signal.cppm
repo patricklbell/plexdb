@@ -35,10 +35,11 @@ export namespace plexdb::os {
     void signal_exit(int code);
 
     // Platform signal numbers for use with process_kill.
+    // Values match the POSIX/Linux ABI specification.
 #if PLEXDB_OS_LINUX
-    constexpr S32 SIGNAL_KILL = 9;   // SIGKILL
-    constexpr S32 SIGNAL_USR1 = 10;  // SIGUSR1
-    constexpr S32 SIGNAL_TERM = 15;  // SIGTERM
+    constexpr S32 SIGNAL_KILL = 9;   // SIGKILL: cannot be caught or ignored
+    constexpr S32 SIGNAL_USR1 = 10;  // SIGUSR1: user-defined signal 1
+    constexpr S32 SIGNAL_TERM = 15;  // SIGTERM: default termination signal
 #endif
 
     struct Poll {

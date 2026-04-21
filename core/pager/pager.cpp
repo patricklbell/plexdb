@@ -214,6 +214,7 @@ namespace plexdb::pager {
 
         if (use_wal) {
             // Ensure WAL is initialised for this session.
+            // page_size == 0 means wal_load failed (empty or corrupt file) — safe to reinitialise.
             if (pager.wal.header.page_size == 0)
                 wal_init(pager.wal, pager.header.page_size);
 

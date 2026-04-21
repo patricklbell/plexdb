@@ -453,8 +453,8 @@ TEST_CASE("WAL: SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]
         // Signal parent that WAL is committed and we are ready to be killed.
         os::signal_notify_safe(notifier);
 
-        // Busy-wait until SIGKILL arrives.
-        for (;;) {}
+        // Suspend until SIGKILL arrives (more efficient than busy-waiting).
+        os::process_pause();
     }
 
     // Parent: wait for child's ready signal then deliver SIGKILL.
