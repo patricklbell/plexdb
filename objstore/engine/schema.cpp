@@ -26,20 +26,23 @@ namespace objstore::schema {
 
         SchemaHeader schema_header{};
         blob::tget(this->schema_blob, &schema_header);
-        
+
         this->keyspaces_blob = blob::BlobDynamicPaged(in_pager, schema_header.keyspaces_page);
         this->tables_blob = blob::BlobDynamicPaged(in_pager, schema_header.tables_page);
         this->columns_blob = blob::BlobDynamicPaged(in_pager, schema_header.columns_page);
-    
-        // 
+
+        //
         // allocate storage and cache blob contents in memory
-        // 
+        //
         for (U64 keyspace_offset_bytes = 0; keyspace_offset_bytes < keyspaces_blob.size_bytes;) {
             KeyspaceStorage ks_storage{
                 .offset_in_blob_bytes = keyspace_offset_bytes,
                 .header = {},
                 .name = {},
                 .tables = {},
+                .replication_class = ReplicationClass::Unknown,
+                .replication_factor = 0,
+                .do_durable_writes = false,
             };
 
             blob::tget(this->keyspaces_blob, &ks_storage.header, &keyspace_offset_bytes);
@@ -90,9 +93,9 @@ namespace objstore::schema {
         }
 
 
-        // 
+        //
         // resolves indices and contruct views
-        // 
+        //
         reserve(this->keyspaces, this->storage.keyspaces.length);
         for (U64 ks_idx = 0; ks_idx < this->storage.keyspaces.length; ks_idx++) {
             const KeyspaceStorage& ks_storage = this->storage.keyspaces[ks_idx];
@@ -151,38 +154,134 @@ namespace objstore::schema {
         return schema_page;
     }
 
-    // 
+    //
     // @todo cache maps for lookups
-    // 
+    //
 
-    Keyspace* read_keyspace_impl(Schema& schema, String8 name) {
+    static Result<Keyspace*> read_keyspace_impl(Schema& schema, String8 name) {
         for (auto& ks : schema.keyspaces) {
             if (ks.name == name && !ks.tombstone) {
-                return &ks;
+                return {&ks};
             }
         }
-        return nullptr;
+        return {nullptr, Error::MissingKeyspace};
     }
-    Table* read_table_impl([[maybe_unused]] Schema& schema, Keyspace& ks, String8 name) {
+    static Result<Table*> read_table_impl([[maybe_unused]] Schema& schema, Keyspace& ks, String8 name) {
         for (auto& tbl : ks.tbls) {
             if (tbl.name == name && !tbl.tombstone) {
-                return &tbl;
+                return {&tbl};
             }
         }
-        return nullptr;
+        return {nullptr, Error::MissingTable};
     }
-    Column* read_column_impl([[maybe_unused]] Schema& schema, Table& tbl, String8 name) {
+    static Result<Column*> read_column_impl([[maybe_unused]] Schema& schema, Table& tbl, String8 name) {
         for (auto& col : tbl.cols) {
             if (col.name == name && !col.tombstone) {
-                return &col;
+                return {&col};
             }
         }
-        return nullptr;
+        return {nullptr, Error::MissingColumn};
     }
 
-    Keyspace* create_keyspace(Schema& schema, const CreateKeyspace& create) {
-        assert_true_not_implemented(create.options.identifier_values.length == 0);
-        assert_true(read_keyspace_impl(schema, create.name) == nullptr, "keyspace already exists");
+    [[nodiscard("option may be invalid")]]
+    static Result<void> apply_keyspace_replication_option(KeyspaceStorage& storage, const OptionValue& option) {
+        if (!type_matches_tag<MapLiteral>(option)) {
+            return {Error::InvalidOptions, "replication option is not a map literal"};
+        }
+
+        const auto& map = get<MapLiteral>(option);
+        for (const auto& [key_term, value_term] : map.key_values) {
+            if (!type_matches_tag<Constant>(key_term.value)) {
+                return {Error::InvalidOptions, "replication option key should be a string"};
+            }
+            const auto& key_constant = get<Constant>(key_term.value);
+            if (!type_matches_tag<AutoString8>(key_constant.value)) {
+                return {Error::InvalidOptions, "replication option key should be a string"};
+            }
+            const auto& key = get<AutoString8>(key_constant.value);
+
+            if (key == "class") {
+                if (!type_matches_tag<Constant>(value_term.value)) {
+                    return {Error::InvalidOptions, "replication class should be a string"};
+                }
+                const auto& value_constant = get<Constant>(value_term.value);
+                if (!type_matches_tag<AutoString8>(value_constant.value)) {
+                    return {Error::InvalidOptions, "replication class should be a string"};
+                }
+                const auto& value = get<AutoString8>(value_constant.value);
+
+                if (value == "SimpleStrategy") {
+                    storage.replication_class = ReplicationClass::SimpleStrategy;
+                } else if (value == "NetworkTopologyStrategy") {
+                    assert_not_implemented("NetworkTopologyStrategy replication class not implemented");
+                } else {
+                    return {Error::InvalidOptions, "unknown replication class"};
+                }
+            } else if (key == "replication_factor") {
+                if (!type_matches_tag<Constant>(value_term.value)) {
+                    return {Error::InvalidOptions, "replication factor should be an integer"};
+                }
+                const auto& value_constant = get<Constant>(value_term.value);
+                if (!type_matches_tag<S64>(value_constant.value)) {
+                    return {Error::InvalidOptions, "replication factor should be an integer"};
+                }
+                const auto& value = get<S64>(value_constant.value);
+
+                if (value <= 0) {
+                    return {Error::InvalidOptions, "replication factor must be strictly positive"};
+                }
+
+                storage.replication_factor = value;
+            } else {
+                assert_not_implemented("NetworkTopologyStrategy per-datacenter replication factors are not implemented");
+            }
+        }
+
+        return {};
+    }
+
+    [[nodiscard("option may be invalid")]]
+    static Result<void> apply_keyspace_durable_writes_option(KeyspaceStorage& storage, const OptionValue& option) {
+        if (!type_matches_tag<Constant>(option)) {
+            return {Error::InvalidOptions, "durable write option should be a boolean"};
+        }
+        const auto& value_constant = get<Constant>(option);
+        if (!type_matches_tag<bool>(value_constant.value)) {
+            return {Error::InvalidOptions, "durable write option should be a boolean"};
+        }
+        const auto& value = get<bool>(value_constant.value);
+
+        storage.do_durable_writes = value;
+        return {};
+    }
+
+    [[nodiscard("options may be invalid")]]
+    static Result<void> apply_keyspace_options(KeyspaceStorage& storage, const Options& opts) {
+        // @todo determine if a replication strategy is required
+        storage.replication_class = ReplicationClass::SimpleStrategy;
+        storage.replication_factor = 1;
+        storage.do_durable_writes = true;
+
+        for (const auto& [key, value] : opts.identifier_values) {
+            if (key == "replication") {
+                if (auto res = apply_keyspace_replication_option(storage, value); res.error != Error::None) {
+                    return res;
+                }
+            } else if (key == "durable_writes") {
+                if (auto res = apply_keyspace_durable_writes_option(storage, value); res.error != Error::None) {
+                    return res;
+                }
+            } else {
+                return {Error::InvalidOptions, "Unknown option in keyspace WITH"};
+            }
+        }
+
+        // @todo should we error if not replication class is provided or continue being more permissive?
+        return {Error::None};
+    }
+
+    Result<Keyspace*> create_keyspace(Schema& schema, const CreateKeyspace& create) {
+        assert_true(read_keyspace_impl(schema, create.name).error == Error::MissingKeyspace, "keyspace already exists");
 
         U64 offset_bytes = schema.keyspaces_blob.size_bytes;
 
@@ -194,13 +293,20 @@ namespace objstore::schema {
             },
             .name = AutoString8(create.name),
             .tables = {},
+            .replication_class = ReplicationClass::SimpleStrategy,
+            .replication_factor = 1,
+            .do_durable_writes = true,
         };
+        if (auto res = apply_keyspace_options(ks_storage, create.options); res.error != Error::None) {
+            return {nullptr, res.error, res.message};
+        }
+
         KeyspaceStorage& ks_storage_ref = push_back(schema.storage.keyspaces, move(ks_storage));
 
         blob::resize(
-            schema.keyspaces_blob, offset_bytes + 
+            schema.keyspaces_blob, offset_bytes +
             // fixed
-            sizeof(ks_storage_ref.header) + 
+            sizeof(ks_storage_ref.header) +
             // variable length
             ks_storage_ref.name.length
         );
@@ -214,13 +320,15 @@ namespace objstore::schema {
             .name = ks_storage_ref.name,
             .tbls = {},
         };
-        return &push_back(schema.keyspaces, move(ks));
+        return {&push_back(schema.keyspaces, move(ks))};
     }
-    Keyspace* read_keyspace(Schema& schema, String8 name) {
+    Result<Keyspace*> read_keyspace(Schema& schema, String8 name) {
         return read_keyspace_impl(schema, name);
     }
-    bool delete_keyspace(Schema& schema, String8 name) {
-        if (Keyspace* ks = read_keyspace_impl(schema, name); ks != nullptr) {
+    Result<void> delete_keyspace(Schema& schema, String8 name) {
+        auto ks_res = read_keyspace_impl(schema, name);
+        if (ks_res.error == Error::None) {
+            const auto& ks = ks_res.value;
             ks->tombstone = true;
 
             KeyspaceStorage& ks_storage = schema.storage.keyspaces[ks->idx];
@@ -228,9 +336,9 @@ namespace objstore::schema {
 
             U64 offset = ks_storage.offset_in_blob_bytes + offsetof(KeyspaceHeader, tombstone);
             tupdate(schema.keyspaces_blob, &ks_storage.header.tombstone, &offset);
-            return true;
+            return {};
         }
-        return false;
+        return {ks_res.error, ks_res.message};
     }
 
     static Optional<U64> get_primary_key_col_idx(const CreateTable& create) {
@@ -275,17 +383,17 @@ namespace objstore::schema {
         return {};
     }
 
-    Table* create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
+    Result<Table*> create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
         assert_true_not_implemented(create.options.value.length == 0);
-        assert_true(read_table_impl(schema, ks, create.name.table_name) == nullptr, "table already exists");
+        assert_true(read_table_impl(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
 
         auto primary_key_col_idx_opt = get_primary_key_col_idx(create);
         if (!primary_key_col_idx_opt) // @todo error code/message
-            return nullptr;
+            return {nullptr, Error::MissingPrimaryKey, "table needs a primary key"};
         U64 primary_key_col_idx = *primary_key_col_idx_opt;
-        
+
         U64 btree_page = btree::create_paged(*schema.tables_blob.pager, sizeof(U64));
-        
+
         U64 offset_bytes = schema.tables_blob.size_bytes;
 
         TableStorage tbl_storage {
@@ -302,9 +410,9 @@ namespace objstore::schema {
         TableStorage& tbl_storage_ref = push_back(schema.storage.tables, move(tbl_storage));
 
         blob::resize(
-            schema.tables_blob, offset_bytes + 
+            schema.tables_blob, offset_bytes +
             // fixed
-            sizeof(tbl_storage_ref.header) + 
+            sizeof(tbl_storage_ref.header) +
             // variable length
             tbl_storage_ref.name.length
         );
@@ -320,36 +428,34 @@ namespace objstore::schema {
             .primary_col_idx = primary_key_col_idx,
             .btree = btree::BTreePaged(schema.tables_blob.pager, tbl_storage_ref.header.btree_page),
         };
-        
+
         Table& tbl_ref = push_back(ks.tbls, move(tbl));
 
         for (U64 col_def_idx = 0; col_def_idx < create.column_definitions.length; col_def_idx++) {
             auto& col_def = create.column_definitions[col_def_idx];
 
-            if (Column* col = read_column_impl(schema, tbl, col_def.name.identifier); col != nullptr) {
+            if (read_column_impl(schema, tbl, col_def.name.identifier).error != Error::MissingColumn) {
                 // @todo hard delete
                 delete_table(schema, ks, create.name.table_name);
-                // @todo error code/message
-                return nullptr;
+                return {nullptr, Error::ColumnNameCollision};
             }
 
-            Column* col_ref = create_column(schema, tbl_ref, col_def);
-
-            if (col_ref == nullptr)  {
+            if (auto res = create_column(schema, tbl_ref, col_def); res.error != Error::None)  {
                 // @todo hard delete
                 delete_table(schema, ks, create.name.table_name);
-                // @todo error code/message
-                return nullptr;
+                return {nullptr, res.error, res.message};
             }
         }
 
-        return &tbl_ref;
+        return {&tbl_ref};
     }
-    Table* read_table(Schema& schema, Keyspace& ks, String8 name) {
+    Result<Table*> read_table(Schema& schema, Keyspace& ks, String8 name) {
         return read_table_impl(schema, ks, name);
     }
-    bool delete_table(Schema& schema, Keyspace& ks, String8 name) {
-        if (Table* tbl = read_table_impl(schema, ks, name); tbl != nullptr) {
+    Result<void> delete_table(Schema& schema, Keyspace& ks, String8 name) {
+        auto tbl_res = read_table_impl(schema, ks, name);
+        if (tbl_res.error != Error::None) {
+            const auto& tbl = tbl_res.value;
             tbl->tombstone = true;
 
             TableStorage& tbl_storage = schema.storage.tables[tbl->idx];
@@ -357,15 +463,15 @@ namespace objstore::schema {
 
             U64 offset = tbl_storage.offset_in_blob_bytes + offsetof(TableHeader, tombstone);
             tupdate(schema.tables_blob, &tbl_storage.header.tombstone, &offset);
-            return true;
+            return {};
         }
-        return false;
+        return {tbl_res.error, tbl_res.message};
     }
 
-    Column* create_column(Schema& schema, Table& tbl, const ColumnDefinition& create) {
+    Result<Column*> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create) {
         assert_true_not_implemented(!create._static);
         assert_true_not_implemented(!create.mask);
-        assert_true(read_column_impl(schema, tbl, create.name.identifier) == nullptr, "column already exists");
+        assert_true(read_column_impl(schema, tbl, create.name.identifier).error == Error::MissingColumn, "column already exists");
 
         U64 offset_bytes = schema.columns_blob.size_bytes;
 
@@ -382,9 +488,9 @@ namespace objstore::schema {
         ColumnStorage& col_storage_ref = push_back(schema.storage.columns, move(col_storage));
 
         blob::resize(
-            schema.columns_blob, offset_bytes + 
+            schema.columns_blob, offset_bytes +
             // fixed
-            sizeof(col_storage_ref.header) + 
+            sizeof(col_storage_ref.header) +
             // variable length
             col_storage_ref.name.length
         );
@@ -397,13 +503,15 @@ namespace objstore::schema {
             .name = col_storage_ref.name,
             .type = col_storage_ref.header.type,
         };
-        return &push_back(tbl.cols, move(col));
+        return {&push_back(tbl.cols, move(col))};
     }
-    Column* read_column(Schema& schema, Table& tbl, String8 name) {
+    Result<Column*> read_column(Schema& schema, Table& tbl, String8 name) {
         return read_column_impl(schema, tbl, name);
     }
-    bool delete_column(Schema& schema, Table& tbl, String8 name) {
-        if (Column* col = read_column_impl(schema, tbl, name); col != nullptr) {
+    Result<void> delete_column(Schema& schema, Table& tbl, String8 name) {
+        auto col_res = read_column_impl(schema, tbl, name);
+        if (col_res.error != Error::None) {
+            const auto& col = col_res.value;
             col->tombstone = true;
 
             for (auto& col_storage : schema.storage.columns) {
@@ -416,8 +524,8 @@ namespace objstore::schema {
                     break;
                 }
             }
-            return true;
+            return {};
         }
-        return false;
+        return {col_res.error, col_res.message};
     }
 }

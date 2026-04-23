@@ -75,7 +75,7 @@ export namespace objstore::engine {
         return "UNKNOWN";
     }
 
-    
+
     enum class ResultKind : U8 {
         Void = 0,       // No result (INSERT, UPDATE, DELETE)
         Rows,           // SELECT result
@@ -136,10 +136,11 @@ export namespace objstore::engine {
     struct ExecutionResult {
         ExecutionStatus status = ExecutionStatus::Success;
         ResultKind kind = ResultKind::Void;
+        // @todo should we store the resolved ptr instead?
         String8 message = "";
         String8 keyspace = "";
         String8 table = "";
-        
+
         Optional<RowRange> rows = {};
         Optional<VirtualRows> virtual_rows = {};
     };

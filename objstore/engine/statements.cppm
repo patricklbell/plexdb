@@ -119,10 +119,9 @@ export namespace objstore {
         AutoString8 identifier;
     };
 
-    using OptionPair = Pair<
-        AutoString8,
-        ExpandTaggedUnion<TypeList<AutoString8, Constant, MapLiteral>>
-    >;
+    using OptionKey = AutoString8;
+    using OptionValue = ExpandTaggedUnion<TypeList<AutoString8, Constant, MapLiteral>>;
+    using OptionPair = Pair<OptionKey, OptionValue>;
     struct Options {
         DynamicArray<OptionPair> identifier_values;
     };
@@ -143,7 +142,7 @@ export namespace objstore {
     };
 
     enum class Operator { eq, lt, gt, le, ge, ne, in, contains, contains_key };
-    
+
     struct SimpleSelection {
         struct Subscript { Term index; };
         struct FieldAccess { AutoString8 field; };
@@ -201,7 +200,7 @@ export namespace objstore {
         AutoString8 name;
         Options options;
     };
-    
+
     struct UseKeyspace {
         AutoString8 keyspace;
     };
@@ -307,7 +306,7 @@ export namespace objstore {
     struct TOIArithmeticOperation;
     struct TermWithIdentifiers {
         ExpandDynamicTaggedUnion<
-            // @note @warn order MUST match Term to allow direct pointer moving 
+            // @note @warn order MUST match Term to allow direct pointer moving
             TypeList<
                 Constant,
                 MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
@@ -423,7 +422,7 @@ export namespace objstore {
         Optional<WhereClause> where;
         Optional<GroupByClause> group_by;
         Optional<OrderByClause> order_by;
-        PerPartitionLimit per_partition_limit; 
+        PerPartitionLimit per_partition_limit;
         Limit limit;
         bool allow_filtering;
     };

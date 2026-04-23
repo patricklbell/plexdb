@@ -253,40 +253,40 @@ namespace objstore::engine {
                     return (stmt.if_not_exists) ? make_void_success() : make_keyspace_already_exists(stmt.name);
                 }
 
-                if (auto existing = schema::read_keyspace(engine.schema, stmt.name); existing != nullptr) {
+                if (auto existing = schema::read_keyspace(engine.schema, stmt.name).value; existing != nullptr) { // @todo propogate error
                     return (stmt.if_not_exists) ? make_void_success() : make_keyspace_already_exists(stmt.name);
                 }
 
-                auto ks = schema::create_keyspace(engine.schema, stmt);
+                auto ks = schema::create_keyspace(engine.schema, stmt).value; // @todo propogate error
                 if (ks == nullptr) {
                     return make_server_error("Failed to create keyspace");
                 }
-    
+
                 return make_keyspace_created(stmt.name);
             } else if constexpr (SameAs<T, CreateTable>) {
                 String8 ks_name = static_cast<bool>(stmt.name.keyspace_name) ? String8(*stmt.name.keyspace_name) : engine.current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name));
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propogate error
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
 
-                if (auto existing = schema::read_table(engine.schema, *ks, stmt.name.table_name); existing != nullptr) {
+                if (auto existing = schema::read_table(engine.schema, *ks, stmt.name.table_name); existing.value != nullptr) { // @todo propogate error
                     return (stmt.if_not_exists) ? make_void_success() : make_table_already_exists(ks_name, stmt.name.table_name);
                 }
-    
-                auto tbl = schema::create_table(engine.schema, *ks, stmt);
+
+                auto tbl = schema::create_table(engine.schema, *ks, stmt).value; // @todo propogate error
                 if (tbl == nullptr) {
                     return make_server_error("Failed to create table");
                 }
-                
+
                 return make_table_created(ks_name, stmt.name.table_name);
             } else if constexpr (SameAs<T, UseKeyspace>) {
                 if (is_system_keyspace(stmt.keyspace)) {
                     engine.current_keyspace = stmt.keyspace;
                     return make_use_keyspace(engine.current_keyspace);
                 }
-                
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace);
+
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace).value; // @todo propogate error
                 if (ks == nullptr) return make_keyspace_not_found(stmt.keyspace);
                 engine.current_keyspace = stmt.keyspace;
 
@@ -294,22 +294,22 @@ namespace objstore::engine {
             } else if constexpr (SameAs<T, AlterKeyspace>) {
                 assert_true_not_implemented(!is_system_keyspace(stmt.keyspace));
 
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace);
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace).value; // @todo propogate error
                 if (ks == nullptr) {
                     return (stmt.if_exists) ? make_void_success() :  make_keyspace_not_found(stmt.keyspace);
                 }
 
                 assert_true_not_implemented(stmt.options.identifier_values.length == 0);
-                
+
                 return make_schema_changed(stmt.keyspace);
             } else if constexpr (SameAs<T, DropKeyspace>) {
                 assert_true_not_implemented(!is_system_keyspace(stmt.keyspace));
 
-                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace);
+                auto ks = schema::read_keyspace(engine.schema, stmt.keyspace).value; // @todo propogate error
                 if (ks == nullptr) {
                     return (stmt.if_exists) ? make_void_success() : make_keyspace_not_found(stmt.keyspace);
                 }
-                
+
                 schema::delete_keyspace(engine.schema, stmt.keyspace);
 
                 return make_schema_changed(stmt.keyspace);
@@ -317,27 +317,27 @@ namespace objstore::engine {
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name));
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propogate error
                 if (ks == nullptr) {
                     return (stmt.if_exists) ? make_void_success() : make_keyspace_not_found(ks_name);
                 }
 
-                if (!schema::delete_table(engine.schema, *ks, stmt.table.table_name)) {
+                if (schema::delete_table(engine.schema, *ks, stmt.table.table_name).error != schema::Error::None) { ; // @todo propogate error
                     if (stmt.if_exists) return make_void_success();
                     return make_table_not_found(ks_name, stmt.table.table_name);
                 }
-                
+
                 return make_schema_changed(ks_name, stmt.table.table_name);
             } else if constexpr (SameAs<T, TruncateTable>) {
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name));
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propogate error
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
 
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name);
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value; // @todo propogate error
                 if (tbl == nullptr) return make_table_not_found(ks_name, stmt.table.table_name);
-                
+
                 btree::truncate(tbl->btree);
 
                 return make_void_success();
@@ -356,10 +356,10 @@ namespace objstore::engine {
                 }
                 assert_true_not_implemented(!is_system_keyspace(ks_name));
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propogate error
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
-    
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.from.table_name);
+
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.from.table_name).value; // @todo propogate error
                 if (tbl == nullptr) return make_table_not_found(ks_name, stmt.from.table_name);
 
                 assert_true_not_implemented(!stmt.transform);
@@ -398,14 +398,14 @@ namespace objstore::engine {
             } else if constexpr (SameAs<T, Insert>) {
                 assert_true_not_implemented(stmt.using_parameters.length == 0);
                 assert_true(static_cast<bool>(stmt.insert_clause), "missing insert clause, this should never happen");
-                
+
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name));
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propogate error
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
 
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name);
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value; // @todo propogate error
                 if (tbl == nullptr) return make_table_not_found(ks_name, stmt.table.table_name);
 
                 return visit(stmt.insert_clause, [&](const auto& v) -> ExecutionResult {
@@ -471,7 +471,7 @@ namespace objstore::engine {
                             U64 pk_key = hash(pk_eval);
                             tinsert(tbl->btree, pk_key, row_page);
                         }
-                        
+
                         return make_void_success();
                     } else if constexpr (SameAs<T, Insert::JsonClause>) {
                         assert_not_implemented();
@@ -503,9 +503,9 @@ namespace objstore::engine {
     // ========================================================================
     static void collect_bind_variables_insert(Engine& engine, const Insert& stmt, DynamicArray<BindVariableSpec>& out) {
         String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
-        auto ks = schema::read_keyspace(engine.schema, ks_name);
+        auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propogate error
         if (ks == nullptr) return;
-        auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name);
+        auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value; // @todo propogate error
         if (tbl == nullptr) return;
 
         if (!type_matches_tag<Insert::NamesValues>(stmt.insert_clause)) return;
@@ -593,9 +593,9 @@ namespace objstore::engine {
                 entry.keyspace = AutoString8(ks_name);
                 entry.table = AutoString8(stmt.table.table_name);
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name);
+                auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propogate error
                 if (ks == nullptr) return;
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name);
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value; // @todo propogate error
                 if (tbl == nullptr) return;
                 for (U64 i = 0; i < entry.bind_variables.length; i++) {
                     if (tbl->primary_col_idx < tbl->cols.length && tbl->cols[tbl->primary_col_idx].name == entry.bind_variables[i].name) {

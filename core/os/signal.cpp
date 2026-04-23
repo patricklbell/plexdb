@@ -8,9 +8,9 @@ module;
     #include <sys/epoll.h>
 #endif
 
-import plexdb.os.containers;
-
 module plexdb.os.signal;
+
+import plexdb.os.containers;
 
 namespace plexdb::os {
     #if PLEXDB_OS_LINUX
@@ -33,7 +33,7 @@ namespace plexdb::os {
             if (handle_to_fd(this->write) >= 0) {
                 close(handle_to_fd(this->write));
             }
-            
+
             this->read  = zero_handle();
             this->write = zero_handle();
         }
@@ -177,7 +177,7 @@ namespace plexdb::os {
 
             clear(epoll_events_scratch);
             resize(epoll_events_scratch, max_out_events_count);
-            
+
             S32 n = ::epoll_wait(
                 handle_to_fd(poll.handle),
                 epoll_events_scratch.ptr,

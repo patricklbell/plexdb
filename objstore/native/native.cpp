@@ -486,9 +486,9 @@ namespace objstore::native {
                 co_await send_native_frame(frame);
             }break;
             case engine::ResultKind::Rows:{
-                auto ks = schema::read_keyspace(engine.schema, result.keyspace);
+                auto ks = schema::read_keyspace(engine.schema, result.keyspace).value; // @todo propogate error
                 assert_true(ks != nullptr, "keyspace not found for rows result");
-                auto tbl = schema::read_table(engine.schema, *ks, result.table);
+                auto tbl = schema::read_table(engine.schema, *ks, result.table).value; // @todo propogate error
                 assert_true(tbl != nullptr, "table not found for rows result");
                 auto frame = make_native_frame(req, op_codes::RESULT, stream);
                 append_result_rows(frame, result, tbl);
