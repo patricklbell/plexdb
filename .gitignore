@@ -1,6 +1,7 @@
 .vscode/
 .zed/
 .opencode/
+.claude/
 build/
 .cache/
 out/

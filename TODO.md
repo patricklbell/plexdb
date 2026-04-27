@@ -1,13 +1,5 @@
 # TODO
 - Parse cache with string hash as key
 - Query planning
-    - Very simple for basic CQL commands
-    - Again cache planning result if complex
-- Do file io with io_uring
-- Shard across cores
-    - Split networking across cores
-    - Fibers and swap out when encountering io
-    - Maximum concurrent io operations in flight
-    - Split file? partition? shard key per request?
-        - Is sharding necessary at process level?
-- Avoid storing pager pointer per btree/blob
+- Shard request handling
+- Shard data storage
