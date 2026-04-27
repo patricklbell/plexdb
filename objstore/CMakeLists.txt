@@ -50,12 +50,13 @@ target_include_directories(objstore_modules
 
 target_sources(objstore_modules
     PUBLIC
-        FILE_SET CXX_MODULES 
+        FILE_SET CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
             engine/engine.cppm
             engine/evaluator.cppm
             engine/io.cppm
+            engine/it.cppm
             engine/schema.cppm
             engine/system_schema.cppm
             engine/statements.cppm
@@ -92,6 +93,7 @@ target_include_directories(objstore
 target_sources(objstore
     PRIVATE
         engine/engine.cpp
+        engine/it.cpp
         engine/schema.cpp
         engine/system_schema.cpp
         log/log.cpp
@@ -150,7 +152,7 @@ if(PLEXDB_ENABLE_TESTS)
     endif()
 
     add_executable(objstore_tests)
-    
+
     file(GLOB_RECURSE OBJSTORE_TEST_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../core/test/*.test.cpp"

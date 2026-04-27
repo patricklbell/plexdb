@@ -7,22 +7,22 @@ export namespace plexdb::blob {
     // @todo partial blob header loading?
 
     // A static blob is divided into two parts, the header and body. The header
-    // contains a list of all the pages the blob covers (including the header). 
+    // contains a list of all the pages the blob covers (including the header).
     // If there is only one page then there is no header.
-    // 
+    //
     // +------------+------------------------------+
     // |   header   |          ...body...          |
     // +------------+------------------------------+
-    // 
+    //
     // The header and body can cross page boudaries
     // +----+----+----+----+------------------+----+
     // | p1 | p2 | p3 | p4 |       ...        | pN |
     // +----+----+----+----+------------------+----+
     // *note pages do not have to be contiguous
-    // 
+    //
     // This allows offset reads without traversing any extra pages.
     struct BlobStaticPaged {
-        Pager* pager;
+        Pager* pager = nullptr;
         U64 size_bytes;
         U64 header_bytes;
         TArrayView<U64, U64> pages;
@@ -37,6 +37,8 @@ export namespace plexdb::blob {
 
         BlobStaticPaged(const BlobStaticPaged& other) = delete;
         BlobStaticPaged& operator=(const BlobStaticPaged& other) = delete;
+
+        explicit operator bool() const { return pager == nullptr; }
     };
     U64 create_paged_static(Pager& pager, U64 size);
 
@@ -45,12 +47,12 @@ export namespace plexdb::blob {
     // for the data pages, in order from 1 -> n. The first data page is special
     // and contains in the first U64 the size, and last U64 the page of the first
     // header.
-    // 
+    //
     // +----+----+-----+----+----+----+-----+----+----+
     // | d0 | h1 | ... | h3 | d1 | d2 | ... | d3 | d4 |
     // +----+----+-----+----+----+----+-----+----+----+
     // *note pages do not have to be contiguous, this ordering is conceptual
-    // 
+    //
     // This allows appending/truncating without copying or shifting, while
     // preserving offset reads. Disadvantage in that reading offset into large
     // blob requires reading first data page.

@@ -43,7 +43,7 @@ export namespace objstore {
 
     struct Type {
         CollectionType ctype;
-        
+
         struct Basic  { BasicType value_dtype;                       };
         struct List   { BasicType element_dtype;                     };
         struct Set    { BasicType key_dtype;                         };
@@ -94,6 +94,34 @@ export namespace objstore {
 }
 
 export namespace plexdb {
+    // @todo ensure hash ordering matches cassandra
+    U64 hash(const objstore::Type& t) {
+        U8 buf[18];
+        U64 len = 0;
+        buf[len++] = static_cast<U8>(t.ctype);
+        switch (t.ctype) {
+            case objstore::CollectionType::basic:
+                buf[len++] = static_cast<U8>(t.basic.value_dtype);
+                break;
+            case objstore::CollectionType::list:
+                buf[len++] = static_cast<U8>(t.list.element_dtype);
+                break;
+            case objstore::CollectionType::set:
+                buf[len++] = static_cast<U8>(t.set.key_dtype);
+                break;
+            case objstore::CollectionType::map:
+                buf[len++] = static_cast<U8>(t.map.key_dtype);
+                buf[len++] = static_cast<U8>(t.map.value_dtype);
+                break;
+            case objstore::CollectionType::vector:
+                buf[len++] = static_cast<U8>(t.vector.element_dtype);
+                os::memory_copy(buf + len, &t.vector.count, sizeof(U64));
+                len += sizeof(U64);
+                break;
+        }
+        return hash(String8(buf, len));
+    }
+
     constexpr inline String8 to_str(objstore::BasicType dtype) {
         switch (dtype) {
             case objstore::BasicType::text:       return "text";

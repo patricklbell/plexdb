@@ -4,7 +4,7 @@ module;
 #include <cstdint>
 #include <new>
 
-// it is not possible to get the source location at the call site without 
+// it is not possible to get the source location at the call site without
 // exposing macros.h or using STL in c++20
 #include <source_location>
 
@@ -106,10 +106,10 @@ export namespace plexdb {
 
     constexpr F32 MAX_F32 = std::numeric_limits<F32>::max();
     constexpr F64 MAX_F64 = std::numeric_limits<F64>::max();
-    
+
     constexpr F32 MIN_F32 = std::numeric_limits<F32>::min();
     constexpr F64 MIN_F64 = std::numeric_limits<F64>::min();
-    
+
     constexpr B8  MAX_B8  = std::numeric_limits<B8 >::max();
     constexpr B16 MAX_B16 = std::numeric_limits<B16>::max();
     constexpr B32 MAX_B32 = std::numeric_limits<B32>::max();
@@ -251,7 +251,7 @@ export namespace plexdb {
 
     template<typename T>
     using RemoveVolatile = typename VolatileHelper<T>::removed;
-    
+
     template<typename T>
     using RemoveRef = typename RefHelper<T>::removed;
 
@@ -394,7 +394,7 @@ export namespace plexdb {
     }
 
     template<typename T>
-    constexpr void swap(T& a, T& b) 
+    constexpr void swap(T& a, T& b)
         noexcept(
             noexcept(T(move(a)))  &&
             noexcept(a = move(b)) &&
@@ -434,7 +434,7 @@ export namespace plexdb {
     struct TArrayView {
         T* ptr;
         Length length;
-        
+
         TArrayView(T* ptr, Length length): ptr(ptr), length(length) {}
         explicit TArrayView(): ptr(nullptr), length(0) {}
 
@@ -495,7 +495,7 @@ export namespace plexdb {
         using Base = TArrayView<T, Length>;
 
         Length cap;
-        
+
         CappedTArrayView(T* ptr, Length length, Length cap): Base(ptr, length), cap(cap) {}
 
         explicit CappedTArrayView(): Base(), cap(0) {}
@@ -527,7 +527,7 @@ export namespace plexdb {
             return true;
         }
     };
-    
+
     template<typename Length = size_t, typename Size = size_t, typename Byte = U8>
         requires Either<Byte, U8, const U8, S8, const S8>
     struct ArrayView {
@@ -637,7 +637,7 @@ export namespace plexdb {
         FlushableTArray(TArrayView<T,Length> b, F f) : buffer(b), length(0), flush(f) {}
         ~FlushableTArray() { this->flush(this->buffer, this->length); }
     };
-    
+
     template<typename F, typename T, typename Length = size_t>
         requires TArrayFlushFunction<F, T, Length>
     void flush_if_needed(FlushableTArray<F,T,Length>& arr) {
@@ -657,10 +657,10 @@ export namespace plexdb {
 
         while (src != end) {
             flush_if_needed(arr);
-            
+
             U64 count = min(static_cast<U64>(end - src), arr.buffer.length - arr.length);
             assert_true(count > 0, "string8 buffer is zero length");
-            
+
             // @todo memory copy
             for (U64 i = 0; i < count; i++) {
                 arr.buffer.ptr[arr.length++] = src[i];
@@ -719,6 +719,21 @@ export namespace plexdb {
     template<typename T, typename Length>
     constexpr Length binary_search_first_gt(const TArrayView<T,Length>& view, const RemoveCV<T>& key) noexcept {
         return binary_search<BinarySearchPolicy::Greater>(view.cbegin(), view.length, key);
+    }
+
+    // not strictly necessary but can be clearer
+    template<typename T, typename Length>
+    constexpr Length binary_search_last_leq(const TArrayView<T,Length>& view,
+                                            const RemoveCV<T>& key) noexcept {
+        auto idx = binary_search_first_gt(view, key);
+        return idx == 0 ? 0 : idx - 1;
+    }
+
+    template<typename T, typename Length>
+    constexpr Length binary_search_last_lt(const TArrayView<T,Length>& view,
+                                           const RemoveCV<T>& key) noexcept {
+        auto idx = binary_search_first_geq(view, key);
+        return idx == 0 ? 0 : idx - 1;
     }
 
     // ========================================================================
@@ -898,7 +913,7 @@ namespace plexdb {
 
     template<size_t N, size_t... Ints>
     struct MakeIndexSequenceHelper : MakeIndexSequenceHelper<N - 1, N - 1, Ints...> {};
-    
+
     template<size_t... Ints>
     struct MakeIndexSequenceHelper<0, Ints...> {
         using type = IndexSequence<Ints...>;

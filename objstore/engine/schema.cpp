@@ -5,6 +5,7 @@ module objstore.engine.schema;
 
 import plexdb.threads;
 import plexdb.tagged_union;
+import plexdb.os.dynamic_tagged_union;
 
 using namespace plexdb;
 
@@ -213,7 +214,13 @@ namespace objstore::schema {
                 if (value == "SimpleStrategy") {
                     storage.replication_class = ReplicationClass::SimpleStrategy;
                 } else if (value == "NetworkTopologyStrategy") {
-                    assert_not_implemented("NetworkTopologyStrategy replication class not implemented");
+                    // @note treat NetworkTopologyStrategy as SimpleStrategy for single-node deployment
+                    // @todo implement proper multi-datacenter replication
+                    storage.replication_class = ReplicationClass::NetworkTopologyStrategy;
+                } else if (value == "org.apache.cassandra.locator.SimpleStrategy") {
+                    storage.replication_class = ReplicationClass::SimpleStrategy;
+                } else if (value == "org.apache.cassandra.locator.NetworkTopologyStrategy") {
+                    storage.replication_class = ReplicationClass::NetworkTopologyStrategy;
                 } else {
                     return {Error::InvalidOptions, "unknown replication class"};
                 }
@@ -233,7 +240,8 @@ namespace objstore::schema {
 
                 storage.replication_factor = value;
             } else {
-                assert_not_implemented("NetworkTopologyStrategy per-datacenter replication factors are not implemented");
+                // @note per-datacenter replication factors (e.g. 'datacenter1': '3') are accepted but ignored
+                // @todo implement per-datacenter replication factor storage
             }
         }
 
@@ -363,7 +371,6 @@ namespace objstore::schema {
 
         if (create.primary_key) {
             auto& pk = *create.primary_key;
-            assert_true_not_implemented(pk.clustering_columns.length == 0, "clustering columns in standalone PRIMARY KEY");
             String8 pk_col_name;
             if (type_matches_tag<ColumnName>(pk.partition_key.column_or_columns)) {
                 pk_col_name = get<ColumnName>(pk.partition_key.column_or_columns).identifier;
@@ -469,7 +476,8 @@ namespace objstore::schema {
     }
 
     Result<Column*> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create) {
-        assert_true_not_implemented(!create._static);
+        // @todo implement proper static column semantics (shared across clustering rows within a partition)
+        assert_true_not_implemented(!create._static, "static column storage is not implemented");
         assert_true_not_implemented(!create.mask);
         assert_true(read_column_impl(schema, tbl, create.name.identifier).error == Error::MissingColumn, "column already exists");
 

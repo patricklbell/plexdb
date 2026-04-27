@@ -38,7 +38,7 @@ export namespace plexdb::btree {
     concept Transaction = requires(T& t, NodeRef ref) {
         { read_header(t) } -> SameAs<const Header*>;
         { update_header(t) } -> SameAs<Header*>;
-        
+
         { create_internal(t) } -> SameAs<NodeRef>;
         { create_leaf(t) } -> SameAs<NodeRef>;
         { read_node(t, ref) } -> SameAs<const Node*>;
@@ -48,4 +48,12 @@ export namespace plexdb::btree {
 
     template<typename B>
     concept BTree = HasTransaction<B> && TransactionConstructible<B> && Transaction<typename B::Transaction>;
+
+    enum class SearchStrategy {
+        RequireEquality,
+        FirstGreater,
+        FirstGreaterEqual,
+        LastLess,
+        LastLessEqual,
+    };
 }

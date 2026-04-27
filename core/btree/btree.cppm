@@ -97,6 +97,13 @@ export namespace plexdb::btree {
         return move(it);
     }
 
+    template<SearchStrategy Strategy, BTree BT>
+    Iterator<BT> find_it(BT& btree, KeyType key) {
+        Iterator<BT> it{btree};
+        it.impl = search_iterator_impl<Strategy>(it.t, key);
+        return move(it);
+    }
+
     // ========================================================================
     // typed interface
     // ========================================================================
@@ -132,6 +139,13 @@ export namespace plexdb::btree {
     Iterator<BT,T> tend(BT&) {
         Iterator<BT,T> it{};
         it.impl = end_iterator_impl();
+        return move(it);
+    }
+
+    template<typename T, SearchStrategy Strategy, BTree BT>
+    Iterator<BT,T> tfind_it(BT& btree, KeyType key) {
+        Iterator<BT,T> it{btree};
+        it.impl = search_iterator_impl<Strategy>(it.t, key);
         return move(it);
     }
 

@@ -225,7 +225,7 @@ namespace objstore::parsers::cql {
                 auto content = LEXY_LIT("''") | not_quote;
                 return dsl::capture(dsl::token(dsl::lit_c<'\''> + dsl::while_(content) + dsl::lit_c<'\''>));
             }();
-            
+
             static constexpr auto value = lexy::callback<AutoString8>(
                 [](auto lex) -> AutoString8 {
                     auto src = lex.begin() + 1; // skip opening '
@@ -770,7 +770,7 @@ namespace objstore::parsers::cql {
                 );
             };
 
-            static constexpr auto rule = dsl::p<ne> | dsl::p<le> | dsl::p<ge> | dsl::p<lt> | dsl::p<gt> | 
+            static constexpr auto rule = dsl::p<ne> | dsl::p<le> | dsl::p<ge> | dsl::p<lt> | dsl::p<gt> |
                                          dsl::p<eq> | dsl::p<in_> | dsl::p<contains_rule>;
             static constexpr auto value = lexy::forward<Operator>;
         };
@@ -1580,7 +1580,7 @@ namespace objstore::parsers::cql {
                     s.transform = move(transform);
                     s.select = move(sel);
                     s.from = move(from);
-                    
+
                     auto process = [&](auto&& arg) {
                         using T = Decay<decltype(arg)>;
                         if constexpr (SameAs<T, WhereClause>) {

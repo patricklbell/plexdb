@@ -106,15 +106,35 @@ namespace objstore::native {
                 return Constant{.value = bool(val[0])};
             }
             case BasicType::uuid:{
-                assert_true(len == 16, "boolean value must be 16 bytes");
+                assert_true(len == 16, "uuid value must be 16 bytes");
                 UUID uuid{};
                 os::memory_copy(&uuid.value[0], val, 16);
                 return Constant{.value = uuid};
             }
+            case BasicType::timeuuid:{
+                assert_true(len == 16, "timeuuid value must be 16 bytes");
+                UUID uuid{};
+                os::memory_copy(&uuid.value[0], val, 16);
+                return Constant{.value = uuid};
+            }
+            case BasicType::tinyint:{
+                S64 v = S64(S8(val[0]));
+                return Constant{.value = v};
+            }
+            case BasicType::date:{
+                assert_true(len == 4, "date value must be 4 bytes");
+                S64 v = S64(read_be_s32(val));
+                return Constant{.value = v};
+            }
+            case BasicType::blob: case BasicType::decimal:
+            case BasicType::duration: case BasicType::inet:
+            case BasicType::varint: case BasicType::vector: case BasicType::hex:{
+                return Constant{.value = AutoString8(val, U64(len))};
+            }
             default:
-                assert_not_implemented("unsupported native type for bind value");
+                assert_not_implemented();
                 return Constant{.value = Null{}};
-        }
+}
     }
 
     // @todo user input error handling
@@ -142,18 +162,20 @@ namespace objstore::native {
                 U64 bind_spec_idx = bind_specs.length;
                 for (U64 idx = 0; idx < bind_specs.length; idx++) {
                     if (bind_specs[idx].name == name) {
+                        assert_true_not_implemented(bind_specs[idx].type.ctype == CollectionType::basic);
                         dtype = bind_specs[idx].type.basic.value_dtype;
                         bind_spec_idx = idx;
                         break;
                     }
                 }
 
-                assert_true_not_implemented(bind_spec_idx < bind_specs.length, "error handling for invalid bind specification not implemented");
+                assert_true_not_implemented(bind_spec_idx < bind_specs.length);
                 bound_values[bind_spec_idx] = read_cql_value_as_constant(p, end, dtype);
             }
         } else {
             for (U16 bind_spec_idx = 0; bind_spec_idx < n_values && p < end; bind_spec_idx++) {
-                assert_true_not_implemented(bind_spec_idx < bind_specs.length, "error handling for invalid bind specification not implemented");
+                assert_true_not_implemented(bind_spec_idx < bind_specs.length);
+                assert_true_not_implemented(bind_specs[bind_spec_idx].type.ctype == CollectionType::basic);
 
                 BasicType dtype = bind_specs[bind_spec_idx].type.basic.value_dtype;
                 push_back(bound_values, read_cql_value_as_constant(p, end, dtype));
@@ -289,7 +311,9 @@ namespace objstore::native {
         visit(value, [&](const auto& v) {
             using T = Decay<decltype(v)>;
 
-            if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
+            if constexpr (SameAs<T, Null>) {
+                append_be_s32(f, -1);  // null [bytes] indicator per CQL native protocol
+            } else if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
                 assert_true(cdtype.ctype == CollectionType::basic, "static value type requires ctype basic, this should never happen");
 
                 append_cql_basic_element(f, cdtype.basic.value_dtype, v);
@@ -369,30 +393,56 @@ namespace objstore::native {
             append_cql_string(f, table);
     }
 
-    // @note uses btree::size so RowRange is only iterated once (RowRange iterators are not resettable)
     void append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl) {
         append_be_s32(f, result_codes::ROWS);
 
+        bool has_select = result.select_col_indices.length > 0;
+        U64 col_count = has_select ? result.select_col_indices.length : tbl->cols.length;
+
+        // @perf
+        auto is_selected = [&](U64 ci) -> bool {
+            if (!has_select) return true;
+            for (U64 i = 0; i < result.select_col_indices.length; i++)
+                if (result.select_col_indices[i] == ci) return true;
+            return false;
+        };
+
         append_be_s32(f, 0x0001);  // Global_tables_spec flag
-        append_be_s32(f, S32(tbl->cols.length));
+        append_be_s32(f, S32(col_count));
         append_cql_string(f, result.keyspace);
         append_cql_string(f, result.table);
 
-        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+        for (U64 i = 0; i < col_count; i++) {
+            U64 ci = has_select ? result.select_col_indices[i] : i;
             append_cql_string(f, tbl->cols[ci].name);
             append_type_codes_option(f, tbl->cols[ci].type);
         }
 
-        // @todo size for WHERE queries
-        append_be_s32(f, S32(btree::size(tbl->btree)));
+        // write placeholder row count, backpatch after iteration
+        U64 count_pos = f.body.length;
+        append_be_s32(f, 0);
 
+        S32 row_count = 0;
         if (result.rows.has_value()) {
-            for (auto& row = result.rows->begin(); row != result.rows->end(); ++row) {
-                for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col) {
-                    append_cql_value(f, engine::read_column_value(col), engine::column(col).type);
+            auto& rows = *result.rows;
+            U64 row_limit = result.row_limit_count;
+            for (auto& row_it = rows.begin(); row_it != rows.end() && U64(row_count) < row_limit; ++row_it) {
+                auto col_range = *row_it;
+                auto& col_it = col_range.begin();
+                auto& col_end_it = col_range.end();
+                for (U64 ci = 0; ci < tbl->cols.length && col_it != col_end_it; ci++, ++col_it) {
+                    if (is_selected(ci))
+                        append_cql_value(f, *col_it, tbl->cols[ci].type);
                 }
+                row_count++;
             }
         }
+
+        // backpatch row count
+        f.body.ptr[count_pos + 0] = U8(U32(row_count) >> 24);
+        f.body.ptr[count_pos + 1] = U8(U32(row_count) >> 16);
+        f.body.ptr[count_pos + 2] = U8(U32(row_count) >> 8);
+        f.body.ptr[count_pos + 3] = U8(U32(row_count));
     }
 
     void append_result_virtual_rows(Frame& f, engine::VirtualRows& vr) {
@@ -486,9 +536,9 @@ namespace objstore::native {
                 co_await send_native_frame(frame);
             }break;
             case engine::ResultKind::Rows:{
-                auto ks = schema::read_keyspace(engine.schema, result.keyspace).value; // @todo propogate error
+                auto ks = schema::read_keyspace(engine.schema, result.keyspace).value; // @todo propagate error
                 assert_true(ks != nullptr, "keyspace not found for rows result");
-                auto tbl = schema::read_table(engine.schema, *ks, result.table).value; // @todo propogate error
+                auto tbl = schema::read_table(engine.schema, *ks, result.table).value; // @todo propagate error
                 assert_true(tbl != nullptr, "table not found for rows result");
                 auto frame = make_native_frame(req, op_codes::RESULT, stream);
                 append_result_rows(frame, result, tbl);

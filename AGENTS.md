@@ -12,9 +12,23 @@
 ## Dev environment
 - C++20 modules with CMake. Static libraries: `plexdb` (core) and `objstore` (CQL object store).
 
+## Row/column iterator architecture (objstore.engine.it)
+- `RowRange` holds two `RowIterator`s (`start`, `stop`). `RowIterator` wraps a `btree::Iterator<BTreePaged, U64>` (pk hash) and dereferences to a `ColumnRange`.
+- `ColumnRange` holds two `ColumnIterator`s (`start`, `end`). `ColumnIterator` reads column values from a `BlobDynamicPaged` row blob in schema order, returning `Null` for inactive columns.
+- `ColumnIterator` is move-only (contains `BlobDynamicPaged`). Use references from `begin()`/`end()` rather than copying.
+- Row blob layout: `[column_count: U64][mask words: U64 × ⌈column_count/64⌉][column data...]`. Byte offset into data = `COLUMN_COUNT_BYTE_COUNT + ceil_div(row_column_count, MASK_BIT_COUNT) * MASK_BYTE_COUNT`.
+- `btree::SearchStrategy` values: `RequireEquality`, `FirstGreater`, `FirstGreaterEqual`, `LastLess`, `LastLessEqual`. The `*_gt_it` and `*_le_it` factory functions both map to `FirstGreater`; `*_ge_it` and `*_lt_it` both map to `FirstGreaterEqual` — they differ only in whether they are used as start or stop iterators.
+- `ExecutionResult` carries `resolved_table` (schema pointer) and `select_col_indices` (empty = all columns). Consumers iterate `result.rows` with `auto col_range = *row_it;` then `auto& col_it = col_range.begin();`.
+
+## CQL native protocol (objstore.native)
+- Protocol v4 frame: 9-byte header `[version, flags, stream(2), opcode, body_len(4)]` + body. Response version byte is `0x84`.
+- Null column values encode as `[bytes]` with length `-1` (big-endian S32).
+- `append_result_rows` backpatches the row count: write placeholder `0` at a recorded position, iterate rows, then overwrite the 4 bytes with the actual count.
+- Row count from `btree::size` is wrong for filtered/range queries; always use the actual iteration count.
+
 ## Testing
 - Tests use [Catch2](https://github.com/catchorg/Catch2/blob/devel/docs/). Create tests for your changes.
-- Test executables: `build/plexdb/plexdb_tests`, `build/objstore/objstore_tests`. Use `--skip-benchmarks` for normal runs.
+- Test executables: `build/core/core_tests`, `build/objstore/objstore_tests`. Use `--skip-benchmarks` for normal runs.
 
 ## Logging & debugging test failures
 - Build with `-DPLEXDB_ENABLE_LOGGING=ON` to enable the structured logging system.

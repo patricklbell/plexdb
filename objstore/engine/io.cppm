@@ -19,7 +19,8 @@ export namespace objstore {
         ColumnValueBasicTypes,
         ExpandDynamicArray<ColumnValueBasicTypes>,
         ExpandDynamicMap<ColumnValueBasicTypes, ColumnValueBasicTypes>,
-        ExpandDynamicSet<ColumnValueBasicTypes>
+        ExpandDynamicSet<ColumnValueBasicTypes>,
+        TypeList<Null>
     >;
     using ColumnValue = ExpandTaggedUnion<ColumnValueTypes>;
 }
@@ -36,17 +37,19 @@ export namespace objstore::io {
     };
 
     template<typename F>
-    concept IsColumnActive = requires (F f, U64 idx) {
-        { f(idx) } -> SameAs<bool>;
+    concept MarkColumnActive = requires(F f, U64 col_idx) {
+        f(col_idx);
     };
 
     template<typename F>
-    concept MarkColumnActive = requires (F f, U64 idx) {
-        { f(idx) };
+    concept IsColumnActive = requires(F f, U64 col_idx) {
+        f(col_idx);
     };
 
-    constexpr U64 U64_BIT_COUNT = sizeof(U64)*8_u64;
-    
+    constexpr U64 COLUMN_COUNT_BYTE_COUNT = sizeof(U64);
+    constexpr U64 MASK_BYTE_COUNT = sizeof(U64);
+    constexpr U64 MASK_BIT_COUNT = MASK_BYTE_COUNT*8_u64;
+
     // ========================================================================
     // read
     // ========================================================================
@@ -58,11 +61,11 @@ export namespace objstore::io {
 
                 AutoString8 value{length};
                 r(reinterpret_cast<U8*>(value.c_str), length);
-            
+
                 return {move(value)};
             }break;
             case BasicType::smallint:{
-                S16 value; 
+                S16 value;
                 r(reinterpret_cast<U8*>(&value), sizeof(value));
 
                 return {move(value)};
@@ -113,22 +116,58 @@ export namespace objstore::io {
                 resize(value.value, length);
                 assert_true(value.value.length == length, "resize successful");
                 r(value.value.ptr, length);
-            
+
                 return {move(value)};
             }
             case BasicType::ascii:
-            case BasicType::date:
+            case BasicType::varchar:{
+                U64 length;
+                r(reinterpret_cast<U8*>(&length), sizeof(length));
+
+                AutoString8 value{length};
+                r(reinterpret_cast<U8*>(value.c_str), length);
+
+                return {move(value)};
+            }break;
+            case BasicType::tinyint:{
+                U8 value;
+                r(reinterpret_cast<U8*>(&value), sizeof(value));
+
+                return {move(value)};
+            }break;
+            case BasicType::date:{
+                S32 value;
+                r(reinterpret_cast<U8*>(&value), sizeof(value));
+
+                return {move(value)};
+            }break;
+            case BasicType::time:{
+                S64 value;
+                r(reinterpret_cast<U8*>(&value), sizeof(value));
+
+                return {move(value)};
+            }break;
+            case BasicType::timeuuid:{
+                UUID value;
+                r(&value.value[0], value.length);
+
+                return {move(value)};
+            }break;
+            case BasicType::inet:
+            case BasicType::varint:
             case BasicType::decimal:
             case BasicType::duration:
-            case BasicType::inet:
-            case BasicType::time:
-            case BasicType::timeuuid:
-            case BasicType::tinyint:
-            case BasicType::varchar:
-            case BasicType::varint:
             case BasicType::vector:
             case BasicType::hex:{
-                assert_not_implemented();
+                U64 length;
+                r(reinterpret_cast<U8*>(&length), sizeof(length));
+
+                Blob value;
+                resize(value.value, length);
+                assert_true(value.value.length == length, "resize successful");
+                r(value.value.ptr, length);
+
+                return {move(value)};
             }
         }
 
@@ -155,24 +194,24 @@ export namespace objstore::io {
                     case BasicType::int_:       return read_arr.template operator()<S32>();
                     case BasicType::bigint:
                     case BasicType::timestamp:
-                    case BasicType::counter:    return read_arr.template operator()<S64>();
+                    case BasicType::counter:
+                    case BasicType::time:       return read_arr.template operator()<S64>();
                     case BasicType::boolean:    return read_arr.template operator()<U8>();
                     case BasicType::float_:     return read_arr.template operator()<F32>();
                     case BasicType::double_:    return read_arr.template operator()<F64>();
                     case BasicType::uuid:
+                    case BasicType::timeuuid:   return read_arr.template operator()<UUID>();
+                    case BasicType::tinyint:    return read_arr.template operator()<U8>();
+                    case BasicType::date:       return read_arr.template operator()<S32>();
                     case BasicType::ascii:
+                    case BasicType::varchar:    return read_arr.template operator()<AutoString8>();
                     case BasicType::blob:
-                    case BasicType::date:
+                    case BasicType::inet:
+                    case BasicType::varint:
                     case BasicType::decimal:
                     case BasicType::duration:
-                    case BasicType::inet:
-                    case BasicType::time:
-                    case BasicType::timeuuid:
-                    case BasicType::tinyint:
-                    case BasicType::varchar:
-                    case BasicType::varint:
                     case BasicType::vector:
-                    case BasicType::hex: assert_not_implemented(); return {};
+                    case BasicType::hex:        return read_arr.template operator()<Blob>();
                 }
 
                 assert_true(false, "invalid basic type for list read");
@@ -193,24 +232,24 @@ export namespace objstore::io {
                     case BasicType::int_:       return read_set.template operator()<S32>();
                     case BasicType::bigint:
                     case BasicType::timestamp:
-                    case BasicType::counter:    return read_set.template operator()<S64>();
+                    case BasicType::counter:
+                    case BasicType::time:       return read_set.template operator()<S64>();
                     case BasicType::boolean:    return read_set.template operator()<U8>();
                     case BasicType::float_:     return read_set.template operator()<F32>();
                     case BasicType::double_:    return read_set.template operator()<F64>();
                     case BasicType::uuid:
+                    case BasicType::timeuuid:   return read_set.template operator()<UUID>();
+                    case BasicType::tinyint:    return read_set.template operator()<U8>();
+                    case BasicType::date:       return read_set.template operator()<S32>();
                     case BasicType::ascii:
+                    case BasicType::varchar:    return read_set.template operator()<AutoString8>();
                     case BasicType::blob:
-                    case BasicType::date:
+                    case BasicType::inet:
+                    case BasicType::varint:
                     case BasicType::decimal:
                     case BasicType::duration:
-                    case BasicType::inet:
-                    case BasicType::time:
-                    case BasicType::timeuuid:
-                    case BasicType::tinyint:
-                    case BasicType::varchar:
-                    case BasicType::varint:
                     case BasicType::vector:
-                    case BasicType::hex: assert_not_implemented(); return {};
+                    case BasicType::hex:        return read_set.template operator()<Blob>();
                 }
 
                 assert_true(false, "invalid basic type for set read");
@@ -235,24 +274,24 @@ export namespace objstore::io {
                         case BasicType::int_:       return read_map_kv.template operator()<K, S32>();
                         case BasicType::bigint:
                         case BasicType::timestamp:
-                        case BasicType::counter:    return read_map_kv.template operator()<K, S64>();
+                        case BasicType::counter:
+                        case BasicType::time:       return read_map_kv.template operator()<K, S64>();
                         case BasicType::boolean:    return read_map_kv.template operator()<K, U8>();
                         case BasicType::float_:     return read_map_kv.template operator()<K, F32>();
                         case BasicType::double_:    return read_map_kv.template operator()<K, F64>();
                         case BasicType::uuid:
+                        case BasicType::timeuuid:   return read_map_kv.template operator()<K, UUID>();
+                        case BasicType::tinyint:    return read_map_kv.template operator()<K, U8>();
+                        case BasicType::date:       return read_map_kv.template operator()<K, S32>();
                         case BasicType::ascii:
+                        case BasicType::varchar:    return read_map_kv.template operator()<K, AutoString8>();
                         case BasicType::blob:
-                        case BasicType::date:
+                        case BasicType::inet:
+                        case BasicType::varint:
                         case BasicType::decimal:
                         case BasicType::duration:
-                        case BasicType::inet:
-                        case BasicType::time:
-                        case BasicType::timeuuid:
-                        case BasicType::tinyint:
-                        case BasicType::varchar:
-                        case BasicType::varint:
                         case BasicType::vector:
-                        case BasicType::hex: assert_not_implemented(); return {};
+                        case BasicType::hex:        return read_map_kv.template operator()<K, Blob>();
                     }
                     assert_true(false, "invalid basic type for map value read");
                     return {};
@@ -263,24 +302,24 @@ export namespace objstore::io {
                     case BasicType::int_:       return read_map_v.template operator()<S32>(cdtype.map.value_dtype);
                     case BasicType::bigint:
                     case BasicType::timestamp:
-                    case BasicType::counter:    return read_map_v.template operator()<S64>(cdtype.map.value_dtype);
+                    case BasicType::counter:
+                    case BasicType::time:       return read_map_v.template operator()<S64>(cdtype.map.value_dtype);
                     case BasicType::boolean:    return read_map_v.template operator()<U8>(cdtype.map.value_dtype);
                     case BasicType::float_:     return read_map_v.template operator()<F32>(cdtype.map.value_dtype);
                     case BasicType::double_:    return read_map_v.template operator()<F64>(cdtype.map.value_dtype);
                     case BasicType::uuid:
+                    case BasicType::timeuuid:   return read_map_v.template operator()<UUID>(cdtype.map.value_dtype);
+                    case BasicType::tinyint:    return read_map_v.template operator()<U8>(cdtype.map.value_dtype);
+                    case BasicType::date:       return read_map_v.template operator()<S32>(cdtype.map.value_dtype);
                     case BasicType::ascii:
+                    case BasicType::varchar:    return read_map_v.template operator()<AutoString8>(cdtype.map.value_dtype);
                     case BasicType::blob:
-                    case BasicType::date:
+                    case BasicType::inet:
+                    case BasicType::varint:
                     case BasicType::decimal:
                     case BasicType::duration:
-                    case BasicType::inet:
-                    case BasicType::time:
-                    case BasicType::timeuuid:
-                    case BasicType::tinyint:
-                    case BasicType::varchar:
-                    case BasicType::varint:
                     case BasicType::vector:
-                    case BasicType::hex: assert_not_implemented(); return {};
+                    case BasicType::hex:        return read_map_v.template operator()<Blob>(cdtype.map.value_dtype);
                 }
                 assert_true(false, "invalid basic type for map key read");
                 return {};
@@ -296,14 +335,15 @@ export namespace objstore::io {
     void read_column_mask(const Read auto& r, const MarkColumnActive auto& mark_active) {
         U64 column_count;
         r(reinterpret_cast<U8*>(&column_count), sizeof(column_count));
+        static_assert(sizeof(column_count) == COLUMN_COUNT_BYTE_COUNT);
 
-        for (U64 mask_idx = 0; mask_idx < ceil_div(column_count, U64_BIT_COUNT); mask_idx++) {
+        for (U64 mask_idx = 0; mask_idx < ceil_div(column_count, MASK_BIT_COUNT); mask_idx++) {
             U64 mask;
             r(reinterpret_cast<U8*>(&mask), sizeof(mask));
 
-            for (U64 bit_idx = 0; bit_idx < min(U64_BIT_COUNT, column_count - mask_idx*U64_BIT_COUNT); bit_idx++) {
+            for (U64 bit_idx = 0; bit_idx < min(MASK_BIT_COUNT, column_count - mask_idx*MASK_BIT_COUNT); bit_idx++) {
                 if (mask & (1_u64 << bit_idx)) {
-                    mark_active(mask_idx*U64_BIT_COUNT + bit_idx);
+                    mark_active(mask_idx*MASK_BIT_COUNT + bit_idx);
                 }
             }
         }
@@ -316,9 +356,13 @@ export namespace objstore::io {
     bool can_cast_write_typed_basic_as_column_value(BasicType dtype) {
         using TT = RemoveCV<T>;
         if constexpr (Either<TT, String8, AutoString8>) {
-            return dtype == BasicType::text || dtype == BasicType::timestamp || dtype == BasicType::uuid;
+            return dtype == BasicType::text || dtype == BasicType::timestamp || dtype == BasicType::uuid ||
+                   dtype == BasicType::ascii || dtype == BasicType::varchar ||
+                   dtype == BasicType::inet || dtype == BasicType::varint || dtype == BasicType::decimal ||
+                   dtype == BasicType::duration || dtype == BasicType::vector || dtype == BasicType::hex;
         } else if constexpr (Either<TT, S64>) {
-            return dtype == BasicType::int_ || dtype == BasicType::bigint || dtype == BasicType::smallint || dtype == BasicType::counter;
+            return dtype == BasicType::int_ || dtype == BasicType::bigint || dtype == BasicType::smallint ||
+                   dtype == BasicType::counter || dtype == BasicType::tinyint || dtype == BasicType::date || dtype == BasicType::time;
         } else if constexpr (Either<TT, bool>) {
             return dtype == BasicType::boolean;
         } else if constexpr (Either<TT, F64, F32>) {
@@ -326,9 +370,11 @@ export namespace objstore::io {
         } else if constexpr (SameAs<TT, Hex>) {
             return dtype == BasicType::hex;
         } else if constexpr (SameAs<TT, UUID>) {
-            return dtype == BasicType::uuid;
+            return dtype == BasicType::uuid || dtype == BasicType::timeuuid;
         } else if constexpr (SameAs<TT, Blob>) {
-            return dtype == BasicType::blob;
+            return dtype == BasicType::blob || dtype == BasicType::inet || dtype == BasicType::varint ||
+                   dtype == BasicType::decimal || dtype == BasicType::duration || dtype == BasicType::vector ||
+                   dtype == BasicType::hex;
         } else if constexpr (SameAs<TT, Null>) {
             return true;
         } else {
@@ -336,35 +382,34 @@ export namespace objstore::io {
             return false;
         }
     }
-    
+
     template<typename T>
     bool can_write_typed_basic_as_column_value(BasicType dtype) {
-        if constexpr (Either<RemoveCV<T>, AutoString8>) { return dtype == BasicType::text; }
+        if constexpr (Either<RemoveCV<T>, AutoString8>) { return dtype == BasicType::text || dtype == BasicType::ascii || dtype == BasicType::varchar; }
         else if constexpr (Either<RemoveCV<T>, S16>)    { return dtype == BasicType::smallint; }
-        else if constexpr (Either<RemoveCV<T>, S32>)    { return dtype == BasicType::int_; }
-        else if constexpr (Either<RemoveCV<T>, S64>)    { return dtype == BasicType::bigint || dtype == BasicType::timestamp || dtype == BasicType::counter; }
-        else if constexpr (Either<RemoveCV<T>, U8>)     { return dtype == BasicType::boolean; }
+        else if constexpr (Either<RemoveCV<T>, S32>)    { return dtype == BasicType::int_ || dtype == BasicType::date; }
+        else if constexpr (Either<RemoveCV<T>, S64>)    { return dtype == BasicType::bigint || dtype == BasicType::timestamp || dtype == BasicType::counter || dtype == BasicType::time; }
+        else if constexpr (Either<RemoveCV<T>, U8>)     { return dtype == BasicType::boolean || dtype == BasicType::tinyint; }
         else if constexpr (Either<RemoveCV<T>, F32>)    { return dtype == BasicType::float_; }
         else if constexpr (Either<RemoveCV<T>, F64>)    { return dtype == BasicType::double_; }
-        else if constexpr (Either<RemoveCV<T>, UUID>)   { return dtype == BasicType::uuid; }
+        else if constexpr (Either<RemoveCV<T>, UUID>)   { return dtype == BasicType::uuid || dtype == BasicType::timeuuid; }
         else if constexpr (Either<RemoveCV<T>, Null>)   { return true;}
-        else if constexpr (Either<RemoveCV<T>, Blob>)   { return dtype == BasicType::blob; }
-        else if constexpr (Either<RemoveCV<T>, Hex>)    { return dtype == BasicType::hex; }
+        else if constexpr (Either<RemoveCV<T>, Blob>)   { return dtype == BasicType::blob || dtype == BasicType::inet || dtype == BasicType::varint || dtype == BasicType::decimal || dtype == BasicType::duration || dtype == BasicType::vector || dtype == BasicType::hex; }
         else                                            { static_assert(!SameAs<T,T>, "missing type case"); return false; }
     }
 
-    bool can_cast_cast_write_constant_as_column_value(const Constant& constant, BasicType dtype) {
+    bool can_cast_write_constant_as_column_value(const Constant& constant, BasicType dtype) {
         return visit(constant.value, [&](const auto& cv) -> bool {
             using T = Decay<decltype(cv)>;
             return can_cast_write_typed_basic_as_column_value<T>(dtype);
         });
     }
 
-    bool can_cast_cast_write_evaluated_as_column_value(const Evaluated& evaluated, const Type& cdtype) {
+    bool can_cast_write_evaluated_as_column_value(const Evaluated& evaluated, const Type& cdtype) {
         return visit(evaluated.value, [&](const auto& cv) -> bool {
             using T = Decay<decltype(cv)>;
             if constexpr (SameAs<T, Constant>) {
-                return cdtype.ctype == CollectionType::basic && can_cast_cast_write_constant_as_column_value(cv, cdtype.basic.value_dtype);
+                return cdtype.ctype == CollectionType::basic && can_cast_write_constant_as_column_value(cv, cdtype.basic.value_dtype);
             } else if constexpr (SameAs<T, MapLiteral>) {
                 assert_not_implemented();
                 return false;
@@ -423,24 +468,39 @@ export namespace objstore::io {
             case BasicType::uuid:{
                 UUID uuid{};
                 w(&uuid.value[0], uuid.value.length);
-            }
+            }break;
             case BasicType::blob:{
                 U64 length = 0_u64;
                 w(reinterpret_cast<const U8*>(&length), sizeof(length));
-            }
+            }break;
             case BasicType::timestamp:
+            case BasicType::time:
             case BasicType::ascii:
-            case BasicType::date:
+            case BasicType::varchar:{
+                U64 length = 0_u64;
+                w(reinterpret_cast<const U8*>(&length), sizeof(length));
+            }break;
+            case BasicType::tinyint:{
+                U8 tinyint = U8(0);
+                w(reinterpret_cast<const U8*>(&tinyint), sizeof(tinyint));
+            }break;
+            case BasicType::date:{
+                S32 date = 0_s32;
+                w(reinterpret_cast<const U8*>(&date), sizeof(date));
+            }break;
+            case BasicType::timeuuid:{
+                UUID uuid{};
+                w(&uuid.value[0], uuid.length);
+            }break;
+            case BasicType::inet:
+            case BasicType::varint:
             case BasicType::decimal:
             case BasicType::duration:
-            case BasicType::inet:
-            case BasicType::time:
-            case BasicType::timeuuid:
-            case BasicType::tinyint:
-            case BasicType::varchar:
-            case BasicType::varint:
             case BasicType::vector:
-            case BasicType::hex: assert_not_implemented();
+            case BasicType::hex:{
+                U64 length = 0_u64;
+                w(reinterpret_cast<const U8*>(&length), sizeof(length));
+            }break;
         }
     }
 
@@ -463,7 +523,18 @@ export namespace objstore::io {
     void write_typed_basic_as_column_value(const Write auto& w, const T& src, BasicType dtype) {
         if constexpr (SameAs<T, AutoString8>) {
             switch (dtype) {
-                case BasicType::text:{
+                case BasicType::text:
+                case BasicType::ascii:
+                case BasicType::varchar:{
+                    w(reinterpret_cast<const U8*>(&src.length), sizeof(src.length));
+                    w(reinterpret_cast<const U8*>(src.c_str), src.length);
+                }break;
+                case BasicType::inet:
+                case BasicType::varint:
+                case BasicType::decimal:
+                case BasicType::duration:
+                case BasicType::vector:
+                case BasicType::hex:{
                     w(reinterpret_cast<const U8*>(&src.length), sizeof(src.length));
                     w(reinterpret_cast<const U8*>(src.c_str), src.length);
                 }break;
@@ -471,6 +542,10 @@ export namespace objstore::io {
             }
         } else if constexpr (SameAs<T, S64>) {
             switch (dtype) {
+                case BasicType::tinyint:{
+                    U8 tinyint = static_cast<U8>(static_cast<S8>(src));
+                    w(reinterpret_cast<const U8*>(&tinyint), sizeof(tinyint));
+                }break;
                 case BasicType::smallint:{
                     S16 smallint = static_cast<S16>(src);
                     w(reinterpret_cast<const U8*>(&smallint), sizeof(smallint));
@@ -479,6 +554,11 @@ export namespace objstore::io {
                     S32 int_ = static_cast<S32>(src);
                     w(reinterpret_cast<const U8*>(&int_), sizeof(int_));
                 }break;
+                case BasicType::date:{
+                    S32 date = static_cast<S32>(src);
+                    w(reinterpret_cast<const U8*>(&date), sizeof(date));
+                }break;
+                case BasicType::time:
                 case BasicType::timestamp:
                 case BasicType::counter:
                 case BasicType::bigint:{
@@ -508,12 +588,16 @@ export namespace objstore::io {
                 default:{ assert_true(false, "mismatch between underlying type and dtype or conversion not implemented"); }break;
             }
         } else if constexpr (SameAs<T, UUID>) {
-            assert_true(dtype == BasicType::uuid, "mismatch between underlying type and dtype or conversion not implemented");
-            w(&src.value[0], sizeof(src.value.length));
-        } else if constexpr (Either<T, Hex, Blob>) {
-            if constexpr (SameAs<T, Hex>) assert_true(dtype == BasicType::hex, "mismatch between underlying type and dtype or conversion not implemented");
-            if constexpr (SameAs<T, Blob>) assert_true(dtype == BasicType::blob, "mismatch between underlying type and dtype or conversion not implemented");
-
+            assert_true(dtype == BasicType::uuid || dtype == BasicType::timeuuid, "mismatch between underlying type and dtype or conversion not implemented");
+            w(&src.value[0], src.length);
+        } else if constexpr (SameAs<T, Hex>) {
+            assert_true(dtype == BasicType::hex, "mismatch between underlying type and dtype or conversion not implemented");
+            w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
+            w(&src.value[0], src.value.length);
+        } else if constexpr (SameAs<T, Blob>) {
+            assert_true(dtype == BasicType::blob || dtype == BasicType::inet || dtype == BasicType::varint ||
+                        dtype == BasicType::decimal || dtype == BasicType::duration || dtype == BasicType::vector ||
+                        dtype == BasicType::hex, "mismatch between underlying type and dtype or conversion not implemented");
             w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
             w(&src.value[0], src.value.length);
         } else if constexpr (SameAs<T, Null>) {
@@ -531,7 +615,7 @@ export namespace objstore::io {
     }
 
     void cast_write_evaluated_as_column_value(const Write auto& w, const Evaluated& evaluated, const Type& cdtype) {
-        assert_true(can_cast_cast_write_evaluated_as_column_value(evaluated, cdtype), "invalid evaluated value for write");
+        assert_true(can_cast_write_evaluated_as_column_value(evaluated, cdtype), "invalid evaluated value for write");
 
         visit(evaluated.value, [&](const auto& cv) {
             using T = Decay<decltype(cv)>;
@@ -572,6 +656,8 @@ export namespace objstore::io {
             } else if constexpr (IsDynamicArray<T>) {
                 if (cdtype.ctype != CollectionType::list) return false;
                 return can_write_typed_basic_as_column_value<typename T::Element>(cdtype.list.element_dtype);
+            } else if constexpr (SameAs<T, Null>) {
+                return true;
             } else {
                 static_assert(!SameAs<T,T>, "missing type case");
             }
@@ -586,6 +672,11 @@ export namespace objstore::io {
             w(reinterpret_cast<const U8*>(s.data), s.length);
         } else if constexpr (Either<T,Array<U8, 16>, S64, S32, S16, U8, F64, F32>) {
             w(reinterpret_cast<const U8*>(&src), sizeof(src));
+        } else if constexpr (SameAs<T, UUID>) {
+            w(&src.value[0], src.length);
+        } else if constexpr (SameAs<T, Blob>) {
+            w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
+            w(src.value.ptr, src.value.length);
         } else {
             static_assert(!SameAs<T,T>, "missing type case");
         }
@@ -622,6 +713,8 @@ export namespace objstore::io {
                 w(reinterpret_cast<const U8*>(&v.length), sizeof(v.length));
                 for (const auto& el: v)
                     write_typed_basic(w, el, cdtype.list.element_dtype);
+            } else if constexpr (SameAs<T, Null>) {
+                // null column values are tracked via column mask; nothing to write
             } else {
                 static_assert(!SameAs<T,T>, "unhandled read value type");
             }
@@ -630,16 +723,17 @@ export namespace objstore::io {
 
     void write_column_mask(const Write auto& w, const IsColumnActive auto& is_active, U64 column_count) {
         w(reinterpret_cast<const U8*>(&column_count), sizeof(column_count));
-        
+        static_assert(sizeof(column_count) == COLUMN_COUNT_BYTE_COUNT);
+
         U64 mask = 0;
         for (U64 idx = 0; idx < column_count; idx++) {
-            mask |= (static_cast<U64>(is_active(idx)) << (idx % U64_BIT_COUNT));
-            if (idx % U64_BIT_COUNT == U64_BIT_COUNT - 1) {
+            mask |= (static_cast<U64>(is_active(idx)) << (idx % MASK_BIT_COUNT));
+            if (idx % MASK_BIT_COUNT == MASK_BIT_COUNT - 1) {
                 w(reinterpret_cast<const U8*>(&mask), sizeof(mask));
                 mask = 0;
             }
         }
-        if (column_count % U64_BIT_COUNT != 0) {
+        if (column_count % MASK_BIT_COUNT != 0) {
             w(reinterpret_cast<const U8*>(&mask), sizeof(mask));
         }
     }

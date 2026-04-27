@@ -26,7 +26,7 @@ cmake -B build -G Ninja -DPLEXDB_ENABLE_TESTS=ON -DPLEXDB_ENABLE_LOGGING=ON \
 ninja -C build
 
 # Run tests
-build/plexdb/plexdb_tests --skip-benchmarks
+build/core/core_tests --skip-benchmarks
 build/objstore/objstore_tests --skip-benchmarks
 ```
 

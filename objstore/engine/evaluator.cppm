@@ -1,6 +1,7 @@
 export module objstore.engine.evaluator;
 
 import plexdb.base;
+import plexdb.os;
 import plexdb.tagged_union;
 import plexdb.os.containers;
 import plexdb.os.dynamic_tagged_union;
@@ -21,30 +22,72 @@ export namespace objstore {
 
     // @warn suggested to move term to avoid copy
     Evaluated evaluate(Term term) {
-        assert_true_not_implemented(type_matches_tag<Constant>(term.value), "non-constant term evaluation is not implemented");
-        return {get<Constant>(term.value)};
+        if (type_matches_tag<Constant>(term.value)) {
+            return {get<Constant>(term.value)};
+        }
+        if (type_matches_tag<MapLiteral>(term.value)) {
+            return {get<MapLiteral>(move(term.value))};
+        }
+        if (type_matches_tag<SetLiteral>(term.value)) {
+            return {get<SetLiteral>(move(term.value))};
+        }
+        if (type_matches_tag<ListOrVectorLiteral>(term.value)) {
+            return {get<ListOrVectorLiteral>(move(term.value))};
+        }
+        if (type_matches_tag<TupleLiteral>(term.value)) {
+            return {get<TupleLiteral>(move(term.value))};
+        }
+        if (type_matches_tag<UdtLiteral>(term.value)) {
+            return {get<UdtLiteral>(move(term.value))};
+        }
+        if (type_matches_tag<BindMarker>(term.value)) {
+            // unresolved bind marker evaluates to null
+            // @todo check this is valid
+            return {Constant{.value = Null{}}};
+        }
+        // @todo implement function calls, arithmetic, type hints
+        assert_true_not_implemented(false, "non-constant/non-literal term evaluation is not implemented");
+        return {Constant{.value = Null{}}};
     }
 }
 
-export namespace plexdb {
-    U64 hash(const objstore::Constant& constant) {
+export namespace objstore {
+    U64 hash(const Constant& constant) {
         return visit(constant.value, [](const auto& cv) -> U64 {
             using T = Decay<decltype(cv)>;
-            if constexpr (SameAs<T, S64>) return hash(static_cast<U64>(cv));
-            else if constexpr (SameAs<T, AutoString8>) return hash(cv);
-            assert_not_implemented("hash for constant value type is not implemented");
+            if constexpr (SameAs<T, S64>) return plexdb::hash(static_cast<U64>(cv));
+            else if constexpr (SameAs<T, AutoString8>) return plexdb::hash(cv);
+            else if constexpr (SameAs<T, bool>) return plexdb::hash(static_cast<U64>(cv));
+            else if constexpr (SameAs<T, F64>) {
+                U64 bits;
+                os::memory_copy(&bits, &cv, sizeof(bits));
+                return plexdb::hash(bits);
+            }
+            else if constexpr (SameAs<T, UUID>) {
+                return plexdb::hash(plexdb::String8(&cv.value[0], cv.length));
+            }
+            else if constexpr (SameAs<T, Null>) return 0_u64;
+            else if constexpr (SameAs<T, Hex>) {
+                return plexdb::hash(plexdb::String8(cv.value.ptr, cv.value.length));
+            }
+            else if constexpr (SameAs<T, Blob>) {
+                return plexdb::hash(plexdb::String8(cv.value.ptr, cv.value.length));
+            }
+            else { static_assert(!SameAs<T,T>, "missing hash for constant value type"); }
             return 0_u64;
         });
     }
-    U64 hash(const objstore::Evaluated& evaluated) {
+    U64 hash(const Evaluated& evaluated) {
         return visit(evaluated.value, [](const auto& cv) -> U64 {
             using T = Decay<decltype(cv)>;
-            if constexpr (SameAs<T,objstore::Constant>) return hash(cv);
+            if constexpr (SameAs<T,Constant>) return hash(cv);
             assert_not_implemented("hash for evaluated value type is not implemented");
             return 0_u64;
         });
     }
+}
 
+export namespace plexdb {
     AutoString8 to_str(objstore::Evaluated c, objstore::BasicType dtype) {
         switch (dtype) {
             case objstore::BasicType::text:{

@@ -70,48 +70,58 @@ namespace objstore::native {
         constexpr S32 SCHEMA_CHANGE = 0x0005;
     }
 
-    namespace type_codes {
-        constexpr U16 Bigint    = 0x0002;
-        constexpr U16 Boolean   = 0x0004;
-        constexpr U16 Counter   = 0x0005;
-        constexpr U16 Double    = 0x0007;
-        constexpr U16 Float     = 0x0008;
-        constexpr U16 Int       = 0x0009;
+namespace type_codes {
+        constexpr U16 Ascii    = 0x0001;
+        constexpr U16 Bigint   = 0x0002;
+        constexpr U16 Blob     = 0x0003;
+        constexpr U16 Boolean  = 0x0004;
+        constexpr U16 Counter  = 0x0005;
+        constexpr U16 Decimal  = 0x0006;
+        constexpr U16 Double   = 0x0007;
+        constexpr U16 Float    = 0x0008;
+        constexpr U16 Int      = 0x0009;
         constexpr U16 Timestamp = 0x000B;
-        constexpr U16 Uuid      = 0x000C;
-        constexpr U16 Varchar   = 0x000D;
-        constexpr U16 Smallint  = 0x0013;
-        constexpr U16 List      = 0x0020;
-        constexpr U16 Map       = 0x0021;
-        constexpr U16 Set       = 0x0022;
+        constexpr U16 Uuid    = 0x000C;
+        constexpr U16 Varchar  = 0x000D;
+        constexpr U16 Varint   = 0x000E;
+        constexpr U16 Timeuuid = 0x000F;
+        constexpr U16 Inet    = 0x0010;
+        constexpr U16 Date     = 0x0011;
+        constexpr U16 Time     = 0x0012;
+        constexpr U16 Smallint = 0x0013;
+        constexpr U16 Tinyint  = 0x0014;
+        constexpr U16 Duration = 0x0015;
+        constexpr U16 List     = 0x0020;
+        constexpr U16 Map     = 0x0021;
+        constexpr U16 Set     = 0x0022;
     }
 
     constexpr U16 basic_type_to_type_code(BasicType dtype) {
         switch (dtype) {
-            case BasicType::text:       return type_codes::Varchar;
-            case BasicType::uuid:       return type_codes::Uuid;
-            case BasicType::timestamp:  return type_codes::Timestamp;
-            case BasicType::smallint:   return type_codes::Smallint;
-            case BasicType::int_:       return type_codes::Int;
-            case BasicType::bigint:     return type_codes::Bigint;
-            case BasicType::counter:    return type_codes::Counter;
-            case BasicType::boolean:    return type_codes::Boolean;
-            case BasicType::float_:     return type_codes::Float;
-            case BasicType::double_:    return type_codes::Double;
-            case BasicType::ascii:
-            case BasicType::blob:
-            case BasicType::date:
-            case BasicType::decimal:
-            case BasicType::duration:
-            case BasicType::inet:
-            case BasicType::time:
-            case BasicType::timeuuid:
-            case BasicType::tinyint:
-            case BasicType::varchar:
-            case BasicType::varint:
+            case BasicType::ascii:     return type_codes::Ascii;
+            case BasicType::bigint:    return type_codes::Bigint;
+            case BasicType::blob:      return type_codes::Blob;
+            case BasicType::boolean:   return type_codes::Boolean;
+            case BasicType::counter:   return type_codes::Counter;
+            case BasicType::date:      return type_codes::Date;
+            case BasicType::decimal:   return type_codes::Decimal;
+            case BasicType::double_:   return type_codes::Double;
+            case BasicType::duration:  return type_codes::Duration;
+            case BasicType::float_:    return type_codes::Float;
+            case BasicType::inet:      return type_codes::Inet;
+            case BasicType::int_:      return type_codes::Int;
+            case BasicType::smallint:  return type_codes::Smallint;
+            case BasicType::text:      return type_codes::Varchar;
+            case BasicType::time:      return type_codes::Time;
+            case BasicType::timestamp: return type_codes::Timestamp;
+            case BasicType::tinyint:   return type_codes::Tinyint;
+            case BasicType::uuid:      return type_codes::Uuid;
+            case BasicType::varchar:   return type_codes::Varchar;
+            case BasicType::varint:    return type_codes::Varint;
+            case BasicType::timeuuid:  return type_codes::Timeuuid;
             case BasicType::vector:
             case BasicType::hex:{
-                assert_not_implemented("native protocol type code for basic type is not implemented");
+                assert_not_implemented("native protocol type code for vector/hex type is not implemented");
                 return 0x0000;
             }break;
         }
@@ -129,7 +139,7 @@ namespace objstore::native {
                         "S64 does not match basic type");
             return 8;
         } else if constexpr (SameAs<TT, S32>) {
-            assert_true(dtype == BasicType::int_ || dtype == BasicType::float_ || dtype == BasicType::date,
+            assert_true(dtype == BasicType::int_ || dtype == BasicType::date,
                         "S32 does not match basic type");
             return 4;
         } else if constexpr (SameAs<TT, S16>) {
@@ -152,21 +162,24 @@ namespace objstore::native {
             assert_true(
                 dtype == BasicType::ascii   ||
                 dtype == BasicType::text    ||
-                dtype == BasicType::varchar ||
-                dtype == BasicType::blob    ||
-                dtype == BasicType::varint  ||
-                dtype == BasicType::decimal ||
-                dtype == BasicType::duration||
-                dtype == BasicType::inet    ||
-                dtype == BasicType::vector,
+                dtype == BasicType::varchar,
                 "AutoString8 does not match basic type"
             );
             return value.length;
         } else if constexpr (SameAs<TT, UUID>) {
-            assert_true(dtype == BasicType::uuid, "UUID value does not match basic type");
+            assert_true(dtype == BasicType::uuid || dtype == BasicType::timeuuid, "UUID value does not match basic type");
             return UUID::length;
         } else if constexpr (SameAs<TT, Blob>) {
-            assert_true(dtype == BasicType::blob, "Blob value does not match basic type");
+            assert_true(
+                dtype == BasicType::blob    ||
+                dtype == BasicType::inet    ||
+                dtype == BasicType::varint  ||
+                dtype == BasicType::decimal ||
+                dtype == BasicType::duration||
+                dtype == BasicType::vector  ||
+                dtype == BasicType::hex,
+                "Blob value does not match basic type"
+            );
             return value.value.length;
         } else if constexpr (SameAs<TT, Hex>) {
             assert_true(dtype == BasicType::hex, "Hex value does not match basic type");
@@ -202,7 +215,7 @@ namespace objstore::native {
     // ========================================================================
     // output
     //   @note
-    //   frame requires co_await send_native_frame(frame) writes the 9-byte 
+    //   frame requires co_await send_native_frame(frame) writes the 9-byte
     //   header + body to TCP in and is currently heap buffered.
     // ========================================================================
     struct Frame {
@@ -233,19 +246,13 @@ namespace objstore::native {
             assert_true(
                 dtype == BasicType::ascii   ||
                 dtype == BasicType::text    ||
-                dtype == BasicType::varchar ||
-                dtype == BasicType::blob    ||
-                dtype == BasicType::varint  ||
-                dtype == BasicType::decimal ||
-                dtype == BasicType::duration||
-                dtype == BasicType::inet    ||
-                dtype == BasicType::vector,
+                dtype == BasicType::varchar,
                 "AutoString8 value does not match BasicType"
             );
 
             append_cql_bytes_raw(f, reinterpret_cast<const U8*>(v.c_str), S32(v.length));
         } else if constexpr (SameAs<TT, UUID>) {
-            assert_true(dtype == BasicType::uuid,"UUID value does not match BasicType");
+            assert_true(dtype == BasicType::uuid || dtype == BasicType::timeuuid, "UUID value does not match BasicType");
 
             append_cql_bytes_raw(f, &v.value[0], v.length);
         } else if constexpr (SameAs<TT, S64>) {
@@ -264,7 +271,6 @@ namespace objstore::native {
         } else if constexpr (SameAs<TT, S32>) {
             assert_true(
                 dtype == BasicType::int_ ||
-                dtype == BasicType::float_ ||
                 dtype == BasicType::date,
                 "S32 value does not match BasicType"
             );
@@ -296,8 +302,21 @@ namespace objstore::native {
             U8 data[8];
             for (int i = 7; i >= 0; i--) { data[i] = U8(bits); bits >>= 8; }
             append_cql_bytes_raw(f, data, 8);
-        } else if constexpr (Either<TT, Hex, Blob>) {
-            assert_not_implemented();
+        } else if constexpr (SameAs<TT, Blob>) {
+            assert_true(
+                dtype == BasicType::blob    ||
+                dtype == BasicType::inet    ||
+                dtype == BasicType::varint  ||
+                dtype == BasicType::decimal ||
+                dtype == BasicType::duration||
+                dtype == BasicType::vector  ||
+                dtype == BasicType::hex,
+                "Blob value does not match BasicType"
+            );
+            append_cql_bytes_raw(f, v.value.ptr, S32(v.value.length));
+        } else if constexpr (SameAs<TT, Hex>) {
+            assert_true(dtype == BasicType::hex, "Hex value does not match BasicType");
+            append_cql_bytes_raw(f, v.value.ptr, S32(v.value.length));
         } else {
             static_assert(!SameAs<TT, TT>, "unsupported static type");
         }
@@ -327,7 +346,7 @@ export namespace objstore::native {
     concept OnReady = requires(F f) { f(); };
 
     Optional<String8> run(U16 port, os::Notifier& interrupt, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback, bool use_uring = true) {
-        const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> {            
+        const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> {
             // process each frame @todo investigate avoiding allocations/copy in favour of direct lock on read buffer
             DynamicArray<U8> frame{};
             while (true) {
@@ -360,7 +379,7 @@ export namespace objstore::native {
 
                 S32 body_byte_count = read_be_s32(&frame[5]);
                 U64 frame_byte_count = FRAME_HEADER_BYTE_COUNT + U64(body_byte_count);
-                
+
                 // read body
                 while (frame.length < frame_byte_count) {
                     if (!co_await try_append_to_frame())

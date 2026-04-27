@@ -58,7 +58,7 @@ export namespace plexdb::btree {
             os::memory_copy(values(right, h), view_shift_up(values(left, h), m));
         else
             os::memory_copy(children(right, h), view_shift_up(children(left, h), m));
-        
+
         KeyType sep_key = is_child_leaf ? keys(right)[0] : keys(left)[m-1];
         // @note for internal nodes we drop the separating key
         left->key_count = is_child_leaf ? m : (m-1);
@@ -83,7 +83,7 @@ export namespace plexdb::btree {
                 idx = leaf->key_count - 1;
                 auto ks = keys(leaf);
                 for (; idx >= 0 && key < ks[idx]; idx--) // @todo reverse iterator?
-                    ks[idx+1] = ks[idx];    
+                    ks[idx+1] = ks[idx];
                 idx++;
             }
             os::memory_shift_up(view_shift_up(values(leaf, h), idx));
@@ -119,14 +119,14 @@ export namespace plexdb::btree {
             CountType child_idx = binary_search_first_gt(keys(n), key);
             child_ref = children(n, h)[child_idx];
             const Node* child = read_node(t_int, child_ref);
-            
+
             if (child->key_count == max_keys(h, is_child_leaf)) {
                 split_child(t_int, h, update_node(t_int, n_ref), child_idx, is_child_leaf);
-    
+
                 child_idx = (key > keys(n)[child_idx]) ? (child_idx+1) : child_idx;
                 child_ref = children(n, h)[child_idx];
             }
-            
+
             assert_true(child->key_count < max_keys(h, is_child_leaf), "insert maintains max invariant.");
         }
         return insert_recursive(t, h, child_ref, depth+1, key);
@@ -137,7 +137,7 @@ export namespace plexdb::btree {
         // acquire read on header for duration of insertion
         auto t_header = scope(t);
         const auto& h = *read_header(t_header);
-        
+
         // ensure root is not full
         bool is_root_leaf = h.depth == 0;
         {
@@ -149,7 +149,7 @@ export namespace plexdb::btree {
                 Node* new_root = update_node(t_root, new_root_ref);
                 children(new_root, h)[0] = h.root;
                 split_child(t_root, h, new_root, 0, is_root_leaf);
-                
+
                 auto& h_write = *update_header(t_root);
                 h_write.root = new_root_ref;
                 h_write.depth++;
@@ -184,9 +184,9 @@ export namespace plexdb::btree {
             CountType idx = binary_search_first_gt(keys(n), key);
             n_ref = children(n, h)[idx];
         }
-        
+
         // acquire lock on returned memory
-        // @note still acquires lock if search fails, assuming transaction will 
+        // @note still acquires lock if search fails, assuming transaction will
         // be ended
         Node* n = update_node(t, n_ref);
         CountType idx = binary_search_first_geq(keys(n), key);
@@ -209,11 +209,11 @@ export namespace plexdb::btree {
 
         // acquire read on header for duration of remove
         const auto& h = *read_header(t_remove);
-        
+
         // @todo check. strategy is to release read locks acquired during
-        // down traversal and acquire rw as needed when flowing up on the 
+        // down traversal and acquire rw as needed when flowing up on the
         // assumption being that flowing up is rare
-        
+
         // traverse to leaf and store path
         Stack<RemoveStackItem> stack{};
         // @todo @perf temp arena
@@ -242,7 +242,7 @@ export namespace plexdb::btree {
 
         Node* node = update_node(t_remove, node_ref);
         delete_from_leaf(h, node, idx);
-        
+
         // fix underflow, propagating upwards as needed
         bool is_leaf = true;
         while (node->key_count < min_keys(h, is_leaf)) {
@@ -280,7 +280,7 @@ export namespace plexdb::btree {
 
             assert_true(left || right, "node must have at least one sibling.");
 
-            // otherwise we need to merge, this causes a delete in the parent 
+            // otherwise we need to merge, this causes a delete in the parent
             // which needs to be propagated
             if (left) {
                 merge(h, left, node, parent, idx-1, is_leaf);
@@ -306,7 +306,7 @@ export namespace plexdb::btree {
 
         // acquire read/write on header for duration of truncate
         auto& h = *update_header(t_truncate);
-        
+
         // traverse from first child of root to leaf
         // deleting horizontally in a zig-zag pattern
         Node* n_root = update_node(t_truncate, h.root);
@@ -317,38 +317,38 @@ export namespace plexdb::btree {
                 const Node* curr = read_node(t_truncate, curr_ref);
                 if (curr->prev == 0) {
                     while (curr->next != 0) {
-                        NodeRef next_ref = curr->next;  
+                        NodeRef next_ref = curr->next;
                         delete_node(t_truncate, curr_ref);
-    
+
                         curr_ref = next_ref;
                         curr = read_node(t_truncate, curr_ref);
                     }
-    
+
                     if (depth != h.depth) {
                         auto children_view = children(curr, h);
                         NodeRef right_most_child_ref = children_view[children_view.length-1];
                         delete_node(t_truncate, curr_ref);
-        
+
                         curr_ref = right_most_child_ref;
                     } else {
                         delete_node(t_truncate, curr_ref);
                     }
                 } else {
                     assert_true(curr->next == 0, "first node in level must be left-most or right-most");
-    
+
                     while (curr->prev != 0) {
                         NodeRef prev_ref = curr->prev;
                         delete_node(t_truncate, curr_ref);
-    
+
                         curr_ref = prev_ref;
                         curr = read_node(t_truncate, curr_ref);
                     }
-    
+
                     if (depth != h.depth) {
                         auto children_view = children(curr, h);
                         NodeRef left_most_child_ref = children_view[0];
                         delete_node(t_truncate, curr_ref);
-        
+
                         curr_ref = left_most_child_ref;
                     } else {
                         delete_node(t_truncate, curr_ref);
@@ -356,7 +356,7 @@ export namespace plexdb::btree {
                 }
             }
         }
-        
+
         n_root->key_count = 0;
         h.size = 0;
         h.depth = 0;
@@ -393,7 +393,7 @@ export namespace plexdb::btree {
             assert_true(keys(n).length > 0, "internal node must have at least one key");
             n_ref = children(n, h)[0];
         }
-        
+
         const Node* n = read_node(t, n_ref);
         assert_true(keys(n).length > 0, "leaf node must have at least one value ");
         return IteratorImpl{
@@ -430,5 +430,73 @@ export namespace plexdb::btree {
             .ref = it.ref,
             .idx = static_cast<CountType>(it.idx + 1_u16),
         };
+    }
+
+    template<SearchStrategy Strategy, Transaction Tx>
+    IteratorImpl search_iterator_impl(Tx& t, KeyType key) {
+        auto t_header = scope(t);
+        const auto& h = *read_header(t_header);
+        NodeRef n_ref = h.root;
+        for (CountType depth = 0; depth < h.depth; depth++) {
+            auto t_node = scope(t);
+            const Node* n = read_node(t_node, n_ref);
+            CountType idx = binary_search_first_gt(keys(n), key);
+            n_ref = children(n, h)[idx];
+        }
+
+        const Node* n = read_node(t, n_ref);
+        if constexpr (Strategy == SearchStrategy::RequireEquality) {
+            CountType idx = binary_search_first_geq(keys(n), key);
+            if (idx < n->key_count && keys(n)[idx] == key) {
+                return IteratorImpl{n, n_ref, idx};
+            }
+            return IteratorImpl{};
+        } else if constexpr (Strategy == SearchStrategy::FirstGreaterEqual) {
+            CountType idx = binary_search_first_geq(keys(n), key);
+            if (idx < n->key_count) {
+                return IteratorImpl{n, n_ref, idx};
+            }
+            if (n->next != 0) {
+                const Node* next = read_node(t, n->next);
+                return IteratorImpl{next, n->next, 0};
+            }
+            return IteratorImpl{};
+        } else if constexpr (Strategy == SearchStrategy::FirstGreater) {
+            CountType idx = binary_search_first_gt(keys(n), key);
+            if (idx < n->key_count) {
+                return IteratorImpl{n, n_ref, idx};
+            }
+            if (n->next != 0) {
+                const Node* next = read_node(t, n->next);
+                return IteratorImpl{next, n->next, 0};
+            }
+            return IteratorImpl{};
+        } else if constexpr (Strategy == SearchStrategy::LastLessEqual) {
+            CountType idx = binary_search_last_leq(keys(n), key);
+
+            if (idx < n->key_count) {
+                return IteratorImpl{n, n_ref, idx};
+            }
+            if (n->prev != 0) {
+                const Node* prev = read_node(t, n->prev);
+                if (prev->key_count > 0) {
+                    return IteratorImpl{prev, n->prev, static_cast<CountType>(prev->key_count - CountType{1})};
+                }
+            }
+            return IteratorImpl{};
+        } else if constexpr (Strategy == SearchStrategy::LastLess) {
+            CountType idx = binary_search_last_lt(keys(n), key);
+
+            if (idx < n->key_count) {
+                return IteratorImpl{n, n_ref, idx};
+            }
+            if (n->prev != 0) {
+                const Node* prev = read_node(t, n->prev);
+                if (prev->key_count > 0) {
+                    return IteratorImpl{prev, n->prev, static_cast<CountType>(prev->key_count - CountType{1})};
+                }
+            }
+            return IteratorImpl{};
+        }
     }
 }

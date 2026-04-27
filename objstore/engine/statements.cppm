@@ -43,12 +43,32 @@ export namespace objstore {
     struct UUID {
         static constexpr U64 length = 16_u64;
         Array<U8, length> value;
+
+        bool operator==(const UUID& o) const {
+            for (U64 i = 0; i < length; i++)
+                if (value[i] != o.value[i]) return false;
+            return true;
+        }
     };
     struct Hex {
         DynamicArray<U8> value;
+
+        bool operator==(const Hex& o) const {
+            if (value.length != o.value.length) return false;
+            for (U64 i = 0; i < value.length; i++)
+                if (value[i] != o.value[i]) return false;
+            return true;
+        }
     };
     struct Blob {
         DynamicArray<U8> value;
+
+        bool operator==(const Blob& o) const {
+            if (value.length != o.value.length) return false;
+            for (U64 i = 0; i < value.length; i++)
+                if (value[i] != o.value[i]) return false;
+            return true;
+        }
     };
     using ConstantTypes = TypeList<AutoString8, S64, bool, F64, Null, UUID, Hex, Blob>;
     struct Constant {
@@ -447,4 +467,18 @@ export namespace objstore {
             Batch
         > value;
     };
+}
+
+export namespace objstore {
+    inline U64 hash(const UUID& uuid) {
+        return plexdb::hash(plexdb::String8(&uuid.value[0], uuid.length));
+    }
+
+    inline U64 hash(const Blob& blob) {
+        return plexdb::hash(plexdb::String8(blob.value.ptr, blob.value.length));
+    }
+
+    inline U64 hash(const Hex& hex) {
+        return plexdb::hash(plexdb::String8(hex.value.ptr, hex.value.length));
+    }
 }

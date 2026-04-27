@@ -4,6 +4,7 @@ export import objstore.engine.types;
 export import objstore.engine.schema;
 export import objstore.engine.system_schema;
 export import objstore.engine.virtual_table;
+export import objstore.engine.it;
 
 import objstore.engine.statements;
 import objstore.engine.io;
@@ -85,64 +86,21 @@ export namespace objstore::engine {
     };
 
     // ========================================================================
-    // row/column iterators
-    // ========================================================================
-    struct ColumnIterator {
-        Pager* pager;
-        const schema::Table* table;
-        U64 row_page;
-        U64 col_idx;
-        U64 row_offset_bytes;
-        DynamicArray<bool> active_cols;
-
-        ColumnIterator& operator++();
-        bool operator==(const ColumnIterator& other) const { return col_idx == other.col_idx; }
-        bool operator!=(const ColumnIterator& other) const { return col_idx != other.col_idx; }
-    };
-
-    const schema::Column& column(const ColumnIterator& it);
-    U64 column_count(const ColumnIterator& it);
-    ColumnValue read_column_value(ColumnIterator& it);
-    ColumnIterator columns_begin(Pager* pager, const schema::Table* table, U64 row_page);
-    ColumnIterator columns_end(const schema::Table* table);
-
-    struct RowIterator {
-        Pager* pager;
-        const schema::Table* table;
-        btree::Iterator<btree::BTreePaged, U64> btree_it;
-        btree::Iterator<btree::BTreePaged, U64> btree_end;
-        U64 row_idx;
-
-        RowIterator& operator++();
-        bool operator==(const RowIterator& other) const { return btree_it == other.btree_it; }
-        bool operator!=(const RowIterator& other) const { return btree_it != other.btree_it; }
-    };
-
-    U64 row_page(RowIterator& it);
-    ColumnIterator columns_begin(RowIterator& it);
-    ColumnIterator columns_end(const RowIterator& it);
-
-    struct RowRange {
-        RowIterator begin_it;
-        RowIterator end_it;
-
-        RowIterator& begin() { return begin_it; }
-        RowIterator& end() { return end_it; }
-    };
-
-    // ========================================================================
     // execution result
     // ========================================================================
     struct ExecutionResult {
         ExecutionStatus status = ExecutionStatus::Success;
         ResultKind kind = ResultKind::Void;
-        // @todo should we store the resolved ptr instead?
         String8 message = "";
         String8 keyspace = "";
         String8 table = "";
 
+        U64 row_limit_count = MAX_U64;
         Optional<RowRange> rows = {};
         Optional<VirtualRows> virtual_rows = {};
+
+        const schema::Table* resolved_table = nullptr;
+        DynamicArray<U64> select_col_indices = {};
     };
 
     ExecutionResult execute(Engine& engine, const Statement& statement);
