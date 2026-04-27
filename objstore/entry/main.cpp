@@ -15,11 +15,11 @@ using namespace plexdb;
 
 void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
     println("Assert failed \"", msg, "\" at ", function_name, " in ", file_name, ":", to_str(line_number));
-    
+
     #if PLEXDB_DEBUG
         PLEXDB_TRAP;
     #else
-        os::signal_exit(1);
+        os::process_exit(1);
     #endif
 }
 
@@ -87,7 +87,7 @@ int main(int argc, char* argv[]) {
             engine::create_database(pager);
         }
         engine::Engine engine{&pager};
-    
+
         if (run_repl) {
             repl::run(engine);
         } else {

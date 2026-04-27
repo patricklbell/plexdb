@@ -15,7 +15,7 @@ module plexdb.os.core;
 namespace plexdb::os {
     File::~File()                   { file_close(this->handle); }
     File::operator Handle() const   { return this->handle; }
-    
+
 #if PLEXDB_OS_LINUX
     // ========================================================================
     // memory
@@ -124,7 +124,7 @@ namespace plexdb::os {
     }
     void file_seek(Handle file, U64 offset) {
         assert_true(static_cast<U64>((S64)offset) == offset, "range overflow");
-        
+
         int fd = handle_to_fd(file);
         off_t res_off = lseek(fd, off_t{(S64)offset}, SEEK_SET);
         assert_true(res_off == (S64)offset, "file seek error");
@@ -154,27 +154,32 @@ namespace plexdb::os {
     // ========================================================================
     // process
     // ========================================================================
-    S32 process_fork() {
-        return static_cast<S32>(fork());
+    static_assert(sizeof(pid_t) == sizeof(U32));
+    static Handle linux_pid_to_handle(pid_t pid    ) { return Handle{.u32 = {memory_cast<U32>(&pid)} }; }
+    static pid_t  linux_handle_to_pid(Handle handle) { return memory_cast<S32>(&handle.u32[0]); }
+
+    Optional<Handle> process_fork() {
+        pid_t pid = ::fork();
+        static_assert(sizeof(pid_t) < sizeof(U64), "zero handle sentinel is guaranteed to be out of range for pid");
+        if (pid == -1) return {};
+        if (pid == 0) return {zero_handle()};
+        return {linux_pid_to_handle(pid)};
     }
-    bool process_kill(S32 pid, S32 signal_number) {
-        return kill(static_cast<pid_t>(pid), signal_number) == 0;
-    }
-    S32 process_wait(S32 pid) {
+    bool process_wait(Handle process_to_wait_on) {
         int status = 0;
-        waitpid(static_cast<pid_t>(pid), &status, 0);
-        if (WIFEXITED(status))   return WEXITSTATUS(status);
-        if (WIFSIGNALED(status)) return -WTERMSIG(status);
-        return -1;
+        ::waitpid(linux_handle_to_pid(process_to_wait_on), &status, 0);
+        if (WIFEXITED(status))   return true;
+        if (WIFSIGNALED(status)) return true;
+        return false;
     }
-    S32 process_get_pid() {
-        return static_cast<S32>(getpid());
+    Handle process_get_handle() {
+        return linux_pid_to_handle(::getpid());
     }
-    void process_exit_immediate(S32 code) {
-        _exit(static_cast<int>(code));
+    void process_exit(int code) {
+        ::exit(code);
     }
     void process_pause() {
-        pause();  // blocks until any signal is delivered
+        ::pause();
     }
 
     // ========================================================================

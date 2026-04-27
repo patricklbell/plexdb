@@ -1,6 +1,3 @@
-module;
-#include "macros.h"
-
 export module plexdb.os.signal;
 
 import plexdb.base;
@@ -32,15 +29,7 @@ export namespace plexdb::os {
     void signal_register_kill(SignalHandler handler);
     void signal_register_stop(SignalHandler handler);
     void signal_ignore_pipe();
-    void signal_exit(int code);
-
-    // Platform signal numbers for use with process_kill.
-    // Values match the POSIX/Linux ABI specification.
-#if PLEXDB_OS_LINUX
-    constexpr S32 SIGNAL_KILL = 9;   // SIGKILL: cannot be caught or ignored
-    constexpr S32 SIGNAL_USR1 = 10;  // SIGUSR1: user-defined signal 1
-    constexpr S32 SIGNAL_TERM = 15;  // SIGTERM: default termination signal
-#endif
+    void signal_send_kill(Handle process);
 
     struct Poll {
         Handle handle;

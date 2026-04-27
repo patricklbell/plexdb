@@ -7,6 +7,7 @@
 #include <random>
 #include <ranges>
 #include <cstdio>
+#include <cinttypes>
 
 import plexdb.base;
 import plexdb.os;
@@ -17,15 +18,15 @@ using namespace plexdb;
 TEST_CASE("write and check read back", "[plexdb.pager]" ) {
     os::File f{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(f));
-    
+
     U64 page_size = 128;
     U64 pidx;
     U8 data[] = "some data";
     REQUIRE(sizeof(data) <= page_size);
-    
+
     {
         auto pager = Pager(f, pager::create(f, page_size));
-        
+
         pidx = pager::new_page(pager);
         U8* buffer = pager::rwpage(pager, pidx);
         os::memory_copy(buffer, data, sizeof(data));
@@ -41,13 +42,13 @@ TEST_CASE("write and check read back", "[plexdb.pager]" ) {
 TEST_CASE("write many pages and check free reclaims space", "[plexdb.pager]" ) {
     os::File f{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(f));
-    
+
     U64 page_size = 32;
     auto pager = Pager(f, pager::create(f, page_size));
-    
+
     U64 initial_pages = pager.header.page_count;
     U64 initial_bytes = os::file_get_stats(f).byte_count;
-    
+
     std::vector<U64> pages{};
     for (int i = 0; i < 1000; i++) {
         pages.push_back(pager::new_page(pager));
@@ -71,7 +72,7 @@ TEST_CASE("write many pages and check free reclaims space", "[plexdb.pager]" ) {
             pager::delete_page(pager, page);
         }
     }
-    
+
     REQUIRE(pager.header.page_count == initial_pages);
     REQUIRE(os::file_get_stats(f).byte_count == initial_bytes);
 }
@@ -79,7 +80,7 @@ TEST_CASE("write many pages and check free reclaims space", "[plexdb.pager]" ) {
 TEST_CASE("write many pages and check random free does not increase size", "[plexdb.pager]" ) {
     os::File f{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(f));
-    
+
     U64 page_size = 32;
 
     U64 total_pages_after_write;
@@ -226,21 +227,20 @@ TEST_CASE("pager repeated reopen and free consistency", "[plexdb.pager]") {
 // Write a page to the database via a WAL-enabled pager and verify it survives
 // a reopen with WAL recovery.
 TEST_CASE("WAL: write and read back via WAL-enabled pager", "[plexdb.pager.wal]") {
-    S32 pid = os::process_get_pid();
-    char db_path[256], wal_path[256];
-    snprintf(db_path,  sizeof(db_path),  "/tmp/plexdb_wal_basic_%d_db",  pid);
-    snprintf(wal_path, sizeof(wal_path), "/tmp/plexdb_wal_basic_%d_wal", pid);
+    os::Handle pid = os::process_get_handle();
+    auto db_path = fmt("/tmp/plexdb_wal_basic_%" PRIu64 "_db",  pid.u64[0]);
+    auto wal_path = fmt("/tmp/plexdb_wal_basic_%" PRIu64 "_wal",  pid.u64[0]);
 
-    if (os::file_exists((const char*)db_path))  os::file_delete((const char*)db_path);
-    if (os::file_exists((const char*)wal_path)) os::file_delete((const char*)wal_path);
+    if (os::file_exists(db_path))  os::file_delete(db_path);
+    if (os::file_exists(wal_path)) os::file_delete(wal_path);
 
     U64 page_size = 128;
     U64 pidx;
     U8 data[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
 
     {
-        os::Handle db  = os::file_open((const char*)db_path);
-        os::Handle wal = os::file_open((const char*)wal_path);
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
         auto hdr = pager::create(db, page_size);
         {
             auto p = Pager(db, wal, hdr);
@@ -252,8 +252,8 @@ TEST_CASE("WAL: write and read back via WAL-enabled pager", "[plexdb.pager.wal]"
     }
 
     {
-        os::Handle db  = os::file_open((const char*)db_path);
-        os::Handle wal = os::file_open((const char*)wal_path);
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
         {
             auto p = Pager(db, wal);
             const U8* rb = pager::rpage(p, pidx);
@@ -264,21 +264,20 @@ TEST_CASE("WAL: write and read back via WAL-enabled pager", "[plexdb.pager.wal]"
         os::file_close(wal);
     }
 
-    os::file_delete((const char*)db_path);
-    os::file_delete((const char*)wal_path);
+    os::file_delete(db_path);
+    os::file_delete(wal_path);
 }
 
 // Fork a child that commits the WAL but exits immediately (simulating a crash
 // before the checkpoint completes). The parent then reopens the pager with the
 // WAL and verifies that recovery replays the committed frames.
 TEST_CASE("WAL: committed WAL replays after abrupt process exit", "[plexdb.pager.wal]") {
-    S32 pid = os::process_get_pid();
-    char db_path[256], wal_path[256];
-    snprintf(db_path,  sizeof(db_path),  "/tmp/plexdb_wal_crash_%d_db",  pid);
-    snprintf(wal_path, sizeof(wal_path), "/tmp/plexdb_wal_crash_%d_wal", pid);
+    os::Handle pid = os::process_get_handle();
+    auto db_path = fmt("/tmp/plexdb_wal_crash_%" PRIu64 "_db",  pid.u64[0]);
+    auto wal_path = fmt("/tmp/plexdb_wal_crash_%" PRIu64 "_wal",  pid.u64[0]);
 
-    if (os::file_exists((const char*)db_path))  os::file_delete((const char*)db_path);
-    if (os::file_exists((const char*)wal_path)) os::file_delete((const char*)wal_path);
+    if (os::file_exists(db_path))  os::file_delete(db_path);
+    if (os::file_exists(wal_path)) os::file_delete(wal_path);
 
     U64 page_size = 128;
     U64 pidx;
@@ -287,7 +286,7 @@ TEST_CASE("WAL: committed WAL replays after abrupt process exit", "[plexdb.pager
 
     // Create database with initial data.
     {
-        os::Handle db = os::file_open((const char*)db_path);
+        os::Handle db = os::file_open(db_path);
         auto hdr = pager::create(db, page_size);
         {
             auto p = Pager(db, hdr);
@@ -299,11 +298,13 @@ TEST_CASE("WAL: committed WAL replays after abrupt process exit", "[plexdb.pager
 
     // Fork a child that commits the WAL for a modified page, then exits abruptly
     // (no checkpoint). This simulates a crash between WAL commit and DB write.
-    S32 child = os::process_fork();
-    if (child == 0) {
+    auto child_opt = os::process_fork();
+    REQUIRE(static_cast<bool>(child_opt));
+    os::Handle child = *child_opt;
+    if (os::is_zero_handle(child)) {
         // Child process: manually commit WAL without checkpointing.
-        os::Handle child_db  = os::file_open((const char*)db_path);
-        os::Handle child_wal = os::file_open((const char*)wal_path);
+        os::Handle child_db  = os::file_open(db_path);
+        os::Handle child_wal = os::file_open(wal_path);
 
         pager::Wal wal{child_wal};
         pager::wal_init(wal, page_size);
@@ -315,14 +316,14 @@ TEST_CASE("WAL: committed WAL replays after abrupt process exit", "[plexdb.pager
         pager::wal_commit(wal);
 
         os::deallocate(buf);
-        os::process_exit_immediate(0);  // crash: no checkpoint
+        os::process_exit(0);  // crash: no checkpoint
     }
     os::process_wait(child);
 
     // Parent: reopen pager with WAL — recovery should replay the committed frame.
     {
-        os::Handle db  = os::file_open((const char*)db_path);
-        os::Handle wal = os::file_open((const char*)wal_path);
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
         {
             auto p = Pager(db, wal);
             const U8* rb = pager::rpage(p, pidx);
@@ -333,21 +334,20 @@ TEST_CASE("WAL: committed WAL replays after abrupt process exit", "[plexdb.pager
         os::file_close(wal);
     }
 
-    os::file_delete((const char*)db_path);
-    os::file_delete((const char*)wal_path);
+    os::file_delete(db_path);
+    os::file_delete(wal_path);
 }
 
 // Fork a child that appends frames to the WAL but does NOT commit (no
 // frame_count update), then exits. The parent verifies that the database is
 // unchanged (no partial writes applied).
 TEST_CASE("WAL: uncommitted frames do not modify the database", "[plexdb.pager.wal]") {
-    S32 pid = os::process_get_pid();
-    char db_path[256], wal_path[256];
-    snprintf(db_path,  sizeof(db_path),  "/tmp/plexdb_wal_nocommit_%d_db",  pid);
-    snprintf(wal_path, sizeof(wal_path), "/tmp/plexdb_wal_nocommit_%d_wal", pid);
+    os::Handle pid = os::process_get_handle();
+    auto db_path = fmt("/tmp/plexdb_wal_nocommit_%" PRIu64 "_db",  pid.u64[0]);
+    auto wal_path = fmt("/tmp/plexdb_wal_nocommit_%" PRIu64 "_wal",  pid.u64[0]);
 
-    if (os::file_exists((const char*)db_path))  os::file_delete((const char*)db_path);
-    if (os::file_exists((const char*)wal_path)) os::file_delete((const char*)wal_path);
+    if (os::file_exists(db_path))  os::file_delete(db_path);
+    if (os::file_exists(wal_path)) os::file_delete(wal_path);
 
     U64 page_size = 128;
     U64 pidx;
@@ -355,7 +355,7 @@ TEST_CASE("WAL: uncommitted frames do not modify the database", "[plexdb.pager.w
     U8 modified[8] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08};
 
     {
-        os::Handle db = os::file_open((const char*)db_path);
+        os::Handle db = os::file_open(db_path);
         auto hdr = pager::create(db, page_size);
         {
             auto p = Pager(db, hdr);
@@ -366,10 +366,12 @@ TEST_CASE("WAL: uncommitted frames do not modify the database", "[plexdb.pager.w
     }
 
     // Child: write frames to WAL but do NOT commit — simulates crash before commit.
-    S32 child = os::process_fork();
-    if (child == 0) {
-        os::Handle child_db  = os::file_open((const char*)db_path);
-        os::Handle child_wal = os::file_open((const char*)wal_path);
+    auto child_opt = os::process_fork();
+    REQUIRE(static_cast<bool>(child_opt));
+    os::Handle child = *child_opt;
+    if (os::is_zero_handle(child)) {
+        os::Handle child_db  = os::file_open(db_path);
+        os::Handle child_wal = os::file_open(wal_path);
 
         pager::Wal wal{child_wal};
         pager::wal_init(wal, page_size);
@@ -381,14 +383,14 @@ TEST_CASE("WAL: uncommitted frames do not modify the database", "[plexdb.pager.w
         // @note no wal_commit — frames are uncommitted
 
         os::deallocate(buf);
-        os::process_exit_immediate(0);
+        os::process_exit(0);
     }
     os::process_wait(child);
 
     // Parent: reopen pager with WAL. No committed frames → original data must be intact.
     {
-        os::Handle db  = os::file_open((const char*)db_path);
-        os::Handle wal = os::file_open((const char*)wal_path);
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
         {
             auto p = Pager(db, wal);
             const U8* rb = pager::rpage(p, pidx);
@@ -399,21 +401,20 @@ TEST_CASE("WAL: uncommitted frames do not modify the database", "[plexdb.pager.w
         os::file_close(wal);
     }
 
-    os::file_delete((const char*)db_path);
-    os::file_delete((const char*)wal_path);
+    os::file_delete(db_path);
+    os::file_delete(wal_path);
 }
 
 // Fork a child that commits the WAL, signals readiness via a notifier, then
 // waits. The parent sends SIGKILL to interrupt the child after the commit.
 // Recovery on reopen must replay the committed WAL frames.
 TEST_CASE("WAL: SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]") {
-    S32 pid = os::process_get_pid();
-    char db_path[256], wal_path[256];
-    snprintf(db_path,  sizeof(db_path),  "/tmp/plexdb_wal_sigkill_%d_db",  pid);
-    snprintf(wal_path, sizeof(wal_path), "/tmp/plexdb_wal_sigkill_%d_wal", pid);
+    os::Handle pid = os::process_get_handle();
+    auto db_path = fmt("/tmp/plexdb_wal_sigkill_%" PRIu64 "_db",  pid.u64[0]);
+    auto wal_path = fmt("/tmp/plexdb_wal_sigkill_%" PRIu64 "_wal",  pid.u64[0]);
 
-    if (os::file_exists((const char*)db_path))  os::file_delete((const char*)db_path);
-    if (os::file_exists((const char*)wal_path)) os::file_delete((const char*)wal_path);
+    if (os::file_exists(db_path))  os::file_delete(db_path);
+    if (os::file_exists(wal_path)) os::file_delete(wal_path);
 
     U64 page_size = 128;
     U64 pidx;
@@ -421,7 +422,7 @@ TEST_CASE("WAL: SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]
     U8 modified[8] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08};
 
     {
-        os::Handle db = os::file_open((const char*)db_path);
+        os::Handle db = os::file_open(db_path);
         auto hdr = pager::create(db, page_size);
         {
             auto p = Pager(db, hdr);
@@ -433,11 +434,13 @@ TEST_CASE("WAL: SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]
 
     os::Notifier notifier{};  // pipe for child→parent ready signal
 
-    S32 child = os::process_fork();
-    if (child == 0) {
+    auto child_opt = os::process_fork();
+    REQUIRE(static_cast<bool>(child_opt));
+    os::Handle child = *child_opt;
+    if (os::is_zero_handle(child)) {
         // Child: commit WAL, signal parent, then wait to be killed.
-        os::Handle child_db  = os::file_open((const char*)db_path);
-        os::Handle child_wal = os::file_open((const char*)wal_path);
+        os::Handle child_db  = os::file_open(db_path);
+        os::Handle child_wal = os::file_open(wal_path);
 
         pager::Wal wal{child_wal};
         pager::wal_init(wal, page_size);
@@ -460,13 +463,13 @@ TEST_CASE("WAL: SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]
     // Parent: wait for child's ready signal then deliver SIGKILL.
     U8 byte = 0;
     os::stream_read(notifier.read, &byte, 1);
-    os::process_kill(child, os::SIGNAL_KILL);
+    os::signal_send_kill(child);
     os::process_wait(child);
 
     // Recovery: reopen with WAL; committed frame must be replayed.
     {
-        os::Handle db  = os::file_open((const char*)db_path);
-        os::Handle wal = os::file_open((const char*)wal_path);
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
         {
             auto p = Pager(db, wal);
             const U8* rb = pager::rpage(p, pidx);
@@ -477,6 +480,6 @@ TEST_CASE("WAL: SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]
         os::file_close(wal);
     }
 
-    os::file_delete((const char*)db_path);
-    os::file_delete((const char*)wal_path);
+    os::file_delete(db_path);
+    os::file_delete(wal_path);
 }

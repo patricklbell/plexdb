@@ -76,8 +76,11 @@ namespace plexdb::os {
             signal_register_linux(SIGPIPE, SIG_IGN);
         }
 
-        void signal_exit(int code) {
-            ::exit(code);
+        static_assert(sizeof(pid_t) == sizeof(U32));
+        static pid_t linux_handle_to_pid(Handle handle) { return memory_cast<S32>(&handle.u32[0]); }
+
+        void signal_send_kill(Handle process) {
+            ::kill(linux_handle_to_pid(process), SIGKILL);
         }
 
         Poll::Poll() {

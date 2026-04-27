@@ -50,7 +50,6 @@ export namespace plexdb::pager {
         Pager() = default;
         Pager(os::Handle file, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
         Pager(os::Handle file, const Pager::Header& header, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
-        // WAL-enabled constructors: wal_file must be a valid handle.
         Pager(os::Handle file, os::Handle wal_file, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
         Pager(os::Handle file, os::Handle wal_file, const Pager::Header& header, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
         Pager(Pager&& other);
