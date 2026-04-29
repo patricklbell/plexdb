@@ -307,7 +307,7 @@ TEST_CASE("WAL: committed WAL replays after abrupt process exit", "[plexdb.pager
         os::Handle child_wal = os::file_open(wal_path);
 
         pager::Wal wal{child_wal};
-        pager::wal_init(wal, page_size);
+        pager::wal_create(wal, page_size);
 
         U8* buf = os::allocate_zero(page_size);
         os::file_read(child_db, Rng1U64{.start=page_size*pidx, .end=page_size*(pidx+1)}, buf);
@@ -374,7 +374,7 @@ TEST_CASE("WAL: uncommitted frames do not modify the database", "[plexdb.pager.w
         os::Handle child_wal = os::file_open(wal_path);
 
         pager::Wal wal{child_wal};
-        pager::wal_init(wal, page_size);
+        pager::wal_create(wal, page_size);
 
         U8* buf = os::allocate_zero(page_size);
         os::file_read(child_db, Rng1U64{.start=page_size*pidx, .end=page_size*(pidx+1)}, buf);
@@ -443,7 +443,7 @@ TEST_CASE("WAL: SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]
         os::Handle child_wal = os::file_open(wal_path);
 
         pager::Wal wal{child_wal};
-        pager::wal_init(wal, page_size);
+        pager::wal_create(wal, page_size);
 
         U8* buf = os::allocate_zero(page_size);
         os::file_read(child_db, Rng1U64{.start=page_size*pidx, .end=page_size*(pidx+1)}, buf);

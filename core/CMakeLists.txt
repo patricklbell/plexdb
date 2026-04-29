@@ -38,7 +38,7 @@ target_include_directories(core_modules
 
 target_sources(core_modules
     PUBLIC
-        FILE_SET CXX_MODULES 
+        FILE_SET CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
             argparse/argparse.cppm
@@ -77,7 +77,8 @@ target_sources(core_modules
             os/uring.cppm
             tagged_union/tagged_union.cppm
             pager/pager.cppm
-            pager/wal.cppm
+            pager/pager.types.cppm
+            pager/pager.wal.cppm
             third_party/xxhash/xxhash.cppm
             threads/threads.cppm
 )
@@ -126,7 +127,7 @@ target_sources(core
         os/time.cpp
         os/uring.cpp
         pager/pager.cpp
-        pager/wal.cpp
+        pager/pager.wal.cpp
         threads/threads.cpp
 )
 

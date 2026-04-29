@@ -5,6 +5,8 @@ module plexdb.pager;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.threads;
+import plexdb.arena;
 
 namespace plexdb::pager {
     inline static U64 get_cache_size(Pager& pager) {
@@ -22,10 +24,10 @@ namespace plexdb::pager {
         U64 cache_idx = idx % pager.read_cache_count;
         return pager.read_cache + cache_idx*get_cache_size(pager) + sizeof(Pager::ReadCacheEntry);
     }
-    
+
     static void read_header(Pager& pager) {
         os::file_read(
-            pager.file, 
+            pager.file,
             Rng1U64{
                 .start=pager.base_offset,
                 .end  =pager.base_offset + sizeof(pager.header),
@@ -35,7 +37,7 @@ namespace plexdb::pager {
     }
     static void write_header(Pager& pager) {
         os::file_write(
-            pager.file, 
+            pager.file,
             Rng1U64{
                 .start=pager.base_offset,
                 .end  =pager.base_offset + sizeof(pager.header),
@@ -64,18 +66,18 @@ namespace plexdb::pager {
         );
     }
 
-    Pager::Header create(os::Handle file, U64 page_size, U64 base_offset) {
-        assert_true(sizeof(Pager::Header) <= page_size, "header does not fit in root page");
+    Header create(os::Handle file, U64 page_size, U64 base_offset) {
+        assert_true(sizeof(Header) <= page_size, "header does not fit in root page");
         assert_true(page_size % sizeof(U64) == 0, "invalid page size alignment");
 
-        Pager::Header header{
+        Header header{
             .magic = HEADER_MAGIC,
             .version = HEADER_CURRENT_VERSION,
             .page_size=page_size,
             .page_count=1, // header page
             .root_page=MAX_U64,
         };
-        
+
         os::file_resize_zero(file, base_offset + header.page_count*header.page_size);
         os::file_write(file, Rng1U64{ .start=base_offset, .end=base_offset+sizeof(header) }, &header);
 
@@ -86,15 +88,13 @@ namespace plexdb::pager {
         pager.read_cache = os::allocate_zero(get_cache_size(pager)*pager.read_cache_count);
     }
 
-    // Recover from WAL if committed frames exist.
     static void maybe_recover_wal(Pager& pager) {
-        if (os::is_zero_handle(pager.wal.file)) return;
+        if (!pager.wal) return;
         if (!wal_load(pager.wal, pager.header.page_size)) return;
         if (!wal_has_committed(pager.wal)) return;
 
         wal_checkpoint(pager.wal, pager.file, pager.base_offset);
         wal_reset(pager.wal);
-        // Re-read header after recovery.
         read_header(pager);
     }
 
@@ -103,20 +103,20 @@ namespace plexdb::pager {
         read_header(*this);
         init_read_cache(*this);
     }
-    Pager::Pager(os::Handle file, const Pager::Header& header, U64 base_offset, U64 read_cache)
+    Pager::Pager(os::Handle file, const Header& header, U64 base_offset, U64 read_cache)
        : file(file), base_offset(base_offset), header(header), read_cache_count(read_cache) {
         init_read_cache(*this);
     }
 
     Pager::Pager(os::Handle file, os::Handle wal_file, U64 base_offset, U64 read_cache)
-      : file(file), base_offset(base_offset), read_cache_count(read_cache), wal(Wal(wal_file)) {
+      : file(file), base_offset(base_offset), read_cache_count(read_cache), wal(wal_file) {
         read_header(*this);
         maybe_recover_wal(*this);
         init_read_cache(*this);
     }
-    Pager::Pager(os::Handle file, os::Handle wal_file, const Pager::Header& header, U64 base_offset, U64 read_cache)
-       : file(file), base_offset(base_offset), header(header), read_cache_count(read_cache), wal(Wal(wal_file)) {
-        wal_init(this->wal, header.page_size);
+    Pager::Pager(os::Handle file, os::Handle wal_file, const Header& header, U64 base_offset, U64 read_cache)
+       : file(file), base_offset(base_offset), header(header), read_cache_count(read_cache), wal(wal_file) {
+        wal_create(this->wal, header.page_size);
         init_read_cache(*this);
     }
 
@@ -167,7 +167,7 @@ namespace plexdb::pager {
 
         other.file = os::zero_handle();
         other.read_cache = nullptr;
-        
+
         return *this;
     }
 
@@ -210,13 +210,8 @@ namespace plexdb::pager {
     }
 
     void fflush(Pager& pager) {
-        bool use_wal = !os::is_zero_handle(pager.wal.file);
-
-        if (use_wal) {
-            // Ensure WAL is initialised for this session.
-            // page_size == 0 means wal_load failed (empty or corrupt file) — safe to reinitialise.
-            if (pager.wal.header.page_size == 0)
-                wal_init(pager.wal, pager.header.page_size);
+        if (pager.wal) {
+            assert_true(pager.wal.header.page_size != 0, "invalid wal page size");
 
             U64 frames_appended = 0;
             for (auto& idx : pager.write_set) {
@@ -229,11 +224,7 @@ namespace plexdb::pager {
                 entry->in_write_set = false;
             }
             if (pager.header_in_write_set) {
-                // Pad header to page_size in a temporary buffer.
-                U8* buf = os::allocate_zero(pager.header.page_size);
-                os::memory_copy(buf, &pager.header, sizeof(pager.header));
-                wal_append_frame(pager.wal, MAX_U64, buf);
-                os::deallocate(buf);
+                wal_append_frame(pager.wal, MAX_U64, reinterpret_cast<U8*>(&pager.header));
                 pager.header_in_write_set = false;
                 frames_appended++;
             }
@@ -247,9 +238,9 @@ namespace plexdb::pager {
             for (auto& idx : pager.write_set) {
                 auto entry = get_cache_entry(pager, idx);
                 assert_true(entry->idx != 0, "header page found in write set");
-                // write as long as page has not already been freed
-                if (idx < pager.header.page_count)
+                if (idx < pager.header.page_count) {
                     write_page(pager, get_cache_data(pager, idx), idx);
+                }
                 entry->in_write_set = false;
             }
             if (pager.header_in_write_set) {
@@ -261,12 +252,12 @@ namespace plexdb::pager {
         clear(pager.write_set);
         arena::clear(pager.write_arena);
     }
-    
+
     // bitset is stored as a page of U64s at the beginning of a block eg.
     // +--------+----------+--------+--------+-----------+--------+----------+------------+
     // | header | bitset 0 | page 2 | page 3 |    ...    | page x | bitset 1 |    ...     |
     // +--------+----------+--------+--------+-----------+--------+----------+------------+
-    // if occupied pages are 0, 1, 8, and 68, relative to the bitset's page, then the 
+    // if occupied pages are 0, 1, 8, and 68, relative to the bitset's page, then the
     // bitset stored is represented as the following in little endian byte order
     // +----------------------------------------------------------------------------------+
     // | 00000011 00000001 00000000 00000000 00000000 00000000 00000000 00000000 00000000 |
@@ -298,11 +289,11 @@ namespace plexdb::pager {
             U64* bitset = rwbitset(pager, bitset_page);
 
             // @perf
-            for (U64 entry_idx = 0; entry_idx < ENTRIES_PER_BITSET; entry_idx++) {    
+            for (U64 entry_idx = 0; entry_idx < ENTRIES_PER_BITSET; entry_idx++) {
                 if (~bitset[entry_idx] != 0) {
                     U64 bit_idx = bit_count_trailing_zeros(~bitset[entry_idx]);
                     bitset[entry_idx] |= 1_u64 << bit_idx;
-    
+
                     U64 free_page = bitset_page + 1 + get_pages_per_entry()*entry_idx + bit_idx;
                     if (free_page >= h.page_count) {
                         h.page_count = free_page+1;
@@ -313,7 +304,7 @@ namespace plexdb::pager {
                 }
             }
         }
-    
+
         // add new bitset
         assert_true((h.page_count - 1) % BITSET_PAGE_STRIDE == 0, "bitset correctly aligned");
 
@@ -321,7 +312,7 @@ namespace plexdb::pager {
         U64 free_page = h.page_count++;
         pager.header_in_write_set = true;
         os::file_resize_zero(pager.file, pager.base_offset + h.page_count*h.page_size);
-        
+
         U64* bitset = rwbitset(pager, bitset_page);
         bitset[0] |= 1_u64;
 

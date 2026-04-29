@@ -141,7 +141,9 @@ export namespace plexdb::os {
         Handle handle;
 
         ~File();
+
         operator Handle() const;
+        operator bool() const { return !os::is_zero_handle(this->handle); }
     };
 
     // ========================================================================

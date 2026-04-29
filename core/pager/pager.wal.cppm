@@ -3,20 +3,22 @@ export module plexdb.pager.wal;
 import plexdb.base;
 import plexdb.os;
 
+import plexdb.pager.types;
+
 export namespace plexdb::pager {
     constexpr Array<U8,8> WAL_MAGIC{'p','X','W','A','L',1,0,0};
+    constexpr Array<U8,2> WAL_CURRENT_VERSION{ 0, 1 };
 
     // WAL file layout:
-    //   [WalHeader]
-    //   [WalFrame] * frame_count   (each frame is sizeof(WalFrame) + page_size bytes)
+    //   [Header]
+    //   [Frame][data] * frame_count   (each frame is sizeof(Frame) + page_size bytes)
     //
     // frame_count in the header is the atomic commit point.
     // Writing frame_count > 0 commits the WAL; frame_count == 0 means no committed data.
-    // A frame with page_idx == MAX_U64 carries the pager header (padded to page_size).
-
     struct Wal {
         struct Header {
-            Array<U8,8> magic;
+            Array<U8,sizeof(WAL_MAGIC)> magic;
+            Array<U8,sizeof(WAL_CURRENT_VERSION)> version;
             U64 page_size;
             U64 salt;
             U64 frame_count;  // 0 = not committed
@@ -37,10 +39,12 @@ export namespace plexdb::pager {
 
         Wal(const Wal&)            = delete;
         Wal& operator=(const Wal&) = delete;
+
+        operator bool() const { return !os::is_zero_handle(this->file); }
     };
 
     // Write WAL header with page_size and fresh random salt; sets frame_count = 0.
-    void wal_init(Wal& wal, U64 page_size);
+    void wal_create(Wal& wal, U64 page_size);
 
     // Read the WAL header; returns true if magic and page_size match.
     bool wal_load(Wal& wal, U64 expected_page_size);
