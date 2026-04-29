@@ -325,7 +325,7 @@ export namespace objstore::io {
                 return {};
             } break;
             case CollectionType::vector:{
-                assert_not_implemented();
+                assert_not_implemented("reading vector collection type is not implemented");
             }break;
         }
         assert_true(false, "invalid collection type");
@@ -411,19 +411,19 @@ export namespace objstore::io {
             if constexpr (SameAs<T, Constant>) {
                 return cdtype.ctype == CollectionType::basic && can_cast_write_constant_as_column_value(cv, cdtype.basic.value_dtype);
             } else if constexpr (SameAs<T, MapLiteral>) {
-                assert_not_implemented();
+                assert_not_implemented("writing map literal as column value is not implemented");
                 return false;
             } else if constexpr (SameAs<T, SetLiteral>) {
-                assert_not_implemented();
+                assert_not_implemented("writing set literal as column value is not implemented");
                 return false;
             } else if constexpr (SameAs<T, ListOrVectorLiteral>) {
-                assert_not_implemented();
+                assert_not_implemented("writing list/vector literal as column value is not implemented");
                 return false;
             } else if constexpr (SameAs<T, UdtLiteral>) {
-                assert_not_implemented();
+                assert_not_implemented("writing UDT literal as column value is not implemented");
                 return false;
             } else if constexpr (SameAs<T, TupleLiteral>) {
-                assert_not_implemented();
+                assert_not_implemented("writing tuple literal as column value is not implemented");
                 return false;
             } else {
                 static_assert(!SameAs<T,T>, "missing type case");
@@ -538,7 +538,7 @@ export namespace objstore::io {
                     w(reinterpret_cast<const U8*>(&src.length), sizeof(src.length));
                     w(reinterpret_cast<const U8*>(src.c_str), src.length);
                 }break;
-                default:{ assert_true(false, "mismatch between underlying type or conversion not implemented and dtype"); }break;
+                default:{ assert_not_implemented("writing string-like value to this dtype is not implemented"); }break;
             }
         } else if constexpr (SameAs<T, S64>) {
             switch (dtype) {
@@ -565,7 +565,7 @@ export namespace objstore::io {
                     S64 bigint = static_cast<S64>(src);
                     w(reinterpret_cast<const U8*>(&bigint), sizeof(bigint));
                 }break;
-                default:{ assert_true(false, "mismatch between underlying type and dtype or conversion not implemented"); }break;
+                default:{ assert_not_implemented("writing integer value to this dtype is not implemented"); }break;
             }
         } else if constexpr (SameAs<T, bool>) {
             switch (dtype) {
@@ -573,7 +573,7 @@ export namespace objstore::io {
                     U8 boolean = static_cast<U8>(src);
                     w(reinterpret_cast<const U8*>(&boolean), sizeof(boolean));
                 }break;
-                default:{ assert_true(false, "mismatch between underlying type and dtype or conversion not implemented"); }break;
+                default:{ assert_not_implemented("writing boolean value to non-boolean dtype is not implemented"); }break;
             }
         } else if constexpr (SameAs<T, F64>) {
             switch (dtype) {
@@ -585,23 +585,23 @@ export namespace objstore::io {
                     F64 double_ = static_cast<F64>(src);
                     w(reinterpret_cast<const U8*>(&double_), sizeof(double_));
                 }break;
-                default:{ assert_true(false, "mismatch between underlying type and dtype or conversion not implemented"); }break;
+                default:{ assert_not_implemented("writing float value to non-float dtype is not implemented"); }break;
             }
         } else if constexpr (SameAs<T, UUID>) {
-            assert_true(dtype == BasicType::uuid || dtype == BasicType::timeuuid, "mismatch between underlying type and dtype or conversion not implemented");
+            assert_true(dtype == BasicType::uuid || dtype == BasicType::timeuuid, "UUID value written to non-uuid column");
             w(&src.value[0], src.length);
         } else if constexpr (SameAs<T, Hex>) {
-            assert_true(dtype == BasicType::hex, "mismatch between underlying type and dtype or conversion not implemented");
+            assert_true(dtype == BasicType::hex, "hex value written to non-hex column");
             w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
             w(&src.value[0], src.value.length);
         } else if constexpr (SameAs<T, Blob>) {
             assert_true(dtype == BasicType::blob || dtype == BasicType::inet || dtype == BasicType::varint ||
                         dtype == BasicType::decimal || dtype == BasicType::duration || dtype == BasicType::vector ||
-                        dtype == BasicType::hex, "mismatch between underlying type and dtype or conversion not implemented");
+                        dtype == BasicType::hex, "blob value written to incompatible column dtype");
             w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
             w(&src.value[0], src.value.length);
         } else if constexpr (SameAs<T, Null>) {
-            assert_not_implemented();
+            assert_not_implemented("writing null column values is not implemented");
         } else {
             static_assert(!SameAs<T,T>, "missing underlying type case");
         }
@@ -623,15 +623,15 @@ export namespace objstore::io {
                 assert_true(cdtype.ctype == CollectionType::basic, "bad can write check!");
                 cast_write_constant_as_column_value(w, cv, cdtype.basic.value_dtype);
             } else if constexpr (SameAs<T, MapLiteral>) {
-                assert_not_implemented();
+                assert_not_implemented("writing map literal as column value is not implemented");
             } else if constexpr (SameAs<T, SetLiteral>) {
-                assert_not_implemented();
+                assert_not_implemented("writing set literal as column value is not implemented");
             } else if constexpr (SameAs<T, ListOrVectorLiteral>) {
-                assert_not_implemented();
+                assert_not_implemented("writing list/vector literal as column value is not implemented");
             } else if constexpr (SameAs<T, UdtLiteral>) {
-                assert_not_implemented();
+                assert_not_implemented("writing UDT literal as column value is not implemented");
             } else if constexpr (SameAs<T, TupleLiteral>) {
-                assert_not_implemented();
+                assert_not_implemented("writing tuple literal as column value is not implemented");
             } else {
                 static_assert(!SameAs<T,T>, "missing type case");
             }

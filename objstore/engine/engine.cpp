@@ -191,7 +191,7 @@ namespace objstore::engine {
                 return make_keyspace_created(stmt.name);
             } else if constexpr (SameAs<T, CreateTable>) {
                 String8 ks_name = static_cast<bool>(stmt.name.keyspace_name) ? String8(*stmt.name.keyspace_name) : engine.current_keyspace;
-                assert_true_not_implemented(!is_system_keyspace(ks_name));
+                assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace CREATE TABLE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propagate error
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
@@ -218,18 +218,18 @@ namespace objstore::engine {
 
                 return make_use_keyspace(engine.current_keyspace);
             } else if constexpr (SameAs<T, AlterKeyspace>) {
-                assert_true_not_implemented(!is_system_keyspace(stmt.keyspace));
+                assert_true_not_implemented(!is_system_keyspace(stmt.keyspace), "system keyspace ALTER KEYSPACE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace).value; // @todo propagate error
                 if (ks == nullptr) {
                     return (stmt.if_exists) ? make_void_success() :  make_keyspace_not_found(stmt.keyspace);
                 }
 
-                assert_true_not_implemented(stmt.options.identifier_values.length == 0);
+                assert_true_not_implemented(stmt.options.identifier_values.length == 0, "ALTER KEYSPACE WITH options are not implemented");
 
                 return make_schema_changed(stmt.keyspace);
             } else if constexpr (SameAs<T, DropKeyspace>) {
-                assert_true_not_implemented(!is_system_keyspace(stmt.keyspace));
+                assert_true_not_implemented(!is_system_keyspace(stmt.keyspace), "system keyspace DROP KEYSPACE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace).value; // @todo propagate error
                 if (ks == nullptr) {
@@ -241,7 +241,7 @@ namespace objstore::engine {
                 return make_schema_changed(stmt.keyspace);
             } else if constexpr (SameAs<T, DropTable>) {
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
-                assert_true_not_implemented(!is_system_keyspace(ks_name));
+                assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace DROP TABLE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propagate error
                 if (ks == nullptr) {
@@ -256,7 +256,7 @@ namespace objstore::engine {
                 return make_schema_changed(ks_name, stmt.table.table_name);
             } else if constexpr (SameAs<T, TruncateTable>) {
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
-                assert_true_not_implemented(!is_system_keyspace(ks_name));
+                assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace TRUNCATE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propagate error
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
@@ -280,7 +280,7 @@ namespace objstore::engine {
                         .virtual_rows = move(system_vr),
                     };
                 }
-                assert_true_not_implemented(!is_system_keyspace(ks_name));
+                assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace SELECT is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propagate error
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
@@ -431,11 +431,11 @@ namespace objstore::engine {
                     .select_col_indices = move(select_col_indices),
                 };
             } else if constexpr (SameAs<T, Insert>) {
-                assert_true_not_implemented(stmt.using_parameters.length == 0);
+                assert_true_not_implemented(stmt.using_parameters.length == 0, "INSERT USING TIMESTAMP/TTL is not implemented");
                 assert_true(static_cast<bool>(stmt.insert_clause), "missing insert clause, this should never happen");
 
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
-                assert_true_not_implemented(!is_system_keyspace(ks_name));
+                assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace INSERT is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value; // @todo propagate error
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
@@ -482,7 +482,7 @@ namespace objstore::engine {
                         }
 
                         // @todo uniqueness check
-                        assert_true_not_implemented(!stmt.if_not_exists);
+                        assert_true_not_implemented(!stmt.if_not_exists, "INSERT IF NOT EXISTS is not implemented");
 
                         // write new values
                         // @perf avoid copying by allowing separate read/write pages in transactions
@@ -533,7 +533,7 @@ namespace objstore::engine {
                 assert_true_not_implemented(!stmt.if_, "UPDATE IF is not implemented");
 
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
-                assert_true_not_implemented(!is_system_keyspace(ks_name));
+                assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace UPDATE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value;
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
@@ -710,7 +710,7 @@ namespace objstore::engine {
                 assert_true_not_implemented(stmt.selections.length == 0, "column-level DELETE is not implemented");
 
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
-                assert_true_not_implemented(!is_system_keyspace(ks_name));
+                assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace DELETE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value;
                 if (ks == nullptr) return make_keyspace_not_found(ks_name);
@@ -742,7 +742,7 @@ namespace objstore::engine {
                 return make_void_success();
             } else if constexpr (SameAs<T, AlterTable>) {
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
-                assert_true_not_implemented(!is_system_keyspace(ks_name));
+                assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace ALTER TABLE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value;
                 if (ks == nullptr) {

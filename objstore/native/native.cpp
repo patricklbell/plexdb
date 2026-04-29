@@ -132,7 +132,7 @@ namespace objstore::native {
                 return Constant{.value = AutoString8(val, U64(len))};
             }
             default:
-                assert_not_implemented();
+                assert_not_implemented("CQL value decoding for this basic type is not implemented");
                 return Constant{.value = Null{}};
 }
     }
@@ -162,20 +162,20 @@ namespace objstore::native {
                 U64 bind_spec_idx = bind_specs.length;
                 for (U64 idx = 0; idx < bind_specs.length; idx++) {
                     if (bind_specs[idx].name == name) {
-                        assert_true_not_implemented(bind_specs[idx].type.ctype == CollectionType::basic);
+                        assert_true_not_implemented(bind_specs[idx].type.ctype == CollectionType::basic, "collection type bind parameters are not implemented");
                         dtype = bind_specs[idx].type.basic.value_dtype;
                         bind_spec_idx = idx;
                         break;
                     }
                 }
 
-                assert_true_not_implemented(bind_spec_idx < bind_specs.length);
+                assert_true_not_implemented(bind_spec_idx < bind_specs.length, "named bind parameter not found in prepared statement spec - error handling is not implemented");
                 bound_values[bind_spec_idx] = read_cql_value_as_constant(p, end, dtype);
             }
         } else {
             for (U16 bind_spec_idx = 0; bind_spec_idx < n_values && p < end; bind_spec_idx++) {
-                assert_true_not_implemented(bind_spec_idx < bind_specs.length);
-                assert_true_not_implemented(bind_specs[bind_spec_idx].type.ctype == CollectionType::basic);
+                assert_true_not_implemented(bind_spec_idx < bind_specs.length, "more positional bind values than expected - error handling is not implemented");
+                assert_true_not_implemented(bind_specs[bind_spec_idx].type.ctype == CollectionType::basic, "collection type bind parameters are not implemented");
 
                 BasicType dtype = bind_specs[bind_spec_idx].type.basic.value_dtype;
                 push_back(bound_values, read_cql_value_as_constant(p, end, dtype));

@@ -163,7 +163,7 @@ namespace objstore::tcp {
         // handlers
         // @note handles client responding to the server's read submission
         auto handle_read_completion = [&](const uring::ReadEvent& read) {
-            assert_true_not_implemented(read.error == uring::Error::None);
+            assert_true_not_implemented(read.error == uring::Error::None, "TCP read error handling is not implemented");
 
             BufferInfo& info = buffer_infos[read.buffer_idx];
             PLEXDB_DEBUG_X(assert_true(info.buffer_idx == read.buffer_idx, "buffer info was not written before read completion"));
@@ -181,7 +181,7 @@ namespace objstore::tcp {
 
         // @note handles completion of write from server to client
         auto handle_write_completion = [&](const uring::WriteEvent& write) {
-            assert_true_not_implemented(write.error == uring::Error::None);
+            assert_true_not_implemented(write.error == uring::Error::None, "TCP write error handling is not implemented");
 
             BufferInfo& info = buffer_infos[write.buffer_idx];
             PLEXDB_DEBUG_X(assert_true(info.buffer_idx == write.buffer_idx, "buffer info was not written before handler needed it"));
@@ -197,7 +197,7 @@ namespace objstore::tcp {
         };
 
         auto handle_accept_completion = [&](const auto& accept) {
-            assert_true_not_implemented(accept.error == uring::Error::None);
+            assert_true_not_implemented(accept.error == uring::Error::None, "TCP accept error handling is not implemented");
 
             using T = RemoveCVRef<decltype(accept)>;
             static_assert(Either<T, uring::AcceptEvent, uring::MultishotAcceptEvent>);
@@ -230,7 +230,7 @@ namespace objstore::tcp {
         };
 
         auto handle_close_completion = [&](const uring::CloseEvent& close) {
-            assert_true_not_implemented(close.error == uring::Error::None);
+            assert_true_not_implemented(close.error == uring::Error::None, "TCP close error handling is not implemented");
 
             close_and_cleanup(close.client, /*is_in_close_handler*/ true);
         };

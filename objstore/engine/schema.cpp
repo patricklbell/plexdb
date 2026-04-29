@@ -391,7 +391,7 @@ namespace objstore::schema {
     }
 
     Result<Table*> create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
-        assert_true_not_implemented(create.options.value.length == 0);
+        assert_true_not_implemented(create.options.value.length == 0, "CREATE TABLE WITH options are not implemented");
         assert_true(read_table_impl(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
 
         auto primary_key_col_idx_opt = get_primary_key_col_idx(create);
@@ -478,7 +478,7 @@ namespace objstore::schema {
     Result<Column*> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create) {
         // @todo implement proper static column semantics (shared across clustering rows within a partition)
         assert_true_not_implemented(!create._static, "static column storage is not implemented");
-        assert_true_not_implemented(!create.mask);
+        assert_true_not_implemented(!create.mask, "column MASKED WITH is not implemented");
         assert_true(read_column_impl(schema, tbl, create.name.identifier).error == Error::MissingColumn, "column already exists");
 
         U64 offset_bytes = schema.columns_blob.size_bytes;
