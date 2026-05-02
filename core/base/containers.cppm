@@ -221,7 +221,7 @@ export namespace plexdb {
     template<typename T, U64 N>
     T& push_back(CappedArray<T, N>& array, const T& value) {
         assert_true(array.cap < N, "array is full");
-        
+
         array.values[array.cap] = value;
         array.cap++;
         return array.values[array.cap - 1];
@@ -461,7 +461,7 @@ export namespace plexdb {
                 } else {
                     node = node->next;
                 }
-                return *this; 
+                return *this;
             }
             Iterator operator++(int) { Iterator tmp = *this; ++(*this); return tmp; }
 
@@ -571,7 +571,7 @@ export namespace plexdb {
         static_assert(C > 0);
 
         static constexpr K sentinel = S;
-        
+
         // @note need to use transform to avoid non-copyable value
         Array<Pair<K, V>, C> key_values = Array<Pair<K, V>, C>::transform(
             [](Pair<K, V>& pair) {
@@ -596,7 +596,7 @@ export namespace plexdb {
                 while (this->slot_idx < C && this->map->key_values[this->slot_idx].first == sentinel) {
                     this->slot_idx++;
                 }
-                return *this; 
+                return *this;
             }
             Iterator operator++(int) { Iterator tmp = *this; ++(*this); return tmp; }
 
@@ -628,7 +628,7 @@ export namespace plexdb {
             } else if (kv.first == map.sentinel) {
                 return map.end();
             }
-            
+
             slot_idx = (slot_idx + 1) % C;
         }
 
@@ -650,7 +650,7 @@ export namespace plexdb {
             } else if (kv.first == map.sentinel) {
                 return nullptr;
             }
-            
+
             slot_idx = (slot_idx + 1) % C;
         }
 

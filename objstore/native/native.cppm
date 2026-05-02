@@ -1,5 +1,6 @@
 module;
 #include "macros.h"
+#include <profiling/tracy.hpp>
 #include <coroutine>
 
 export module objstore.native;
@@ -346,48 +347,53 @@ export namespace objstore::native {
     concept OnReady = requires(F f) { f(); };
 
     Optional<String8> run(U16 port, os::Notifier& interrupt, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback, bool use_uring = true) {
-        const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> {
+        const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> { TracyFiberEnter("request")
             // process each frame @todo investigate avoiding allocations/copy in favour of direct lock on read buffer
             DynamicArray<U8> frame{};
             while (true) {
-                // @perf avoid allocation for frames which fit in buffer
-                // @perf investigate holding one or multiple buffers for during of request
-                // @perf investigate shared read memory outside ring
-                const auto try_append_to_frame = [&]() -> coroutine::Task<bool> {
-                    Optional<tcp::RWBuffer> opt_buffer = tcp::acquire(req);
-                    if (!opt_buffer) {
-                        log::native_error("buffer starvation, failing read");
-                        co_return false;
-                    }
-                    auto& buffer = *opt_buffer;
-                    if (auto err = co_await tcp::read(req, &buffer); err != tcp::Error::None) {
+                S32 body_byte_count = MAX_S32;
+                U64 frame_byte_count = MAX_U64;
+
+                { ZoneScopedN("read")
+                    // @perf avoid allocation for frames which fit in buffer
+                    // @perf investigate holding one or multiple buffers for during of request
+                    // @perf investigate shared read memory outside ring
+                    const auto try_append_to_frame = [&]() -> coroutine::Task<bool> {
+                        Optional<tcp::RWBuffer> opt_buffer = tcp::acquire(req);
+                        if (!opt_buffer) {
+                            log::native_error("buffer starvation, dropping read");
+                            co_return false;
+                        }
+                        auto& buffer = *opt_buffer;
+                        if (auto err = co_await tcp::read(req, &buffer); err != tcp::Error::None) {
+                            log::native_error("error reading request, dropping connection");
+                            tcp::release(req, &buffer);
+                            co_return false;
+                        }
+                        resize(frame, frame.length + buffer.length);
+                        os::memory_copy(frame.ptr + frame.length - buffer.length, buffer.view.ptr, buffer.length);
                         tcp::release(req, &buffer);
-                        co_return false;
+                        co_return true;
+                    };
+
+                    // read header
+                    while (frame.length < FRAME_HEADER_BYTE_COUNT) {
+                        if (!co_await try_append_to_frame())
+                            break;
                     }
-                    resize(frame, frame.length + buffer.length);
-                    os::memory_copy(frame.ptr + frame.length - buffer.length, buffer.view.ptr, buffer.length);
-                    tcp::release(req, &buffer);
-                    co_return true;
-                };
+                    if (frame.length < FRAME_HEADER_BYTE_COUNT) break;
 
-                // read header
-                while (frame.length < FRAME_HEADER_BYTE_COUNT) {
-                    if (!co_await try_append_to_frame())
-                        break;
+                    body_byte_count = read_be_s32(&frame[5]);
+                    frame_byte_count = FRAME_HEADER_BYTE_COUNT + U64(body_byte_count);
+
+                    // read body
+                    while (frame.length < frame_byte_count) {
+                        if (!co_await try_append_to_frame())
+                            break;
+                    }
+                    if (frame.length < frame_byte_count) break;
                 }
-                if (frame.length < FRAME_HEADER_BYTE_COUNT) break;
 
-                S32 body_byte_count = read_be_s32(&frame[5]);
-                U64 frame_byte_count = FRAME_HEADER_BYTE_COUNT + U64(body_byte_count);
-
-                // read body
-                while (frame.length < frame_byte_count) {
-                    if (!co_await try_append_to_frame())
-                        break;
-                }
-                if (frame.length < frame_byte_count) break;
-
-                // write response
                 co_await frame_handler(engine, req, frame.ptr, &frame.ptr[FRAME_HEADER_BYTE_COUNT], body_byte_count);
 
                 // if next frame was partially read, move it to the front
@@ -398,7 +404,7 @@ export namespace objstore::native {
             }
 
             co_await tcp::close(req);
-            co_return;
+            TracyFiberLeave; co_return;
         };
 
         {

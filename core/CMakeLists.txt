@@ -14,9 +14,45 @@ option(CORE_ENABLE_IO_URING "Enable using io_uring for io" ON)
 # Third part dependencies
 # =============================================================================
 if(CORE_ENABLE_IO_URING)
-    include(FindPkgConfig)
-    pkg_check_modules(liburing REQUIRED IMPORTED_TARGET GLOBAL liburing>=2.0)
+  include(FindPkgConfig)
+  pkg_check_modules(liburing REQUIRED IMPORTED_TARGET GLOBAL liburing>=2.0)
 endif()
+
+# =============================================================================
+# Profiling
+# =============================================================================
+if(PLEXDB_ENABLE_TRACY_PROFILER)
+  if(NOT TARGET TracyClient)
+    set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
+    set(TRACY_FIBERS ON CACHE BOOL "" FORCE)
+    set(TRACY_ON_DEMAND OFF CACHE BOOL "" FORCE)
+
+    include(FetchContent)
+    FetchContent_Declare(
+        tracy
+        GIT_REPOSITORY  https://github.com/wolfpld/tracy.git
+        GIT_TAG         master
+        GIT_SHALLOW     TRUE
+        GIT_PROGRESS    TRUE
+    )
+    FetchContent_MakeAvailable(tracy)
+  endif()
+endif()
+
+add_library(profiling INTERFACE)
+add_library(plexdb::profiling ALIAS profiling)
+target_compile_definitions(profiling
+    INTERFACE
+        $<$<BOOL:${PLEXDB_ENABLE_TRACY_PROFILER}>:PLEXDB_ENABLE_TRACY_PROFILER=1>
+)
+target_include_directories(profiling
+    INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tracy
+)
+target_link_libraries(profiling
+    INTERFACE
+        $<$<BOOL:${PLEXDB_ENABLE_TRACY_PROFILER}>:TracyClient>
+)
 
 # =============================================================================
 # Library
@@ -83,10 +119,10 @@ target_sources(core_modules
             threads/threads.cppm
 )
 
-target_link_libraries(core_modules PRIVATE plexdb::compiler_config)
-if(CORE_ENABLE_IO_URING)
-    target_link_libraries(core_modules PRIVATE PkgConfig::liburing)
-endif()
+target_link_libraries(core_modules
+    PRIVATE
+        plexdb::compiler_config
+)
 
 # Static library
 add_library(core STATIC)
@@ -101,6 +137,8 @@ target_include_directories(core
         ${CMAKE_CURRENT_SOURCE_DIR}/../macros
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
         ${CMAKE_CURRENT_SOURCE_DIR}/log
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tracy
 )
 
 target_sources(core
@@ -136,45 +174,44 @@ target_link_libraries(core
         core_modules
     PRIVATE
         plexdb::compiler_config
+        $<$<BOOL:${CORE_ENABLE_IO_URING}>:PkgConfig::liburing>
+        plexdb::profiling
 )
-if(CORE_ENABLE_IO_URING)
-    target_link_libraries(core PUBLIC PkgConfig::liburing)
-endif()
 
 # =============================================================================
 # Tests
 # =============================================================================
 if(PLEXDB_ENABLE_TESTS)
-    find_package(Catch2 3.13.0 QUIET)
-    if(NOT TARGET Catch2::Catch2WithMain)
-        include(FetchContent)
-        FetchContent_Declare(
+  find_package(Catch2 3.13.0 QUIET)
+  if(NOT TARGET Catch2::Catch2WithMain)
+    include(FetchContent)
+    FetchContent_Declare(
             Catch2
             GIT_REPOSITORY https://github.com/catchorg/Catch2.git
             GIT_TAG        v3.13.0
         )
-        FetchContent_MakeAvailable(Catch2)
-    endif()
+    FetchContent_MakeAvailable(Catch2)
+  endif()
 
-    add_executable(core_tests)
+  add_executable(core_tests)
 
-    target_compile_definitions(core PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${CORE_ENABLE_IO_URING}>,1,0>)
+  target_compile_definitions(core PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${CORE_ENABLE_IO_URING}>,1,0>)
 
-    file(GLOB_RECURSE CORE_TEST_SOURCES CONFIGURE_DEPENDS
+  file(GLOB_RECURSE CORE_TEST_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
     )
-    target_sources(core_tests
+  target_sources(core_tests
         PRIVATE
             ${CORE_TEST_SOURCES}
     )
 
-    target_include_directories(core_tests
+  target_include_directories(core_tests
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/log
             ${CMAKE_CURRENT_SOURCE_DIR}/test
     )
 
-    target_link_libraries(core_tests
+  target_link_libraries(core_tests
         PRIVATE
             plexdb::compiler_config
             stdc++exp # std::stacktrace may require link experimental c++ library

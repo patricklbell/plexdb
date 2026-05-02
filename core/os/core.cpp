@@ -1,5 +1,6 @@
 module;
 #include "macros.h"
+#include <profiling/tracy.hpp>
 #if PLEXDB_OS_LINUX
     #include <stdlib.h>
     #include <fcntl.h>
@@ -21,16 +22,19 @@ namespace plexdb::os {
     // memory
     // ========================================================================
     U8* allocate(U64 bytes) {
-        return reinterpret_cast<U8*>(malloc(bytes));
+        void* ptr = malloc(bytes);
+        TracyAlloc(ptr, bytes) ;
+        return reinterpret_cast<U8*>(ptr);
+    }
+    void deallocate(void* ptr) {
+        TracyFree(ptr);
+        free(ptr);
     }
     U8* allocate_zero(U64 bytes) {
         // @perf
         U8* data = allocate(bytes);
         memory_zero(data, bytes);
         return data;
-    }
-    void deallocate(void* ptr) {
-        free(ptr);
     }
     void* memory_copy(void* dst, const void* src, U64 bytes) noexcept {
         return __builtin_memcpy(dst, src, bytes);

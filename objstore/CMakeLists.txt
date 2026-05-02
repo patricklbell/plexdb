@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.28)
 project(objstore)
 
 if(NOT TARGET plexdb::core)
-    add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../core)
+  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../core)
 endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/compiler_config.cmake)
@@ -23,13 +23,13 @@ set(LEXY_HAS_CONSTEVAL ON)
 
 # @todo use installed library (may require cmake configuration files to be installed)
 if(NOT TARGET foonathan::lexy)
-    include(FetchContent)
-    FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
-    FetchContent_MakeAvailable(lexy)
+  include(FetchContent)
+  FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
+  FetchContent_MakeAvailable(lexy)
 endif()
 
 if(NOT PLEXDB_DEBUG)
-    set(LEXY_ENABLE_ASSERT OFF)
+  set(LEXY_ENABLE_ASSERT OFF)
 endif()
 
 # =============================================================================
@@ -45,7 +45,6 @@ set_target_properties(objstore_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(objstore_modules
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../macros
-        ${CMAKE_CURRENT_SOURCE_DIR}/../test
 )
 
 target_sources(objstore_modules
@@ -111,26 +110,28 @@ target_link_libraries(objstore
         plexdb::compiler_config
         foonathan::lexy::core
         foonathan::lexy::ext
+        plexdb::profiling
 )
 
 # =============================================================================
 # Executables
 # =============================================================================
 if(OBJSTORE_ENABLE_SERVER)
-    add_executable(objstore_server)
+  add_executable(objstore_server)
 
-    target_sources(objstore_server
+  target_sources(objstore_server
         PRIVATE
             entry/main.cpp
     )
 
-    target_link_libraries(objstore_server
+  target_link_libraries(objstore_server
         PRIVATE
             plexdb::compiler_config
             plexdb::objstore
+            plexdb::profiling
     )
 
-    target_include_directories(objstore_server
+  target_include_directories(objstore_server
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../macros
     )
@@ -140,28 +141,28 @@ endif()
 # Tests
 # =============================================================================
 if(PLEXDB_ENABLE_TESTS)
-    find_package(Catch2 3.13.0 QUIET)
-    if(NOT TARGET Catch2::Catch2WithMain)
-        include(FetchContent)
-        FetchContent_Declare(
+  find_package(Catch2 3.13.0 QUIET)
+  if(NOT TARGET Catch2::Catch2WithMain)
+    include(FetchContent)
+    FetchContent_Declare(
             Catch2
             GIT_REPOSITORY https://github.com/catchorg/Catch2.git
             GIT_TAG        v3.13.0
         )
-        FetchContent_MakeAvailable(Catch2)
-    endif()
+    FetchContent_MakeAvailable(Catch2)
+  endif()
 
-    add_executable(objstore_tests)
+  add_executable(objstore_tests)
 
-    file(GLOB_RECURSE OBJSTORE_TEST_SOURCES CONFIGURE_DEPENDS
+  file(GLOB_RECURSE OBJSTORE_TEST_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../core/test/*.test.cpp"
     )
-    file(GLOB_RECURSE OBJSTORE_TEST_MODULE_SOURCES CONFIGURE_DEPENDS
+  file(GLOB_RECURSE OBJSTORE_TEST_MODULE_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cppm"
         "${CMAKE_CURRENT_SOURCE_DIR}/../core/test/*.test.cppm"
     )
-    target_sources(objstore_tests
+  target_sources(objstore_tests
         PRIVATE
             ${OBJSTORE_TEST_SOURCES}
         PUBLIC
@@ -171,14 +172,14 @@ if(PLEXDB_ENABLE_TESTS)
                 ${OBJSTORE_TEST_MODULE_SOURCES}
     )
 
-    target_include_directories(objstore_tests
+  target_include_directories(objstore_tests
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../macros
             ${CMAKE_CURRENT_SOURCE_DIR}/../core/log
             ${CMAKE_CURRENT_SOURCE_DIR}/../core/test
     )
 
-    target_link_libraries(objstore_tests
+  target_link_libraries(objstore_tests
         PRIVATE
             plexdb::compiler_config
             stdc++exp # std::stacktrace may require link experimental c++ library

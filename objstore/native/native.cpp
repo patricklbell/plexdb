@@ -1,5 +1,6 @@
 module;
 #include <coroutine>
+#include <profiling/tracy.hpp>
 
 module objstore.native;
 
@@ -192,7 +193,7 @@ namespace objstore::native {
         return Frame{.body = {}, .req = req, .op = op, .stream = stream};
     }
 
-    coroutine::Task<> send_native_frame(Frame& f) {
+    coroutine::Task<> send_native_frame(Frame& f) { ZoneScopedN("send_native_frame")
         assert_true(f.body.length <= MAX_U32, "body length too large");
         U32 body_len = U32(f.body.length);
 
@@ -565,7 +566,7 @@ namespace objstore::native {
         const U8* header,
         const U8* body,
         S32 body_length
-    ) {
+    ) { ZoneScopedN("frame_handler");
         S16 stream  = read_be_s16(header + 2);
         U8  op      = header[4];
 
