@@ -60,31 +60,31 @@ namespace objstore::engine {
     static constexpr BuiltinCol sys_local_cols[] = {
         {"key",                     make_basic(BasicType::text), "partition_key",  0},
         {"bootstrapped",            make_basic(BasicType::text), "regular",       -1},
-        {"broadcast_address",       make_basic(BasicType::text), "regular",       -1},
+        {"broadcast_address",       make_basic(BasicType::inet), "regular",       -1},
         {"broadcast_port",          make_basic(BasicType::int_), "regular",       -1},
         {"cluster_name",            make_basic(BasicType::text), "regular",       -1},
         {"cql_version",             make_basic(BasicType::text), "regular",       -1},
         {"data_center",             make_basic(BasicType::text), "regular",       -1},
         {"host_id",                 make_basic(BasicType::uuid), "regular",       -1},
-        {"listen_address",          make_basic(BasicType::text), "regular",       -1},
+        {"listen_address",          make_basic(BasicType::inet), "regular",       -1},
         {"listen_port",             make_basic(BasicType::int_), "regular",       -1},
         {"native_protocol_version", make_basic(BasicType::text), "regular",       -1},
         {"partitioner",             make_basic(BasicType::text), "regular",       -1},
         {"rack",                    make_basic(BasicType::text), "regular",       -1},
         {"release_version",         make_basic(BasicType::text), "regular",       -1},
-        {"rpc_address",             make_basic(BasicType::text), "regular",       -1},
+        {"rpc_address",             make_basic(BasicType::inet), "regular",       -1},
         {"rpc_port",                make_basic(BasicType::int_), "regular",       -1},
         {"schema_version",          make_basic(BasicType::uuid), "regular",       -1},
         {"tokens",                  make_set  (BasicType::text),    "regular",    -1},
     };
     static constexpr BuiltinCol sys_peers_cols[] = {
-        {"peer",            make_basic(BasicType::text), "partition_key",  0},
+        {"peer",            make_basic(BasicType::inet), "partition_key",  0},
         {"data_center",     make_basic(BasicType::text), "regular",       -1},
         {"host_id",         make_basic(BasicType::uuid), "regular",       -1},
-        {"preferred_ip",    make_basic(BasicType::text), "regular",       -1},
+        {"preferred_ip",    make_basic(BasicType::inet), "regular",       -1},
         {"rack",            make_basic(BasicType::text), "regular",       -1},
         {"release_version", make_basic(BasicType::text), "regular",       -1},
-        {"rpc_address",     make_basic(BasicType::text), "regular",       -1},
+        {"rpc_address",     make_basic(BasicType::inet), "regular",       -1},
         {"schema_version",  make_basic(BasicType::uuid), "regular",       -1},
         {"tokens",          make_set  (BasicType::text),    "regular",       -1},
     };
@@ -531,39 +531,46 @@ namespace objstore::engine {
 
         emplace_back(vr.columns, VirtualColumn{"key", make_basic(BasicType::text)});
         emplace_back(vr.columns, VirtualColumn{"bootstrapped", make_basic(BasicType::text)});
-        emplace_back(vr.columns, VirtualColumn{"broadcast_address", make_basic(BasicType::text)});
+        emplace_back(vr.columns, VirtualColumn{"broadcast_address", make_basic(BasicType::inet)});
         emplace_back(vr.columns, VirtualColumn{"broadcast_port", make_basic(BasicType::int_)});
         emplace_back(vr.columns, VirtualColumn{"cluster_name", make_basic(BasicType::text)});
         emplace_back(vr.columns, VirtualColumn{"cql_version", make_basic(BasicType::text)});
         emplace_back(vr.columns, VirtualColumn{"data_center", make_basic(BasicType::text)});
         emplace_back(vr.columns, VirtualColumn{"host_id", make_basic(BasicType::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"listen_address", make_basic(BasicType::text)});
+        emplace_back(vr.columns, VirtualColumn{"listen_address", make_basic(BasicType::inet)});
         emplace_back(vr.columns, VirtualColumn{"listen_port", make_basic(BasicType::int_)});
         emplace_back(vr.columns, VirtualColumn{"native_protocol_version", make_basic(BasicType::text)});
         emplace_back(vr.columns, VirtualColumn{"partitioner", make_basic(BasicType::text)});
         emplace_back(vr.columns, VirtualColumn{"rack", make_basic(BasicType::text)});
         emplace_back(vr.columns, VirtualColumn{"release_version", make_basic(BasicType::text)});
-        emplace_back(vr.columns, VirtualColumn{"rpc_address", make_basic(BasicType::text)});
+        emplace_back(vr.columns, VirtualColumn{"rpc_address", make_basic(BasicType::inet)});
         emplace_back(vr.columns, VirtualColumn{"rpc_port", make_basic(BasicType::int_)});
         emplace_back(vr.columns, VirtualColumn{"schema_version", make_basic(BasicType::uuid)});
         emplace_back(vr.columns, VirtualColumn{"tokens", make_set(BasicType::text)});
 
+        auto make_loopback_ipv4 = []() {
+            Blob b;
+            push_back(b.value, U8(127)); push_back(b.value, U8(0));
+            push_back(b.value, U8(0));   push_back(b.value, U8(1));
+            return b;
+        };
+
         VirtualRow row;
         emplace_back(row.values, "local"_as);
         emplace_back(row.values, "COMPLETED"_as);
-        emplace_back(row.values, "127.0.0.1"_as);
+        emplace_back(row.values, make_loopback_ipv4());  // broadcast_address
         emplace_back(row.values, S32(7000));
         emplace_back(row.values, "objstore"_as);
         emplace_back(row.values, "3.4.7"_as);
         emplace_back(row.values, "datacenter1"_as);
         emplace_back(row.values, UUID{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}});
-        emplace_back(row.values, "127.0.0.1"_as);
+        emplace_back(row.values, make_loopback_ipv4());  // listen_address
         emplace_back(row.values, S32(7000));
         emplace_back(row.values, "4"_as);
         emplace_back(row.values, "org.apache.cassandra.dht.Murmur3Partitioner"_as);
         emplace_back(row.values, "rack1"_as);
         emplace_back(row.values, "3.11.19"_as); // @note last version in 3.x, before system_virtual
-        emplace_back(row.values, "127.0.0.1"_as);
+        emplace_back(row.values, make_loopback_ipv4());  // rpc_address
         emplace_back(row.values, S32(9042));
         emplace_back(row.values, UUID{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}});
         emplace_back(row.values, DynamicSet<AutoString8>{{"0"_as}});
@@ -577,13 +584,13 @@ namespace objstore::engine {
         vr.keyspace = "system";
         vr.table = "peers";
 
-        emplace_back(vr.columns, VirtualColumn{"peer", make_basic(BasicType::text)});
+        emplace_back(vr.columns, VirtualColumn{"peer", make_basic(BasicType::inet)});
         emplace_back(vr.columns, VirtualColumn{"data_center", make_basic(BasicType::text)});
         emplace_back(vr.columns, VirtualColumn{"host_id", make_basic(BasicType::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"preferred_ip", make_basic(BasicType::text)});
+        emplace_back(vr.columns, VirtualColumn{"preferred_ip", make_basic(BasicType::inet)});
         emplace_back(vr.columns, VirtualColumn{"rack", make_basic(BasicType::text)});
         emplace_back(vr.columns, VirtualColumn{"release_version", make_basic(BasicType::text)});
-        emplace_back(vr.columns, VirtualColumn{"rpc_address", make_basic(BasicType::text)});
+        emplace_back(vr.columns, VirtualColumn{"rpc_address", make_basic(BasicType::inet)});
         emplace_back(vr.columns, VirtualColumn{"schema_version", make_basic(BasicType::uuid)});
         emplace_back(vr.columns, VirtualColumn{"tokens", make_set(BasicType::text)});
 

@@ -1,4 +1,5 @@
 #include "macros.h"
+#include <profiling/tracy.hpp>
 
 import plexdb.base;
 import plexdb.os;
@@ -73,8 +74,8 @@ int main(int argc, char* argv[]) {
     }
 
     U64 page_size = 4_kb;
-    bool db_create = !os::file_exists(db_path);
     os::File db_file{os::file_open(db_path)};
+    bool db_create = os::file_get_stats(db_file).byte_count == 0;
 
     if (db_create) {
         println("created new database \"", db_path, "\"");

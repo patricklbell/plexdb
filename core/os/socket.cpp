@@ -38,7 +38,9 @@ namespace plexdb::os {
             if (is_zero_handle(socket)) {
                 return;
             }
-            ::close(handle_to_fd(socket));
+            int fd = handle_to_fd(socket);
+            ::shutdown(fd, SHUT_RDWR);
+            ::close(fd);
         }
 
         bool socket_set_option(Handle socket, SocketOption option, bool enable) {
@@ -64,8 +66,8 @@ namespace plexdb::os {
                     return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) == 0;
                 }
                 case SocketOption::Reuse: {
-                    return setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == 0;
-                    return setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) == 0;
+                    bool ok = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == 0;
+                    return ok & (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) == 0);
                 }
             }
             return false;
@@ -190,7 +192,9 @@ namespace plexdb::os {
 
         void socket_close(Handle socket) {
             if (!socket_valid(socket)) return;
-            ::closesocket(handle_to_sock(socket));
+            SOCKET s = handle_to_sock(socket);
+            ::shutdown(s, SD_BOTH);
+            ::closesocket(s);
         }
 
         bool socket_set_option(Handle socket, SocketOption option, bool enabled) {

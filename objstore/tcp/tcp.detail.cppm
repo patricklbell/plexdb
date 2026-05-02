@@ -28,7 +28,7 @@ namespace objstore::tcp {
         U32 initial_free_buffer_idx = next_free_buffer_idx;
         while (!os::is_zero_handle(buffer_infos[next_free_buffer_idx].client)) {
             next_free_buffer_idx = (next_free_buffer_idx + 1) % buffer_count;
-            
+
             if (next_free_buffer_idx == initial_free_buffer_idx) {
                 return INVALID_BUFFER_IDX;
             }
@@ -51,7 +51,7 @@ namespace objstore::tcp {
         MapFixedSentinel<os::Handle, Connection, 2_u64*MAX_CONCURRENT_CONNECTIONS, os::zero_handle()> client_to_connection;
         DynamicArray<BufferInfo> buffer_infos{ring.buffer_count};
         U32 next_free_buffer_idx = 0;
-        
+
         // helpers
         auto close_and_cleanup = [&](const os::Handle& client, bool is_in_close_handler) {
             auto it = find_it(client_to_connection, client);
@@ -87,7 +87,7 @@ namespace objstore::tcp {
             if (free_buffer_idx == INVALID_BUFFER_IDX) {
                 return {};
             }
-            
+
             BufferInfo& info = buffer_infos[free_buffer_idx];
             info.client = connection->client;
             PLEXDB_DEBUG_X(info.buffer_idx = free_buffer_idx;)
@@ -111,7 +111,7 @@ namespace objstore::tcp {
 
             U32 byte_offset = buffer->view.ptr - (ring.buffers + buffer->idx*ring.buffer_size);
             U32 byte_count = buffer->length;
-            
+
             co_return co_await coroutine::Awaitable{
                 [&](std::coroutine_handle<> h) {
                     connection->waiting_rwc = h;
@@ -241,7 +241,7 @@ namespace objstore::tcp {
         poll_unblock_on(poll_until_server_or_interrupt, ring.server);
 
         uring::sqe_push_multishot_accept(ring);
-        
+
         while (!should_exit) {
             uring::sqe_submit_non_blocking(ring);
 
@@ -250,7 +250,7 @@ namespace objstore::tcp {
             for (U32 cqe_entry_idx = 0; cqe_entry_idx < cqe_entry_count; cqe_entry_idx++) {
                 auto cqe = cqe_top(ring);
                 cqe_pop(ring, 1);
-                
+
                 if (!static_cast<bool>(cqe)) {
                     continue;
                 }
@@ -324,8 +324,8 @@ namespace objstore::tcp {
             Connection& connection = it->second;
             if (!os::is_zero_handle(connection.client)) {
                 os::socket_close(connection.client);
+                connection.client = os::zero_handle();
             }
-            connection.client = os::zero_handle();
 
             if (stats.active_connections > 0) {
                 stats.active_connections--;
@@ -335,6 +335,13 @@ namespace objstore::tcp {
             auto w_it = find_it(waiting_op, client);
             if (w_it != waiting_op.end()) {
                 remove_it(waiting_op, w_it);
+            }
+
+            if (connection.waiting_rwc) {
+                // connection.client is zero — read/write resume lambdas return false → ConnectionClosed
+                std::coroutine_handle<> h = connection.waiting_rwc;
+                connection.waiting_rwc = std::coroutine_handle<>{};
+                h.resume();
             }
 
             connection.task.reset();
@@ -362,8 +369,12 @@ namespace objstore::tcp {
         AsyncReadFunctor socket_read_functor{[&](Connection* connection, RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(connection->client), "invalid read on closed connection");
             assert_true(!connection->waiting_rwc, "connection already has coroutine pending, this should never happen!");
+
+            // @note save before the loop: buffer->length is zeroed on error paths but must not
+            // shrink to 0 on WouldBlock retry
+            const U32 recv_length = U32(buffer->length);
             while (true) {
-                auto result = os::socket_receive(connection->client, buffer->view.ptr, buffer->length);
+                auto result = os::socket_receive(connection->client, buffer->view.ptr, recv_length);
                 if (result.byte_count > 0 && result.error == os::SocketError::None) {
                     buffer->length = result.byte_count;
                     stats.total_bytes_read += result.byte_count;
