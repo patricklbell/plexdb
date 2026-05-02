@@ -2,25 +2,30 @@
 # bench-cassandra-stress.sh — run cassandra-stress against a local objstore instance
 #
 # Usage: ./extra/bench-cassandra-stress.sh [options]
-#   -b <path>   objstore_server binary  (default: ./build/objstore/objstore_server)
-#   -n <ops>    operations per workload (default: 100000)
-#   -t <threads> client threads         (default: 16)
-#   -p <port>   native protocol port    (default: 9042)
-#   -h          show this help
+#   -b <path>    objstore_server binary  (default: ./build/objstore/objstore_server)
+#   -n <ops>     operations per workload (default: 100000)
+#   -t <threads> client threads          (default: 16)
+#   -p <port>    native protocol port    (default: 9042)
+#   -P <port>    LD_PRELOAD for binary   (default: )
+#   -h           show this help
 
 set -euo pipefail
+
+LD_PRELOAD=""
 
 BINARY="${BINARY:-./build/objstore/objstore_server}"
 OPS="${OPS:-100000}"
 THREADS="${THREADS:-16}"
 PORT="${PORT:-9042}"
+PRELOAD=""
 
-while getopts "b:n:t:p:h" opt; do
+while getopts "b:n:t:p:P:h" opt; do
     case "$opt" in
         b) BINARY="$OPTARG" ;;
         n) OPS="$OPTARG" ;;
         t) THREADS="$OPTARG" ;;
         p) PORT="$OPTARG" ;;
+        P) PRELOAD="$OPTARG" ;;
         h)
             sed -n '2,9p' "$0" | sed 's/^# \?//'
             exit 0
@@ -49,8 +54,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Starting objstore on port $PORT (native mode)..."
-"$BINARY" "$DB" --native --port "$PORT" &
+echo "Starting objstore on port $PORT..."
+if [ -n "$PRELOAD" ]; then
+    echo "Setting LD_PRELOAD=${PRELOAD}"
+fi
+LD_PRELOAD=${PRELOAD} "$BINARY" "$DB" --port "$PORT" &
 SERVER_PID=$!
 
 python3 - "$PORT" <<'EOF'

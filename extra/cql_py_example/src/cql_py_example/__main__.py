@@ -1,8 +1,10 @@
+import random
 import sys
 import time
-import random
+
 import numpy as np
 from cassandra.cluster import Cluster
+
 
 def generate_telemetry(t):
     return {
@@ -57,16 +59,21 @@ def main():
         for t in np.arange(0, 60, 0.1):
             data = generate_telemetry(t)
 
-            session.execute(prepared, (
-                rocket_id,
-                data["timestamp"],
-                data["altitude"],
-                data["velocity"],
-                data["fuel"],
-                data["temperature"]
-            ))
+            session.execute(
+                prepared,
+                (
+                    rocket_id,
+                    data["timestamp"],
+                    data["altitude"],
+                    data["velocity"],
+                    data["fuel"],
+                    data["temperature"],
+                ),
+            )
 
-            print(f"t={t} altitude={data['altitude']:.1f}m velocity={data['velocity']:.1f}m/s")
+            print(
+                f"t={t} altitude={data['altitude']:.1f}m velocity={data['velocity']:.1f}m/s"
+            )
             time.sleep(0.01)
 
         print("Insert complete.")
