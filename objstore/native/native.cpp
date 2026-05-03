@@ -520,10 +520,10 @@ namespace objstore::native {
             // @note If result metadata changes dynamically (e.g., schema evolution while a
             // prepared statement is cached), a richer versioning scheme (e.g., schema epoch)
             // will be needed here to correctly signal Metadata_changed to clients.
-            XXHash64 h(uint64_t(0xCA550DA7));
+            XXHash64 h(0xCA550DA7_u64);
             h.add(entry.keyspace.c_str, entry.keyspace.length);
             h.add(entry.table.c_str, entry.table.length);
-            uint64_t rmi = h.hash();
+            U64 rmi = h.hash();
             U8 rmi_bytes[8];
             for (int i = 7; i >= 0; i--) { rmi_bytes[i] = U8(rmi); rmi >>= 8; }
             append_cql_short_bytes(f, rmi_bytes, 8);
