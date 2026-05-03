@@ -12,24 +12,37 @@ import plexdb.btree;
 import plexdb.tagged_union;
 import plexdb.os.dynamic_tagged_union;
 import plexdb.coroutine;
+import xxhash;
 
+import objstore.crc;
 import objstore.tcp;
 import objstore.parsers;
 import objstore.engine;
 import objstore.engine.statements;
 import objstore.engine.io;
 import objstore.log;
+import objstore.lz4;
 
 using namespace plexdb;
 using namespace objstore;
 
 namespace objstore::native {
-    constexpr U64 FRAME_HEADER_BYTE_COUNT = 9;
-    constexpr U8  RESPONSE_VERSION  = 0x84;
-
     // ========================================================================
     // protocol
     // ========================================================================
+    struct NegotiatedProtocol {
+        U8   version    = 4;
+        bool compressed = false;
+    };
+
+    constexpr U64 V4_FRAME_HEADER_BYTE_COUNT = 9;
+
+    constexpr U64 V5_MAX_PAYLOAD_BYTE_COUNT   = 131071u; // 17-bit max outer frame payload
+    constexpr U64 V5_UNCOMP_HDR_BYTE_COUNT    = 3;
+    constexpr U64 V5_COMP_HDR_BYTE_COUNT      = 5;
+    constexpr U64 V5_HDR_CRC24_BYTE_COUNT     = 3;
+    constexpr U64 V5_PAYLOAD_CRC32_BYTE_COUNT = 4;
+
     namespace op_codes {
         constexpr U8 ERROR         = 0x00;
         constexpr U8 STARTUP       = 0x01;
@@ -43,6 +56,10 @@ namespace objstore::native {
         constexpr U8 REGISTER      = 0x0B;
         constexpr U8 BATCH         = 0x0D;
         constexpr U8 AUTH_RESPONSE = 0x0F;
+    }
+
+    namespace error_codes {
+        constexpr S32 PROTOCOL_ERROR    = 0x000A;
     }
 
     constexpr String8 op_codes_to_str(const U8& op) {
@@ -213,21 +230,22 @@ namespace type_codes {
 
     Constant read_cql_value_as_constant(const U8*& p, const U8* end, BasicType dtype);
 
+    // Acquire a TCP buffer, read data into it, append to buf, then release.
+    coroutine::Task<bool> try_append_tcp_read(const tcp::Request& req, DynamicArray<U8>& buf);
+
     // ========================================================================
     // output
     //   @note
-    //   frame requires co_await send_native_frame(frame) writes the 9-byte
-    //   header + body to TCP in and is currently heap buffered.
+    //   frame requires co_await send_native_frame<V,C>(frame) which writes a
+    //   version-appropriate envelope (v4: plain 9-byte header + body;
+    //   v5: v4 envelope wrapped in outer frames with CRC24/CRC32).
     // ========================================================================
     struct Frame {
         DynamicArray<U8> body;
         const tcp::Request* req;
-        U8  op;
-        S16 stream;
+        U8   op;
+        S16  stream;
     };
-
-    Frame make_native_frame(const tcp::Request* req, U8 op, S16 stream);
-    coroutine::Task<> send_native_frame(Frame& f);
 
     void append_byte(Frame& f, U8 v);
     void append_bytes(Frame& f, const U8* data, U64 n);
@@ -330,16 +348,213 @@ namespace type_codes {
     void append_result_schema_change(Frame& f, String8 change_type, String8 target, String8 keyspace, String8 table);
     void append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl);
     void append_result_virtual_rows(Frame& f, engine::VirtualRows& vr);
-    void append_result_prepared(Frame& f, U64 id, engine::PreparedEntry& entry);
 
-    DynamicArray<Constant> read_query_parameter_values(const U8*& p, const U8* end, const DynamicArray<engine::BindVariableSpec>& bind_specs);
-    coroutine::Task<bool> send_error_if_failed(engine::ExecutionResult& result, const tcp::Request* req, S16 stream);
-    coroutine::Task<> send_execution_result(engine::ExecutionResult& result, engine::Engine& engine, const tcp::Request* req, S16 stream);
+    // ========================================================================
+    // send helpers
+    // ========================================================================
+    coroutine::Task<> send_block(const tcp::Request& req, const U8* data, U64 len);
+
+    // Wrap data in v5 outer frame(s) and send. Splits into V5_MAX_PAYLOAD chunks
+    // when needed, setting isSelfContained on the final fragment only.
+    template<bool Compressed>
+    coroutine::Task<> send_v5_outer_frames(const tcp::Request& req, const U8* data, U64 data_len) {
+        U64 offset = 0;
+        do {
+            U64 chunk = min(data_len - offset, V5_MAX_PAYLOAD_BYTE_COUNT);
+            bool self_contained = (offset + chunk >= data_len);
+
+            if constexpr (Compressed) {
+                S32 bound    = lz4::compress_bound(S32(chunk));
+                DynamicArray<U8> cbuf{};
+                resize(cbuf, U64(bound));
+                S32 comp_len = lz4::compress(data + offset, cbuf.ptr, S32(chunk), bound);
+                assert_true(comp_len > 0, "LZ4 compression failed in send_v5_outer_frames");
+
+                U32 c = U32(comp_len), u = U32(chunk);
+                U8 bits[5] = {
+                    U8(c),
+                    U8(c >> 8),
+                    U8(U8(c >> 16 & 0x01u) | U8((u & 0x7Fu) << 1)),
+                    U8(u >> 7),
+                    U8(U8(u >> 15 & 0x03u) | U8(U8(self_contained) << 2))
+                };
+                U32 hcrc = crc::crc24(bits, 5);
+                U8 hdr[V5_COMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT] = {
+                    bits[0], bits[1], bits[2], bits[3], bits[4],
+                    U8(hcrc), U8(hcrc >> 8), U8(hcrc >> 16)
+                };
+                U32 pcrc = crc::crc32(cbuf.ptr, U64(comp_len), crc::CRC32_CQL_V5_INIT);
+                U8 trailer[4] = { U8(pcrc), U8(pcrc >> 8), U8(pcrc >> 16), U8(pcrc >> 24) };
+                co_await send_block(req, hdr, V5_COMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT);
+                co_await send_block(req, cbuf.ptr, U64(comp_len));
+                co_await send_block(req, trailer, 4);
+            } else {
+                U32 pl = U32(chunk);
+                U8 bits[3] = {
+                    U8(pl), U8(pl >> 8),
+                    U8(U8(pl >> 16 & 0x01u) | U8(U8(self_contained) << 1))
+                };
+                U32 hcrc = crc::crc24(bits, 3);
+                U8 hdr[V5_UNCOMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT] = {
+                    bits[0], bits[1], bits[2],
+                    U8(hcrc), U8(hcrc >> 8), U8(hcrc >> 16)
+                };
+                U32 pcrc = crc::crc32(data + offset, chunk, crc::CRC32_CQL_V5_INIT);
+                U8 trailer[4] = { U8(pcrc), U8(pcrc >> 8), U8(pcrc >> 16), U8(pcrc >> 24) };
+                co_await send_block(req, hdr, V5_UNCOMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT);
+                co_await send_block(req, data + offset, chunk);
+                co_await send_block(req, trailer, 4);
+            }
+
+            offset += chunk;
+        } while (offset < data_len);
+    }
 
     // ========================================================================
     // handler
     // ========================================================================
+    coroutine::Task<bool> negotiate_connection(const tcp::Request& req, NegotiatedProtocol* opt_out_negotiated_protocol);
+
+    // Defined in native.cpp; explicitly instantiated for (5,true), (5,false), (4,false).
+    template<U8 Version, bool Compressed>
     coroutine::Task<void> frame_handler(engine::Engine& engine, const tcp::Request& req, const U8* header, const U8* body, S32 body_length);
+
+    extern template coroutine::Task<void> frame_handler<5u, true> (engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    extern template coroutine::Task<void> frame_handler<5u, false>(engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    extern template coroutine::Task<void> frame_handler<4u, false>(engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
+
+    template<U8 Version, bool Compressed>
+    coroutine::Task<void> post_startup_loop(engine::Engine& engine, const tcp::Request& req) {
+        if constexpr (Version >= 5) {
+            DynamicArray<U8> read_buf{};
+            DynamicArray<U8> envelope_buf{};
+
+            const auto fill_to = [&](U64 n) -> coroutine::Task<bool> {
+                while (read_buf.length < n) {
+                    if (!co_await try_append_tcp_read(req, read_buf)) co_return false;
+                }
+                co_return true;
+            };
+
+            const auto consume_front = [&](U64 n) {
+                U64 rem = read_buf.length - n;
+                if (rem > 0) os::memory_move(read_buf.ptr, read_buf.ptr + n, rem);
+                resize(read_buf, rem);
+            };
+
+            constexpr U64 V5_HDR_BYTE_COUNT = Compressed ? V5_COMP_HDR_BYTE_COUNT : V5_UNCOMP_HDR_BYTE_COUNT;
+            constexpr U64 V5_HDR_WITH_CRC24_BYTE_COUNT = V5_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT;
+
+            while (true) {
+                envelope_buf.length = 0;
+                bool self_contained  = false;
+                bool ok              = true;
+
+                // Accumulate outer frames until a self-contained message is assembled
+                while (!self_contained) {
+                    if (!co_await fill_to(V5_HDR_WITH_CRC24_BYTE_COUNT)) { ok = false; break; }
+
+                    // Verify header CRC24
+                    U32 hdr_crc_computed = crc::crc24(read_buf.ptr, V5_HDR_BYTE_COUNT);
+                    U32 hdr_crc_stored   = U32(read_buf[V5_HDR_BYTE_COUNT])
+                                        | (U32(read_buf[V5_HDR_BYTE_COUNT + 1]) << 8)
+                                        | (U32(read_buf[V5_HDR_BYTE_COUNT + 2]) << 16);
+                    if (hdr_crc_computed != hdr_crc_stored) {
+                        log::native_error("v5 frame header CRC24 mismatch, dropping connection");
+                        ok = false; break;
+                    }
+
+                    U32 payload_len = 0, uncomp_len = 0;
+                    if constexpr (Compressed) {
+                        payload_len    = U32(read_buf[0]) | (U32(read_buf[1]) << 8) | ((U32(read_buf[2]) & 0x01u) << 16);
+                        uncomp_len     = ((U32(read_buf[2]) >> 1) & 0x7Fu) | (U32(read_buf[3]) << 7) | ((U32(read_buf[4]) & 0x03u) << 15);
+                        self_contained = bool((read_buf[4] >> 2) & 1u);
+                    } else {
+                        payload_len    = U32(read_buf[0]) | (U32(read_buf[1]) << 8) | ((U32(read_buf[2]) & 0x01u) << 16);
+                        self_contained = bool((read_buf[2] >> 1) & 1u);
+                    }
+                    consume_front(V5_HDR_WITH_CRC24_BYTE_COUNT);
+
+                    if (!co_await fill_to(payload_len + V5_PAYLOAD_CRC32_BYTE_COUNT)) { ok = false; break; }
+
+                    // Verify CRC32 of payload
+                    {
+                        U32 payload_crc_computed = crc::crc32(read_buf.ptr, payload_len, crc::CRC32_CQL_V5_INIT);
+                        U32 payload_crc_stored   = U32(read_buf[payload_len])
+                                                | (U32(read_buf[payload_len + 1]) << 8)
+                                                | (U32(read_buf[payload_len + 2]) << 16)
+                                                | (U32(read_buf[payload_len + 3]) << 24);
+                        if (payload_crc_computed != payload_crc_stored) {
+                            log::native_error("v5 frame payload CRC32 mismatch, dropping connection");
+                            ok = false; break;
+                        }
+                    }
+
+                    if constexpr (Compressed) {
+                        U64 old_len = envelope_buf.length;
+                        resize(envelope_buf, old_len + uncomp_len);
+                        S32 result = lz4::decompress(
+                            read_buf.ptr, envelope_buf.ptr + old_len,
+                            S32(payload_len), S32(uncomp_len)
+                        );
+                        if (result != S32(uncomp_len)) {
+                            log::native_error("v5 frame LZ4 decompression failed, dropping connection");
+                            ok = false; break;
+                        }
+                    } else {
+                        U64 old_len = envelope_buf.length;
+                        resize(envelope_buf, old_len + payload_len);
+                        os::memory_copy(envelope_buf.ptr + old_len, read_buf.ptr, payload_len);
+                    }
+                    consume_front(payload_len + V5_PAYLOAD_CRC32_BYTE_COUNT);
+                }
+
+                if (!ok) break;
+
+                // Dispatch all inner envelopes from the assembled payload
+                const U8* p   = envelope_buf.ptr;
+                const U8* end = p + envelope_buf.length;
+                while (p + V4_FRAME_HEADER_BYTE_COUNT <= end) {
+                    S32 inner_body_len = read_be_s32(p + 5);
+                    if (inner_body_len < 0) break;
+                    if (p + V4_FRAME_HEADER_BYTE_COUNT + U64(inner_body_len) > end) break;
+                    co_await frame_handler<Version, Compressed>(engine, req, p, p + V4_FRAME_HEADER_BYTE_COUNT, inner_body_len);
+                    p += V4_FRAME_HEADER_BYTE_COUNT + inner_body_len;
+                }
+            }
+        } else {
+            // v4: plain envelope framing (no outer wrapping)
+            DynamicArray<U8> frame{};
+            S32 body_byte_count  = MAX_S32;
+            U64 frame_byte_count = MAX_U64;
+            while (true) {
+                body_byte_count  = MAX_S32;
+                frame_byte_count = MAX_U64;
+
+                { ZoneScopedN("read")
+                    while (frame.length < V4_FRAME_HEADER_BYTE_COUNT) {
+                        if (!co_await try_append_tcp_read(req, frame)) break;
+                    }
+                    if (frame.length < V4_FRAME_HEADER_BYTE_COUNT) break;
+
+                    body_byte_count  = read_be_s32(&frame[5]);
+                    frame_byte_count = V4_FRAME_HEADER_BYTE_COUNT + U64(body_byte_count);
+
+                    while (frame.length < frame_byte_count) {
+                        if (!co_await try_append_tcp_read(req, frame)) break;
+                    }
+                    if (frame.length < frame_byte_count) break;
+                }
+
+                co_await frame_handler<Version, Compressed>(engine, req, frame.ptr, &frame.ptr[V4_FRAME_HEADER_BYTE_COUNT], body_byte_count);
+
+                if (frame.length > frame_byte_count) {
+                    os::memory_copy(frame.ptr, &frame.ptr[frame_byte_count], frame.length - frame_byte_count);
+                }
+                resize(frame, frame.length - frame_byte_count);
+            }
+        }
+    }
 }
 
 export namespace objstore::native {
@@ -348,59 +563,20 @@ export namespace objstore::native {
 
     Optional<String8> run(U16 port, os::Notifier& interrupt, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback, bool use_uring = true) {
         const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> { TracyFiberEnter("request")
-            // process each frame @todo investigate avoiding allocations/copy in favour of direct lock on read buffer
-            DynamicArray<U8> frame{};
-            while (true) {
-                S32 body_byte_count = MAX_S32;
-                U64 frame_byte_count = MAX_U64;
+            NegotiatedProtocol negotiated_protocol{};
+            bool ok = co_await negotiate_connection(req, &negotiated_protocol);
+            if (!ok) {
+                co_await tcp::close(req);
+                TracyFiberLeave; co_return;
+            }
 
-                { ZoneScopedN("read")
-                    // @perf avoid allocation for frames which fit in buffer
-                    // @perf investigate holding one or multiple buffers for during of request
-                    // @perf investigate shared read memory outside ring
-                    const auto try_append_to_frame = [&]() -> coroutine::Task<bool> {
-                        Optional<tcp::RWBuffer> opt_buffer = tcp::acquire(req);
-                        if (!opt_buffer) {
-                            log::native_error("buffer starvation, dropping read");
-                            co_return false;
-                        }
-                        auto& buffer = *opt_buffer;
-                        if (auto err = co_await tcp::read(req, &buffer); err != tcp::Error::None) {
-                            log::native_error("error reading request, dropping connection");
-                            tcp::release(req, &buffer);
-                            co_return false;
-                        }
-                        resize(frame, frame.length + buffer.length);
-                        os::memory_copy(frame.ptr + frame.length - buffer.length, buffer.view.ptr, buffer.length);
-                        tcp::release(req, &buffer);
-                        co_return true;
-                    };
-
-                    // read header
-                    while (frame.length < FRAME_HEADER_BYTE_COUNT) {
-                        if (!co_await try_append_to_frame())
-                            break;
-                    }
-                    if (frame.length < FRAME_HEADER_BYTE_COUNT) break;
-
-                    body_byte_count = read_be_s32(&frame[5]);
-                    frame_byte_count = FRAME_HEADER_BYTE_COUNT + U64(body_byte_count);
-
-                    // read body
-                    while (frame.length < frame_byte_count) {
-                        if (!co_await try_append_to_frame())
-                            break;
-                    }
-                    if (frame.length < frame_byte_count) break;
-                }
-
-                co_await frame_handler(engine, req, frame.ptr, &frame.ptr[FRAME_HEADER_BYTE_COUNT], body_byte_count);
-
-                // if next frame was partially read, move it to the front
-                if (frame.length > frame_byte_count) {
-                    os::memory_copy(frame.ptr, &frame.ptr[frame_byte_count], frame.length - frame_byte_count);
-                }
-                resize(frame, frame.length - frame_byte_count);
+            if (negotiated_protocol.version == 5) {
+                if (negotiated_protocol.compressed)
+                    co_await post_startup_loop<5, true>(engine, req);
+                else
+                    co_await post_startup_loop<5, false>(engine, req);
+            } else {
+                co_await post_startup_loop<4, false>(engine, req);
             }
 
             co_await tcp::close(req);

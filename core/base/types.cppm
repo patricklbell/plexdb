@@ -123,6 +123,9 @@ export namespace plexdb {
     template<typename T>
     using NumericLimits = std::numeric_limits<T>;
 
+    constexpr U8 operator""_u8(unsigned long long value) {
+        return static_cast<U8>(value);
+    }
     constexpr U16 operator""_u16(unsigned long long value) {
         return static_cast<U16>(value);
     }

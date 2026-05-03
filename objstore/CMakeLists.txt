@@ -28,6 +28,20 @@ if(NOT TARGET foonathan::lexy)
   FetchContent_MakeAvailable(lexy)
 endif()
 
+if(NOT TARGET lz4::lz4)
+  include(FetchContent)
+  FetchContent_Declare(
+      lz4
+      GIT_REPOSITORY https://github.com/lz4/lz4.git
+      GIT_TAG        v1.10.0
+      GIT_SHALLOW    TRUE
+      SOURCE_SUBDIR  build/cmake
+  )
+  set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
+  set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(lz4)
+endif()
+
 if(NOT PLEXDB_DEBUG)
   set(LEXY_ENABLE_ASSERT OFF)
 endif()
@@ -52,6 +66,7 @@ target_sources(objstore_modules
         FILE_SET CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
+            crc/crc.cppm
             engine/engine.cppm
             engine/evaluator.cppm
             engine/io.cppm
@@ -68,6 +83,7 @@ target_sources(objstore_modules
             tcp/tcp.types.cppm
             native/native.cppm
             repl/repl.cppm
+            third_party/lz4/lz4.cppm
 )
 
 target_link_libraries(objstore_modules
@@ -101,6 +117,7 @@ target_sources(objstore
         tcp/tcp.types.cpp
         native/native.cpp
         repl/repl.cpp
+        third_party/lz4/lz4.cpp
 )
 
 target_link_libraries(objstore
@@ -111,6 +128,7 @@ target_link_libraries(objstore
         foonathan::lexy::core
         foonathan::lexy::ext
         plexdb::profiling
+        lz4_static
 )
 
 # =============================================================================
