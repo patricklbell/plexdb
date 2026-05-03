@@ -1,3 +1,6 @@
+module;
+#include <profiling/tracy.hpp>
+
 export module plexdb.btree.detail;
 
 export import plexdb.btree.types;
@@ -43,7 +46,7 @@ export namespace plexdb::btree {
 
     // @precondition parent is not full
     template<Transaction Tx>
-    void split_child(Tx& t, const Header& h, Node* parent, CountType child_idx, bool is_child_leaf) {
+    void split_child(Tx& t, const Header& h, Node* parent, CountType child_idx, bool is_child_leaf) { ZoneScopedN("btree::split");
         assert_true(parent->key_count < max_keys(h, false), "parent is not full");
 
         Node* left = update_node(t, children(parent, h)[child_idx]);
@@ -133,7 +136,7 @@ export namespace plexdb::btree {
     }
 
     template<Transaction Tx>
-    U8* insert_impl(Tx& t, KeyType key) {
+    U8* insert_impl(Tx& t, KeyType key) { ZoneScopedN("btree::insert");
         // acquire read on header for duration of insertion
         auto t_header = scope(t);
         const auto& h = *read_header(t_header);
@@ -171,7 +174,7 @@ export namespace plexdb::btree {
     };
 
     template<Transaction Tx>
-    Search search_impl(Tx& t, KeyType key) {
+    Search search_impl(Tx& t, KeyType key) { ZoneScopedN("btree::search");
         // acquire read on header for duration of search
         // @todo check necessary for duration since depth changing may not break search
         auto t_header = scope(t);
@@ -204,7 +207,7 @@ export namespace plexdb::btree {
     };
 
     template<Transaction Tx>
-    bool remove_impl(Tx& t, KeyType key) {
+    bool remove_impl(Tx& t, KeyType key) { ZoneScopedN("btree::remove");
         auto t_remove = scope(t);
 
         // acquire read on header for duration of remove

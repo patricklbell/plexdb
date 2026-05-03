@@ -122,6 +122,7 @@ target_sources(core_modules
 target_link_libraries(core_modules
     PRIVATE
         plexdb::compiler_config
+        plexdb::profiling
 )
 
 # Static library

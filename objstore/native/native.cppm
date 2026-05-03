@@ -429,6 +429,7 @@ namespace type_codes {
             DynamicArray<U8> read_buf{};
             DynamicArray<U8> envelope_buf{};
 
+            // @todo refactor to be common
             const auto fill_to = [&](U64 n) -> coroutine::Task<bool> {
                 while (read_buf.length < n) {
                     if (!co_await try_append_tcp_read(req, read_buf)) co_return false;
@@ -436,6 +437,7 @@ namespace type_codes {
                 co_return true;
             };
 
+            // @todo @perf remove
             const auto consume_front = [&](U64 n) {
                 U64 rem = read_buf.length - n;
                 if (rem > 0) os::memory_move(read_buf.ptr, read_buf.ptr + n, rem);
@@ -450,63 +452,65 @@ namespace type_codes {
                 bool self_contained  = false;
                 bool ok              = true;
 
-                // Accumulate outer frames until a self-contained message is assembled
-                while (!self_contained) {
-                    if (!co_await fill_to(V5_HDR_WITH_CRC24_BYTE_COUNT)) { ok = false; break; }
+                { ZoneScopedN("post_startup_loop::read")
+                    // Accumulate outer frames until a self-contained message is assembled
+                    while (!self_contained) {
+                        if (!co_await fill_to(V5_HDR_WITH_CRC24_BYTE_COUNT)) { ok = false; break; }
 
-                    // Verify header CRC24
-                    U32 hdr_crc_computed = crc::crc24(read_buf.ptr, V5_HDR_BYTE_COUNT);
-                    U32 hdr_crc_stored   = U32(read_buf[V5_HDR_BYTE_COUNT])
-                                        | (U32(read_buf[V5_HDR_BYTE_COUNT + 1]) << 8)
-                                        | (U32(read_buf[V5_HDR_BYTE_COUNT + 2]) << 16);
-                    if (hdr_crc_computed != hdr_crc_stored) {
-                        log::native_error("v5 frame header CRC24 mismatch, dropping connection");
-                        ok = false; break;
-                    }
-
-                    U32 payload_len = 0, uncomp_len = 0;
-                    if constexpr (Compressed) {
-                        payload_len    = U32(read_buf[0]) | (U32(read_buf[1]) << 8) | ((U32(read_buf[2]) & 0x01u) << 16);
-                        uncomp_len     = ((U32(read_buf[2]) >> 1) & 0x7Fu) | (U32(read_buf[3]) << 7) | ((U32(read_buf[4]) & 0x03u) << 15);
-                        self_contained = bool((read_buf[4] >> 2) & 1u);
-                    } else {
-                        payload_len    = U32(read_buf[0]) | (U32(read_buf[1]) << 8) | ((U32(read_buf[2]) & 0x01u) << 16);
-                        self_contained = bool((read_buf[2] >> 1) & 1u);
-                    }
-                    consume_front(V5_HDR_WITH_CRC24_BYTE_COUNT);
-
-                    if (!co_await fill_to(payload_len + V5_PAYLOAD_CRC32_BYTE_COUNT)) { ok = false; break; }
-
-                    // Verify CRC32 of payload
-                    {
-                        U32 payload_crc_computed = crc::crc32(read_buf.ptr, payload_len, crc::CRC32_CQL_V5_INIT);
-                        U32 payload_crc_stored   = U32(read_buf[payload_len])
-                                                | (U32(read_buf[payload_len + 1]) << 8)
-                                                | (U32(read_buf[payload_len + 2]) << 16)
-                                                | (U32(read_buf[payload_len + 3]) << 24);
-                        if (payload_crc_computed != payload_crc_stored) {
-                            log::native_error("v5 frame payload CRC32 mismatch, dropping connection");
+                        // Verify header CRC24
+                        U32 hdr_crc_computed = crc::crc24(read_buf.ptr, V5_HDR_BYTE_COUNT);
+                        U32 hdr_crc_stored   = U32(read_buf[V5_HDR_BYTE_COUNT])
+                                            | (U32(read_buf[V5_HDR_BYTE_COUNT + 1]) << 8)
+                                            | (U32(read_buf[V5_HDR_BYTE_COUNT + 2]) << 16);
+                        if (hdr_crc_computed != hdr_crc_stored) {
+                            log::native_error("v5 frame header CRC24 mismatch, dropping connection");
                             ok = false; break;
                         }
-                    }
 
-                    if constexpr (Compressed) {
-                        U64 old_len = envelope_buf.length;
-                        resize(envelope_buf, old_len + uncomp_len);
-                        S32 result = lz4::decompress(
-                            read_buf.ptr, envelope_buf.ptr + old_len,
-                            S32(payload_len), S32(uncomp_len)
-                        );
-                        if (result != S32(uncomp_len)) {
-                            log::native_error("v5 frame LZ4 decompression failed, dropping connection");
-                            ok = false; break;
+                        U32 payload_len = 0, uncomp_len = 0;
+                        if constexpr (Compressed) {
+                            payload_len    = U32(read_buf[0]) | (U32(read_buf[1]) << 8) | ((U32(read_buf[2]) & 0x01u) << 16);
+                            uncomp_len     = ((U32(read_buf[2]) >> 1) & 0x7Fu) | (U32(read_buf[3]) << 7) | ((U32(read_buf[4]) & 0x03u) << 15);
+                            self_contained = bool((read_buf[4] >> 2) & 1u);
+                        } else {
+                            payload_len    = U32(read_buf[0]) | (U32(read_buf[1]) << 8) | ((U32(read_buf[2]) & 0x01u) << 16);
+                            self_contained = bool((read_buf[2] >> 1) & 1u);
                         }
-                    } else {
-                        U64 old_len = envelope_buf.length;
-                        resize(envelope_buf, old_len + payload_len);
-                        os::memory_copy(envelope_buf.ptr + old_len, read_buf.ptr, payload_len);
+                        consume_front(V5_HDR_WITH_CRC24_BYTE_COUNT);
+
+                        if (!co_await fill_to(payload_len + V5_PAYLOAD_CRC32_BYTE_COUNT)) { ok = false; break; }
+
+                        // Verify CRC32 of payload
+                        {
+                            U32 payload_crc_computed = crc::crc32(read_buf.ptr, payload_len, crc::CRC32_CQL_V5_INIT);
+                            U32 payload_crc_stored   = U32(read_buf[payload_len])
+                                                    | (U32(read_buf[payload_len + 1]) << 8)
+                                                    | (U32(read_buf[payload_len + 2]) << 16)
+                                                    | (U32(read_buf[payload_len + 3]) << 24);
+                            if (payload_crc_computed != payload_crc_stored) {
+                                log::native_error("v5 frame payload CRC32 mismatch, dropping connection");
+                                ok = false; break;
+                            }
+                        }
+
+                        if constexpr (Compressed) {
+                            U64 old_len = envelope_buf.length;
+                            resize(envelope_buf, old_len + uncomp_len);
+                            S32 result = lz4::decompress(
+                                read_buf.ptr, envelope_buf.ptr + old_len,
+                                S32(payload_len), S32(uncomp_len)
+                            );
+                            if (result != S32(uncomp_len)) {
+                                log::native_error("v5 frame LZ4 decompression failed, dropping connection");
+                                ok = false; break;
+                            }
+                        } else {
+                            U64 old_len = envelope_buf.length;
+                            resize(envelope_buf, old_len + payload_len);
+                            os::memory_copy(envelope_buf.ptr + old_len, read_buf.ptr, payload_len);
+                        }
+                        consume_front(payload_len + V5_PAYLOAD_CRC32_BYTE_COUNT);
                     }
-                    consume_front(payload_len + V5_PAYLOAD_CRC32_BYTE_COUNT);
                 }
 
                 if (!ok) break;
@@ -531,7 +535,7 @@ namespace type_codes {
                 body_byte_count  = MAX_S32;
                 frame_byte_count = MAX_U64;
 
-                { ZoneScopedN("read")
+                { ZoneScopedN("post_startup_loop::read")
                     while (frame.length < V4_FRAME_HEADER_BYTE_COUNT) {
                         if (!co_await try_append_tcp_read(req, frame)) break;
                     }

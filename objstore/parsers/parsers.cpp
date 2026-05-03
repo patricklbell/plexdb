@@ -1,4 +1,5 @@
 module;
+#include <profiling/tracy.hpp>
 #include <lexy/action/parse.hpp>
 #include <lexy/callback.hpp>
 #include <lexy/dsl.hpp>
@@ -1645,7 +1646,7 @@ namespace objstore::parsers::cql {
         };
     }
 
-    Optional<Statement> parse(String8 bytes, void(*error_fn)(const String8& error)) {
+    Optional<Statement> parse(String8 bytes, void(*error_fn)(const String8& error)) { ZoneScopedN("parsers::parse");
         log::db_query_text(bytes);
 
         auto input = lexy::string_input<lexy::ascii_encoding>(bytes.data, bytes.length);

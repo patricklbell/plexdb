@@ -1,3 +1,6 @@
+module;
+#include <profiling/tracy.hpp>
+
 module objstore.engine;
 
 import plexdb.os;
@@ -170,7 +173,7 @@ namespace objstore::engine {
         };
     }
 
-    ExecutionResult execute(Engine& engine, const Statement& statement) {
+    ExecutionResult execute(Engine& engine, const Statement& statement) { ZoneScopedN("engine::execute");
         return visit(statement.value, [&](const auto& stmt) -> ExecutionResult {
             using T = RemoveCVRef<decltype(stmt)>;
 
@@ -267,7 +270,7 @@ namespace objstore::engine {
                 btree::truncate(tbl->btree);
 
                 return make_void_success();
-            } else if constexpr (SameAs<T, Select>) {
+            } else if constexpr (SameAs<T, Select>) { ZoneScopedN("engine::select");
                 String8 ks_name = static_cast<bool>(stmt.from.keyspace_name) ? String8(*stmt.from.keyspace_name) : engine.current_keyspace;
 
                 auto system_vr = try_system_select(engine, ks_name, stmt.from.table_name);
@@ -430,7 +433,7 @@ namespace objstore::engine {
                     .resolved_table = tbl,
                     .select_col_indices = move(select_col_indices),
                 };
-            } else if constexpr (SameAs<T, Insert>) {
+            } else if constexpr (SameAs<T, Insert>) { ZoneScopedN("engine::insert");
                 assert_true_not_implemented(stmt.using_parameters.length == 0, "INSERT USING TIMESTAMP/TTL is not implemented");
                 assert_true(static_cast<bool>(stmt.insert_clause), "missing insert clause, this should never happen");
 
@@ -528,7 +531,7 @@ namespace objstore::engine {
                         static_assert(!SameAs<T,T>, "missing type case");
                     }
                 });
-            } else if constexpr (SameAs<T, Update>) {
+            } else if constexpr (SameAs<T, Update>) { ZoneScopedN("engine::update");
                 assert_true_not_implemented(stmt.using_parameters.length == 0, "UPDATE USING TIMESTAMP/TTL is not implemented");
                 assert_true_not_implemented(!stmt.if_, "UPDATE IF is not implemented");
 
@@ -704,7 +707,7 @@ namespace objstore::engine {
                 }
 
                 return make_void_success();
-            } else if constexpr (SameAs<T, Delete>) {
+            } else if constexpr (SameAs<T, Delete>) { ZoneScopedN("engine::delete");
                 assert_true_not_implemented(stmt.using_parameters.length == 0, "DELETE USING TIMESTAMP is not implemented");
                 assert_true_not_implemented(!stmt.if_, "DELETE IF is not implemented");
                 assert_true_not_implemented(stmt.selections.length == 0, "column-level DELETE is not implemented");
@@ -872,7 +875,7 @@ namespace objstore::engine {
     // ========================================================================
     // prepared statements
     // ========================================================================
-    PrepareResult prepare(Engine& engine, String8 query) {
+    PrepareResult prepare(Engine& engine, String8 query) { ZoneScopedN("engine::prepare");
         U64 query_hash = hash(query);
 
         auto* existing = find(engine.prepared_cache, query_hash);
@@ -916,7 +919,7 @@ namespace objstore::engine {
         return find(engine.prepared_cache, prepared_id);
     }
 
-    ExecutionResult execute(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values) {
+    ExecutionResult execute(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values) { ZoneScopedN("engine::execute_prepared");
         auto* entry = find(engine.prepared_cache, prepared_id);
         if (entry == nullptr) {
             return { .status = ExecutionStatus::Invalid, .message = "Prepared statement not found" };

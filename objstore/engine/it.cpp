@@ -1,3 +1,6 @@
+module;
+#include <profiling/tracy.hpp>
+
 module objstore.engine.it;
 
 import plexdb.base;
@@ -47,7 +50,7 @@ namespace objstore {
         get_column_current_mask(&this->current_mask, this->row_blob, this->current_column_idx);
     }
 
-    ColumnValue ColumnIterator::operator*() {
+    ColumnValue ColumnIterator::operator*() { ZoneScopedN("it::column_read");
         assert_true(this->table != nullptr, "cannot dereference an end iterator, this should never happen!");
 
         if (this->current_column_idx >= this->row_column_count) {

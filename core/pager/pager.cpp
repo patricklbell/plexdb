@@ -1,5 +1,6 @@
 module;
 #include "macros.h"
+#include <profiling/tracy.hpp>
 
 module plexdb.pager;
 
@@ -45,7 +46,7 @@ namespace plexdb::pager {
             &pager.header
         );
     }
-    static void read_page(Pager& pager, U8* data, U64 idx) {
+    static void read_page(Pager& pager, U8* data, U64 idx) { ZoneScopedN("pager::read_page");
         os::file_read(
             pager.file,
             Rng1U64{
@@ -55,7 +56,7 @@ namespace plexdb::pager {
             data
         );
     }
-    static void write_page(Pager& pager, U8* data, U64 idx) {
+    static void write_page(Pager& pager, U8* data, U64 idx) { ZoneScopedN("pager::write_page");
         os::file_write(
             pager.file,
             Rng1U64{
@@ -209,7 +210,7 @@ namespace plexdb::pager {
         return get_cache_data(pager, idx);
     }
 
-    void fflush(Pager& pager) {
+    void fflush(Pager& pager) { ZoneScopedN("pager::fflush");
         if (pager.wal) {
             assert_true(pager.wal.header.page_size != 0, "invalid wal page size");
 
@@ -279,7 +280,7 @@ namespace plexdb::pager {
         return reinterpret_cast<U64*>(rwpage(pager, idx));
     }
 
-    U64 new_page(Pager& pager) {
+    U64 new_page(Pager& pager) { ZoneScopedN("pager::new_page");
         const U64 ENTRIES_PER_BITSET = get_bitset_entry_count(pager);
         const U64 BITSET_PAGE_STRIDE = ENTRIES_PER_BITSET*get_pages_per_entry() + 1;
         auto& h = pager.header;
@@ -319,7 +320,7 @@ namespace plexdb::pager {
         return free_page;
     }
 
-    void delete_page(Pager& pager, U64 idx) {
+    void delete_page(Pager& pager, U64 idx) { ZoneScopedN("pager::delete_page");
         assert_true(idx < pager.header.page_count && idx > 0, "page out of range");
         const U64 PAGES_PER_BITSET = get_bitset_entry_count(pager)*get_pages_per_entry() + 1;
         auto& h = pager.header;

@@ -56,7 +56,7 @@ def main():
         VALUES (?, ?, ?, ?, ?, ?)
         """)
 
-        for t in np.arange(0, 60, 0.1):
+        for t in np.arange(0, 6000, 0.1):
             data = generate_telemetry(t)
 
             session.execute(
@@ -71,10 +71,10 @@ def main():
                 ),
             )
 
-            print(
-                f"t={t} altitude={data['altitude']:.1f}m velocity={data['velocity']:.1f}m/s"
-            )
-            time.sleep(0.01)
+            if int(t) == t:
+                print(
+                    f"t={t} altitude={data['altitude']:.1f}m velocity={data['velocity']:.1f}m/s"
+                )
 
         print("Insert complete.")
 
