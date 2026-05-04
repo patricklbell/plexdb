@@ -1,0 +1,16 @@
+[project]
+name = "cql_py_example"
+version = "0.1.0"
+
+requires-python = "<=3.12"
+dependencies = [
+    "cassandra-driver>=3.28",
+    "numpy"
+]
+
+[project.scripts]
+cql_py_example = "cql_py_example.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

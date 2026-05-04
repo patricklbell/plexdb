@@ -1,101 +1,74 @@
 module;
 #include "macros.h"
+#include <coroutine>
 
 export module objstore.tcp.types;
 
 import plexdb.os;
 import plexdb.base;
 import plexdb.arena;
+import plexdb.coroutine;
 
 using namespace plexdb;
 
 export namespace objstore::tcp {
-    // ========================================================================
-    // Chunk chain
-    //   When an inflight request spans multiple read buffer reads, we chain 
-    //   buffers together. If the chain grows too large, to avoid starving new
-    //   conncetions, we fall back to dynamic allocation. @todo tracking
-    // ========================================================================
-    constexpr int MAX_SMALL_CHAIN_BUFFERS_COUNT = 4;
-    constexpr int LARGE_BUFFER_SIZE = 64 * 1_kb;
-
-    struct Chunk {
-        int buffer_idx = -1;
-        TArrayView<U8,int> data{};
-    };
-
-    using ChunkNode = Deque<Chunk>::Node;
-
-    struct ChunkChain {
-        arena::ArenaPage* arena = nullptr;
-        CappedArray<ChunkNode, MAX_SMALL_CHAIN_BUFFERS_COUNT> small_chunks;
-        Deque<Chunk> chunks;
-        U64 chunk_size;
-
-        ChunkChain() = default;
-        ~ChunkChain();
-    };
-
-
-    // ========================================================================
-    // buffer
-    //   a connection can hold multiple buffers, there is a many-to-one mapping
-    //   between buffers -> client
-    // ========================================================================
-    // @note fat struct, not always meaningfull depending on the handler
-    struct BufferInfo {
-        PLEXDB_DEBUG_X(U32 buffer_idx = -1;)
-        os::Handle client = os::zero_handle();
-    };
-
-    // ========================================================================
-    // connection
-    // ========================================================================
     constexpr int MAX_CONCURRENT_CONNECTIONS = 1000;
-
-    struct Connection {
-        os::Handle client;
-        ChunkChain chunk_chain;
-    };
+    struct Connection;
 
     // ========================================================================
-    // user handlers
+    // request handling
     // ========================================================================
-    enum class RequestStatus {
-        // The request has been processed completely
-        Handled,
-        // The request is pending further data from the client, some data may have been consumed
-        Pending,
-        // The connection has been processed and should be closed
-        Close,
+    enum class Error {
+        None = 0,
+        ConnectionClosed,
+        // @todo
+        Other,
     };
 
-    using AsyncWriteFunctor = AutoFunctor<void(Connection*, U64, U32, U32)>;
+    struct RWBuffer {
+        TArrayView<U8,U32> view{};
+        U64 length;
+        U64 idx;
+    };
+
+    using AcquireRWBufferFunctor = AutoFunctor<Optional<RWBuffer>(Connection*)>; // @todo async
+    using ReleaseRWBufferFunctor = AutoFunctor<void(Connection*,const RWBuffer*)>;
+    using AsyncReadFunctor = AutoFunctor<coroutine::Task<Error>(Connection*,RWBuffer*)>;
+    using AsyncWriteFunctor = AutoFunctor<coroutine::Task<Error>(Connection*,const RWBuffer*)>;
+    using AsyncCloseFunctor = AutoFunctor<coroutine::Task<>(Connection*)>;
 
     struct Request {
         Connection* connection;
+        AcquireRWBufferFunctor* acquire;
+        ReleaseRWBufferFunctor* release;
+        AsyncReadFunctor* read;
         AsyncWriteFunctor* write;
+        AsyncCloseFunctor* close;
     };
 
-    // @note this is fired for every new chunk, potentially multiple times per request
-    template<typename F>
-    concept OnChunk = requires(F f, const Request& req) {
-        { f(req) } -> SameAs<RequestStatus>;
+    struct Connection {
+        os::Handle client;
+        Optional<coroutine::Task<void, coroutine::Start::Eager>> task;
+        // @warn req must be stored here so its lifetime matches the task, making
+        //       const Request& safe across co_awaits
+        Request req;
+
+        // preemption state for resuming after r/w/c completes
+        // @warn internal, do not use in connection handler
+        U32 count_rwc;
+        Error error_rwc;
+        std::coroutine_handle<> waiting_rwc;
     };
+
+    Optional<RWBuffer> acquire(const Request& req) { return (*req.acquire)(req.connection); }
+    void release(const Request& req, const RWBuffer* buffer) { return (*req.release)(req.connection, buffer); }
+    coroutine::Task<Error> read(const Request& req, RWBuffer* buffer) { co_return co_await (*req.read)(req.connection, buffer); }
+    coroutine::Task<Error> write(const Request& req, const RWBuffer* buffer) { co_return co_await (*req.write)(req.connection, buffer); }
+    coroutine::Task<> close(const Request& req) { co_return co_await (*req.close)(req.connection); }
     
     template<typename F>
-    concept OnOpen = requires(F f, Connection* connection) {
-        { f(connection) };
-    };
-
-    template<typename F>
-    concept OnClose = requires(F f, Connection* connection) {
-        { f(connection) };
-    };
-
-    template<typename F>
-    concept OnReady = requires(F f, U64 buffer_size, U64 buffer_count) {
-        { f(buffer_size, buffer_count) };
+    concept ConnectionHandler = requires(F f, Request connection) {
+        { f(connection) } -> SameAs<coroutine::Task<void, coroutine::Start::Eager>>;
     };
 
     // ========================================================================

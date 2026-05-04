@@ -1,25 +1,26 @@
 #include "macros.h"
+#include <profiling/tracy.hpp>
 
 import plexdb.base;
 import plexdb.os;
 import plexdb.pager;
 import plexdb.argparse;
+import plexdb.threads;
 
 import objstore.engine;
 import objstore.repl;
-import objstore.http;
 import objstore.native;
 
 using namespace objstore;
 using namespace plexdb;
 
 void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-    println("assert failed with message \"", msg, "\"");
-    
+    println("Assert failed \"", msg, "\" at ", function_name, " in ", file_name, ":", to_str(line_number));
+
     #if PLEXDB_DEBUG
         PLEXDB_TRAP;
     #else
-        os::signal_exit(1);
+        os::process_exit(1);
     #endif
 }
 
@@ -32,6 +33,9 @@ void signal_handler(int) {
 }
 
 int main(int argc, char* argv[]) {
+    plexdb::threads::Context main_thread_ctx{.arenas={},.is_main=true};
+    plexdb::threads::equip(&main_thread_ctx);
+
     os::signal_ignore_pipe();
     set_assert_handler(assert_handler);
     os::signal_register_kill(signal_handler);
@@ -40,7 +44,7 @@ int main(int argc, char* argv[]) {
     argparse::add_positional(arg_parser, "db_path", "Path to the database file");
     argparse::add_option(arg_parser, "--port", "-p", "TCP port to listen on", "9042");
     argparse::add_flag(arg_parser, "--repl", "-r", "Run interactive REPL instead of server");
-    argparse::add_flag(arg_parser, "--native", "-n", "Use Cassandra native binary protocol (default: HTTP)");
+    argparse::add_flag(arg_parser, "--no-uring", "-U", "Disable io_uring and use synchronous socket I/O");
 
     auto args = argparse::parse(arg_parser, argc, argv);
     if (args.help_requested) {
@@ -56,7 +60,7 @@ int main(int argc, char* argv[]) {
     String8 db_path = argparse::get_positional(args, 0);
     U16 port = u16_from_str(argparse::get_option(args, 0));
     bool run_repl   = argparse::has_flag(args, 0);
-    bool run_native = argparse::has_flag(args, 1);
+    bool no_uring   = argparse::has_flag(args, 1);
     if (port == 0) {
         println("Invalid port");
         return 1;
@@ -70,8 +74,8 @@ int main(int argc, char* argv[]) {
     }
 
     U64 page_size = 4_kb;
-    bool db_create = !os::file_exists(db_path);
     os::File db_file{os::file_open(db_path)};
+    bool db_create = os::file_get_stats(db_file).byte_count == 0;
 
     if (db_create) {
         println("created new database \"", db_path, "\"");
@@ -84,16 +88,12 @@ int main(int argc, char* argv[]) {
             engine::create_database(pager);
         }
         engine::Engine engine{&pager};
-    
+
         if (run_repl) {
             repl::run(engine);
-        } else if (run_native) {
-            auto on_ready = [&port]() { println("listening on port ", to_str(port), " (native protocol)"); };
-            Optional<String8> err = native::run(port, g_signal_notifier, g_should_stop, engine, on_ready);
-            if (err) println(*err);
         } else {
-            auto on_ready = [&port]() { println("listening on port ", to_str(port), " (http protocol)"); };
-            Optional<String8> err = http::run(port, g_signal_notifier, g_should_stop, engine, on_ready);
+            auto on_ready = [&port, no_uring]() { println("listening on port ", to_str(port), no_uring ? " (native protocol, sync sockets)" : " (native protocol)"); };
+            Optional<String8> err = native::run(port, g_signal_notifier, g_should_stop, engine, on_ready, !no_uring);
             if (err) println(*err);
         }
 

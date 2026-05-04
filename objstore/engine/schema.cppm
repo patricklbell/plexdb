@@ -6,8 +6,8 @@ import plexdb.pager;
 import plexdb.blob;
 import plexdb.btree;
 
-import objstore.engine.dtype;
 import objstore.engine.statements;
+import objstore.engine.types;
 
 using namespace plexdb;
 
@@ -15,9 +15,9 @@ export namespace objstore::schema {
     struct Column {
         bool tombstone;
         String8 name;
-        const CDType type;
+        const Type type;
     };
-    
+
     struct Table {
         U64 idx;
         bool tombstone;
@@ -53,17 +53,25 @@ export namespace objstore::schema {
     struct ColumnHeader {
         bool tombstone;
         U64 name_length;
-        CDType type;
+        Type type;
         U64 table_idx;
     };
     #pragma pack(pop)
 
+    enum class ReplicationClass {
+        Unknown,
+        SimpleStrategy,
+        NetworkTopologyStrategy,
+    };
     // @todo use long held transaction with pager cache as storage?
     struct KeyspaceStorage {
         U64 offset_in_blob_bytes;
         KeyspaceHeader header;
         AutoString8 name;
         DynamicArray<U64> tables;
+        ReplicationClass replication_class;
+        U64 replication_factor;
+        bool do_durable_writes;
     };
     struct TableStorage {
         U64 offset_in_blob_bytes;
@@ -97,15 +105,36 @@ export namespace objstore::schema {
 
     U64 create_schema(Pager& pager);
 
-    Keyspace* create_keyspace(Schema& schema, const CreateKeyspace& create);
-    Keyspace* read_keyspace(Schema& schema, String8 name);
-    bool delete_keyspace(Schema& schema, String8 name);
+    enum class Error {
+        None,
+        InvalidOptions,
+        MissingKeyspace,
+        MissingPrimaryKey,
+        ColumnNameCollision,
+        MissingTable,
+        MissingColumn,
+    };
+    template<typename T>
+    struct Result {
+        T value;
+        Error error = Error::None;
+        String8 message = "";
+    };
+    template<>
+    struct Result<void> {
+        Error error = Error::None;
+        String8 message = "";
+    };
 
-    Table* create_table(Schema& schema, Keyspace& ks, const CreateTable& create);
-    Table* read_table(Schema& schema, Keyspace& ks, String8 name);
-    bool delete_table(Schema& schema, Keyspace& ks, String8 name);
+    Result<Keyspace*> create_keyspace(Schema& schema, const CreateKeyspace& create);
+    Result<Keyspace*> read_keyspace(Schema& schema, String8 name);
+    Result<void> delete_keyspace(Schema& schema, String8 name);
 
-    Column* create_column(Schema& schema, Table& tbl, const CreateColumn& create);
-    Column* read_column(Schema& schema, Table& tbl, String8 name);
-    bool delete_column(Schema& schema, Table& tbl, String8 name);
+    Result<Table*> create_table(Schema& schema, Keyspace& ks, const CreateTable& create);
+    Result<Table*> read_table(Schema& schema, Keyspace& ks, String8 name);
+    Result<void> delete_table(Schema& schema, Keyspace& ks, String8 name);
+
+    Result<Column*> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create);
+    Result<Column*> read_column(Schema& schema, Table& tbl, String8 name);
+    Result<void> delete_column(Schema& schema, Table& tbl, String8 name);
 }

@@ -1,5 +1,7 @@
 module;
 #include "macros.h"
+#include <profiling/tracy.hpp>
+#include <coroutine>
 
 export module objstore.native;
 
@@ -8,26 +10,40 @@ import plexdb.os;
 import plexdb.os.containers;
 import plexdb.btree;
 import plexdb.tagged_union;
+import plexdb.os.dynamic_tagged_union;
+import plexdb.coroutine;
+import xxhash;
 
+import objstore.crc;
 import objstore.tcp;
 import objstore.parsers;
 import objstore.engine;
 import objstore.engine.statements;
+import objstore.engine.io;
+import objstore.log;
+import objstore.lz4;
 
 using namespace plexdb;
 using namespace objstore;
 
-// ============================================================================
-// Private implementation
-// ============================================================================
 namespace objstore::native {
-    constexpr U64 FRAME_HEADER_SIZE = 9;
-    constexpr U8  RESPONSE_VERSION  = 0x84;
+    // ========================================================================
+    // protocol
+    // ========================================================================
+    struct NegotiatedProtocol {
+        U8   version    = 4;
+        bool compressed = false;
+    };
 
-    // ========================================================================
-    // Protocol
-    // ========================================================================
-    namespace opcode {
+    constexpr U64 V4_FRAME_HEADER_BYTE_COUNT = 9;
+
+    constexpr U64 V5_MAX_PAYLOAD_BYTE_COUNT   = 131071u; // 17-bit max outer frame payload
+    constexpr U64 V5_UNCOMP_HDR_BYTE_COUNT    = 3;
+    constexpr U64 V5_COMP_HDR_BYTE_COUNT      = 5;
+    constexpr U64 V5_HDR_CRC24_BYTE_COUNT     = 3;
+    constexpr U64 V5_PAYLOAD_CRC32_BYTE_COUNT = 4;
+
+    namespace op_codes {
         constexpr U8 ERROR         = 0x00;
         constexpr U8 STARTUP       = 0x01;
         constexpr U8 READY         = 0x02;
@@ -42,48 +58,153 @@ namespace objstore::native {
         constexpr U8 AUTH_RESPONSE = 0x0F;
     }
 
-    namespace result_kind {
+    namespace error_codes {
+        constexpr S32 PROTOCOL_ERROR    = 0x000A;
+    }
+
+    constexpr String8 op_codes_to_str(const U8& op) {
+        switch (op) {
+            case op_codes::ERROR        : return "ERROR";
+            case op_codes::STARTUP      : return "STARTUP";
+            case op_codes::READY        : return "READY";
+            case op_codes::OPTIONS      : return "OPTIONS";
+            case op_codes::SUPPORTED    : return "SUPPORTED";
+            case op_codes::QUERY        : return "QUERY";
+            case op_codes::RESULT       : return "RESULT";
+            case op_codes::PREPARE      : return "PREPARE";
+            case op_codes::EXECUTE      : return "EXECUTE";
+            case op_codes::REGISTER     : return "REGISTER";
+            case op_codes::BATCH        : return "BATCH";
+            case op_codes::AUTH_RESPONSE: return "AUTH_RESPONSE";
+        };
+        return "UNKNOWN";
+    }
+
+    namespace result_codes {
         constexpr S32 VOID          = 0x0001;
         constexpr S32 ROWS          = 0x0002;
         constexpr S32 SET_KEYSPACE  = 0x0003;
+        constexpr S32 PREPARED      = 0x0004;
         constexpr S32 SCHEMA_CHANGE = 0x0005;
     }
 
-    namespace cql_type {
-        constexpr U16 Bigint    = 0x0002;
-        constexpr U16 Boolean   = 0x0004;
-        constexpr U16 Counter   = 0x0005;
-        constexpr U16 Double    = 0x0007;
-        constexpr U16 Float     = 0x0008;
-        constexpr U16 Int       = 0x0009;
+namespace type_codes {
+        constexpr U16 Ascii    = 0x0001;
+        constexpr U16 Bigint   = 0x0002;
+        constexpr U16 Blob     = 0x0003;
+        constexpr U16 Boolean  = 0x0004;
+        constexpr U16 Counter  = 0x0005;
+        constexpr U16 Decimal  = 0x0006;
+        constexpr U16 Double   = 0x0007;
+        constexpr U16 Float    = 0x0008;
+        constexpr U16 Int      = 0x0009;
         constexpr U16 Timestamp = 0x000B;
-        constexpr U16 Uuid      = 0x000C;
-        constexpr U16 Varchar   = 0x000D;
-        constexpr U16 Smallint  = 0x0013;
-        constexpr U16 List      = 0x0020;
-        constexpr U16 Map       = 0x0021;
-        constexpr U16 Set       = 0x0022;
+        constexpr U16 Uuid    = 0x000C;
+        constexpr U16 Varchar  = 0x000D;
+        constexpr U16 Varint   = 0x000E;
+        constexpr U16 Timeuuid = 0x000F;
+        constexpr U16 Inet    = 0x0010;
+        constexpr U16 Date     = 0x0011;
+        constexpr U16 Time     = 0x0012;
+        constexpr U16 Smallint = 0x0013;
+        constexpr U16 Tinyint  = 0x0014;
+        constexpr U16 Duration = 0x0015;
+        constexpr U16 List     = 0x0020;
+        constexpr U16 Map     = 0x0021;
+        constexpr U16 Set     = 0x0022;
     }
 
-    constexpr U16 dtype_to_cql_type(DType dtype) {
+    constexpr U16 basic_type_to_type_code(BasicType dtype) {
         switch (dtype) {
-            case DType::text:       return cql_type::Varchar;
-            case DType::uuid:       return cql_type::Uuid;
-            case DType::timestamp:  return cql_type::Timestamp;
-            case DType::smallint:   return cql_type::Smallint;
-            case DType::int_:       return cql_type::Int;
-            case DType::bigint:     return cql_type::Bigint;
-            case DType::counter:    return cql_type::Counter;
-            case DType::boolean:    return cql_type::Boolean;
-            case DType::float_:     return cql_type::Float;
-            case DType::double_:    return cql_type::Double;
+            case BasicType::ascii:     return type_codes::Ascii;
+            case BasicType::bigint:    return type_codes::Bigint;
+            case BasicType::blob:      return type_codes::Blob;
+            case BasicType::boolean:   return type_codes::Boolean;
+            case BasicType::counter:   return type_codes::Counter;
+            case BasicType::date:      return type_codes::Date;
+            case BasicType::decimal:   return type_codes::Decimal;
+            case BasicType::double_:   return type_codes::Double;
+            case BasicType::duration:  return type_codes::Duration;
+            case BasicType::float_:    return type_codes::Float;
+            case BasicType::inet:      return type_codes::Inet;
+            case BasicType::int_:      return type_codes::Int;
+            case BasicType::smallint:  return type_codes::Smallint;
+            case BasicType::text:      return type_codes::Varchar;
+            case BasicType::time:      return type_codes::Time;
+            case BasicType::timestamp: return type_codes::Timestamp;
+            case BasicType::tinyint:   return type_codes::Tinyint;
+            case BasicType::uuid:      return type_codes::Uuid;
+            case BasicType::varchar:   return type_codes::Varchar;
+            case BasicType::varint:    return type_codes::Varint;
+            case BasicType::timeuuid:  return type_codes::Timeuuid;
+            case BasicType::vector:
+            case BasicType::hex:{
+                assert_not_implemented("native protocol type code for vector/hex type is not implemented");
+                return 0x0000;
+            }break;
         }
+
+        assert_true(false, "invalid basic type");
         return 0x0000;
     }
 
-    constexpr U16 dtype_to_cql_type(CDType cdtype) {
-        if (cdtype.base.ctype != CType::native) return 0x0000;
-        return dtype_to_cql_type(cdtype.native.value_dtype);
+    template <typename T>
+    S32 basic_element_byte_size(const BasicType& dtype, const T& value) {
+        using TT = Decay<T>;
+
+        if constexpr (SameAs<TT, S64>) {
+            assert_true(dtype == BasicType::bigint || dtype == BasicType::counter || dtype == BasicType::timestamp || dtype == BasicType::time,
+                        "S64 does not match basic type");
+            return 8;
+        } else if constexpr (SameAs<TT, S32>) {
+            assert_true(dtype == BasicType::int_ || dtype == BasicType::date,
+                        "S32 does not match basic type");
+            return 4;
+        } else if constexpr (SameAs<TT, S16>) {
+            assert_true(dtype == BasicType::smallint,
+                        "S16 does not match basic type");
+            return 2;
+        } else if constexpr (SameAs<TT, U8>) {
+            assert_true(dtype == BasicType::boolean || dtype == BasicType::tinyint,
+                        "U8 does not match basic type");
+            return 1;
+        } else if constexpr (SameAs<TT, F64>) {
+            assert_true(dtype == BasicType::double_,
+                        "F64 does not match basic type");
+            return 8;
+        } else if constexpr (SameAs<TT, F32>) {
+            assert_true(dtype == BasicType::float_,
+                        "F32 does not match basic type");
+            return 4;
+        } else if constexpr (SameAs<TT, AutoString8>) {
+            assert_true(
+                dtype == BasicType::ascii   ||
+                dtype == BasicType::text    ||
+                dtype == BasicType::varchar,
+                "AutoString8 does not match basic type"
+            );
+            return value.length;
+        } else if constexpr (SameAs<TT, UUID>) {
+            assert_true(dtype == BasicType::uuid || dtype == BasicType::timeuuid, "UUID value does not match basic type");
+            return UUID::length;
+        } else if constexpr (SameAs<TT, Blob>) {
+            assert_true(
+                dtype == BasicType::blob    ||
+                dtype == BasicType::inet    ||
+                dtype == BasicType::varint  ||
+                dtype == BasicType::decimal ||
+                dtype == BasicType::duration||
+                dtype == BasicType::vector  ||
+                dtype == BasicType::hex,
+                "Blob value does not match basic type"
+            );
+            return value.value.length;
+        } else if constexpr (SameAs<TT, Hex>) {
+            assert_true(dtype == BasicType::hex, "Hex value does not match basic type");
+            return value.value.length;
+        } else {
+            static_assert(!SameAs<TT,TT>, "missing basic value type");
+        }
     }
 
     template<typename T> concept IsCqlDA = IsDynamicArray<T>;
@@ -91,489 +212,379 @@ namespace objstore::native {
     template<typename T> concept IsCqlDM = IsDynamicMap<T>;
 
     // ========================================================================
-    // Per-connection state
-    // ========================================================================
-    struct NativeState {
-        // @todo obviously this is wrong
-        DynamicArray<U8> recv_buf;
-        bool startup_done = false;
-    };
-
-    // ========================================================================
-    // Read/write helpers
+    // input
     // ========================================================================
     U16 read_be_u16(const U8* p);
     S16 read_be_s16(const U8* p);
     S32 read_be_s32(const U8* p);
+    S64 read_be_s64(const U8* p);
 
     // Read [long string]: [int] n + n bytes
     String8 read_cql_long_string(const U8*& p, const U8* end);
 
-    template<BufferedString8Flush F>
-    inline void append_be_u8(BufferedString8<F>& buf, U8 v) {
-        append(buf, static_cast<char>(v));
-    }
+    // Read [string]: [short] n + n bytes
+    String8 read_cql_string(const U8*& p, const U8* end);
 
-    template<BufferedString8Flush F>
-    inline void append_be_u16(BufferedString8<F>& buf, U16 v) {
-        append_be_u8(buf, U8(v >> 8));
-        append_be_u8(buf, U8(v));
-    }
+    // Read [short bytes]: [short] n + n bytes, returns length and sets out_data
+    U16 read_cql_short_bytes(const U8*& p, const U8* end, const U8*& out_data);
 
-    template<BufferedString8Flush F>
-    inline void append_be_s32(BufferedString8<F>& buf, S32 v) {
-        append_be_u8(buf, U8(U32(v) >> 24));
-        append_be_u8(buf, U8(U32(v) >> 16));
-        append_be_u8(buf, U8(U32(v) >> 8));
-        append_be_u8(buf, U8(U32(v)));
-    }
+    Constant read_cql_value_as_constant(const U8*& p, const U8* end, BasicType dtype);
 
-    // Write [string]: [short] n + bytes
-    template<BufferedString8Flush F>
-    inline void append_cql_string(BufferedString8<F>& buf, String8 s) {
-        append_be_u16(buf, U16(s.length));
-        for (U64 i = 0; i < s.length; i++)
-            append_be_u8(buf, U8(s.data[i]));
-    }
+    // Acquire a TCP buffer, read data into it, append to buf, then release.
+    coroutine::Task<bool> try_append_tcp_read(const tcp::Request& req, DynamicArray<U8>& buf);
 
-    // Write [bytes]: [int] n + bytes  (n < 0 = null)
-    template<BufferedString8Flush F>
-    inline void append_cql_bytes_raw(BufferedString8<F>& buf, const U8* data, S32 n) {
-        append_be_s32(buf, n);
-        if (n > 0) {
-            for (S32 i = 0; i < n; i++)
-                append_be_u8(buf, data[i]);
-        }
-    }
+    // ========================================================================
+    // output
+    //   @note
+    //   frame requires co_await send_native_frame<V,C>(frame) which writes a
+    //   version-appropriate envelope (v4: plain 9-byte header + body;
+    //   v5: v4 envelope wrapped in outer frames with CRC24/CRC32).
+    // ========================================================================
+    struct Frame {
+        DynamicArray<U8> body;
+        const tcp::Request* req;
+        U8   op;
+        S16  stream;
+    };
 
-    // Write a single native element as [bytes] (big-endian, includes the [int] length prefix)
-    template<BufferedString8Flush F, typename T>
-    void append_cql_native_element(BufferedString8<F>& buf, const T& v) {
+    void append_byte(Frame& f, U8 v);
+    void append_bytes(Frame& f, const U8* data, U64 n);
+    void append_be_u16(Frame& f, U16 v);
+    void append_be_s32(Frame& f, S32 v);
+
+    void append_cql_string(Frame& f, String8 s);
+    void append_cql_short_bytes(Frame& f, const U8* data, U16 n);
+    void append_cql_bytes_raw(Frame& f, const U8* data, S32 n);
+    void append_cql_value(Frame& f, const ColumnValue& value, Type cdtype);
+
+    template<typename T>
+    void append_cql_basic_element(Frame& f, const BasicType& dtype, const T& v) {
         using TT = Decay<T>;
+
         if constexpr (SameAs<TT, AutoString8>) {
-            append_cql_bytes_raw(buf, reinterpret_cast<const U8*>(v.c_str), S32(v.length));
+            assert_true(
+                dtype == BasicType::ascii   ||
+                dtype == BasicType::text    ||
+                dtype == BasicType::varchar,
+                "AutoString8 value does not match BasicType"
+            );
+
+            append_cql_bytes_raw(f, reinterpret_cast<const U8*>(v.c_str), S32(v.length));
+        } else if constexpr (SameAs<TT, UUID>) {
+            assert_true(dtype == BasicType::uuid || dtype == BasicType::timeuuid, "UUID value does not match BasicType");
+
+            append_cql_bytes_raw(f, &v.value[0], v.length);
         } else if constexpr (SameAs<TT, S64>) {
+            assert_true(
+                dtype == BasicType::bigint ||
+                dtype == BasicType::counter ||
+                dtype == BasicType::timestamp ||
+                dtype == BasicType::time,
+                "S64 value does not match BasicType"
+            );
+
             S64 vv = v;
             U8 data[8];
             for (int i = 7; i >= 0; i--) { data[i] = U8(vv); vv >>= 8; }
-            append_cql_bytes_raw(buf, data, 8);
+            append_cql_bytes_raw(f, data, 8);
         } else if constexpr (SameAs<TT, S32>) {
+            assert_true(
+                dtype == BasicType::int_ ||
+                dtype == BasicType::date,
+                "S32 value does not match BasicType"
+            );
             U8 data[4] = { U8(U32(v) >> 24), U8(U32(v) >> 16), U8(U32(v) >> 8), U8(U32(v)) };
-            append_cql_bytes_raw(buf, data, 4);
+            append_cql_bytes_raw(f, data, 4);
+
         } else if constexpr (SameAs<TT, S16>) {
+            assert_true(dtype == BasicType::smallint, "S16 value does not match BasicType");
             U8 data[2] = { U8(U16(v) >> 8), U8(v) };
-            append_cql_bytes_raw(buf, data, 2);
+            append_cql_bytes_raw(f, data, 2);
+
         } else if constexpr (SameAs<TT, U8>) {
-            append_cql_bytes_raw(buf, &v, 1);
+            assert_true(
+                dtype == BasicType::boolean ||
+                dtype == BasicType::tinyint,
+                "U8 value does not match BasicType"
+            );
+            append_cql_bytes_raw(f, &v, 1);
+
         } else if constexpr (SameAs<TT, F32>) {
+            assert_true(dtype == BasicType::float_, "F32 value does not match BasicType");
             U32 bits; os::memory_copy(&bits, &v, sizeof(bits));
             U8 data[4] = { U8(bits >> 24), U8(bits >> 16), U8(bits >> 8), U8(bits) };
-            append_cql_bytes_raw(buf, data, 4);
+            append_cql_bytes_raw(f, data, 4);
+
         } else if constexpr (SameAs<TT, F64>) {
+            assert_true(dtype == BasicType::double_, "F64 value does not match BasicType");
             U64 bits; os::memory_copy(&bits, &v, sizeof(bits));
             U8 data[8];
             for (int i = 7; i >= 0; i--) { data[i] = U8(bits); bits >>= 8; }
-            append_cql_bytes_raw(buf, data, 8);
+            append_cql_bytes_raw(f, data, 8);
+        } else if constexpr (SameAs<TT, Blob>) {
+            assert_true(
+                dtype == BasicType::blob    ||
+                dtype == BasicType::inet    ||
+                dtype == BasicType::varint  ||
+                dtype == BasicType::decimal ||
+                dtype == BasicType::duration||
+                dtype == BasicType::vector  ||
+                dtype == BasicType::hex,
+                "Blob value does not match BasicType"
+            );
+            append_cql_bytes_raw(f, v.value.ptr, S32(v.value.length));
+        } else if constexpr (SameAs<TT, Hex>) {
+            assert_true(dtype == BasicType::hex, "Hex value does not match BasicType");
+            append_cql_bytes_raw(f, v.value.ptr, S32(v.value.length));
+        } else {
+            static_assert(!SameAs<TT, TT>, "unsupported static type");
         }
     }
 
-    template<typename T>
-    S32 cql_native_element_byte_size(const T& v) {
-        using TT = Decay<T>;
-        if constexpr (SameAs<TT, AutoString8>) return S32(v.length);
-        if constexpr (SameAs<TT, S64>)        return 8;
-        if constexpr (SameAs<TT, S32>)        return 4;
-        if constexpr (SameAs<TT, S16>)        return 2;
-        if constexpr (SameAs<TT, U8>)         return 1;
-        if constexpr (SameAs<TT, F32>)        return 4;
-        if constexpr (SameAs<TT, F64>)        return 8;
-        return 0;
-    }
-
-    // Write an [option] for a column type (§4.2.5.2): [short] type_id + optional nested type(s)
-    template<BufferedString8Flush F>
-    void append_cql_type_option(BufferedString8<F>& buf, CDType cdtype) {
-        switch (cdtype.base.ctype) {
-            case CType::native:
-                append_be_u16(buf, dtype_to_cql_type(cdtype.native.value_dtype));
-                break;
-            case CType::list:
-                append_be_u16(buf, cql_type::List);
-                append_be_u16(buf, dtype_to_cql_type(cdtype.list.element_dtype));
-                break;
-            case CType::set:
-                append_be_u16(buf, cql_type::Set);
-                append_be_u16(buf, dtype_to_cql_type(cdtype.set.key_dtype));
-                break;
-            case CType::map:
-                append_be_u16(buf, cql_type::Map);
-                append_be_u16(buf, dtype_to_cql_type(cdtype.map.key_dtype));
-                append_be_u16(buf, dtype_to_cql_type(cdtype.map.value_dtype));
-                break;
-        }
-    }
-
-    // Write a dtype::ReadValue as CQL binary [bytes] (big-endian network order)
-    template<BufferedString8Flush F>
-    void append_cql_value(BufferedString8<F>& buf, const dtype::ReadValue& value, CDType cdtype) {
-        if (cdtype.base.ctype != CType::native) {
-            // Serialize collection as [bytes]: [int] body_len | [int] elem_count | n×[bytes]
-            visit(value, [&](const auto& v) {
-                using T = Decay<decltype(v)>;
-                if constexpr (IsCqlDM<T>) {
-                    U64 pair_count = length(v);
-                    S32 body = 4; // [int] pair count
-                    for (auto it = v.begin(); it != v.end(); ++it) {
-                        body += 4 + cql_native_element_byte_size((*it).first);
-                        body += 4 + cql_native_element_byte_size((*it).second);
-                    }
-                    append_be_s32(buf, body);
-                    append_be_s32(buf, S32(pair_count));
-                    for (auto it = v.begin(); it != v.end(); ++it) {
-                        append_cql_native_element(buf, (*it).first);
-                        append_cql_native_element(buf, (*it).second);
-                    }
-                } else if constexpr (IsCqlDS<T>) {
-                    U64 elem_count = length(v);
-                    S32 body = 4;
-                    for (auto it = v.begin(); it != v.end(); ++it)
-                        body += 4 + cql_native_element_byte_size(*it);
-                    append_be_s32(buf, body);
-                    append_be_s32(buf, S32(elem_count));
-                    for (auto it = v.begin(); it != v.end(); ++it)
-                        append_cql_native_element(buf, *it);
-                } else if constexpr (IsCqlDA<T>) {
-                    S32 body = 4;
-                    for (U64 i = 0; i < v.length; i++)
-                        body += 4 + cql_native_element_byte_size(v[i]);
-                    append_be_s32(buf, body);
-                    append_be_s32(buf, S32(v.length));
-                    for (U64 i = 0; i < v.length; i++)
-                        append_cql_native_element(buf, v[i]);
-                }
-            });
-            return;
-        }
-        switch (cdtype.native.value_dtype) {
-            case DType::text:
-            case DType::uuid:
-            case DType::timestamp: {
-                const AutoString8& s = get<AutoString8>(value);
-                append_cql_bytes_raw(buf, reinterpret_cast<const U8*>(s.c_str), S32(s.length));
-            } break;
-            case DType::smallint: {
-                S16 v = get<S16>(value);
-                U8 data[2] = { U8(v >> 8), U8(v) };
-                append_cql_bytes_raw(buf, data, 2);
-            } break;
-            case DType::int_: {
-                S32 v = get<S32>(value);
-                U8 data[4] = { U8(U32(v) >> 24), U8(U32(v) >> 16), U8(U32(v) >> 8), U8(U32(v)) };
-                append_cql_bytes_raw(buf, data, 4);
-            } break;
-            case DType::counter:
-            case DType::bigint: {
-                S64 v = get<S64>(value);
-                U8 data[8];
-                for (int i = 7; i >= 0; i--) {
-                    data[i] = U8(v);
-                    v >>= 8;
-                }
-                append_cql_bytes_raw(buf, data, 8);
-            } break;
-            case DType::boolean: {
-                U8 v = get<U8>(value);
-                append_cql_bytes_raw(buf, &v, 1);
-            } break;
-            case DType::float_: {
-                F32 v = get<F32>(value);
-                U32 bits;
-                os::memory_copy(&bits, &v, sizeof(bits));
-                U8 data[4] = { U8(bits >> 24), U8(bits >> 16), U8(bits >> 8), U8(bits) };
-                append_cql_bytes_raw(buf, data, 4);
-            } break;
-            case DType::double_: {
-                F64 v = get<F64>(value);
-                U64 bits;
-                os::memory_copy(&bits, &v, sizeof(bits));
-                U8 data[8];
-                for (int i = 7; i >= 0; i--) {
-                    data[i] = U8(bits);
-                    bits >>= 8;
-                }
-                append_cql_bytes_raw(buf, data, 8);
-            } break;
-        }
-    }
+    void append_type_codes_option(Frame& f, Type cdtype);
+    void append_error_body(Frame& f, engine::ExecutionStatus status, String8 message);
+    void append_result_void(Frame& f);
+    void append_result_set_keyspace(Frame& f, String8 keyspace);
+    void append_result_schema_change(Frame& f, String8 change_type, String8 target, String8 keyspace, String8 table);
+    void append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl);
+    void append_result_virtual_rows(Frame& f, engine::VirtualRows& vr);
 
     // ========================================================================
-    // Response frame builder
+    // send helpers
     // ========================================================================
-    // Reserves FRAME_HEADER_SIZE bytes at the front of the chunk buffer, writes
-    // the body after, and fills in the 9-byte header when the BufferedString8 flushes.
-    inline auto make_native_frame(tcp::Connection* conn, tcp::Chunk* chunk, tcp::AsyncWriteFunctor* write, U8 op, S16 stream) {
-        assert_true(chunk->buffer_idx >= 0, "cannot use large chunk for native response");
+    coroutine::Task<> send_block(const tcp::Request& req, const U8* data, U64 len);
 
-        U64 chunk_size = conn->chunk_chain.chunk_size;
+    // Wrap data in v5 outer frame(s) and send. Splits into V5_MAX_PAYLOAD chunks
+    // when needed, setting isSelfContained on the final fragment only.
+    template<bool Compressed>
+    coroutine::Task<> send_v5_outer_frames(const tcp::Request& req, const U8* data, U64 data_len) {
+        U64 offset = 0;
+        do {
+            U64 chunk = min(data_len - offset, V5_MAX_PAYLOAD_BYTE_COUNT);
+            bool self_contained = (offset + chunk >= data_len);
 
-        return BufferedString8(
-            TArrayView<char>(
-                reinterpret_cast<char*>(chunk->data.ptr + FRAME_HEADER_SIZE),
-                chunk_size - FRAME_HEADER_SIZE
-            ),
-            [=](const char* data, U64 length, bool is_final) {
-                assert_true_not_implemented(is_final, "native response body too large for chunk buffer");
+            if constexpr (Compressed) {
+                S32 bound    = lz4::compress_bound(S32(chunk));
+                DynamicArray<U8> cbuf{};
+                resize(cbuf, U64(bound));
+                S32 comp_len = lz4::compress(data + offset, cbuf.ptr, S32(chunk), bound);
+                assert_true(comp_len > 0, "LZ4 compression failed in send_v5_outer_frames");
 
-                U8* hdr = chunk->data.ptr;
-                hdr[0] = RESPONSE_VERSION;
-                hdr[1] = 0x00;  // flags
-                hdr[2] = U8(U16(stream) >> 8);
-                hdr[3] = U8(stream);
-                hdr[4] = op;
-                U32 body_len = U32(length);
-                hdr[5] = U8(body_len >> 24);
-                hdr[6] = U8(body_len >> 16);
-                hdr[7] = U8(body_len >> 8);
-                hdr[8] = U8(body_len);
-
-                (*write)(conn, chunk->buffer_idx, 0, FRAME_HEADER_SIZE + U32(length));
+                U32 c = U32(comp_len), u = U32(chunk);
+                U8 bits[5] = {
+                    U8(c),
+                    U8(c >> 8),
+                    U8(U8(c >> 16 & 0x01u) | U8((u & 0x7Fu) << 1)),
+                    U8(u >> 7),
+                    U8(U8(u >> 15 & 0x03u) | U8(U8(self_contained) << 2))
+                };
+                U32 hcrc = crc::crc24(bits, 5);
+                U8 hdr[V5_COMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT] = {
+                    bits[0], bits[1], bits[2], bits[3], bits[4],
+                    U8(hcrc), U8(hcrc >> 8), U8(hcrc >> 16)
+                };
+                U32 pcrc = crc::crc32(cbuf.ptr, U64(comp_len), crc::CRC32_CQL_V5_INIT);
+                U8 trailer[4] = { U8(pcrc), U8(pcrc >> 8), U8(pcrc >> 16), U8(pcrc >> 24) };
+                co_await send_block(req, hdr, V5_COMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT);
+                co_await send_block(req, cbuf.ptr, U64(comp_len));
+                co_await send_block(req, trailer, 4);
+            } else {
+                U32 pl = U32(chunk);
+                U8 bits[3] = {
+                    U8(pl), U8(pl >> 8),
+                    U8(U8(pl >> 16 & 0x01u) | U8(U8(self_contained) << 1))
+                };
+                U32 hcrc = crc::crc24(bits, 3);
+                U8 hdr[V5_UNCOMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT] = {
+                    bits[0], bits[1], bits[2],
+                    U8(hcrc), U8(hcrc >> 8), U8(hcrc >> 16)
+                };
+                U32 pcrc = crc::crc32(data + offset, chunk, crc::CRC32_CQL_V5_INIT);
+                U8 trailer[4] = { U8(pcrc), U8(pcrc >> 8), U8(pcrc >> 16), U8(pcrc >> 24) };
+                co_await send_block(req, hdr, V5_UNCOMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT);
+                co_await send_block(req, data + offset, chunk);
+                co_await send_block(req, trailer, 4);
             }
-        );
+
+            offset += chunk;
+        } while (offset < data_len);
     }
 
     // ========================================================================
-    // Body writers for each RESULT/ERROR type
+    // handler
     // ========================================================================
-    template<BufferedString8Flush F>
-    void append_error_body(BufferedString8<F>& buf, engine::ExecutionStatus status, String8 message) {
-        append_be_s32(buf, S32(static_cast<U16>(status)));
-        append_cql_string(buf, message);
-    }
+    coroutine::Task<bool> negotiate_connection(const tcp::Request& req, NegotiatedProtocol* opt_out_negotiated_protocol);
 
-    template<BufferedString8Flush F>
-    void append_result_void(BufferedString8<F>& buf) {
-        append_be_s32(buf, result_kind::VOID);
-    }
+    // Defined in native.cpp; explicitly instantiated for (5,true), (5,false), (4,false).
+    template<U8 Version, bool Compressed>
+    coroutine::Task<void> frame_handler(engine::Engine& engine, const tcp::Request& req, const U8* header, const U8* body, S32 body_length);
 
-    template<BufferedString8Flush F>
-    void append_result_set_keyspace(BufferedString8<F>& buf, String8 keyspace) {
-        append_be_s32(buf, result_kind::SET_KEYSPACE);
-        append_cql_string(buf, keyspace);
-    }
+    extern template coroutine::Task<void> frame_handler<5u, true> (engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    extern template coroutine::Task<void> frame_handler<5u, false>(engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    extern template coroutine::Task<void> frame_handler<4u, false>(engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
 
-    template<BufferedString8Flush F>
-    void append_result_schema_change(BufferedString8<F>& buf, String8 change_type, String8 target, String8 keyspace, String8 table) {
-        append_be_s32(buf, result_kind::SCHEMA_CHANGE);
-        append_cql_string(buf, change_type);
-        append_cql_string(buf, target);
-        append_cql_string(buf, keyspace);
-        if (table.length > 0)
-            append_cql_string(buf, table);
-    }
+    template<U8 Version, bool Compressed>
+    coroutine::Task<void> post_startup_loop(engine::Engine& engine, const tcp::Request& req) {
+        if constexpr (Version >= 5) {
+            DynamicArray<U8> read_buf{};
+            DynamicArray<U8> envelope_buf{};
 
-    // @note uses btree::size so RowRange is only iterated once (RowRange iterators are not resettable)
-    template<BufferedString8Flush F>
-    void append_result_rows(BufferedString8<F>& buf, engine::ExecutionResult& result, schema::Table* tbl) {
-        append_be_s32(buf, result_kind::ROWS);
+            // @todo refactor to be common
+            const auto fill_to = [&](U64 n) -> coroutine::Task<bool> {
+                while (read_buf.length < n) {
+                    if (!co_await try_append_tcp_read(req, read_buf)) co_return false;
+                }
+                co_return true;
+            };
 
-        append_be_s32(buf, 0x0001);  // Global_tables_spec flag
-        append_be_s32(buf, S32(tbl->cols.length));
-        append_cql_string(buf, result.keyspace);
-        append_cql_string(buf, result.table);
+            // @todo @perf remove
+            const auto consume_front = [&](U64 n) {
+                U64 rem = read_buf.length - n;
+                if (rem > 0) os::memory_move(read_buf.ptr, read_buf.ptr + n, rem);
+                resize(read_buf, rem);
+            };
 
-        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-            append_cql_string(buf, tbl->cols[ci].name);
-            append_cql_type_option(buf, tbl->cols[ci].type);
-        }
+            constexpr U64 V5_HDR_BYTE_COUNT = Compressed ? V5_COMP_HDR_BYTE_COUNT : V5_UNCOMP_HDR_BYTE_COUNT;
+            constexpr U64 V5_HDR_WITH_CRC24_BYTE_COUNT = V5_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT;
 
-        append_be_s32(buf, S32(btree::size(tbl->btree)));
+            while (true) {
+                envelope_buf.length = 0;
+                bool self_contained  = false;
+                bool ok              = true;
 
-        for (auto& row = result.rows->begin(); row != result.rows->end(); ++row) {
-            for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col)
-                append_cql_value(buf, engine::read_value(col), engine::column(col).type);
-        }
-    }
+                { ZoneScopedN("post_startup_loop::read")
+                    // Accumulate outer frames until a self-contained message is assembled
+                    while (!self_contained) {
+                        if (!co_await fill_to(V5_HDR_WITH_CRC24_BYTE_COUNT)) { ok = false; break; }
 
-    template<BufferedString8Flush F>
-    void append_result_virtual_rows(BufferedString8<F>& buf, engine::VirtualRows& vr) {
-        append_be_s32(buf, result_kind::ROWS);
+                        // Verify header CRC24
+                        U32 hdr_crc_computed = crc::crc24(read_buf.ptr, V5_HDR_BYTE_COUNT);
+                        U32 hdr_crc_stored   = U32(read_buf[V5_HDR_BYTE_COUNT])
+                                            | (U32(read_buf[V5_HDR_BYTE_COUNT + 1]) << 8)
+                                            | (U32(read_buf[V5_HDR_BYTE_COUNT + 2]) << 16);
+                        if (hdr_crc_computed != hdr_crc_stored) {
+                            log::native_error("v5 frame header CRC24 mismatch, dropping connection");
+                            ok = false; break;
+                        }
 
-        append_be_s32(buf, 0x0001);  // Global_tables_spec flag
-        append_be_s32(buf, S32(vr.columns.length));
-        append_cql_string(buf, vr.keyspace);
-        append_cql_string(buf, vr.table);
+                        U32 payload_len = 0, uncomp_len = 0;
+                        if constexpr (Compressed) {
+                            payload_len    = U32(read_buf[0]) | (U32(read_buf[1]) << 8) | ((U32(read_buf[2]) & 0x01u) << 16);
+                            uncomp_len     = ((U32(read_buf[2]) >> 1) & 0x7Fu) | (U32(read_buf[3]) << 7) | ((U32(read_buf[4]) & 0x03u) << 15);
+                            self_contained = bool((read_buf[4] >> 2) & 1u);
+                        } else {
+                            payload_len    = U32(read_buf[0]) | (U32(read_buf[1]) << 8) | ((U32(read_buf[2]) & 0x01u) << 16);
+                            self_contained = bool((read_buf[2] >> 1) & 1u);
+                        }
+                        consume_front(V5_HDR_WITH_CRC24_BYTE_COUNT);
 
-        for (U64 ci = 0; ci < vr.columns.length; ci++) {
-            append_cql_string(buf, vr.columns[ci].name);
-            append_cql_type_option(buf, vr.columns[ci].type);
-        }
+                        if (!co_await fill_to(payload_len + V5_PAYLOAD_CRC32_BYTE_COUNT)) { ok = false; break; }
 
-        append_be_s32(buf, S32(vr.rows.length));
+                        // Verify CRC32 of payload
+                        {
+                            U32 payload_crc_computed = crc::crc32(read_buf.ptr, payload_len, crc::CRC32_CQL_V5_INIT);
+                            U32 payload_crc_stored   = U32(read_buf[payload_len])
+                                                    | (U32(read_buf[payload_len + 1]) << 8)
+                                                    | (U32(read_buf[payload_len + 2]) << 16)
+                                                    | (U32(read_buf[payload_len + 3]) << 24);
+                            if (payload_crc_computed != payload_crc_stored) {
+                                log::native_error("v5 frame payload CRC32 mismatch, dropping connection");
+                                ok = false; break;
+                            }
+                        }
 
-        for (U64 ri = 0; ri < vr.rows.length; ri++) {
-            for (U64 ci = 0; ci < vr.columns.length; ci++)
-                append_cql_value(buf, vr.rows[ri].values[ci], vr.columns[ci].type);
-        }
-    }
-
-    // ========================================================================
-    // Frame dispatcher
-    // ========================================================================
-    void handle_frame(
-        NativeState& state,
-        engine::Engine& engine,
-        tcp::Connection* conn,
-        tcp::AsyncWriteFunctor* write,
-        const U8* header,
-        const U8* body,
-        S32 body_len
-    ) {
-        S16 stream  = read_be_s16(header + 2);
-        U8  op      = header[4];
-
-        tcp::Chunk& chunk = *front(conn->chunk_chain.chunks);
-        const U8* body_end = body + body_len;
-
-        switch (op) {
-            case opcode::STARTUP: {
-                state.startup_done = true;
-                auto frame = make_native_frame(conn, &chunk, write, opcode::READY, stream);
-                // empty body
-            } break;
-
-            case opcode::OPTIONS: {
-                auto frame = make_native_frame(conn, &chunk, write, opcode::SUPPORTED, stream);
-                // [string multimap]: n pairs of ([string] key, [string list] values)
-                append_be_u16(frame, 1);
-                append_cql_string(frame, "CQL_VERSION");
-                append_be_u16(frame, 1);
-                append_cql_string(frame, "3.0.0");
-            } break;
-
-            case opcode::QUERY: {
-                const U8* p = body;
-                String8 query = read_cql_long_string(p, body_end);
-                // Remaining bytes are query parameters (consistency, flags, etc.) - ignored
-
-                auto cql_opt = parsers::cql::parse(query);
-                if (!cql_opt) {
-                    auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
-                    append_error_body(frame, engine::ExecutionStatus::SyntaxError, "Failed to parse CQL");
-                    break;
+                        if constexpr (Compressed) {
+                            U64 old_len = envelope_buf.length;
+                            resize(envelope_buf, old_len + uncomp_len);
+                            S32 result = lz4::decompress(
+                                read_buf.ptr, envelope_buf.ptr + old_len,
+                                S32(payload_len), S32(uncomp_len)
+                            );
+                            if (result != S32(uncomp_len)) {
+                                log::native_error("v5 frame LZ4 decompression failed, dropping connection");
+                                ok = false; break;
+                            }
+                        } else {
+                            U64 old_len = envelope_buf.length;
+                            resize(envelope_buf, old_len + payload_len);
+                            os::memory_copy(envelope_buf.ptr + old_len, read_buf.ptr, payload_len);
+                        }
+                        consume_front(payload_len + V5_PAYLOAD_CRC32_BYTE_COUNT);
+                    }
                 }
 
-                engine::ExecutionResult result = engine::execute(engine, *cql_opt);
+                if (!ok) break;
 
-                if (result.status != engine::ExecutionStatus::Success) {
-                    auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
-                    String8 msg = result.message.length ? result.message : engine::to_str(result.status);
-                    append_error_body(frame, result.status, msg);
-                    break;
+                // Dispatch all inner envelopes from the assembled payload
+                const U8* p   = envelope_buf.ptr;
+                const U8* end = p + envelope_buf.length;
+                while (p + V4_FRAME_HEADER_BYTE_COUNT <= end) {
+                    S32 inner_body_len = read_be_s32(p + 5);
+                    if (inner_body_len < 0) break;
+                    if (p + V4_FRAME_HEADER_BYTE_COUNT + U64(inner_body_len) > end) break;
+                    co_await frame_handler<Version, Compressed>(engine, req, p, p + V4_FRAME_HEADER_BYTE_COUNT, inner_body_len);
+                    p += V4_FRAME_HEADER_BYTE_COUNT + inner_body_len;
+                }
+            }
+        } else {
+            // v4: plain envelope framing (no outer wrapping)
+            DynamicArray<U8> frame{};
+            S32 body_byte_count  = MAX_S32;
+            U64 frame_byte_count = MAX_U64;
+            while (true) {
+                body_byte_count  = MAX_S32;
+                frame_byte_count = MAX_U64;
+
+                { ZoneScopedN("post_startup_loop::read")
+                    while (frame.length < V4_FRAME_HEADER_BYTE_COUNT) {
+                        if (!co_await try_append_tcp_read(req, frame)) break;
+                    }
+                    if (frame.length < V4_FRAME_HEADER_BYTE_COUNT) break;
+
+                    body_byte_count  = read_be_s32(&frame[5]);
+                    frame_byte_count = V4_FRAME_HEADER_BYTE_COUNT + U64(body_byte_count);
+
+                    while (frame.length < frame_byte_count) {
+                        if (!co_await try_append_tcp_read(req, frame)) break;
+                    }
+                    if (frame.length < frame_byte_count) break;
                 }
 
-                switch (result.kind) {
-                    case engine::ResultKind::Void:{
-                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
-                        append_result_void(frame);
-                    }break;
-                    case engine::ResultKind::SchemaChange:{
-                        String8 change_type = result.message.length ? result.message : "UPDATED";
-                        String8 target      = result.table.length   ? "TABLE"        : "KEYSPACE";
-                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
-                        append_result_schema_change(frame, change_type, target, result.keyspace, result.table);
-                    }break;
-                    case engine::ResultKind::UseKeyspace:{
-                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
-                        append_result_set_keyspace(frame, result.keyspace);
-                    }break;
-                    case engine::ResultKind::Rows:{
-                        auto ks = schema::read_keyspace(engine.schema, result.keyspace);
-                        assert_true(ks != nullptr, "keyspace not found for rows result");
-                        auto tbl = schema::read_table(engine.schema, *ks, result.table);
-                        assert_true(tbl != nullptr, "table not found for rows result");
-                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
-                        append_result_rows(frame, result, tbl);
-                    }break;
-                    case engine::ResultKind::VirtualRows:{
-                        assert_true(result.virtual_rows.has_value(), "virtual rows missing");
-                        auto frame = make_native_frame(conn, &chunk, write, opcode::RESULT, stream);
-                        append_result_virtual_rows(frame, *result.virtual_rows);
-                    }break;
+                co_await frame_handler<Version, Compressed>(engine, req, frame.ptr, &frame.ptr[V4_FRAME_HEADER_BYTE_COUNT], body_byte_count);
+
+                if (frame.length > frame_byte_count) {
+                    os::memory_copy(frame.ptr, &frame.ptr[frame_byte_count], frame.length - frame_byte_count);
                 }
-            } break;
-
-            case opcode::REGISTER: {
-                // Ignore event registration, respond with READY
-                auto frame = make_native_frame(conn, &chunk, write, opcode::READY, stream);
-            } break;
-
-            case opcode::PREPARE: {
-                assert_true_not_implemented(false, "PREPARE not implemented");
-            } break;
-
-            case opcode::EXECUTE: {
-                assert_true_not_implemented(false, "EXECUTE not implemented");
-            } break;
-
-            case opcode::BATCH: {
-                assert_true_not_implemented(false, "BATCH not implemented");
-            } break;
-
-            default: {
-                auto frame = make_native_frame(conn, &chunk, write, opcode::ERROR, stream);
-                append_error_body(frame, engine::ExecutionStatus::Invalid, "Unknown opcode");
-            } break;
+                resize(frame, frame.length - frame_byte_count);
+            }
         }
     }
 }
 
-// ============================================================================
-// Public interface
-// ============================================================================
 export namespace objstore::native {
     template<typename F>
     concept OnReady = requires(F f) { f(); };
 
-    Optional<String8> run(U16 port, os::Notifier& signal_pipe, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback) {
-        MapFixedSentinel<os::Handle, NativeState, 2_u64*tcp::MAX_CONCURRENT_CONNECTIONS> client_to_state;
-
-        const auto on_chunk = [&engine, &client_to_state](const tcp::Request& req) -> tcp::RequestStatus {
-            NativeState& state = find_or_insert(client_to_state, req.connection->client);
-
-            // @todo async, proper chunk chaining
-            // Append all new data from the chunk chain to our receive buffer.
-            // Since we always return Handled, the chain contains only data from the current read.
-            for (tcp::Chunk& chunk : req.connection->chunk_chain.chunks) {
-                for (U64 i = 0; i < chunk.data.length; i++)
-                    push_back(state.recv_buf, chunk.data.ptr[i]);
+    Optional<String8> run(U16 port, os::Notifier& interrupt, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback, bool use_uring = true) {
+        const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> { TracyFiberEnter("request")
+            NegotiatedProtocol negotiated_protocol{};
+            bool ok = co_await negotiate_connection(req, &negotiated_protocol);
+            if (!ok) {
+                co_await tcp::close(req);
+                TracyFiberLeave; co_return;
             }
 
-            // Process one complete frame (if available)
-            if (state.recv_buf.length >= FRAME_HEADER_SIZE) {
-                const U8* hdr = state.recv_buf.ptr;
-                S32 body_len = read_be_s32(hdr + 5);
-
-                if (body_len >= 0 && state.recv_buf.length >= FRAME_HEADER_SIZE + U64(body_len)) {
-                    handle_frame(state, engine, req.connection, req.write, hdr, hdr + FRAME_HEADER_SIZE, body_len);
-
-                    // Remove the consumed frame from the front of recv_buf
-                    U64 frame_size = FRAME_HEADER_SIZE + U64(body_len);
-                    U64 remaining  = state.recv_buf.length - frame_size;
-                    if (remaining > 0)
-                        os::memory_move(state.recv_buf.ptr, state.recv_buf.ptr + frame_size, remaining);
-                    state.recv_buf.length = remaining;
-                }
+            if (negotiated_protocol.version == 5) {
+                if (negotiated_protocol.compressed)
+                    co_await post_startup_loop<5, true>(engine, req);
+                else
+                    co_await post_startup_loop<5, false>(engine, req);
+            } else {
+                co_await post_startup_loop<4, false>(engine, req);
             }
 
-            // Always release the chunk chain; unprocessed data is in recv_buf
-            return tcp::RequestStatus::Handled;
-        };
-
-        const auto on_open  = [](tcp::Connection*) {};
-
-        const auto on_close = [&client_to_state](tcp::Connection* connection) {
-            if (connection != nullptr)
-                try_remove(client_to_state, connection->client);
+            co_await tcp::close(req);
+            TracyFiberLeave; co_return;
         };
 
         {
@@ -589,13 +600,14 @@ export namespace objstore::native {
 
             on_ready_callback();
 
+            tcp::Listener listener{socket, use_uring};
             tcp::listen(
-                socket,
-                on_chunk, on_open, on_close,
-                signal_pipe, should_exit
+                listener,
+                connection_handler,
+                interrupt, should_exit
             );
-
-            return {};
         }
+
+        return {};
     }
 }

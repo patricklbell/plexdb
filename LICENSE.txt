@@ -1,0 +1,20 @@
+PlexDB
+Copyright (c) 2026 Patrick Bell
+
+This software is available under two licensing options:
+
+1. GNU General Public License (GPL) v3.0
+   - You may use, modify, and redistribute this software under the terms of the GPLv3.
+   - A copy of the GPLv3 license can be found at: https://www.gnu.org/licenses/gpl-3.0.html
+   - Any distributed modifications or derivative works must also be licensed under GPLv3.
+
+2. Commercial License
+   - For use cases where the GPL is not suitable (e.g., proprietary distribution),
+     a separate commercial license may be obtained.
+   - Please contact [Patrick Bell / 46551885+patricklbell@users.noreply.github.com] for commercial licensing terms.
+
+Disclaimer:
+This software is provided "as is", without warranty of any kind, express or implied,
+including but not limited to the warranties of merchantability, fitness for a particular purpose,
+and non-infringement. In no event shall the authors be liable for any claim, damages, or other
+liability arising from the use of this software.

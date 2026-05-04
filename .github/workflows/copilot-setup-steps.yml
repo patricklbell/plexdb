@@ -22,14 +22,36 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 nodejs npm
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 nodejs npm \
+            libgrpc++-dev libprotobuf-dev protobuf-compiler protobuf-compiler-grpc
 
       - name: Configure CMake
-        run: cmake -B build -G Ninja -DBUILD_TESTS=ON -DPLEXDB_LOG_ENABLED=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+        run: cmake -B build -G Ninja -DPLEXDB_ENABLE_TESTS=ON -DPLEXDB_ENABLE_LOGGING=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
 
       - name: Build
         run: ninja -C build
 
-      - name: Install test_cql.js dependencies
+      - name: Build OTLP plugin
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+          ninja -C build
+        working-directory: objstore/plugins/log_otel
+      
+      - name: Build log file plugin
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+          ninja -C build
+        working-directory: objstore/plugins/log_file
+
+      - name: Install cql_node_example dependencies
         run: npm install
-        working-directory: extra/node
+        working-directory: extra/cql_node_example
+      
+      - name: Install cql_py_example dependencies
+        run: |
+          curl -Ls https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          uv sync --no-build-isolation-package cassandra-driver
+        working-directory: extra/cql_py_example

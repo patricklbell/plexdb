@@ -1,0 +1,236 @@
+module;
+#include "stb_sprintf.h"
+
+export module plexdb.base.string;
+
+import plexdb.base.types;
+import plexdb.base.math;
+
+namespace plexdb {
+    // @note writes to inout.data WITHOUT null terminator, returns bytes written
+    U64 fmt_raw_impl(char* buf, U64 buf_len, const char* fmt, ...);
+
+    // @note appends formatted output directly to BufferedString8, flushing as needed
+    void append_fmt_impl(char* buf_ptr, U64 buf_len, U64* length_ptr, void* flush_ctx, void (*flush_fn)(void*, const char*, U64), const char* fmt, ...);
+}
+
+export namespace plexdb {
+    struct AutoString8;
+
+    struct String8 {
+        const char* data;
+        U64 length;
+
+        constexpr String8() = default;
+
+        String8(const char* in_buffer, U64 in_length) : data(in_buffer), length(in_length) {}
+
+        String8(const U8* in_buffer, U64 in_length) : data(reinterpret_cast<const char*>(in_buffer)), length(in_length) {}
+
+        template<U64 N>
+        constexpr String8(const char (&lit)[N]) : data(lit), length(N - 1) {}
+
+        template<typename Length>
+        constexpr String8(const TArrayView<char,Length>& view) : data(view.ptr), length(static_cast<U64>(view.length)) {}
+
+        template<typename Length>
+        constexpr String8(const CappedTArrayView<char,Length>& view) : data(view.ptr), length(static_cast<U64>(view.cap)) {}
+
+        String8(const char* in_c_str);
+        String8(const AutoString8& str);
+
+        constexpr operator const char*() const { return this->data; }
+
+        const char* c_str() const;
+    };
+
+    bool operator==(const String8& a, const String8& b);
+    bool operator==(const char* a, const String8& b);
+
+    Optional<U64> find(const String8& str, char c);
+
+    struct AutoString8 {
+        char* c_str;
+        U64 length;
+
+        AutoString8();
+        explicit AutoString8(U64 length);
+        explicit AutoString8(const U8* in, U64 length);
+        explicit AutoString8(const char* str);
+        explicit AutoString8(const String8& str);
+
+        ~AutoString8();
+        AutoString8(const AutoString8& other);
+        AutoString8(AutoString8&& other);
+
+        AutoString8& operator=(const AutoString8& other) noexcept;
+        AutoString8& operator=(const String8& other) noexcept;
+
+        AutoString8& operator=(AutoString8&& other) noexcept;
+
+        AutoString8& operator+=(const String8& rhs);
+        
+        operator const char*() const; 
+
+        bool operator==(const String8& b) const;
+        bool operator==(const char* b) const;
+        bool operator==(const AutoString8& b) const;
+    };
+
+    void resize(AutoString8& str, U64 size);
+    void push_back(AutoString8& str, const char& c);
+    void append(AutoString8& str, const char* first, const char* last);
+    void append(AutoString8& str, String8 s);
+    void to_lowercase_inplace(AutoString8& str);
+    
+    U64 hash(const AutoString8& s);
+    U64 hash(String8 s);
+
+    AutoString8 operator+(const String8& lhs, const String8& rhs);   
+    AutoString8 operator""_as(const char* str, size_t len);
+
+    AutoString8 to_str(const String8& x);
+    AutoString8 to_str(const AutoString8& x);
+    AutoString8 to_str(S64 x);
+    AutoString8 to_str(U64 x);
+    AutoString8 to_str(S32 x);
+    AutoString8 to_str(U32 x);
+    AutoString8 to_str(S16 x);
+    AutoString8 to_str(U16 x);
+    AutoString8 to_str(S8 x);
+    AutoString8 to_str(U8 x);
+
+    AutoString8 to_str(F32 x);
+    AutoString8 to_str(F64 x);
+
+    AutoString8 to_str(bool x);
+
+    S64 s64_from_str(String8 x);
+    U64 u64_from_str(String8 x);
+    S32 s32_from_str(String8 x);
+    U32 u32_from_str(String8 x);
+    S16 s16_from_str(String8 x);
+    U16 u16_from_str(String8 x);
+    S8  s8_from_str(String8 x);
+    U8  u8_from_str(String8 x);
+
+    F32 f32_from_str(String8 x);
+    F64 f64_from_str(String8 x);
+
+    bool bool_from_str(String8 x);
+
+    template <typename... Args>
+    U64 fmt_length(const char* fmt, Args&&... args) {
+        return stbsp_snprintf(nullptr, 0, fmt, forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    void fmt_raw(String8& inout, const char* fmt, Args&&... args) {
+        inout.length = fmt_raw_impl(const_cast<char*>(inout.data), inout.length, fmt, forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    AutoString8 fmt(const char* fmt_str, Args&&... args) {
+        U64 length = fmt_length(fmt_str, forward<Args>(args)...);
+        AutoString8 result(length);
+        String8 view{result.c_str, length};
+        fmt_raw(view, fmt_str, forward<Args>(args)...);
+        return result;
+    }
+
+    void print(const String8& str);
+    
+    template <typename... Args>
+    void print(const String8& first, const Args&... rest) {
+        print(first);
+        (print(rest), ...);
+    }
+
+    template <typename... Args>
+    void println(const Args&... args) {
+        print(args...);
+        print("\n");
+    }
+
+    template<typename F>
+    concept BufferedString8Flush = TArrayFlushFunction<F, char>;
+
+    template<BufferedString8Flush F>
+    using BufferedString8 = FlushableTArray<F, char>;
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, char c) {
+        flush_if_needed(str);
+
+        assert_true(str.length < str.buffer.length, "string8 buffer is zero length");
+        str.buffer.ptr[str.length++] = c;
+    }
+}
+
+namespace plexdb {
+    template<BufferedString8Flush F>
+    void buffered_string_flush_wrapper(void* ctx, const char*, U64 ) {
+        auto* str = static_cast<BufferedString8<F>*>(ctx);
+        flush_if_needed(*str);
+    }
+}
+
+export namespace plexdb {
+    template<BufferedString8Flush F, typename... Args>
+    void append_fmt(BufferedString8<F>& str, const char* fmt, Args&&... args) {
+        append_fmt_impl(
+            str.buffer.ptr, str.buffer.length, &str.length,
+            &str, buffered_string_flush_wrapper<F>,
+            fmt, forward<Args>(args)...
+        );
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, const char* value) {
+        append_fmt(str, "%s", value);
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, S64 value) {
+        append_fmt(str, "%lld", static_cast<long long>(value));
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, S32 value) {
+        append_fmt(str, "%d", value);
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, S16 value) {
+        append_fmt(str, "%d", static_cast<int>(value));
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, U8 value) {
+        append_fmt(str, "%u", static_cast<unsigned>(value));
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, F64 value) {
+        append_fmt(str, "%g", value);
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, F32 value) {
+        append_fmt(str, "%g", static_cast<double>(value));
+    }
+
+    template<BufferedString8Flush F>
+    void append(BufferedString8<F>& str, bool value) {
+        append(str, value ? String8("true") : String8("false"));
+    }
+
+    template<BufferedString8Flush F, typename First, typename... Rest>
+    void append(BufferedString8<F>& str, const First& first, const Rest&... rest)
+    {
+        append(str, first);
+        if constexpr (sizeof...(rest) > 0) {
+            append(str, rest...);
+        }
+    }
+}

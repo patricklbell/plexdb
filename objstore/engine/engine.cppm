@@ -1,12 +1,18 @@
 export module objstore.engine;
 
-export import objstore.engine.dtype;
+export import objstore.engine.types;
 export import objstore.engine.schema;
+export import objstore.engine.system_schema;
+export import objstore.engine.virtual_table;
+export import objstore.engine.it;
+
 import objstore.engine.statements;
+import objstore.engine.io;
 
 import plexdb.base;
 import plexdb.os;
 import plexdb.tagged_union;
+import plexdb.os.dynamic_tagged_union;
 import plexdb.pager;
 import plexdb.blob;
 import plexdb.btree;
@@ -14,10 +20,33 @@ import plexdb.btree;
 using namespace plexdb;
 
 export namespace objstore::engine {
+    // ========================================================================
+    // prepared statement cache
+    // ========================================================================
+    struct BindVariableSpec {
+        AutoString8 name;
+        Type type;
+    };
+
+    struct PreparedEntry {
+        AutoString8 query_string;
+        AutoString8 keyspace;
+        AutoString8 table;
+        DynamicArray<BindVariableSpec> bind_variables;
+        S32 pk_index = -1;
+    };
+
+    // @todo determine what the correct strategy is here
+    constexpr U64 MAX_PREPARED_STATEMENTS = 1024;
+
+    // ========================================================================
+    // engine
+    // ========================================================================
     struct Engine {
         Pager* pager;
         schema::Schema schema;
-        String8 current_keyspace = "";
+        AutoString8 current_keyspace{""};
+        MapFixedSentinel<U64, PreparedEntry, MAX_PREPARED_STATEMENTS> prepared_cache;
 
         Engine(Pager* in_pager);
     };
@@ -32,7 +61,6 @@ export namespace objstore::engine {
         Invalid         = 0x2200,  // Syntactically correct but invalid
         ConfigError     = 0x2300,  // Configuration issue
         AlreadyExists   = 0x2400,  // Keyspace/table already exists
-        NotImplemented  = 0x2500,  // Feature not implemented
     };
 
     constexpr String8 to_str(ExecutionStatus status) {
@@ -44,82 +72,17 @@ export namespace objstore::engine {
             case ExecutionStatus::Invalid:        return "INVALID";
             case ExecutionStatus::ConfigError:    return "CONFIG_ERROR";
             case ExecutionStatus::AlreadyExists:  return "ALREADY_EXISTS";
-            case ExecutionStatus::NotImplemented: return "NOT_IMPLEMENTED";
         }
         return "UNKNOWN";
     }
 
-    
+
     enum class ResultKind : U8 {
         Void = 0,       // No result (INSERT, UPDATE, DELETE)
         Rows,           // SELECT result
         VirtualRows,    // Virtual/system table result (not backed by storage)
         SchemaChange,   // CREATE/DROP/ALTER result
         UseKeyspace,    // USE keyspace
-    };
-
-    // ========================================================================
-    // virtual rows (for system/virtual tables not backed by storage)
-    // ========================================================================
-    struct VirtualColumn {
-        String8 name;
-        CDType type;
-    };
-
-    struct VirtualRow {
-        DynamicArray<dtype::ReadValue> values;
-    };
-
-    struct VirtualRows {
-        String8 keyspace;
-        String8 table;
-        DynamicArray<VirtualColumn> columns;
-        DynamicArray<VirtualRow> rows;
-    };
-
-    // ========================================================================
-    // row/column iterators
-    // ========================================================================
-    struct ColumnIterator {
-        Pager* pager;
-        const schema::Table* table;
-        U64 row_page;
-        U64 col_idx;
-        U64 row_offset_bytes;
-
-        ColumnIterator& operator++();
-        bool operator==(const ColumnIterator& other) const { return col_idx == other.col_idx; }
-        bool operator!=(const ColumnIterator& other) const { return col_idx != other.col_idx; }
-    };
-
-    const schema::Column& column(const ColumnIterator& it);
-    U64 column_count(const ColumnIterator& it);
-    dtype::ReadValue read_value(ColumnIterator& it);
-    ColumnIterator columns_begin(Pager* pager, const schema::Table* table, U64 row_page);
-    ColumnIterator columns_end(const schema::Table* table);
-
-    struct RowIterator {
-        Pager* pager;
-        const schema::Table* table;
-        btree::Iterator<btree::BTreePaged, U64> btree_it;
-        btree::Iterator<btree::BTreePaged, U64> btree_end;
-        U64 row_idx;
-
-        RowIterator& operator++();
-        bool operator==(const RowIterator& other) const { return btree_it == other.btree_it; }
-        bool operator!=(const RowIterator& other) const { return btree_it != other.btree_it; }
-    };
-
-    U64 row_page(RowIterator& it);
-    ColumnIterator columns_begin(RowIterator& it);
-    ColumnIterator columns_end(const RowIterator& it);
-
-    struct RowRange {
-        RowIterator begin_it;
-        RowIterator end_it;
-
-        RowIterator& begin() { return begin_it; }
-        RowIterator& end() { return end_it; }
     };
 
     // ========================================================================
@@ -131,10 +94,34 @@ export namespace objstore::engine {
         String8 message = "";
         String8 keyspace = "";
         String8 table = "";
-        
-        Optional<RowRange> rows;
-        Optional<VirtualRows> virtual_rows;
+
+        U64 row_limit_count = MAX_U64;
+        Optional<RowRange> rows = {};
+        Optional<VirtualRows> virtual_rows = {};
+
+        const schema::Table* resolved_table = nullptr;
+        DynamicArray<U64> select_col_indices = {};
     };
 
     ExecutionResult execute(Engine& engine, const Statement& statement);
+    ExecutionResult execute(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values);
+    ExecutionResult execute(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values);
+
+    // ========================================================================
+    // bind variables
+    // ========================================================================
+    DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement);
+
+    // ========================================================================
+    // prepared statements
+    // ========================================================================
+    struct PrepareResult {
+        ExecutionStatus status = ExecutionStatus::Success;
+        String8 message = "";
+        U64 id = 0;
+        PreparedEntry* entry = nullptr;
+    };
+
+    PrepareResult prepare(Engine& engine, String8 query);
+    PreparedEntry* try_get_prepared(Engine& engine, U64 prepared_id);
 }

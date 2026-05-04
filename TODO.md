@@ -1,10 +1,8 @@
 # TODO
-- Parse CQL in objstore with lexy
-    - Parse cache with string hash as key
+- Parse cache with string hash as key
 - Query planning
-    - Very simple for basic CQL commands
-    - Again cache planning result if complex
 - Do file io with io_uring
+- Avoid storing pager pointer per btree/blob
 - Shard across cores
     - OS layer
         - Expose `sched_setaffinity` in `plexdb.os` for CPU pinning
@@ -29,4 +27,3 @@
     - Abstract SPSC intra process communication, inter process (UDS), network communication 
     - Recovery
         - Schema recovery from leader's committed log
-- Avoid storing pager pointer per btree/blob

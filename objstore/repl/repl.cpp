@@ -8,6 +8,7 @@ import plexdb.os;
 import plexdb.tagged_union;
 
 import objstore.engine;
+import objstore.engine.io; // @note require for to_str on database value
 import objstore.parsers;
 
 using namespace plexdb;
@@ -78,14 +79,14 @@ namespace objstore::repl {
             String8 pending_input(input_buf, n);
 
             while (true) {
-                if (!parsers::cql::is_complete(pending_input)) {
+                if (!find(pending_input, ';')) {
                     break;
                 }
 
                 Optional<U64> semi_idx_opt = find(pending_input, ';');
                 String8 stmt_input{pending_input.data, (static_cast<bool>(semi_idx_opt)) ? (*semi_idx_opt + 1) : 0};
 
-                auto stmt_opt = parsers::cql::parse(stmt_input, false);
+                auto stmt_opt = parsers::cql::parse(stmt_input);
                 if (!stmt_opt) {
                     os::stream_write(ostream, "ERROR: Failed to parse CQL\n");
                     pending_input = AutoString8{};
@@ -95,33 +96,52 @@ namespace objstore::repl {
                 engine::ExecutionResult result = engine::execute(eng, *stmt_opt);
                 
                 U64 row_count = 0;
-                if (result.rows) {
-                    for (auto& row = result.rows->begin(); row != result.rows->end(); ++row) {
-                        if (row_count == 0) {
-                            U64 col_idx = 0;
-                            for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col, ++col_idx) {
-                                if (col_idx > 0) os::stream_write(ostream, " | ");
-                                os::stream_write(ostream, engine::column(col).name);
-                            }
-                            os::stream_write(ostream, "\n");
+                if (result.rows && result.resolved_table) {
+                    const schema::Table* tbl = result.resolved_table;
+                    bool has_select = result.select_col_indices.length > 0;
 
-                            col_idx = 0;
-                            for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col, ++col_idx) {
-                                if (col_idx > 0) os::stream_write(ostream, "-+-");
-                                for (U64 j = 0; j < engine::column(col).name.length; j++)
-                                    os::stream_write(ostream, "-", 1);
-                            }
-                            os::stream_write(ostream, "\n");
-                        }
+                    auto is_selected = [&](U64 ci) -> bool {
+                        if (!has_select) return true;
+                        for (U64 k = 0; k < result.select_col_indices.length; k++)
+                            if (result.select_col_indices[k] == ci) return true;
+                        return false;
+                    };
 
-                        U64 col_idx = 0;
-                        for (auto col = engine::columns_begin(row); col != engine::columns_end(row); ++col, ++col_idx) {
-                            os::stream_write(ostream, col_idx == 0 ? " " : " | ");
-                            AutoString8 val_str = dtype::to_str(engine::read_value(col), engine::column(col).type);
-                            os::stream_write(ostream, val_str.c_str, val_str.length);
+                    // print header in schema order, filtered by selection
+                    {
+                        bool first = true;
+                        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                            if (!is_selected(ci)) continue;
+                            if (!first) os::stream_write(ostream, " | ");
+                            os::stream_write(ostream, tbl->cols[ci].name);
+                            first = false;
                         }
                         os::stream_write(ostream, "\n");
-                        ++row_count;
+                        first = true;
+                        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                            if (!is_selected(ci)) continue;
+                            if (!first) os::stream_write(ostream, "-+-");
+                            for (U64 j = 0; j < tbl->cols[ci].name.length; j++)
+                                os::stream_write(ostream, "-", 1);
+                            first = false;
+                        }
+                        os::stream_write(ostream, "\n");
+                    }
+
+                    U64 row_limit = result.row_limit_count;
+                    for (auto& row_it = result.rows->begin(); row_it != result.rows->end() && row_count < row_limit; ++row_it, ++row_count) {
+                        auto col_range = *row_it;
+                        auto& col_it = col_range.begin();
+                        auto& col_end_it = col_range.end();
+                        bool first = true;
+                        for (U64 ci = 0; ci < tbl->cols.length && col_it != col_end_it; ci++, ++col_it) {
+                            if (!is_selected(ci)) continue;
+                            os::stream_write(ostream, first ? " " : " | ");
+                            AutoString8 val_str = to_str(*col_it, tbl->cols[ci].type);
+                            os::stream_write(ostream, val_str.c_str, val_str.length);
+                            first = false;
+                        }
+                        os::stream_write(ostream, "\n");
                     }
                 } else if (result.virtual_rows) {
                     auto& vr = *result.virtual_rows;
@@ -141,7 +161,7 @@ namespace objstore::repl {
                     for (U64 ri = 0; ri < vr.rows.length; ri++) {
                         for (U64 ci = 0; ci < vr.columns.length; ci++) {
                             os::stream_write(ostream, ci == 0 ? " " : " | ");
-                            AutoString8 val_str = dtype::to_str(vr.rows[ri].values[ci], vr.columns[ci].type);
+                            AutoString8 val_str = to_str(vr.rows[ri].values[ci], vr.columns[ci].type);
                             os::stream_write(ostream, val_str.c_str, val_str.length);
                         }
                         os::stream_write(ostream, "\n");

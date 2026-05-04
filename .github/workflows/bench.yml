@@ -35,7 +35,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-19 \
             -DCMAKE_C_COMPILER=clang-19 \
             -DPLEXDB_DEBUG=OFF \
-            -DBUILD_TESTS=OFF
+            -DPLEXDB_ENABLE_TESTS=OFF
 
       - name: Build
         run: ninja -C build

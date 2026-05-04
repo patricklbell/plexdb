@@ -3,63 +3,47 @@ cmake_minimum_required(VERSION 3.28)
 # =============================================================================
 # Project setup
 # =============================================================================
-if(NOT DEFINED PROJECT_NAME)
-    set(OBJSTORE_IS_MAIN_PROJECT ON)
-else()
-    set(OBJSTORE_IS_MAIN_PROJECT OFF)
-endif()
-
 project(objstore)
 
-if(OBJSTORE_IS_MAIN_PROJECT)
-    option(BUILD_TESTS "Build unit tests" ON)
-    option(OBJSTORE_BUILD_SERVER "Build objstore server" ON)
-    option(PLEXDB_LOG_ENABLED "Enable structured logging hooks" OFF)
-    option(PLEXDB_DEBUG "Build debug checks" ON)
-    
-    add_subdirectory(../plexdb plexdb)
-
-    if(PLEXDB_LOG_ENABLED)
-        add_compile_definitions(PLEXDB_LOG_ENABLED=1)
-    endif()
-    if(PLEXDB_DEBUG)
-        add_compile_definitions(PLEXDB_DEBUG=1)
-    endif()
+if(NOT TARGET plexdb::core)
+  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../core)
 endif()
 
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/compiler_config.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/options.cmake)
+
+option(OBJSTORE_ENABLE_SERVER "Build objstore server" ON)
 
 # =============================================================================
 # Third part dependencies
 # =============================================================================
-include(FetchContent)
-include(FindPkgConfig)
-pkg_check_modules(liburing REQUIRED IMPORTED_TARGET GLOBAL liburing>=2.0)
-
-FetchContent_Declare(llhttp
-    URL "https://github.com/nodejs/llhttp/archive/refs/tags/release/v8.1.0.tar.gz"
-)
-
-FetchContent_MakeAvailable(llhttp)
-
-add_library(llhttp STATIC
-    ${llhttp_SOURCE_DIR}/src/api.c
-    ${llhttp_SOURCE_DIR}/src/http.c
-    ${llhttp_SOURCE_DIR}/src/llhttp.c
-)
-
-target_include_directories(llhttp PUBLIC
-    ${llhttp_SOURCE_DIR}/include
-)
-
-FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
-FetchContent_MakeAvailable(lexy)
-
 set(LEXY_ENCODING_OF_CHAR lexy::ascii)
 set(LEXY_HAS_NTTP ON)
 set(LEXY_HAS_CONSTEVAL ON)
 
-if(!PLEXDB_DEBUG)
-    set(LEXY_ENABLE_ASSERT OFF)
+# @todo use installed library (may require cmake configuration files to be installed)
+if(NOT TARGET foonathan::lexy)
+  include(FetchContent)
+  FetchContent_Declare(lexy URL https://lexy.foonathan.net/download/lexy-src.zip)
+  FetchContent_MakeAvailable(lexy)
+endif()
+
+if(NOT TARGET lz4::lz4)
+  include(FetchContent)
+  FetchContent_Declare(
+      lz4
+      GIT_REPOSITORY https://github.com/lz4/lz4.git
+      GIT_TAG        v1.10.0
+      GIT_SHALLOW    TRUE
+      SOURCE_SUBDIR  build/cmake
+  )
+  set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
+  set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(lz4)
+endif()
+
+if(NOT PLEXDB_DEBUG)
+  set(LEXY_ENABLE_ASSERT OFF)
 endif()
 
 # =============================================================================
@@ -69,140 +53,134 @@ endif()
 add_library(objstore_modules STATIC)
 add_library(plexdb::objstore_modules ALIAS objstore_modules)
 
-target_compile_features(objstore_modules PUBLIC cxx_std_20)
+target_compile_features(objstore_modules PUBLIC cxx_std_23)
 set_target_properties(objstore_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_include_directories(objstore_modules PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+target_include_directories(objstore_modules
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
 )
 
 target_sources(objstore_modules
     PUBLIC
-        FILE_SET CXX_MODULES 
+        FILE_SET CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
-            engine/dtype.cppm
+            crc/crc.cppm
             engine/engine.cppm
+            engine/evaluator.cppm
+            engine/io.cppm
+            engine/it.cppm
             engine/schema.cppm
+            engine/system_schema.cppm
             engine/statements.cppm
+            engine/types.cppm
+            engine/virtual_table.cppm
             log/log.cppm
             parsers/parsers.cppm
             tcp/tcp.cppm
             tcp/tcp.detail.cppm
             tcp/tcp.types.cppm
-            http/http.cppm
             native/native.cppm
             repl/repl.cppm
+            third_party/lz4/lz4.cppm
 )
 
 target_link_libraries(objstore_modules
     PUBLIC
-        plexdb::plexdb
+        plexdb::core
     PRIVATE
-        PkgConfig::liburing
+        plexdb::compiler_config
 )
 
 # Static library
 add_library(objstore STATIC)
 add_library(plexdb::objstore ALIAS objstore)
 
-target_compile_features(objstore PUBLIC cxx_std_20)
+target_compile_features(objstore PUBLIC cxx_std_23)
 set_target_properties(objstore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_include_directories(objstore PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+target_include_directories(objstore
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
 )
 
 target_sources(objstore
     PRIVATE
         engine/engine.cpp
+        engine/it.cpp
         engine/schema.cpp
+        engine/system_schema.cpp
         log/log.cpp
         parsers/parsers.cpp
         tcp/tcp.detail.cpp
         tcp/tcp.types.cpp
-        http/http.cpp
         native/native.cpp
         repl/repl.cpp
+        third_party/lz4/lz4.cpp
 )
 
 target_link_libraries(objstore
     PUBLIC
         plexdb::objstore_modules
     PRIVATE
-        PkgConfig::liburing
-        llhttp
+        plexdb::compiler_config
         foonathan::lexy::core
         foonathan::lexy::ext
+        plexdb::profiling
+        lz4_static
 )
-
-# =============================================================================
-# Plugins
-# =============================================================================
-if(PLEXDB_LOG_ENABLED)
-    add_library(objstore_log_file SHARED)
-    target_compile_features(objstore_log_file PRIVATE cxx_std_20)
-
-    target_sources(objstore_log_file
-        PRIVATE
-            plugins/log_file/log_file_plugin.cpp
-    )
-
-    target_include_directories(objstore_log_file
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/../plexdb/log
-    )
-endif()
 
 # =============================================================================
 # Executables
 # =============================================================================
-if(OBJSTORE_BUILD_SERVER)
-    add_executable(objstore_server)
+if(OBJSTORE_ENABLE_SERVER)
+  add_executable(objstore_server)
 
-    target_sources(objstore_server
+  target_sources(objstore_server
         PRIVATE
             entry/main.cpp
     )
 
-    target_link_libraries(objstore_server
+  target_link_libraries(objstore_server
         PRIVATE
+            plexdb::compiler_config
             plexdb::objstore
+            plexdb::profiling
     )
 
-    target_include_directories(objstore_server PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+  target_include_directories(objstore_server
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../macros
     )
-
-    if(PLEXDB_LOG_ENABLED)
-        target_link_options(objstore_server PRIVATE -rdynamic)
-    endif()
 endif()
 
 # =============================================================================
 # Tests
 # =============================================================================
-if(BUILD_TESTS)
-    # Fetch Catch2 only once (parent scope can override this)
-    if(NOT TARGET Catch2::Catch2WithMain)
-        Include(FetchContent)
-        FetchContent_Declare(
+if(PLEXDB_ENABLE_TESTS)
+  find_package(Catch2 3.13.0 QUIET)
+  if(NOT TARGET Catch2::Catch2WithMain)
+    include(FetchContent)
+    FetchContent_Declare(
             Catch2
             GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-            GIT_TAG        v3.11.0
+            GIT_TAG        v3.13.0
         )
-        FetchContent_MakeAvailable(Catch2)
-    endif()
+    FetchContent_MakeAvailable(Catch2)
+  endif()
 
-    add_executable(objstore_tests)
-    
-    file(GLOB_RECURSE OBJSTORE_TEST_SOURCES CONFIGURE_DEPENDS
+  add_executable(objstore_tests)
+
+  file(GLOB_RECURSE OBJSTORE_TEST_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../core/test/*.test.cpp"
     )
-    file(GLOB_RECURSE OBJSTORE_TEST_MODULE_SOURCES CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/**/*.helper.cppm"
+  file(GLOB_RECURSE OBJSTORE_TEST_MODULE_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cppm"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../core/test/*.test.cppm"
     )
-    target_sources(objstore_tests
+  target_sources(objstore_tests
         PRIVATE
             ${OBJSTORE_TEST_SOURCES}
         PUBLIC
@@ -212,12 +190,17 @@ if(BUILD_TESTS)
                 ${OBJSTORE_TEST_MODULE_SOURCES}
     )
 
-    target_include_directories(objstore_tests PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+  target_include_directories(objstore_tests
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../macros
+            ${CMAKE_CURRENT_SOURCE_DIR}/../core/log
+            ${CMAKE_CURRENT_SOURCE_DIR}/../core/test
     )
 
-    target_link_libraries(objstore_tests
+  target_link_libraries(objstore_tests
         PRIVATE
+            plexdb::compiler_config
+            stdc++exp # std::stacktrace may require link experimental c++ library
             plexdb::objstore
             Catch2::Catch2WithMain
     )

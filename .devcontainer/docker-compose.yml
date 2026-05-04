@@ -1,0 +1,63 @@
+services:
+  # Tecnativa docker-socket-proxy: intercepts Docker API calls and blocks dangerous
+  # write/exec operations while preserving read access (docker ps, logs, inspect).
+  # Prevents container-escape via: docker run --privileged -v /:/host ...
+  # Reference: https://github.com/Tecnativa/docker-socket-proxy
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      # Read-only operations – allowed (useful for debugging sibling containers)
+      CONTAINERS: 1
+      IMAGES: 1
+      INFO: 1
+      NETWORKS: 1
+      VOLUMES: 1
+      # Dangerous write/exec operations – blocked
+      POST: 0
+      BUILD: 0
+      COMMIT: 0
+      EXEC: 0
+      SWARM: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  plexdb:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+      args:
+        USER_UID: ${HOST_UID:-1000}
+        USER_GID: ${HOST_GID:-1000}
+    container_name: plexdb-${WORKTREE_NAME:-dev}
+    # Drop all Linux capabilities – the container only needs clang/cmake/bash/node at runtime.
+    # Add specific capabilities back with cap_add if a tool breaks.
+    cap_drop:
+      - ALL
+    # Prevent privilege escalation via setuid/setgid binaries
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+        # Workspace (no ~/.ssh mount – prevents agent from pushing to remote repos)
+        - ..:/workspace:cached
+        # FUSE overlayfs mount for coroutines
+        - type: bind
+          source: ..
+          target: /workspace
+          bind:
+            propagation: rshared
+    environment:
+      DOCKER_HOST: tcp://docker-proxy:2375
+    env_file:
+      - .env
+    depends_on:
+      - docker-proxy
+    # Socket cleanup loop: 10 passes at 30 s intervals (~5 min) to remove VS Code IPC
+    # sockets including late-created ones. Runs as a child of the container's own bash
+    # process – NOT subject to VS Code's cgroup-based lifecycle cleanup.
+    # postAttachCommand is unreliable for background processes; Docker Compose command is not.
+    command: >
+      bash -c '
+      (for i in 1 2 3 4 5 6 7 8 9 10; do sleep 30;
+        find /tmp -maxdepth 2 \( -name "vscode-ipc-*.sock" -o -name "vscode-git-*.sock" \) -delete 2>/dev/null;
+      done) &
+      sleep infinity'

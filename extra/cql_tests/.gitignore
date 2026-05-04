@@ -1,0 +1,6 @@
+# Fetched upstream tests and Python artifacts
+scylla_cql_tests/
+.venv/
+__pycache__/
+*.pyc
+*.log

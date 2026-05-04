@@ -126,8 +126,10 @@
 
 // utilities
 
-#if defined(PLEXDB_DEBUG)
-    #define PLEXDB_DEBUG 1
+#if !defined(PLEXDB_DEBUG)
+    #define PLEXDB_DEBUG 0
+#endif
+#if PLEXDB_DEBUG
     #define PLEXDB_DEBUG_X(x) x
 #else
     #define PLEXDB_DEBUG_X(x)
@@ -216,21 +218,7 @@
     #define thread_static
 #endif
 
-#if PLEXDB_COMPILER_GCC || PLEXDB_COMPILER_CLANG
-    #define PLEXDB_IS_CONSTEVAL() __builtin_is_constant_evaluated()
-#elif PLEXDB_COMPILER_MSVC
-    #define PLEXDB_IS_CONSTEVAL() __is_constant_evaluated()
-#else
-    #error Is consteval not defined for this compiler.
-#endif
-
-#if PLEXDB_COMPILER_GCC || COMPILER_CLANG
-    #define PLEXDB_UNUSED [[maybe_unused]]
-#else
-    #define PLEXDB_UNUSED
-#endif
-
-#define PLEXDB_CONSTEVAL_TRAP(x) {PLEXDB_UNUSED int a = 1/static_cast<int>(static_cast<bool>(x));}
+#define PLEXDB_CONSTEVAL_TRAP(x) (void)(1 / static_cast<int>(static_cast<bool>(x)))
 
 // OffsetOf
 #include <cstddef>

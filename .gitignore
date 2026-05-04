@@ -1,9 +1,15 @@
 .vscode/
+.zed/
+.opencode/
+.claude/
 build/
 .cache/
 out/
 _codeql_detected_source_root
 *.db
+*.stats
 objstore.pid
 **/.venv
 **/node_modules
+**/__pycache__
+.orktree

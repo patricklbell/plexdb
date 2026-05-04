@@ -1,20 +1,22 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
-#include <thread>
+#include <coroutine>
 #include <atomic>
-#include <semaphore>
 #include <vector>
+#include <cstring>
 
 import plexdb.base;
+import plexdb.coroutine;
 import plexdb.os;
+import plexdb.threads;
 import plexdb.os.uring;
 import objstore.tcp;
-import objstore.tcp.detail;
 
 using namespace plexdb;
 using namespace plexdb::os;
 using namespace objstore::tcp;
+namespace tcp = objstore::tcp;
 
 namespace {
     constexpr int TCP_TEST_PORT_BASE = 21000;
@@ -24,546 +26,270 @@ namespace {
         return TCP_TEST_PORT_BASE + port_counter.fetch_add(1);
     }
 
-    enum class ListenMode { Auto, Uring, Socket };
-
     struct TestServer {
         os::Handle socket = os::zero_handle();
-        os::Notifier signal_pipe;
+        os::Notifier interrupt;
+        U16 port;
 
-        TestServer(int port) {
-            this->socket = socket_open();
-            socket_set_option(this->socket, SocketOption::Reuse, true);
-            socket_bind(this->socket, static_cast<U16>(port));
-            socket_listen(this->socket, 128);
+        TestServer(int p) : port(static_cast<U16>(p)) {
+            socket = socket_open();
+            socket_set_option(socket, SocketOption::Reuse, true);
+            socket_bind(socket, port);
+            socket_listen(socket, 128);
         }
 
         ~TestServer() {
-            if (!is_zero_handle(this->socket)) {
-                socket_close(this->socket);
-            }
+            if (!is_zero_handle(socket)) socket_close(socket);
         }
 
-        void stop() {
-            os::signal_notify_safe(this->signal_pipe);
-        }
+        void stop() { os::signal_notify_safe(interrupt); }
     };
-
-    template<typename OnChunk, typename OnClose>
-    Stats listen(const OnChunk& on_chunk, const OnClose& on_close, TestServer& server, volatile bool& exit_signal, ListenMode mode = ListenMode::Auto) {
-        auto on_open = [](Connection*) {};
-        auto on_chunk_new = [&](const Request& req) -> RequestStatus {
-            return on_chunk(const_cast<Request&>(req));
-        };
-        auto on_close_new = [&](Connection* connection) {
-            on_close(static_cast<int>(connection->client.u32[0]));
-        };
-
-        if (mode == ListenMode::Socket) {
-            return objstore::tcp::listen_socket(server.socket, on_chunk_new, on_close_new, on_open, server.signal_pipe, exit_signal);
-        }
-        if (mode == ListenMode::Uring) {
-            auto ring_settings = uring::get_ring_settings();
-            uring::Ring ring{
-                server.socket,
-                ring_settings->recommended_queue_depth, ring_settings->recommended_buffer_size, ring_settings->recommended_buffer_count
-            };
-            if (ring) {
-                return objstore::tcp::listen_uring(ring, on_chunk_new, on_close_new, on_open, server.signal_pipe, exit_signal);
-            }
-        }
-
-        return objstore::tcp::listen(server.socket, on_chunk_new, on_open, on_close_new, server.signal_pipe, exit_signal);
-    }
-
-    U64 total_chunk_bytes(const Request& req) {
-        U64 total = 0;
-        for (const auto& chunk : req.connection->chunk_chain.chunks) {
-            total += (U64)chunk.data.length;
-        }
-        return total;
-    }
-
-    AutoString8 chunks_to_string(const Request& req) {
-        AutoString8 result;
-        for (const auto& chunk : req.connection->chunk_chain.chunks) {
-            for (int i = 0; i < chunk.data.length; i++) {
-                result.push_back(chunk.data.ptr[i]);
-            }
-        }
-        return result;
-    }
 }
 
 TEST_CASE("handles signal from pipe", "[objstore.tcp]") {
-    int port = get_unique_port();
-    TestServer server(port);
-    
+    TestServer server(get_unique_port());
     REQUIRE(!is_zero_handle(server.socket));
 }
 
-TEST_CASE("receives simple request - socket", "[objstore.tcp][socket]") {
-    int port = get_unique_port();
-    TestServer server(port);
+TEST_CASE("receives request", "[objstore.tcp]") {
+    bool try_uring = GENERATE(false, true);
+    TestServer server(get_unique_port());
 
-    std::binary_semaphore server_ready{0};
-    std::binary_semaphore data_received{0};
-    volatile bool exit_signal = false;
-    AutoString8 received_data;
+    threads::Semaphore done{0};
+    volatile bool should_exit = false;
+    AutoString8 received;
 
-    std::thread server_thread([&]() {
-
-        auto on_chunk = [&](Request& req) -> RequestStatus {
-            received_data = chunks_to_string(req);
-            data_received.release();
-            return RequestStatus::Handled;
-        };
-
-        auto on_close = [&](int fd) {};
-
-        server_ready.release();
-        listen(on_chunk, on_close, server, exit_signal, ListenMode::Socket);
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
+        {
+            Socket client{socket_open()};
+            CHECK(socket_connect(client, "127.0.0.1", server.port));
+            socket_send_all(client, "HELLO", 5);
+        }
+        done.wait();
+        should_exit = true;
+        server.stop();
     });
 
-    server_ready.acquire();
+    Listener listener{server.socket, try_uring};
+    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+        auto buf = tcp::acquire(req);
+        CHECK(static_cast<bool>(buf));
+        CHECK(co_await tcp::read(req, &*buf) == Error::None);
+        received = AutoString8{buf->view.ptr, buf->length};
+        tcp::release(req, &*buf);
 
-    {
-        Socket client{socket_open()};
-        bool connected = socket_connect(client, "127.0.0.1", (U16)port);
-        REQUIRE(connected);
+        done.signal();
+        co_await tcp::close(req);
+    }, server.interrupt, should_exit);
 
-        String8 message = "HELLO";
-        auto res = socket_send_all(client, message.data, message.length);
-        REQUIRE(res.error == SocketError::None);
-    }
-
-    data_received.acquire();
-
-    exit_signal = true;
-    server.stop();
-    server_thread.join();
-
-    REQUIRE(received_data == "HELLO");
-}
-
-TEST_CASE("receives simple request - uring", "[objstore.tcp][uring]") {
-    int port = get_unique_port();
-    TestServer server(port);
-
-    std::binary_semaphore server_ready{0};
-    std::binary_semaphore data_received{0};
-    volatile bool exit_signal = false;
-    AutoString8 received_data;
-
-    std::thread server_thread([&server, &server_ready, &exit_signal, &received_data, &data_received]() {
-
-        auto on_chunk = [&](Request& req) -> RequestStatus {
-            received_data = chunks_to_string(req);
-            data_received.release();
-            return RequestStatus::Handled;
-        };
-
-        auto on_close = [](int) {};
-
-        server_ready.release();
-        listen(on_chunk, on_close, server, exit_signal, ListenMode::Uring);
-    });
-
-    server_ready.acquire();
-
-    {
-        Socket client{socket_open()};
-        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
-
-        String8 message = "HELLO";
-        auto res = socket_send_all(client, message.data, message.length);
-        REQUIRE(res.error == SocketError::None);
-    }
-
-    data_received.acquire();
-
-    exit_signal = true;
-    server.stop();
-    server_thread.join();
-
-    REQUIRE(received_data == "HELLO");
+    REQUIRE(received == "HELLO");
 }
 
 TEST_CASE("receives large request", "[objstore.tcp]") {
-    int port = get_unique_port();
-    TestServer server(port);
+    TestServer server(get_unique_port());
 
-    std::binary_semaphore server_ready{0};
-    std::binary_semaphore data_received{0};
-    volatile bool exit_signal = false;
+    threads::Semaphore done{0};
+    volatile bool should_exit = false;
     U64 total_received = 0;
-
     constexpr U64 DATA_SIZE = 32 * 1024;
 
-    std::thread server_thread([&server, &server_ready, &exit_signal, &total_received, &data_received]() {
-
-        auto on_chunk = [&](Request& req) -> RequestStatus {
-            U64 bytes = total_chunk_bytes(req);
-
-            if (bytes >= DATA_SIZE) {
-                total_received = bytes;
-                data_received.release();
-                return RequestStatus::Handled;
-            }
-            return RequestStatus::Pending;
-        };
-
-        auto on_close = [](int) {};
-
-        server_ready.release();
-        listen(on_chunk, on_close, server, exit_signal);
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
+        {
+            Socket client{socket_open()};
+            CHECK(socket_connect(client, "127.0.0.1", server.port));
+            std::vector<char> data(DATA_SIZE);
+            for (U64 i = 0; i < DATA_SIZE; i++) data[i] = (char)('A' + (i % 26));
+            socket_send_all(client, data.data(), data.size());
+        }
+        done.wait();
+        should_exit = true;
+        server.stop();
     });
 
-    server_ready.acquire();
-
-    {
-        Socket client{socket_open()};
-        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
-
-        std::vector<char> large_data(DATA_SIZE);
-        for (U64 i = 0; i < DATA_SIZE; i++) {
-            large_data[i] = (char)('A' + (i % 26));
+    Listener listener{server.socket};
+    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+        U64 total = 0;
+        while (total < DATA_SIZE) {
+            auto buf = tcp::acquire(req);
+            CHECK(static_cast<bool>(buf));
+            CHECK(co_await tcp::read(req, &*buf) == Error::None);
+            tcp::release(req, &*buf);
+            total += buf->length;
         }
-
-        auto res = socket_send_all(client, large_data.data(), large_data.size());
-        REQUIRE(res.error == SocketError::None);
-    }
-
-    data_received.acquire();
-
-    exit_signal = true;
-    server.stop();
-    server_thread.join();
+        total_received = total;
+        done.signal();
+        co_await tcp::close(req);
+    }, server.interrupt, should_exit);
 
     REQUIRE(total_received >= DATA_SIZE);
 }
 
 TEST_CASE("handles multiple sequential connections", "[objstore.tcp]") {
-    int port = get_unique_port();
-    TestServer server(port);
+    TestServer server(get_unique_port());
 
-    std::binary_semaphore server_ready{0};
-    std::counting_semaphore<16> connection_sem{0};
-    volatile bool exit_signal = false;
+    threads::Semaphore connection_sem{0};
+    volatile bool should_exit = false;
     std::atomic<int> connection_count{0};
-
     constexpr int NUM_CONNECTIONS = 5;
 
-    std::thread server_thread([&server, &server_ready, &exit_signal, &connection_count, &connection_sem]() {
-
-        auto on_chunk = [&](Request& req) -> RequestStatus {
-            connection_count++;
-            connection_sem.release();
-            return RequestStatus::Close;
-        };
-
-        auto on_close = [](int) {};
-
-        server_ready.release();
-        listen(on_chunk, on_close, server, exit_signal);
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
+        for (int i = 0; i < NUM_CONNECTIONS; i++) {
+            Socket client{socket_open()};
+            CHECK(socket_connect(client, "127.0.0.1", server.port));
+            char msg[16]; snprintf(msg, sizeof(msg), "MSG%d", i);
+            socket_send_all(client, msg, (int)strlen(msg));
+            connection_sem.wait();
+        }
+        should_exit = true;
+        server.stop();
     });
 
-    server_ready.acquire();
+    Listener listener{server.socket};
+    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+        auto buf = tcp::acquire(req);
+        CHECK(static_cast<bool>(buf));
+        CHECK(co_await tcp::read(req, &*buf) == Error::None);
+        tcp::release(req, &*buf);
 
-    for (int i = 0; i < NUM_CONNECTIONS; i++) {
-        Socket client{socket_open()};
-        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
-
-        char message[32];
-        int len = snprintf(message, sizeof(message), "MSG%d", i);
-        socket_send_all(client, message, len);
-        
-        connection_sem.acquire();
-    }
-
-    exit_signal = true;
-    server.stop();
-    server_thread.join();
+        connection_count++;
+        connection_sem.signal();
+        co_await tcp::close(req);
+    }, server.interrupt, should_exit);
 
     REQUIRE(connection_count == NUM_CONNECTIONS);
 }
 
 TEST_CASE("handles concurrent connections", "[objstore.tcp]") {
-    int port = get_unique_port();
-    TestServer server(port);
+    TestServer server(get_unique_port());
 
-    std::binary_semaphore server_ready{0};
-    std::counting_semaphore<16> request_sem{0};
-    volatile bool exit_signal = false;
+    threads::Semaphore request_sem{0};
+    volatile bool should_exit = false;
     std::atomic<int> request_count{0};
-
     constexpr int NUM_CLIENTS = 4;
 
-    std::thread server_thread([&server, &server_ready, &exit_signal, &request_count, &request_sem]() {
-
-        auto on_chunk = [&](Request& req) -> RequestStatus {
-            request_count++;
-            request_sem.release();
-            return RequestStatus::Close;
-        };
-
-        auto on_close = [](int) {};
-
-        server_ready.release();
-        listen(on_chunk, on_close, server, exit_signal);
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
+        threads::Thread clients[NUM_CLIENTS];
+        for (int i = 0; i < NUM_CLIENTS; i++) {
+            clients[i] = threads::launch("tcp-client", [&server, i]() {
+                Socket client{socket_open()};
+                if (socket_connect(client, "127.0.0.1", server.port)) {
+                    char msg[16]; snprintf(msg, sizeof(msg), "CLIENT%d", i);
+                    socket_send_all(client, msg, (int)strlen(msg));
+                }
+            });
+        }
+        for (auto& t : clients) t = {};
+        for (int i = 0; i < NUM_CLIENTS; i++) request_sem.wait();
+        should_exit = true;
+        server.stop();
     });
 
-    server_ready.acquire();
+    Listener listener{server.socket};
+    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+        auto buf = tcp::acquire(req);
+        CHECK(static_cast<bool>(buf));
+        CHECK(co_await tcp::read(req, &*buf) == Error::None);
+        tcp::release(req, &*buf);
 
-    std::vector<std::thread> client_threads;
-    client_threads.reserve(NUM_CLIENTS);
-
-    for (int i = 0; i < NUM_CLIENTS; i++) {
-        client_threads.emplace_back([port, i]() {
-            Socket client{socket_open()};
-            if (socket_connect(client, "127.0.0.1", (U16)port)) {
-                char message[32];
-                int len = snprintf(message, sizeof(message), "CLIENT%d", i);
-                socket_send_all(client, message, len);
-            }
-        });
-    }
-
-    for (auto& t : client_threads) {
-        t.join();
-    }
-
-    for (int i = 0; i < NUM_CLIENTS; i++) {
-        request_sem.acquire();
-    }
-
-    exit_signal = true;
-    server.stop();
-    server_thread.join();
+        request_count++;
+        request_sem.signal();
+        co_await tcp::close(req);
+    }, server.interrupt, should_exit);
 
     REQUIRE(request_count == NUM_CLIENTS);
 }
 
 TEST_CASE("handles client disconnect", "[objstore.tcp]") {
-    int port = get_unique_port();
-    TestServer server(port);
+    TestServer server(get_unique_port());
 
-    std::binary_semaphore server_ready{0};
-    std::binary_semaphore close_sem{0};
-    volatile bool exit_signal = false;
-    std::atomic<int> close_count{0};
+    threads::Semaphore done{0};
+    volatile bool should_exit = false;
 
-    std::thread server_thread([&server, &server_ready, &exit_signal, &close_count, &close_sem]() {
-
-        auto on_chunk = [&](Request& req) -> RequestStatus {
-            return RequestStatus::Pending;
-        };
-
-        auto on_close = [&](int) {
-            close_count++;
-            close_sem.release();
-        };
-
-        server_ready.release();
-        listen(on_chunk, on_close, server, exit_signal);
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
+        { Socket client{socket_open()}; CHECK(socket_connect(client, "127.0.0.1", server.port)); }
+        done.wait();
+        should_exit = true;
+        server.stop();
     });
 
-    server_ready.acquire();
+    Listener listener{server.socket};
+    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+        auto buf = tcp::acquire(req);
+        CHECK(static_cast<bool>(buf));
+        CHECK(co_await tcp::read(req, &*buf) == Error::ConnectionClosed);
+        tcp::release(req, &*buf);
 
-    {
-        Socket client{socket_open()};
-        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
-        socket_send_all(client, "DATA", 4);
-    }
-
-    close_sem.acquire();
-
-    exit_signal = true;
-    server.stop();
-    server_thread.join();
-
-    REQUIRE(close_count >= 1);
+        done.signal();
+        co_await tcp::close(req);
+    }, server.interrupt, should_exit);
 }
 
 TEST_CASE("tracks statistics correctly", "[objstore.tcp]") {
-    int port = get_unique_port();
-    TestServer server(port);
+    TestServer server(get_unique_port());
 
-    std::binary_semaphore server_ready{0};
-    std::binary_semaphore done{0};
-    volatile bool exit_signal = false;
-    Stats stats;
+    threads::Semaphore done{0};
+    volatile bool should_exit = false;
 
-    std::thread server_thread([&server, &server_ready, &exit_signal, &stats, &done]() {
-
-        auto on_chunk = [&](Request& req) -> RequestStatus {
-            done.release();
-            return RequestStatus::Close;
-        };
-
-        auto on_close = [](int) {};
-
-        server_ready.release();
-        stats = listen(on_chunk, on_close, server, exit_signal);
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
+        {
+            Socket client{socket_open()};
+            CHECK(socket_connect(client, "127.0.0.1", server.port));
+            socket_send_all(client, "TESTDATA", 8);
+        }
+        done.wait();
+        should_exit = true;
+        server.stop();
     });
 
-    server_ready.acquire();
+    Listener listener{server.socket};
+    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+        auto buf = tcp::acquire(req);
+        CHECK(static_cast<bool>(buf));
+        CHECK(co_await tcp::read(req, &*buf) == Error::None);
+        tcp::release(req, &*buf);
 
-    {
-        Socket client{socket_open()};
-        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
-        socket_send_all(client, "TESTDATA", 8);
-    }
+        done.signal();
+        co_await tcp::close(req);
+    }, server.interrupt, should_exit);
 
-    done.acquire();
-
-    exit_signal = true;
-    server.stop();
-    server_thread.join();
-
-    REQUIRE(stats.total_connections >= 1);
-    REQUIRE(stats.total_bytes_read >= 8);
+    REQUIRE(listener.stats.total_connections >= 1);
+    REQUIRE(listener.stats.total_bytes_read >= 8);
 }
 
 TEST_CASE("binary data with null bytes", "[objstore.tcp]") {
-    int port = get_unique_port();
-    TestServer server(port);
+    TestServer server(get_unique_port());
 
-    std::binary_semaphore server_ready{0};
-    std::binary_semaphore data_received{0};
-    volatile bool exit_signal = false;
-    std::vector<char> received_data;
+    threads::Semaphore done{0};
+    volatile bool should_exit = false;
+    std::vector<U8> received;
 
-    std::thread server_thread([&server, &server_ready, &exit_signal, &received_data, &data_received]() {
-
-        auto on_chunk = [&](Request& req) -> RequestStatus {
-            for (const auto& chunk : req.connection->chunk_chain.chunks) {
-                for (int i = 0; i < chunk.data.length; i++) {
-                    received_data.push_back(chunk.data.ptr[i]);
-                }
-            }
-            data_received.release();
-            return RequestStatus::Handled;
-        };
-
-        auto on_close = [](int) {};
-
-        server_ready.release();
-        listen(on_chunk, on_close, server, exit_signal);
+    threads::Thread client_thread = threads::launch("test-client", [&]() {
+        {
+            Socket client{socket_open()};
+            CHECK(socket_connect(client, "127.0.0.1", server.port));
+            char binary_data[10] = {0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00};
+            socket_send_all(client, binary_data, 10);
+        }
+        done.wait();
+        should_exit = true;
+        server.stop();
     });
 
-    server_ready.acquire();
+    Listener listener{server.socket};
+    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+        auto buf = tcp::acquire(req);
+        CHECK(static_cast<bool>(buf));
+        CHECK(co_await tcp::read(req, &*buf) == Error::None);
+        received.assign(buf->view.ptr, buf->view.ptr + buf->length);
+        tcp::release(req, &*buf);
 
-    {
-        Socket client{socket_open()};
-        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
+        done.signal();
+        co_await tcp::close(req);
+    }, server.interrupt, should_exit);
 
-        char binary_data[10] = {0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00};
-        socket_send_all(client, binary_data, 10);
-    }
-
-    data_received.acquire();
-
-    exit_signal = true;
-    server.stop();
-    server_thread.join();
-
-    REQUIRE(received_data.size() >= 10);
-    REQUIRE(received_data[0] == 0x01);
-    REQUIRE(received_data[1] == 0x00);
-    REQUIRE(received_data[2] == 0x02);
-    REQUIRE(received_data[4] == 0x03);
-}
-
-TEST_CASE("pending response accumulates data", "[objstore.tcp]") {
-    int port = get_unique_port();
-    TestServer server(port);
-
-    std::binary_semaphore server_ready{0};
-    std::binary_semaphore done{0};
-    volatile bool exit_signal = false;
-    std::atomic<int> chunk_count{0};
-    U64 final_size = 0;
-
-    constexpr U64 TARGET_SIZE = 20;
-
-    std::thread server_thread([&server, &server_ready, &exit_signal, &chunk_count, &final_size, &done]() {
-
-        auto on_chunk = [&](Request& req) -> RequestStatus {
-            chunk_count++;
-            U64 total = total_chunk_bytes(req);
-            
-            if (total >= TARGET_SIZE) {
-                final_size = total;
-                done.release();
-                return RequestStatus::Handled;
-            }
-            return RequestStatus::Pending;
-        };
-
-        auto on_close = [](int) {};
-
-        server_ready.release();
-        listen(on_chunk, on_close, server, exit_signal);
-    });
-
-    server_ready.acquire();
-
-    {
-        Socket client{socket_open()};
-        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
-
-        socket_send_all(client, "PART1PART2PART3PART4", 20);
-    }
-
-    done.acquire();
-
-    exit_signal = true;
-    server.stop();
-    server_thread.join();
-
-    REQUIRE(final_size >= TARGET_SIZE);
-}
-
-TEST_CASE("close response terminates connection", "[objstore.tcp]") {
-    int port = get_unique_port();
-    TestServer server(port);
-
-    std::binary_semaphore server_ready{0};
-    std::binary_semaphore chunk_sem{0};
-    volatile bool exit_signal = false;
-    std::atomic<int> request_count{0};
-    std::atomic<int> close_count{0};
-
-    std::thread server_thread([&server, &server_ready, &exit_signal, &request_count, &close_count, &chunk_sem]() {
-
-        auto on_chunk = [&](Request& req) -> RequestStatus {
-            request_count++;
-            chunk_sem.release();
-            return RequestStatus::Close;
-        };
-
-        auto on_close = [&](int) {
-            close_count++;
-        };
-
-        server_ready.release();
-        listen(on_chunk, on_close, server, exit_signal);
-    });
-
-    server_ready.acquire();
-
-    {
-        Socket client{socket_open()};
-        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port));
-        socket_send_all(client, "CLOSE_ME", 8);
-    }
-
-    chunk_sem.acquire();
-
-    exit_signal = true;
-    server.stop();
-    server_thread.join();
-
-    REQUIRE(request_count >= 1);
-    REQUIRE(close_count >= 1);
+    REQUIRE(received.size() >= 10);
+    REQUIRE(received[0] == 0x01);
+    REQUIRE(received[1] == 0x00);
+    REQUIRE(received[2] == 0x02);
+    REQUIRE(received[4] == 0x03);
 }
