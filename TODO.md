@@ -6,9 +6,6 @@
     - Again cache planning result if complex
 - Do file io with io_uring
 - Shard across cores
-    - plexdb core shard primitives (done)
-        - `plexdb.shard.spsc` — Lock-free SPSC ring buffer
-        - `plexdb.shard.token` — Token hashing and shard mapping
     - OS layer
         - Expose `sched_setaffinity` in `plexdb.os` for CPU pinning
         - Expose `SO_REUSEPORT` in `plexdb.os.socket`
@@ -29,12 +26,7 @@
         - Log replication: leader → all followers via SPSC
         - Commit on majority ack, apply on commit notification
         - Persist committed log to dedicated pager page
-    - Storage layout
-        - File-per-shard mode: `db_0`, `db_1`, ..., `db_N`
-        - Region-per-shard mode: single file with `Pager::base_offset`
-        - Dynamic region expansion when a shard exhausts its allocated space
+    - Abstract SPSC intra process communication, inter process (UDS), network communication 
     - Recovery
-        - Per-shard WAL at pager level
-        - Independent replay on crash recovery
         - Schema recovery from leader's committed log
 - Avoid storing pager pointer per btree/blob
