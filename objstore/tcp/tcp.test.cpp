@@ -72,7 +72,7 @@ TEST_CASE("receives request", "[objstore.tcp]") {
 
     Listener listener{server.socket, try_uring};
     listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
-        auto buf = tcp::acquire(req);
+        auto buf = co_await tcp::acquire(req);
         CHECK(static_cast<bool>(buf));
         CHECK(co_await tcp::read(req, &*buf) == Error::None);
         received = AutoString8{buf->view.ptr, buf->length};
@@ -110,7 +110,7 @@ TEST_CASE("receives large request", "[objstore.tcp]") {
     listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
         U64 total = 0;
         while (total < DATA_SIZE) {
-            auto buf = tcp::acquire(req);
+            auto buf = co_await tcp::acquire(req);
             CHECK(static_cast<bool>(buf));
             CHECK(co_await tcp::read(req, &*buf) == Error::None);
             tcp::release(req, &*buf);
@@ -146,7 +146,7 @@ TEST_CASE("handles multiple sequential connections", "[objstore.tcp]") {
 
     Listener listener{server.socket};
     listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
-        auto buf = tcp::acquire(req);
+        auto buf = co_await tcp::acquire(req);
         CHECK(static_cast<bool>(buf));
         CHECK(co_await tcp::read(req, &*buf) == Error::None);
         tcp::release(req, &*buf);
@@ -186,7 +186,7 @@ TEST_CASE("handles concurrent connections", "[objstore.tcp]") {
 
     Listener listener{server.socket};
     listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
-        auto buf = tcp::acquire(req);
+        auto buf = co_await tcp::acquire(req);
         CHECK(static_cast<bool>(buf));
         CHECK(co_await tcp::read(req, &*buf) == Error::None);
         tcp::release(req, &*buf);
@@ -214,7 +214,7 @@ TEST_CASE("handles client disconnect", "[objstore.tcp]") {
 
     Listener listener{server.socket};
     listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
-        auto buf = tcp::acquire(req);
+        auto buf = co_await tcp::acquire(req);
         CHECK(static_cast<bool>(buf));
         CHECK(co_await tcp::read(req, &*buf) == Error::ConnectionClosed);
         tcp::release(req, &*buf);
@@ -243,7 +243,7 @@ TEST_CASE("tracks statistics correctly", "[objstore.tcp]") {
 
     Listener listener{server.socket};
     listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
-        auto buf = tcp::acquire(req);
+        auto buf = co_await tcp::acquire(req);
         CHECK(static_cast<bool>(buf));
         CHECK(co_await tcp::read(req, &*buf) == Error::None);
         tcp::release(req, &*buf);
@@ -277,7 +277,7 @@ TEST_CASE("binary data with null bytes", "[objstore.tcp]") {
 
     Listener listener{server.socket};
     listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
-        auto buf = tcp::acquire(req);
+        auto buf = co_await tcp::acquire(req);
         CHECK(static_cast<bool>(buf));
         CHECK(co_await tcp::read(req, &*buf) == Error::None);
         received.assign(buf->view.ptr, buf->view.ptr + buf->length);

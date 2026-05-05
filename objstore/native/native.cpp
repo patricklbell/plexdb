@@ -136,7 +136,7 @@ namespace objstore::native {
     }
 
     coroutine::Task<bool> try_append_tcp_read(const tcp::Request& req, DynamicArray<U8>& buf) {
-        Optional<tcp::RWBuffer> opt = tcp::acquire(req);
+        auto opt = co_await tcp::acquire(req);
         if (!opt) co_return false;
         auto& rbuf = *opt;
         if (auto err = co_await tcp::read(req, &rbuf); err != tcp::Error::None) {
@@ -230,7 +230,7 @@ namespace objstore::native {
     // ========================================================================
     coroutine::Task<> send_block(const tcp::Request& req, const U8* data, U64 len) {
         while (len > 0) {
-            Optional<tcp::RWBuffer> buf_opt = tcp::acquire(req);
+            auto buf_opt = co_await tcp::acquire(req);
             assert_true(static_cast<bool>(buf_opt), "buffer starvation in send_block");
             tcp::RWBuffer& buf = *buf_opt;
             U64 chunk = min(len, U64(buf.length));

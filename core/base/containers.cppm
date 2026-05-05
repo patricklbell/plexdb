@@ -316,6 +316,65 @@ export namespace plexdb {
     }
 
     // ========================================================================
+    // ring fifo (statically allocated circular buffer)
+    // ========================================================================
+    template<typename T, U64 N>
+    struct RingFifo {
+        static constexpr U64 capacity = N;
+
+        T slots[N]{};
+        U64 _head = 0;
+        U64 _tail = 0;
+
+        U64 head() const { return _head; }
+        U64 tail() const { return _tail; }
+    };
+
+    template<typename T, U64 N>
+    constexpr bool empty(const RingFifo<T,N>& fifo) { return fifo.head() == fifo.tail(); }
+    template<typename T, U64 N>
+    constexpr U64 count(const RingFifo<T,N>& fifo) {
+        if (fifo.tail() >= fifo.head()) return fifo.tail() - fifo.head();
+        return N - fifo.head() + fifo.tail();
+    }
+    template<typename T, U64 N>
+    constexpr bool full(const RingFifo<T,N>& fifo) {
+        return ((fifo.tail() + 1) % N) == fifo.head();
+    }
+    template<typename T, U64 N>
+    constexpr U64 capacity(const RingFifo<T,N>& fifo) { return N; }
+
+    template<typename T, U64 N>
+    T* front(RingFifo<T,N>& fifo) {
+        return empty(fifo) ? nullptr : &fifo.slots[fifo.head()];
+    }
+    template<typename T, U64 N>
+    const T* front(const RingFifo<T,N>& fifo) {
+        return empty(fifo) ? nullptr : &fifo.slots[fifo.head()];
+    }
+
+    template<typename T, U64 N>
+    void push_front(RingFifo<T,N>& fifo, T value) {
+        assert_true(!full(fifo), "ring fifo full");
+        fifo.slots[fifo._tail] = value;
+        fifo._tail = (fifo._tail + 1) % N;
+    }
+
+    template<typename T, U64 N>
+    T pop_front(RingFifo<T,N>& fifo) {
+        assert_true(!empty(fifo), "ring fifo empty");
+        T value = fifo.slots[fifo._head];
+        fifo._head = (fifo._head + 1) % N;
+        return value;
+    }
+
+    template<typename T, U64 N>
+    void clear(RingFifo<T,N>& fifo) {
+        fifo._head = 0;
+        fifo._tail = 0;
+    }
+
+    // ========================================================================
     // deque (doubly-linked list)
     // ========================================================================
     template<typename T>

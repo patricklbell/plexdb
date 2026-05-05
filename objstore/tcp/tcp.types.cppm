@@ -31,7 +31,7 @@ export namespace objstore::tcp {
         U64 idx;
     };
 
-    using AcquireRWBufferFunctor = AutoFunctor<Optional<RWBuffer>(Connection*)>; // @todo async
+    using AcquireRWBufferFunctor = AutoFunctor<coroutine::Task<Optional<RWBuffer>>(Connection*)>;
     using ReleaseRWBufferFunctor = AutoFunctor<void(Connection*,const RWBuffer*)>;
     using AsyncReadFunctor = AutoFunctor<coroutine::Task<Error>(Connection*,RWBuffer*)>;
     using AsyncWriteFunctor = AutoFunctor<coroutine::Task<Error>(Connection*,const RWBuffer*)>;
@@ -49,19 +49,15 @@ export namespace objstore::tcp {
     struct Connection {
         os::Handle client;
         Optional<coroutine::Task<void, coroutine::Start::Eager>> task;
-        // @warn req must be stored here so its lifetime matches the task, making
-        //       const Request& safe across co_awaits
         Request req;
 
-        // preemption state for resuming after r/w/c completes
-        // @warn internal, do not use in connection handler
         U32 count_rwc;
         Error error_rwc;
         std::coroutine_handle<> waiting_rwc;
     };
 
-    Optional<RWBuffer> acquire(const Request& req) { return (*req.acquire)(req.connection); }
-    void release(const Request& req, const RWBuffer* buffer) { return (*req.release)(req.connection, buffer); }
+    inline coroutine::Task<Optional<RWBuffer>> acquire(const Request& req) { co_return co_await (*req.acquire)(req.connection); }
+    inline void release(const Request& req, const RWBuffer* buffer) { return (*req.release)(req.connection, buffer); }
     coroutine::Task<Error> read(const Request& req, RWBuffer* buffer) { co_return co_await (*req.read)(req.connection, buffer); }
     coroutine::Task<Error> write(const Request& req, const RWBuffer* buffer) { co_return co_await (*req.write)(req.connection, buffer); }
     coroutine::Task<> close(const Request& req) { co_return co_await (*req.close)(req.connection); }

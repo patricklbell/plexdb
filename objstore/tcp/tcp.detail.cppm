@@ -52,6 +52,8 @@ namespace objstore::tcp {
         DynamicArray<BufferInfo> buffer_infos{ring.buffer_count};
         U32 next_free_buffer_idx = 0;
 
+        RingFifo<std::coroutine_handle<>, MAX_CONCURRENT_CONNECTIONS> buffer_waiters{};
+
         // helpers
         auto close_and_cleanup = [&](const os::Handle& client, bool is_in_close_handler) {
             auto it = find_it(client_to_connection, client);
@@ -81,27 +83,40 @@ namespace objstore::tcp {
         };
 
         // user api
-        AcquireRWBufferFunctor uring_acquire_rwbuffer_functor{[&](Connection* connection) -> Optional<RWBuffer> {
-            U32 free_buffer_idx = get_next_free_buffer_idx(next_free_buffer_idx, buffer_infos, ring.buffer_count);
-            // @todo error handling
-            if (free_buffer_idx == INVALID_BUFFER_IDX) {
-                return {};
+        AcquireRWBufferFunctor uring_acquire_rwbuffer_functor{[&](Connection* connection) -> coroutine::Task<Optional<RWBuffer>> {
+            while (true) {
+                U32 free_buffer_idx = get_next_free_buffer_idx(next_free_buffer_idx, buffer_infos, ring.buffer_count);
+                if (free_buffer_idx != INVALID_BUFFER_IDX) {
+                    BufferInfo& info = buffer_infos[free_buffer_idx];
+                    info.client = connection->client;
+                    PLEXDB_DEBUG_X(info.buffer_idx = free_buffer_idx;)
+
+                    co_return RWBuffer{
+                        .view   = TArrayView<U8,U32>(ring.buffers + free_buffer_idx * ring.buffer_size, ring.buffer_size),
+                        .length = ring.buffer_size,
+                        .idx    = free_buffer_idx,
+                    };
+                }
+
+                co_await coroutine::Awaitable{
+                    [&](std::coroutine_handle<> h) {
+                        push_front(buffer_waiters, h);
+                    },
+                    [&]() -> bool {
+                        return get_next_free_buffer_idx(next_free_buffer_idx, buffer_infos, ring.buffer_count) != INVALID_BUFFER_IDX;
+                    }
+                };
             }
-
-            BufferInfo& info = buffer_infos[free_buffer_idx];
-            info.client = connection->client;
-            PLEXDB_DEBUG_X(info.buffer_idx = free_buffer_idx;)
-
-            return RWBuffer{
-                .view   = TArrayView<U8,U32>(ring.buffers + free_buffer_idx * ring.buffer_size, ring.buffer_size),
-                .length = ring.buffer_size,
-                .idx    = free_buffer_idx,
-            };
         }};
 
         ReleaseRWBufferFunctor uring_release_rwbuffer_functor{[&]([[maybe_unused]] Connection* connection, const RWBuffer* buffer) {
             BufferInfo& info = buffer_infos[buffer->idx];
             info.client = os::zero_handle();
+
+            if (!empty(buffer_waiters)) {
+                auto h = pop_front(buffer_waiters);
+                h.resume();
+            }
         }};
 
         AsyncReadFunctor uring_async_read_functor{[&](Connection* connection, RWBuffer* buffer) -> coroutine::Task<Error> {
@@ -312,6 +327,8 @@ namespace objstore::tcp {
         MapFixedSentinel<os::Handle, U8, 2_u64*MAX_CONCURRENT_CONNECTIONS> waiting_op;
         DynamicArray<BufferInfo> buffer_infos{BUFFER_COUNT};
         U32 next_free_buffer_idx = 0;
+
+        RingFifo<std::coroutine_handle<>, MAX_CONCURRENT_CONNECTIONS> socket_buffer_waiters{};
         U8* buffer_pool = os::allocate(U64(BUFFER_SIZE) * BUFFER_COUNT);
 
         // non-blocking accept + non-blocking client I/O, coroutine handlers suspend on socket readiness.
@@ -354,22 +371,38 @@ namespace objstore::tcp {
             remove_it(client_to_connection, it);
         };
 
-        AcquireRWBufferFunctor socket_acquire_functor{[&](Connection* connection) -> Optional<RWBuffer> {
-            U32 free = get_next_free_buffer_idx(next_free_buffer_idx, buffer_infos, BUFFER_COUNT);
-            if (free == INVALID_BUFFER_IDX) return {};
+        AcquireRWBufferFunctor socket_acquire_functor{[&](Connection* connection) -> coroutine::Task<Optional<RWBuffer>> {
+            while (true) {
+                U32 free = get_next_free_buffer_idx(next_free_buffer_idx, buffer_infos, BUFFER_COUNT);
+                if (free != INVALID_BUFFER_IDX) {
+                    buffer_infos[free].client = connection->client;
+                    PLEXDB_DEBUG_X(buffer_infos[free].buffer_idx = free;)
 
-            buffer_infos[free].client = connection->client;
-            PLEXDB_DEBUG_X(buffer_infos[free].buffer_idx = free;)
+                    co_return RWBuffer{
+                        .view   = TArrayView<U8,U32>(buffer_pool + free * BUFFER_SIZE, BUFFER_SIZE),
+                        .length = BUFFER_SIZE,
+                        .idx    = free,
+                    };
+                }
 
-            return RWBuffer{
-                .view   = TArrayView<U8,U32>(buffer_pool + free * BUFFER_SIZE, BUFFER_SIZE),
-                .length = BUFFER_SIZE,
-                .idx    = free,
-            };
+                co_await coroutine::Awaitable{
+                    [&](std::coroutine_handle<> h) {
+                        push_front(socket_buffer_waiters, h);
+                    },
+                    [&]() -> bool {
+                        return get_next_free_buffer_idx(next_free_buffer_idx, buffer_infos, BUFFER_COUNT) != INVALID_BUFFER_IDX;
+                    }
+                };
+            }
         }};
 
         ReleaseRWBufferFunctor socket_release_functor{[&](Connection*, const RWBuffer* buffer) {
             buffer_infos[buffer->idx].client = os::zero_handle();
+
+            if (!empty(socket_buffer_waiters)) {
+                auto h = pop_front(socket_buffer_waiters);
+                h.resume();
+            }
         }};
 
         AsyncReadFunctor socket_read_functor{[&](Connection* connection, RWBuffer* buffer) -> coroutine::Task<Error> {
