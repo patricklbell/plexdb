@@ -8,7 +8,9 @@ module;
     #include <sys/statvfs.h>
     #include <sys/mman.h>
     #include <sys/syscall.h>
+    #include <sys/stat.h>
     #include <fcntl.h>
+    #include <dirent.h>
     #include <linux/aio_abi.h>
     #include <linux/io_uring.h>
     #include <stdlib.h>
@@ -197,6 +199,32 @@ namespace plexdb::os {
                 return MAX_U32;
             }
 
+            U32 get_disk_queue_depth() {
+                constexpr U32 DEFAULT_QUEUE_DEPTH = 32;
+                constexpr U32 ROTATIONAL_QUEUE_DEPTH = 8;
+
+                DIR* sys_block = opendir("/sys/block");
+                if (sys_block) {
+                    struct dirent* entry;
+                    while ((entry = readdir(sys_block)) != nullptr) {
+                        if (entry->d_name[0] == '.') continue;
+
+                        if (strncmp(entry->d_name, "loop", 4) == 0) continue;
+                        if (strncmp(entry->d_name, "nvme", 4) == 0) continue;
+
+                        char rotational_path[512];
+                        snprintf(rotational_path, sizeof(rotational_path), "/sys/block/%s/queue/rotational", entry->d_name);
+                        if (read_sysfs_u64(rotational_path, 1) == 1) {
+                            closedir(sys_block);
+                            return ROTATIONAL_QUEUE_DEPTH;
+                        }
+                    }
+                    closedir(sys_block);
+                }
+
+                return DEFAULT_QUEUE_DEPTH;
+            }
+
             void probe_io_uring(IoUringFeatures* f) {
                 f->supported = 0;
                 f->max_sq_entries = 0;
@@ -299,6 +327,7 @@ namespace plexdb::os {
                 g_system_info.cache_line_size = get_cache_line_size();
                 g_system_info.mlock_limit = get_mlock_limit();
                 g_system_info.vma_limit = get_vma_limit();
+                g_system_info.disk_queue_depth = get_disk_queue_depth();
 
                 // process info
                 g_process_info.pid = static_cast<U32>(getpid());

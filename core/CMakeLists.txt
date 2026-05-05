@@ -77,6 +77,7 @@ target_sources(core_modules
         FILE_SET CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
+            aio/aio.cppm
             argparse/argparse.cppm
             arena/arena.cppm
             base/base.cppm
@@ -147,6 +148,7 @@ target_include_directories(core
 
 target_sources(core
     PRIVATE
+        aio/aio.cpp
         argparse/argparse.cpp
         arena/arena.cpp
         base/math.cpp

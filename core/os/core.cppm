@@ -147,6 +147,22 @@ export namespace plexdb::os {
     };
 
     // ========================================================================
+    // async file I/O (Linux AIO fallback)
+    // ========================================================================
+    enum class AsyncFileError { None, IO, Invalid, Cancelled };
+    struct AsyncFileCtx;
+    AsyncFileCtx*    async_file_ctx_create(U32 max_events);
+    void             async_file_ctx_destroy(AsyncFileCtx*);
+    bool             async_file_submit_read (AsyncFileCtx*, Handle file, U64 offset, U32 count, U8* buf, U64 token);
+    bool             async_file_submit_write(AsyncFileCtx*, Handle file, U64 offset, U32 count, const U8* buf, U64 token);
+    bool             async_file_submit_sync (AsyncFileCtx*, Handle file, U64 token);
+    bool             async_file_submit_flush(AsyncFileCtx*);
+    struct AsyncFileEvent { AsyncFileError error; U64 token; U32 bytes; };
+    U32              async_file_drain(AsyncFileCtx*, AsyncFileEvent* out, U32 max);
+    void             async_file_wait_one(AsyncFileCtx*);
+    Handle           async_file_wake_fd(AsyncFileCtx*);
+
+    // ========================================================================
     // process
     // ========================================================================
     // @note returns empty optional on failure, zero handle for child process

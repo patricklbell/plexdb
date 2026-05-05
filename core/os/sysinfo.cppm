@@ -18,6 +18,7 @@ export namespace plexdb::os {
         U64 cache_line_size;
         U64 mlock_limit;
         U32 vma_limit;
+        U32 disk_queue_depth;
     };
 
     // ========================================================================

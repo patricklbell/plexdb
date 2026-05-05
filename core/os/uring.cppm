@@ -90,7 +90,25 @@ export namespace plexdb::uring {
         os::Handle client;
     };
 
-    using CQE = TaggedUnion<ReadEvent,WriteEvent,AcceptEvent,MultishotAcceptEvent,CloseEvent>;
+    struct FileReadEvent {
+        Error error;
+        U32 buffer_idx;
+        U32 bytes_read;
+        U64 token;
+    };
+    struct FileWriteEvent {
+        Error error;
+        U32 buffer_idx;
+        U32 bytes_written;
+        U64 token;
+    };
+    struct FileSyncEvent {
+        Error error;
+        U64 token;
+    };
+
+    using CQE = TaggedUnion<ReadEvent,WriteEvent,AcceptEvent,MultishotAcceptEvent,CloseEvent,
+                            FileReadEvent,FileWriteEvent,FileSyncEvent>;
 
     U32 cqe_get_size(const Ring& ring);
     CQE cqe_top(Ring& ring);
@@ -106,7 +124,25 @@ export namespace plexdb::uring {
     bool sqe_push_read(Ring& ring, os::Handle client, U32 buffer_idx, U32 byte_offset, U32 byte_count);
     bool sqe_push_write(Ring& ring, os::Handle client, U32 buffer_idx, U32 byte_offset, U32 byte_count);
 
+    bool sqe_push_file_read(Ring& ring, os::Handle file, U32 buffer_idx, U64 file_offset, U32 count, U64 token);
+    bool sqe_push_file_write(Ring& ring, os::Handle file, U32 buffer_idx, U64 file_offset, U32 count, U64 token);
+    bool sqe_push_file_sync(Ring& ring, os::Handle file, U64 token);
+
     bool sqe_submit_non_blocking(Ring& ring);
+
+    // ========================================================================
+    // global I/O budget
+    // ========================================================================
+    struct GlobalIOBudget {
+        U32 network_queue_depth;
+        U64 network_buffer_size;
+        U32 network_buffer_count;
+        U32 file_queue_depth;
+        U64 file_buffer_size;
+        U32 file_buffer_count;
+    };
+
+    GlobalIOBudget compute_io_budget(U64 page_size);
 
     // ========================================================================
     // stats

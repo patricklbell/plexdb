@@ -28,6 +28,9 @@ namespace plexdb::uring {
         TYPE_WRITE              = 0x3_u64 << 60,
         TYPE_CLOSE              = 0x4_u64 << 60,
         TYPE_MULTISHOT_ACCEPT   = 0x5_u64 << 60,
+        TYPE_FILE_READ          = 0x6_u64 << 60,
+        TYPE_FILE_WRITE         = 0x7_u64 << 60,
+        TYPE_FILE_SYNC          = 0x8_u64 << 60,
 
         TYPE_MASK  = 0xF_u64 << 60,
         DATA_MASK = ~TYPE_MASK
@@ -127,6 +130,42 @@ namespace plexdb::uring {
 
     U8* get_buffer_ptr(Ring& ring, U32 buffer_idx) {
         return &ring.buffers[buffer_idx*ring.buffer_size];
+    }
+
+    GlobalIOBudget compute_io_budget(U64 page_size) {
+        constexpr U64 IO_URING_OVERHEAD_BYTES = 64_kb;
+
+        U64 mlock_limit = os::get_system_info()->mlock_limit;
+        U64 total_mlock = max(mlock_limit, 2 * IO_URING_OVERHEAD_BYTES) - 2 * IO_URING_OVERHEAD_BYTES;
+
+        auto* kf = os::get_kernel_features();
+        U32 max_sq_entries = kf->io_uring.supported ? min(kf->io_uring.max_sq_entries, kf->io_uring.max_cq_entries) : 0;
+        U32 max_iovecs = kf->io_uring.supported ? kf->io_uring.max_iovecs : 0;
+        U64 total_memory = os::get_system_info()->total_memory;
+
+        U64 usable_bytes = min(total_mlock, total_memory);
+        U64 network_bytes = usable_bytes / 2;
+        U64 file_bytes = usable_bytes / 2;
+
+        U32 disk_queue_depth = os::get_system_info()->disk_queue_depth;
+        U32 network_queue_depth = max_sq_entries > 0 ? max_sq_entries / 2 : 32;
+
+        U64 network_buffer_size = 64_kb;
+        U32 network_buffer_count = U32(network_bytes / network_buffer_size);
+        if (network_buffer_count > max_iovecs) network_buffer_count = max_iovecs;
+
+        U64 file_buffer_size = align_up(page_size, os::get_system_info()->page_size);
+        U32 file_buffer_count = U32(file_bytes / file_buffer_size);
+        if (file_buffer_count > max_iovecs) file_buffer_count = max_iovecs;
+
+        return GlobalIOBudget{
+            .network_queue_depth = network_queue_depth,
+            .network_buffer_size = network_buffer_size,
+            .network_buffer_count = network_buffer_count,
+            .file_queue_depth = disk_queue_depth,
+            .file_buffer_size = file_buffer_size,
+            .file_buffer_count = file_buffer_count,
+        };
     }
 
     #if CORE_ENABLE_IO_URING
@@ -333,6 +372,28 @@ namespace plexdb::uring {
                             .client = (error == Error::None) ? fd_to_handle(static_cast<int>(data)) : os::zero_handle(),
                         }};
                     }break;
+                    case TYPE_FILE_READ:{
+                        return CQE{FileReadEvent{
+                            .error = error,
+                            .buffer_idx = static_cast<U32>(data & 0xFFFFFFFF),
+                            .bytes_read = static_cast<U32>(max(result, 0_s32)),
+                            .token = data >> 32,
+                        }};
+                    }break;
+                    case TYPE_FILE_WRITE:{
+                        return CQE{FileWriteEvent{
+                            .error = error,
+                            .buffer_idx = static_cast<U32>(data & 0xFFFFFFFF),
+                            .bytes_written = static_cast<U32>(max(result, 0_s32)),
+                            .token = data >> 32,
+                        }};
+                    }break;
+                    case TYPE_FILE_SYNC:{
+                        return CQE{FileSyncEvent{
+                            .error = error,
+                            .token = data,
+                        }};
+                    }break;
                     case TYPE_MASK:{}break;
                     case DATA_MASK:{}break;
                 }
@@ -436,6 +497,58 @@ namespace plexdb::uring {
             
             auto* iovecs = static_cast<iovec*>(ring.iovecs_vptr);
             io_uring_prep_write_fixed(sqe, client_fd, iovecs[buffer_idx].iov_base, byte_count, byte_offset, buffer_idx);
+            io_uring_sqe_set_data(sqe, (void*)user_data);
+            return true;
+        }
+
+        bool sqe_push_file_read(Ring& ring, os::Handle file, U32 buffer_idx, U64 file_offset, U32 count, U64 token) {
+            assert_true(static_cast<bool>(ring), "invalid ring");
+            assert_true(buffer_idx < ring.buffer_count, "buffer_idx out of range");
+            auto* uring_ring = static_cast<io_uring*>(ring.ring_vptr);
+            io_uring_sqe* sqe = io_uring_get_sqe(uring_ring);
+            if (sqe == nullptr) {
+                return false;
+            }
+
+            int file_fd = handle_to_fd(file);
+            U64 user_data = encode_user_data(TYPE_FILE_READ, (token << 32) | U64(buffer_idx));
+
+            auto* iovecs = static_cast<iovec*>(ring.iovecs_vptr);
+            io_uring_prep_read_fixed(sqe, file_fd, iovecs[buffer_idx].iov_base, count, file_offset, buffer_idx);
+            io_uring_sqe_set_data(sqe, (void*)user_data);
+            return true;
+        }
+
+        bool sqe_push_file_write(Ring& ring, os::Handle file, U32 buffer_idx, U64 file_offset, U32 count, U64 token) {
+            assert_true(static_cast<bool>(ring), "invalid ring");
+            assert_true(buffer_idx < ring.buffer_count, "buffer_idx out of range");
+            auto* uring_ring = static_cast<io_uring*>(ring.ring_vptr);
+            io_uring_sqe* sqe = io_uring_get_sqe(uring_ring);
+            if (sqe == nullptr) {
+                return false;
+            }
+
+            int file_fd = handle_to_fd(file);
+            U64 user_data = encode_user_data(TYPE_FILE_WRITE, (token << 32) | U64(buffer_idx));
+
+            auto* iovecs = static_cast<iovec*>(ring.iovecs_vptr);
+            io_uring_prep_write_fixed(sqe, file_fd, iovecs[buffer_idx].iov_base, count, file_offset, buffer_idx);
+            io_uring_sqe_set_data(sqe, (void*)user_data);
+            return true;
+        }
+
+        bool sqe_push_file_sync(Ring& ring, os::Handle file, U64 token) {
+            assert_true(static_cast<bool>(ring), "invalid ring");
+            auto* uring_ring = static_cast<io_uring*>(ring.ring_vptr);
+            io_uring_sqe* sqe = io_uring_get_sqe(uring_ring);
+            if (sqe == nullptr) {
+                return false;
+            }
+
+            int file_fd = handle_to_fd(file);
+            U64 user_data = encode_user_data(TYPE_FILE_SYNC, token);
+
+            io_uring_prep_fsync(sqe, file_fd, IORING_FSYNC_DATASYNC);
             io_uring_sqe_set_data(sqe, (void*)user_data);
             return true;
         }
@@ -555,6 +668,21 @@ namespace plexdb::uring {
         }
 
         bool sqe_push_write(Ring& ring, os::Handle client, U32 buffer_idx, U32 byte_offset, U32 byte_count) {
+            assert_true_always(false, "io_uring not available on this platform");
+            return false;
+        }
+
+        bool sqe_push_file_read(Ring& ring, os::Handle file, U32 buffer_idx, U64 file_offset, U32 count, U64 token) {
+            assert_true_always(false, "io_uring not available on this platform");
+            return false;
+        }
+
+        bool sqe_push_file_write(Ring& ring, os::Handle file, U32 buffer_idx, U64 file_offset, U32 count, U64 token) {
+            assert_true_always(false, "io_uring not available on this platform");
+            return false;
+        }
+
+        bool sqe_push_file_sync(Ring& ring, os::Handle file, U64 token) {
             assert_true_always(false, "io_uring not available on this platform");
             return false;
         }

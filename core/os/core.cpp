@@ -9,9 +9,14 @@ module;
     #include <sys/stat.h>
     #include <sys/wait.h>
     #include <signal.h>
+    #include <sys/eventfd.h>
+    #include <linux/aio_abi.h>
+    #include <errno.h>
 #endif
 
 module plexdb.os.core;
+
+import plexdb.base;
 
 namespace plexdb::os {
     File::~File()                   { file_close(this->handle); }
@@ -153,6 +158,222 @@ namespace plexdb::os {
         return FileStats{
             .byte_count = static_cast<U64>(stat.st_size),
         };
+    }
+
+    // ========================================================================
+    // async file I/O
+    // ========================================================================
+    constexpr U32 MAX_PENDING_AIO = 256;
+
+    struct AsyncFileCtx {
+        aio_context_t aio_ctx;
+        U32 max_events;
+        U32 pending_count;
+        Handle wake_fd;
+        U32 pending_idx;
+        iocb* pending_iocbs[MAX_PENDING_AIO];
+    };
+
+    AsyncFileCtx* async_file_ctx_create(U32 max_events) {
+        #if PLEXDB_OS_LINUX
+            assert_true(max_events > 0, "max_events must be positive");
+            assert_true(max_events <= MAX_PENDING_AIO, "max_events exceeds limit");
+
+            AsyncFileCtx* ctx = reinterpret_cast<AsyncFileCtx*>(os::allocate_zero(sizeof(AsyncFileCtx)));
+            assert_true(ctx != nullptr, "failed to allocate async file context");
+
+            ctx->max_events = max_events;
+            ctx->pending_count = 0;
+            ctx->pending_idx = 0;
+
+            long ret = syscall(7, max_events, &ctx->aio_ctx); // __NR_io_setup
+            assert_true(ret >= 0, "io_setup syscall failed");
+
+            ctx->wake_fd = Handle{.u32={static_cast<U32>(eventfd(0, EFD_NONBLOCK))}};
+            assert_true(!os::is_zero_handle(ctx->wake_fd), "eventfd creation failed");
+
+            return ctx;
+        #else
+            assert_true(false, "async file I/O not supported on this platform");
+            return nullptr;
+        #endif
+    }
+
+    void async_file_ctx_destroy(AsyncFileCtx* ctx) {
+        #if PLEXDB_OS_LINUX
+            assert_true(ctx != nullptr, "null context in async_file_ctx_destroy");
+
+            if (!os::is_zero_handle(ctx->wake_fd)) {
+                int err = close(static_cast<int>(ctx->wake_fd.u32[0]));
+                assert_true(err == 0, "eventfd close failed");
+            }
+
+            long ret = syscall(6, ctx->aio_ctx); // __NR_io_destroy
+            assert_true(ret == 0, "io_destroy syscall failed");
+
+            os::deallocate(ctx);
+        #else
+            assert_true(false, "async file I/O not supported on this platform");
+        #endif
+    }
+
+    bool async_file_submit_read(AsyncFileCtx* ctx, Handle file, U64 offset, U32 count, U8* buf, U64 token) {
+        #if PLEXDB_OS_LINUX
+            assert_true(ctx != nullptr, "null context in async_file_submit_read");
+            assert_true(!os::is_zero_handle(file), "invalid file handle in async_file_submit_read");
+            assert_true(buf != nullptr, "null buffer in async_file_submit_read");
+            assert_true(count > 0, "zero count in async_file_submit_read");
+
+            iocb* iocb_ptr = reinterpret_cast<iocb*>(os::allocate_zero(sizeof(iocb)));
+            assert_true(iocb_ptr != nullptr, "failed to allocate iocb");
+
+            iocb_ptr->aio_fildes = handle_to_fd(file);
+            iocb_ptr->aio_offset = static_cast<off_t>(offset);
+            iocb_ptr->aio_nbytes = count;
+            iocb_ptr->aio_buf = reinterpret_cast<U64>(buf);
+            iocb_ptr->aio_data = token;
+            iocb_ptr->aio_flags = IOCB_FLAG_RESFD;
+            iocb_ptr->aio_resfd = static_cast<U32>(ctx->wake_fd.u32[0]);
+
+            iocb* iocbs[1] = { iocb_ptr };
+            long ret = syscall(18, ctx->aio_ctx, 1, iocbs); // __NR_io_submit
+            assert_true(ret == 1, "io_submit failed for read");
+
+            ctx->pending_count++;
+            ctx->pending_iocbs[ctx->pending_idx % MAX_PENDING_AIO] = iocb_ptr;
+            ctx->pending_idx++;
+            return true;
+        #else
+            assert_true(false, "async file I/O not supported on this platform");
+            return false;
+        #endif
+    }
+
+    bool async_file_submit_write(AsyncFileCtx* ctx, Handle file, U64 offset, U32 count, const U8* buf, U64 token) {
+        #if PLEXDB_OS_LINUX
+            assert_true(ctx != nullptr, "null context in async_file_submit_write");
+            assert_true(!os::is_zero_handle(file), "invalid file handle in async_file_submit_write");
+            assert_true(buf != nullptr, "null buffer in async_file_submit_write");
+            assert_true(count > 0, "zero count in async_file_submit_write");
+
+            iocb* iocb_ptr = reinterpret_cast<iocb*>(os::allocate_zero(sizeof(iocb)));
+            assert_true(iocb_ptr != nullptr, "failed to allocate iocb");
+
+            iocb_ptr->aio_fildes = handle_to_fd(file);
+            iocb_ptr->aio_offset = static_cast<off_t>(offset);
+            iocb_ptr->aio_nbytes = count;
+            iocb_ptr->aio_buf = reinterpret_cast<U64>(const_cast<U8*>(buf));
+            iocb_ptr->aio_data = token;
+            iocb_ptr->aio_flags = IOCB_FLAG_RESFD;
+            iocb_ptr->aio_resfd = static_cast<U32>(ctx->wake_fd.u32[0]);
+            iocb_ptr->aio_lio_opcode = IOCB_CMD_PWRITEV;
+
+            iocb* iocbs[1] = { iocb_ptr };
+            long ret = syscall(18, ctx->aio_ctx, 1, iocbs); // __NR_io_submit
+            assert_true(ret == 1, "io_submit failed for write");
+
+            ctx->pending_count++;
+            ctx->pending_iocbs[ctx->pending_idx % MAX_PENDING_AIO] = iocb_ptr;
+            ctx->pending_idx++;
+            return true;
+        #else
+            assert_true(false, "async file I/O not supported on this platform");
+            return false;
+        #endif
+    }
+
+    bool async_file_submit_sync(AsyncFileCtx* ctx, Handle file, U64 token) {
+        #if PLEXDB_OS_LINUX
+            assert_true(ctx != nullptr, "null context in async_file_submit_sync");
+            assert_true(!os::is_zero_handle(file), "invalid file handle in async_file_submit_sync");
+
+            iocb* iocb_ptr = reinterpret_cast<iocb*>(os::allocate_zero(sizeof(iocb)));
+            assert_true(iocb_ptr != nullptr, "failed to allocate iocb");
+
+            iocb_ptr->aio_fildes = handle_to_fd(file);
+            iocb_ptr->aio_offset = 0;
+            iocb_ptr->aio_nbytes = 0;
+            iocb_ptr->aio_buf = token;
+            iocb_ptr->aio_data = token;
+            iocb_ptr->aio_flags = IOCB_FLAG_RESFD;
+            iocb_ptr->aio_resfd = static_cast<U32>(ctx->wake_fd.u32[0]);
+            iocb_ptr->aio_lio_opcode = IOCB_CMD_FSYNC;
+
+            iocb* iocbs[1] = { iocb_ptr };
+            long ret = syscall(18, ctx->aio_ctx, 1, iocbs); // __NR_io_submit
+            assert_true(ret == 1, "io_submit failed for sync");
+
+            ctx->pending_count++;
+            ctx->pending_iocbs[ctx->pending_idx % MAX_PENDING_AIO] = iocb_ptr;
+            ctx->pending_idx++;
+            return true;
+        #else
+            assert_true(false, "async file I/O not supported on this platform");
+            return false;
+        #endif
+    }
+
+    bool async_file_submit_flush(AsyncFileCtx* ctx) {
+        assert_true(ctx != nullptr, "null context in async_file_submit_flush");
+        return true;
+    }
+
+    U32 async_file_drain(AsyncFileCtx* ctx, AsyncFileEvent* out, U32 max) {
+        #if PLEXDB_OS_LINUX
+            assert_true(ctx != nullptr, "null context in async_file_drain");
+            assert_true(out != nullptr, "null output buffer in async_file_drain");
+            assert_true(max > 0, "zero max in async_file_drain");
+
+            io_event events[16];
+            U32 batch = min(max, U32(16));
+
+            timespec timeout = { .tv_sec = 0, .tv_nsec = 0 };
+            long ret = syscall(29, ctx->aio_ctx, 0, batch, events, &timeout); // __NR_io_getevents
+            assert_true(ret >= 0, "io_getevents syscall failed");
+
+            if (ret <= 0) return 0;
+
+            U32 count = 0;
+            for (long i = 0; i < ret && count < max; i++) {
+                assert_true(events[i].res >= 0 || events[i].res == -EINPROGRESS, 
+                    "unexpected negative result in drain");
+
+                out[count].token = events[i].data;
+                out[count].bytes = static_cast<U32>(events[i].res >= 0 ? events[i].res : 0);
+                out[count].error = (events[i].res < 0) ? AsyncFileError::IO : AsyncFileError::None;
+
+                if (ctx->pending_count > 0) {
+                    U32 idx = (ctx->pending_idx - ctx->pending_count) % MAX_PENDING_AIO;
+                    U8* iocb_ptr = reinterpret_cast<U8*>(ctx->pending_iocbs[idx]);
+                    os::deallocate(iocb_ptr);
+                }
+                ctx->pending_count--;
+                count++;
+            }
+
+            return count;
+        #else
+            assert_true(false, "async file I/O not supported on this platform");
+            return 0;
+        #endif
+    }
+
+    void async_file_wait_one(AsyncFileCtx* ctx) {
+        #if PLEXDB_OS_LINUX
+            assert_true(ctx != nullptr, "null context in async_file_wait_one");
+            assert_true(!os::is_zero_handle(ctx->wake_fd), "invalid wake fd in async_file_wait_one");
+
+            U64 val;
+            ssize_t n = read(static_cast<int>(ctx->wake_fd.u32[0]), &val, sizeof(val));
+            assert_true(n == sizeof(val) || n == -1, "unexpected read result from eventfd");
+        #else
+            assert_true(false, "async file I/O not supported on this platform");
+        #endif
+    }
+
+    Handle async_file_wake_fd(AsyncFileCtx* ctx) {
+        assert_true(ctx != nullptr, "null context in async_file_wake_fd");
+        return ctx->wake_fd;
     }
 
     // ========================================================================

@@ -266,6 +266,12 @@ namespace objstore::tcp {
                         handle_accept_completion(cqe);
                     } else if constexpr (SameAs<T, uring::CloseEvent>) {
                         handle_close_completion(cqe);
+                    } else if constexpr (SameAs<T, uring::FileReadEvent>) {
+                        // @note file I/O completions handled by pager, not TCP event loop
+                    } else if constexpr (SameAs<T, uring::FileWriteEvent>) {
+                        // @note file I/O completions handled by pager, not TCP event loop
+                    } else if constexpr (SameAs<T, uring::FileSyncEvent>) {
+                        // @note file I/O completions handled by pager, not TCP event loop
                     } else {
                         static_assert(!SameAs<T,T>);
                     }
