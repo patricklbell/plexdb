@@ -12,7 +12,7 @@ import objstore.engine.io;
 import plexdb.base;
 import plexdb.os;
 import plexdb.tagged_union;
-import plexdb.os.dynamic_tagged_union;
+import plexdb.dynamic.tagged_union;
 import plexdb.pager;
 import plexdb.blob;
 import plexdb.btree;

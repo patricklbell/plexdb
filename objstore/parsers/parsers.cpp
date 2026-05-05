@@ -15,8 +15,8 @@ module objstore.parsers;
 import plexdb.base;
 import plexdb.tagged_union;
 import plexdb.os;
-import plexdb.os.containers;
-import plexdb.os.dynamic_tagged_union;
+import plexdb.dynamic.containers;
+import plexdb.dynamic.tagged_union;
 import objstore.log;
 
 namespace {

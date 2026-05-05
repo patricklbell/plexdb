@@ -5,7 +5,7 @@ module objstore.engine.schema;
 
 import plexdb.threads;
 import plexdb.tagged_union;
-import plexdb.os.dynamic_tagged_union;
+import plexdb.dynamic.tagged_union;
 
 using namespace plexdb;
 

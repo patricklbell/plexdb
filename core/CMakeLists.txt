@@ -99,11 +99,11 @@ target_sources(core_modules
             coroutine/base.cppm
             coroutine/coroutine.cppm
             coroutine/extra.cppm
+            dynamic/containers.cppm
+            dynamic/function.cppm
+            dynamic/tagged_union.cppm
             log/log.cppm
-            os/containers.cppm
             os/core.cppm
-            os/dynamic_tagged_union.cppm
-            os/function.cppm
             os/os.cppm
             os/signal.cppm
             os/socket.cppm

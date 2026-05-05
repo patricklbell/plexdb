@@ -2,9 +2,9 @@ export module objstore.engine.statements;
 
 import plexdb.base;
 import plexdb.os;
-import plexdb.os.containers;
+import plexdb.dynamic.containers;
 import plexdb.tagged_union;
-import plexdb.os.dynamic_tagged_union;
+import plexdb.dynamic.tagged_union;
 
 import objstore.engine.types;
 
@@ -26,7 +26,7 @@ export namespace objstore {
     struct BindMarker;
     struct Term {
         // @note @warn DO NOT modify without also checking TermWithIdentifier
-        ExpandDynamicTaggedUnion<
+        ExpandAutoTaggedUnion<
             TypeList<
                 Constant,
                 MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
@@ -325,7 +325,7 @@ export namespace objstore {
 
     struct TOIArithmeticOperation;
     struct TermWithIdentifiers {
-        ExpandDynamicTaggedUnion<
+        ExpandAutoTaggedUnion<
             // @note @warn order MUST match Term to allow direct pointer moving
             TypeList<
                 Constant,
@@ -399,7 +399,7 @@ export namespace objstore {
         struct Count {};
         // @note dynamic to allow recursive definition
         struct Selector {
-            DynamicTaggedUnion<ColumnName, Term, Cast, Function, Count> value;
+            AutoTaggedUnion<ColumnName, Term, Cast, Function, Count> value;
         };
         struct Cast {
             Selector column;

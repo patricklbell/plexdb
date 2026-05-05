@@ -1,7 +1,7 @@
 // @todo benchmark
 module;
 #include <initializer_list>
-export module plexdb.os.containers;
+export module plexdb.dynamic.containers;
 
 import plexdb.base;
 import plexdb.os.core;
@@ -228,7 +228,7 @@ export namespace plexdb {
     T& insert(DynamicArray<T,Size>& arr, U64 idx, Args&&... args) {
         // @todo avoid unnecessary double move construct
         reserve_for_push(arr);
-        
+
         ++arr.length;
         for (Size i = arr.length - 1; i > idx; --i) {
             new (arr.ptr + i) T(move(arr.ptr[i - 1]));
@@ -344,7 +344,7 @@ export namespace plexdb {
             if (find_slot_and_pair(*this, key, slot_idx, pair_idx)) {
                 return Iterator{ .map = this, .slot_idx = slot_idx, .pair_idx = pair_idx };
             }
-            
+
             reserve_for_push(*this);
             slot_idx = hash(key) % slots.length;
             DynamicArray<Pair<K,V>>& bucket = slots[slot_idx];
@@ -396,7 +396,7 @@ export namespace plexdb {
             resize(map.slots, DYNAMIC_MAP_INITIAL_SLOTS);
             return;
         }
-        
+
         for (U64 i = 0; i < map.slots.length; i++) {
             if (map.slots[i].length > DYNAMIC_MAP_MAX_PAIRS_PER_SLOT) {
                 U64 new_slot_count = map.slots.length * DYNAMIC_MAP_SLOT_GROWTH_RATE + 1;
@@ -671,7 +671,7 @@ export namespace plexdb {
     template<typename K>
     void rehash(DynamicSet<K>& set, U64 new_slot_count) {
         assert_true(new_slot_count != 0, "zero rehash not allowed");
-        
+
         DynamicArray<DynamicArray<K>> old_slots = move(set.slots);
         DynamicArray<DynamicArray<K>> new_slots;
         resize(new_slots, new_slot_count);

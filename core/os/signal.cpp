@@ -10,7 +10,7 @@ module;
 
 module plexdb.os.signal;
 
-import plexdb.os.containers;
+import plexdb.dynamic.containers;
 
 namespace plexdb::os {
     #if PLEXDB_OS_LINUX

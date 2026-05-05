@@ -2,7 +2,7 @@ export module objstore.engine.virtual_table;
 
 import plexdb.base;
 import plexdb.os;
-import plexdb.os.containers;
+import plexdb.dynamic.containers;
 
 import objstore.engine.io;
 import objstore.engine.types;

@@ -1,7 +1,7 @@
 export module objstore.engine.schema;
 
 import plexdb.base;
-import plexdb.os.containers;
+import plexdb.dynamic.containers;
 import plexdb.pager;
 import plexdb.blob;
 import plexdb.btree;

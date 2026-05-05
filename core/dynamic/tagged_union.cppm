@@ -1,11 +1,11 @@
-export module plexdb.os.dynamic_tagged_union;
+export module plexdb.dynamic.tagged_union;
 
 import plexdb.base;
 import plexdb.os.core;
 
 export namespace plexdb {
     template<typename... Types>
-    struct DynamicTaggedUnion {
+    struct AutoTaggedUnion {
         static constexpr IndexSequenceFor<Types...> is{};
 
         static constexpr size_t invalid_index = static_cast<size_t>(-1);
@@ -43,7 +43,7 @@ export namespace plexdb {
         // copy into already-allocated ptr
         // ====================================================================
         template <size_t I>
-        void copy_construct_at_index(const DynamicTaggedUnion& other) {
+        void copy_construct_at_index(const AutoTaggedUnion& other) {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
                 new (ptr) T(*reinterpret_cast<const T*>(other.ptr));
@@ -51,7 +51,7 @@ export namespace plexdb {
         }
 
         template <size_t... Is>
-        void copy_construct_impl(const DynamicTaggedUnion& other, IndexSequence<Is...>) {
+        void copy_construct_impl(const AutoTaggedUnion& other, IndexSequence<Is...>) {
             ((other.index == Is ? (copy_construct_at_index<Is>(other), void()) : void()), ...);
         }
 
@@ -59,7 +59,7 @@ export namespace plexdb {
         // copy assignment helpers
         // ====================================================================
         template <size_t I>
-        void copy_assign_at_index(const DynamicTaggedUnion& other) {
+        void copy_assign_at_index(const AutoTaggedUnion& other) {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
                 if (index == I) {
@@ -73,7 +73,7 @@ export namespace plexdb {
         }
 
         template <size_t... Is>
-        void copy_assign_impl(const DynamicTaggedUnion& other, IndexSequence<Is...>) {
+        void copy_assign_impl(const AutoTaggedUnion& other, IndexSequence<Is...>) {
             ((other.index == Is ? (copy_assign_at_index<Is>(other), void()) : void()), ...);
         }
 
@@ -81,7 +81,7 @@ export namespace plexdb {
         // move assignment helpers
         // ====================================================================
         template <size_t I>
-        void move_assign_at_index(DynamicTaggedUnion&& other) {
+        void move_assign_at_index(AutoTaggedUnion&& other) {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
                 if (index == I) {
@@ -95,7 +95,7 @@ export namespace plexdb {
         }
 
         template <size_t... Is>
-        void move_assign_impl(DynamicTaggedUnion&& other, IndexSequence<Is...>) {
+        void move_assign_impl(AutoTaggedUnion&& other, IndexSequence<Is...>) {
             ((other.index == Is ? (move_assign_at_index<Is>(move(other)), void()) : void()), ...);
         }
 
@@ -103,18 +103,18 @@ export namespace plexdb {
         // ====================================================================
         // constructors
         // ====================================================================
-        DynamicTaggedUnion() = default;
+        AutoTaggedUnion() = default;
 
         template<typename T>
             requires (SameAs<Decay<T>, Types> || ...)
-        DynamicTaggedUnion(T&& value) {
+        AutoTaggedUnion(T&& value) {
             using DecayedT = Decay<T>;
             ptr = os::allocate(max(sizeof(Types)...));
             new (ptr) DecayedT(forward<T>(value));
             index = TypeIndex<DecayedT, Types...>;
         }
 
-        DynamicTaggedUnion(const DynamicTaggedUnion& other) {
+        AutoTaggedUnion(const AutoTaggedUnion& other) {
             if (other.ptr != nullptr) {
                 ptr = os::allocate(max(sizeof(Types)...));
                 copy_construct_impl(other, IndexSequenceFor<Types...>{});
@@ -123,7 +123,7 @@ export namespace plexdb {
         }
 
         // @note Move steals the allocation; other becomes empty.
-        DynamicTaggedUnion(DynamicTaggedUnion&& other) noexcept {
+        AutoTaggedUnion(AutoTaggedUnion&& other) noexcept {
             ptr         = other.ptr;
             index       = other.index;
             other.ptr   = nullptr;
@@ -133,14 +133,14 @@ export namespace plexdb {
         // ====================================================================
         // destructor
         // ====================================================================
-        ~DynamicTaggedUnion() {
+        ~AutoTaggedUnion() {
             destroy();
         }
 
         // ====================================================================
         // assignment
         // ====================================================================
-        DynamicTaggedUnion& operator=(const DynamicTaggedUnion& other) {
+        AutoTaggedUnion& operator=(const AutoTaggedUnion& other) {
             if (this == &other) return *this;
 
             if (other.ptr == nullptr) {
@@ -155,7 +155,7 @@ export namespace plexdb {
             return *this;
         }
 
-        DynamicTaggedUnion& operator=(DynamicTaggedUnion&& other) noexcept {
+        AutoTaggedUnion& operator=(AutoTaggedUnion&& other) noexcept {
             if (this == &other) return *this;
 
             destroy();
@@ -168,7 +168,7 @@ export namespace plexdb {
 
         template<typename T>
             requires (SameAs<Decay<T>, Types> || ...)
-        DynamicTaggedUnion& operator=(T&& value) {
+        AutoTaggedUnion& operator=(T&& value) {
             using DecayedT = Decay<T>;
             constexpr size_t new_index = TypeIndex<DecayedT, Types...>;
 
@@ -192,34 +192,34 @@ export namespace plexdb {
     };
 
     template<typename T, typename... Types>
-    constexpr bool type_matches_tag(const DynamicTaggedUnion<Types...>& u) noexcept {
+    constexpr bool type_matches_tag(const AutoTaggedUnion<Types...>& u) noexcept {
         using DecayedT = Decay<T>;
         size_t idx = TypeIndex<DecayedT, Types...>;
         return u.index == idx;
     }
 
     template<typename T, typename... Types>
-    T& get(DynamicTaggedUnion<Types...>& u) noexcept {
-        assert_true(type_matches_tag<T>(u), "reading wrong type from DynamicTaggedUnion");
+    T& get(AutoTaggedUnion<Types...>& u) noexcept {
+        assert_true(type_matches_tag<T>(u), "reading wrong type from AutoTaggedUnion");
         return *reinterpret_cast<T*>(u.ptr);
     }
 
     template<typename T, typename... Types>
-    const T& get(const DynamicTaggedUnion<Types...>& u) noexcept {
-        assert_true(type_matches_tag<T>(u), "reading wrong type from DynamicTaggedUnion");
+    const T& get(const AutoTaggedUnion<Types...>& u) noexcept {
+        assert_true(type_matches_tag<T>(u), "reading wrong type from AutoTaggedUnion");
         return *reinterpret_cast<const T*>(u.ptr);
     }
 
     template<typename... Ts>
-    struct ExpandDynamicTaggedUnionHelper;
+    struct ExpandAutoTaggedUnionHelper;
 
     template<typename... Ts>
-    struct ExpandDynamicTaggedUnionHelper<TypeList<Ts...>> {
-        using type = DynamicTaggedUnion<Ts...>;
+    struct ExpandAutoTaggedUnionHelper<TypeList<Ts...>> {
+        using type = AutoTaggedUnion<Ts...>;
     };
 
     template<typename Ts>
-    using ExpandDynamicTaggedUnion = ExpandDynamicTaggedUnionHelper<Ts>::type;
+    using ExpandAutoTaggedUnion = ExpandAutoTaggedUnionHelper<Ts>::type;
 }
 
 namespace plexdb {
@@ -248,14 +248,14 @@ namespace plexdb {
     }
 
     export template<typename Visitor, typename... Types>
-    decltype(auto) visit(DynamicTaggedUnion<Types...>& u, Visitor&& vis) {
-        assert_true(u.ptr != nullptr, "visiting empty DynamicTaggedUnion");
+    decltype(auto) visit(AutoTaggedUnion<Types...>& u, Visitor&& vis) {
+        assert_true(u.ptr != nullptr, "visiting empty AutoTaggedUnion");
         return dtu_visit_impl<Visitor, Types...>(u, forward<Visitor>(vis), IndexSequenceFor<Types...>{});
     }
 
     export template<typename Visitor, typename... Types>
-    decltype(auto) visit(const DynamicTaggedUnion<Types...>& u, Visitor&& vis) {
-        assert_true(u.ptr != nullptr, "visiting empty DynamicTaggedUnion");
+    decltype(auto) visit(const AutoTaggedUnion<Types...>& u, Visitor&& vis) {
+        assert_true(u.ptr != nullptr, "visiting empty AutoTaggedUnion");
         return dtu_visit_impl<Visitor, Types...>(u, forward<Visitor>(vis), IndexSequenceFor<Types...>{});
     }
 }

@@ -4,7 +4,7 @@ module;
 module objstore.engine;
 
 import plexdb.os;
-import plexdb.os.dynamic_tagged_union;
+import plexdb.dynamic.tagged_union;
 
 import objstore.parsers;
 import objstore.engine.evaluator;

@@ -1,26 +1,26 @@
 #include <catch2/catch_test_macros.hpp>
 
-import plexdb.os.dynamic_tagged_union;
+import plexdb.dynamic.tagged_union;
 import plexdb.base;
 
 using namespace plexdb;
 
-TEST_CASE("DynamicTaggedUnion default construction", "[dynamic_tagged_union]") {
-    DynamicTaggedUnion<int, double> u;
+TEST_CASE("AutoTaggedUnion default construction", "[dynamic.tagged_union]") {
+    AutoTaggedUnion<int, double> u;
     REQUIRE(!u);
     REQUIRE(u.ptr == nullptr);
-    REQUIRE(u.index == DynamicTaggedUnion<int, double>::invalid_index);
+    REQUIRE(u.index == AutoTaggedUnion<int, double>::invalid_index);
 }
 
-TEST_CASE("DynamicTaggedUnion value construction", "[dynamic_tagged_union]") {
-    DynamicTaggedUnion<int, double> u(42);
+TEST_CASE("AutoTaggedUnion value construction", "[dynamic.tagged_union]") {
+    AutoTaggedUnion<int, double> u(42);
     REQUIRE(u);
     REQUIRE(type_matches_tag<int>(u));
     REQUIRE(get<int>(u) == 42);
 }
 
-TEST_CASE("DynamicTaggedUnion assignment from value", "[dynamic_tagged_union]") {
-    DynamicTaggedUnion<int, double> u;
+TEST_CASE("AutoTaggedUnion assignment from value", "[dynamic.tagged_union]") {
+    AutoTaggedUnion<int, double> u;
     u = 3.14;
     REQUIRE(u);
     REQUIRE(type_matches_tag<double>(u));
@@ -39,9 +39,9 @@ TEST_CASE("DynamicTaggedUnion assignment from value", "[dynamic_tagged_union]") 
     }
 }
 
-TEST_CASE("DynamicTaggedUnion copy construction", "[dynamic_tagged_union]") {
-    DynamicTaggedUnion<int, double> src(99);
-    DynamicTaggedUnion<int, double> dst(src);
+TEST_CASE("AutoTaggedUnion copy construction", "[dynamic.tagged_union]") {
+    AutoTaggedUnion<int, double> src(99);
+    AutoTaggedUnion<int, double> dst(src);
 
     REQUIRE(dst);
     REQUIRE(get<int>(dst) == 99);
@@ -49,18 +49,18 @@ TEST_CASE("DynamicTaggedUnion copy construction", "[dynamic_tagged_union]") {
     REQUIRE(dst.ptr != src.ptr);
 }
 
-TEST_CASE("DynamicTaggedUnion copy construction from empty", "[dynamic_tagged_union]") {
-    DynamicTaggedUnion<int, double> src;
-    DynamicTaggedUnion<int, double> dst(src);
+TEST_CASE("AutoTaggedUnion copy construction from empty", "[dynamic.tagged_union]") {
+    AutoTaggedUnion<int, double> src;
+    AutoTaggedUnion<int, double> dst(src);
     REQUIRE(!dst);
     REQUIRE(dst.ptr == nullptr);
 }
 
-TEST_CASE("DynamicTaggedUnion move construction", "[dynamic_tagged_union]") {
-    DynamicTaggedUnion<int, double> src(55);
+TEST_CASE("AutoTaggedUnion move construction", "[dynamic.tagged_union]") {
+    AutoTaggedUnion<int, double> src(55);
     void* original_ptr = src.ptr;
 
-    DynamicTaggedUnion<int, double> dst(move(src));
+    AutoTaggedUnion<int, double> dst(move(src));
 
     REQUIRE(dst);
     REQUIRE(dst.ptr == original_ptr);
@@ -69,9 +69,9 @@ TEST_CASE("DynamicTaggedUnion move construction", "[dynamic_tagged_union]") {
     REQUIRE(src.ptr == nullptr);
 }
 
-TEST_CASE("DynamicTaggedUnion copy assignment", "[dynamic_tagged_union]") {
-    DynamicTaggedUnion<int, double> a(10);
-    DynamicTaggedUnion<int, double> b;
+TEST_CASE("AutoTaggedUnion copy assignment", "[dynamic.tagged_union]") {
+    AutoTaggedUnion<int, double> a(10);
+    AutoTaggedUnion<int, double> b;
 
     SECTION("empty <- valued") {
         b = a;
@@ -80,30 +80,30 @@ TEST_CASE("DynamicTaggedUnion copy assignment", "[dynamic_tagged_union]") {
     }
 
     SECTION("valued <- empty") {
-        DynamicTaggedUnion<int, double> empty;
+        AutoTaggedUnion<int, double> empty;
         a = empty;
         REQUIRE(!a);
     }
 
     SECTION("valued <- valued same type") {
-        DynamicTaggedUnion<int, double> c(20);
+        AutoTaggedUnion<int, double> c(20);
         a = c;
         REQUIRE(get<int>(a) == 20);
     }
 
     SECTION("valued <- valued different type") {
-        DynamicTaggedUnion<int, double> c(1.5);
+        AutoTaggedUnion<int, double> c(1.5);
         a = c;
         REQUIRE(type_matches_tag<double>(a));
         REQUIRE(get<double>(a) == 1.5);
     }
 }
 
-TEST_CASE("DynamicTaggedUnion move assignment", "[dynamic_tagged_union]") {
-    DynamicTaggedUnion<int, double> src(77);
+TEST_CASE("AutoTaggedUnion move assignment", "[dynamic.tagged_union]") {
+    AutoTaggedUnion<int, double> src(77);
     void* original_ptr = src.ptr;
 
-    DynamicTaggedUnion<int, double> dst;
+    AutoTaggedUnion<int, double> dst;
     dst = move(src);
 
     REQUIRE(dst.ptr == original_ptr);
@@ -111,15 +111,15 @@ TEST_CASE("DynamicTaggedUnion move assignment", "[dynamic_tagged_union]") {
     REQUIRE(!src);
 }
 
-TEST_CASE("DynamicTaggedUnion self-assignment", "[dynamic_tagged_union]") {
-    DynamicTaggedUnion<int, double> u(5);
+TEST_CASE("AutoTaggedUnion self-assignment", "[dynamic.tagged_union]") {
+    AutoTaggedUnion<int, double> u(5);
     auto& u_ref = u;
     u = u_ref;
     REQUIRE(get<int>(u) == 5);
 }
 
-TEST_CASE("DynamicTaggedUnion visit", "[dynamic_tagged_union]") {
-    DynamicTaggedUnion<int, double> u(3.14);
+TEST_CASE("AutoTaggedUnion visit", "[dynamic.tagged_union]") {
+    AutoTaggedUnion<int, double> u(3.14);
 
     double result = visit(u, [](auto& v) -> double {
         return static_cast<double>(v);

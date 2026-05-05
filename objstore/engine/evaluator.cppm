@@ -3,8 +3,8 @@ export module objstore.engine.evaluator;
 import plexdb.base;
 import plexdb.os;
 import plexdb.tagged_union;
-import plexdb.os.containers;
-import plexdb.os.dynamic_tagged_union;
+import plexdb.dynamic.containers;
+import plexdb.dynamic.tagged_union;
 
 import objstore.engine.statements;
 import objstore.engine.types;
@@ -17,7 +17,7 @@ export namespace objstore {
     >;
     struct Evaluated {
         // @note @warn DO NOT modify without also checking TermWithIdentifier
-        ExpandDynamicTaggedUnion<EvaluatedTypes> value;
+        ExpandAutoTaggedUnion<EvaluatedTypes> value;
     };
 
     // @warn suggested to move term to avoid copy
