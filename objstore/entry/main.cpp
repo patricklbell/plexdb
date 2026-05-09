@@ -1,7 +1,9 @@
 #include "macros.h"
 #include <profiling/tracy.hpp>
+#include <coroutine>
 
 import plexdb.base;
+import plexdb.coroutine;
 import plexdb.os;
 import plexdb.pager;
 import plexdb.argparse;
@@ -41,10 +43,12 @@ int main(int argc, char* argv[]) {
     os::signal_register_kill(signal_handler);
 
     auto arg_parser = argparse::make_parser("objstore", "Object store database server");
-    argparse::add_positional(arg_parser, "db_path", "Path to the database file");
-    argparse::add_option(arg_parser, "--port", "-p", "TCP port to listen on", "9042");
-    argparse::add_flag(arg_parser, "--repl", "-r", "Run interactive REPL instead of server");
-    argparse::add_flag(arg_parser, "--no-uring", "-U", "Disable io_uring and use synchronous socket I/O");
+
+    U64 db_path_arg  = argparse::add_positional(arg_parser, "db_path", "Path to the database file");
+    U64 port_arg     = argparse::add_option(arg_parser, "--port", "-p", "TCP port to listen on", "9042");
+    U64 repl_arg     = argparse::add_flag(arg_parser, "--repl", "-r", "Run interactive REPL instead of server");
+    U64 no_uring_arg = argparse::add_flag(arg_parser, "--no-uring", "-U", "Disable io_uring and use synchronous socket I/O");
+    U64 no_wal_arg   = argparse::add_flag(arg_parser, "--no-wal", "-W", "Disable write-ahead-log (WAL)");
 
     auto args = argparse::parse(arg_parser, argc, argv);
     if (args.help_requested) {
@@ -57,10 +61,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    String8 db_path = argparse::get_positional(args, 0);
-    U16 port = u16_from_str(argparse::get_option(args, 0));
-    bool run_repl   = argparse::has_flag(args, 0);
-    bool no_uring   = argparse::has_flag(args, 1);
+    String8 db_path = argparse::get_positional(args, db_path_arg);
+    U16 port = u16_from_str(argparse::get_option(args, port_arg));
+    bool run_repl = argparse::has_flag(args, repl_arg);
+    bool no_uring = argparse::has_flag(args, no_uring_arg);
+    bool no_wal   = argparse::has_flag(args, no_wal_arg);
     if (port == 0) {
         println("Invalid port");
         return 1;
@@ -81,13 +86,21 @@ int main(int argc, char* argv[]) {
         println("created new database \"", db_path, "\"");
         pager::create(db_file, page_size);
     }
-    Pager pager{db_file};
+    Pager pager;
+
+    Optional<os::File> opt_wal_file;
+    if (no_wal) {
+        pager = Pager{db_file};
+    } else {
+        opt_wal_file = os::File{os::file_open(db_path + ".wal"_as)};
+        pager = Pager{db_file, static_cast<os::Handle>(*opt_wal_file)};
+    }
 
     {
         if (db_create) {
-            engine::create_database(pager);
+            coroutine::drive(engine::create_database(pager));
         }
-        engine::Engine engine{&pager};
+        engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
         if (run_repl) {
             repl::run(engine);

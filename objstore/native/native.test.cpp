@@ -9,6 +9,8 @@ import plexdb.base;
 import plexdb.os;
 import plexdb.threads;
 import plexdb.pager;
+import plexdb.pager.test_helpers;
+import plexdb.coroutine;
 
 import objstore.engine;
 import objstore.native;
@@ -16,6 +18,7 @@ import objstore.native;
 using namespace plexdb;
 using namespace plexdb::os;
 using namespace objstore;
+using namespace pager_test;
 
 namespace {
     constexpr int NATIVE_TEST_PORT_BASE = 23000;
@@ -166,9 +169,9 @@ TEST_CASE("Native protocol STARTUP handshake", "[objstore.native]") {
 
     U64 page_size = 4_kb;
     pager::create(db_file, page_size);
-    Pager pager{db_file};
-    engine::create_database(pager);
-    engine::Engine engine{&pager};
+    auto pager = make_pager(db_file);
+    coroutine::drive(engine::create_database(pager));
+    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
@@ -202,9 +205,9 @@ TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[objstore.native]") {
 
     U64 page_size = 4_kb;
     pager::create(db_file, page_size);
-    Pager pager{db_file};
-    engine::create_database(pager);
-    engine::Engine engine{&pager};
+    auto pager = make_pager(db_file);
+    coroutine::drive(engine::create_database(pager));
+    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
@@ -241,9 +244,9 @@ TEST_CASE("Native protocol CQL DDL and DML operations", "[objstore.native]") {
 
     U64 page_size = 4_kb;
     pager::create(db_file, page_size);
-    Pager pager{db_file};
-    engine::create_database(pager);
-    engine::Engine engine{&pager};
+    auto pager = make_pager(db_file);
+    coroutine::drive(engine::create_database(pager));
+    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
@@ -319,9 +322,9 @@ TEST_CASE("Native protocol error responses", "[objstore.native]") {
 
     U64 page_size = 4_kb;
     pager::create(db_file, page_size);
-    Pager pager{db_file};
-    engine::create_database(pager);
-    engine::Engine engine{&pager};
+    auto pager = make_pager(db_file);
+    coroutine::drive(engine::create_database(pager));
+    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
@@ -363,9 +366,9 @@ TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") 
     {
         U64 page_size = 4_kb;
         pager::create(db_file, page_size);
-        Pager pager{db_file};
-        engine::create_database(pager);
-        engine::Engine engine{&pager};
+        auto pager = make_pager(db_file);
+        coroutine::drive(engine::create_database(pager));
+        engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
         os::Notifier interrupt_notifier;
         threads::Semaphore server_ready{0};
@@ -399,8 +402,8 @@ TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") 
     }
 
     {
-        Pager pager{db_file};
-        engine::Engine engine{&pager};
+        auto pager = make_pager(db_file);
+        engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
         os::Notifier interrupt_notifier;
         threads::Semaphore server_ready{0};
@@ -438,9 +441,9 @@ TEST_CASE("Native protocol system.local virtual view", "[objstore.native]") {
 
     U64 page_size = 4_kb;
     pager::create(db_file, page_size);
-    Pager pager{db_file};
-    engine::create_database(pager);
-    engine::Engine engine{&pager};
+    auto pager = make_pager(db_file);
+    coroutine::drive(engine::create_database(pager));
+    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
@@ -500,9 +503,9 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
 
     U64 page_size = 4_kb;
     pager::create(db_file, page_size);
-    Pager pager{db_file};
-    engine::create_database(pager);
-    engine::Engine engine{&pager};
+    auto pager = make_pager(db_file);
+    coroutine::drive(engine::create_database(pager));
+    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
@@ -594,9 +597,9 @@ TEST_CASE("Native protocol collection serialization", "[objstore.native]") {
 
     U64 page_size = 4_kb;
     pager::create(db_file, page_size);
-    Pager pager{db_file};
-    engine::create_database(pager);
-    engine::Engine engine{&pager};
+    auto pager = make_pager(db_file);
+    coroutine::drive(engine::create_database(pager));
+    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
@@ -641,9 +644,9 @@ TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native][!mayfail]") 
 
     U64 page_size = 4_kb;
     pager::create(db_file, page_size);
-    Pager pager{db_file};
-    engine::create_database(pager);
-    engine::Engine engine{&pager};
+    auto pager = make_pager(db_file);
+    coroutine::drive(engine::create_database(pager));
+    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
@@ -788,9 +791,9 @@ TEST_CASE("Native protocol QUERY with bind values", "[objstore.native][!mayfail]
 
     U64 page_size = 4_kb;
     pager::create(db_file, page_size);
-    Pager pager{db_file};
-    engine::create_database(pager);
-    engine::Engine engine{&pager};
+    auto pager = make_pager(db_file);
+    coroutine::drive(engine::create_database(pager));
+    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};

@@ -2,6 +2,7 @@ export module objstore.engine.schema;
 
 import plexdb.base;
 import plexdb.dynamic.containers;
+import plexdb.coroutine;
 import plexdb.pager;
 import plexdb.blob;
 import plexdb.btree;
@@ -100,10 +101,11 @@ export namespace objstore::schema {
         blob::BlobDynamicPaged tables_blob;
         blob::BlobDynamicPaged columns_blob;
 
-        Schema(Pager* in_pager, U64 page);
+        Schema() = default;
+        static coroutine::Task<Schema> load(Pager* in_pager, U64 page);
     };
 
-    U64 create_schema(Pager& pager);
+    coroutine::Task<U64> create_schema(Pager& pager);
 
     enum class Error {
         None,
@@ -126,15 +128,16 @@ export namespace objstore::schema {
         String8 message = "";
     };
 
-    Result<Keyspace*> create_keyspace(Schema& schema, const CreateKeyspace& create);
     Result<Keyspace*> read_keyspace(Schema& schema, String8 name);
-    Result<void> delete_keyspace(Schema& schema, String8 name);
+    Result<Table*>    read_table(Schema& schema, Keyspace& ks, String8 name);
+    Result<Column*>   read_column(Schema& schema, Table& tbl, String8 name);
 
-    Result<Table*> create_table(Schema& schema, Keyspace& ks, const CreateTable& create);
-    Result<Table*> read_table(Schema& schema, Keyspace& ks, String8 name);
-    Result<void> delete_table(Schema& schema, Keyspace& ks, String8 name);
+    coroutine::Task<Result<Keyspace*>> create_keyspace(Schema& schema, const CreateKeyspace& create);
+    coroutine::Task<Result<void>>      delete_keyspace(Schema& schema, String8 name);
 
-    Result<Column*> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create);
-    Result<Column*> read_column(Schema& schema, Table& tbl, String8 name);
-    Result<void> delete_column(Schema& schema, Table& tbl, String8 name);
+    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create);
+    coroutine::Task<Result<void>>   delete_table(Schema& schema, Keyspace& ks, String8 name);
+
+    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create);
+    coroutine::Task<Result<void>>    delete_column(Schema& schema, Table& tbl, String8 name);
 }

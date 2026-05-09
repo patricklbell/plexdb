@@ -6,6 +6,8 @@ import plexdb.pager.types;
 import plexdb.base;
 import plexdb.os;
 import plexdb.arena;
+import plexdb.aio;
+import plexdb.coroutine;
 
 export namespace plexdb::pager {
     constexpr U64 DEFAULT_READ_CACHE = 1000u;
@@ -16,6 +18,8 @@ export namespace plexdb::pager {
         static constexpr U64 alignment = sizeof(U64);
         os::Handle file = os::zero_handle();
         U64 base_offset = 0;
+        
+        aio::FileIOContext* file_io_ctx = nullptr;
 
         Header header = {};
         bool header_in_write_set = false;
@@ -59,12 +63,12 @@ export namespace plexdb::pager {
 
     void set_root(Pager& pager, U64 page);
 
-    const U8* rpage(Pager& pager, U64 idx);
-    U8* rwpage(Pager& pager, U64 idx);
-    void fflush(Pager& pager);
+    coroutine::Task<const U8*> rpage(Pager& pager, U64 idx);
+    coroutine::Task<U8*> rwpage(Pager& pager, U64 idx);
+    coroutine::Task<> fflush(Pager& pager);
 
-    U64 new_page(Pager& pager);
-    void delete_page(Pager& pager, U64 idx);
+    coroutine::Task<U64> new_page(Pager& pager);
+    coroutine::Task<> delete_page(Pager& pager, U64 idx);
 }
 
 export namespace plexdb {

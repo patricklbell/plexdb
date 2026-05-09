@@ -342,7 +342,7 @@ export namespace plexdb {
         return ((fifo.tail() + 1) % N) == fifo.head();
     }
     template<typename T, U64 N>
-    constexpr U64 capacity(const RingFifo<T,N>& fifo) { return N; }
+    constexpr U64 capacity([[maybe_unused]] const RingFifo<T,N>& fifo) { return N; }
 
     template<typename T, U64 N>
     T* front(RingFifo<T,N>& fifo) {

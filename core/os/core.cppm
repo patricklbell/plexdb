@@ -138,9 +138,18 @@ export namespace plexdb::os {
     FileStats file_get_stats(Handle file);
 
     struct File {
-        Handle handle;
+        Handle handle = zero_handle();
+
+        File();
+        explicit File(Handle h);
 
         ~File();
+
+        File(const File& other) = delete;
+        File& operator=(const File& other) = delete;
+
+        File(File&& other) noexcept;
+        File& operator=(File&& other) noexcept;
 
         operator Handle() const;
         operator bool() const { return !os::is_zero_handle(this->handle); }

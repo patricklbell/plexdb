@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/benchmark/catch_benchmark.hpp>
+#include <coroutine>
 #include <algorithm>
 #include <vector>
 
@@ -9,9 +10,16 @@ import plexdb.arena;
 import plexdb.btree;
 import plexdb.btree.print;
 import plexdb.pager;
+import plexdb.coroutine;
+import plexdb.pager.test_helpers;
 
 using namespace plexdb;
 using namespace plexdb::btree;
+using namespace pager_test;
+
+static U64 create_paged_sync(Pager& pager, U64 value_stride) {
+    return coroutine::drive(btree::create_paged(pager, value_stride));
+}
 
 TEST_CASE("insert", "[plexdb.btree.paged]") {
     SECTION("(page_size=128) consecutive insertion") {
@@ -19,24 +27,24 @@ TEST_CASE("insert", "[plexdb.btree.paged]") {
         U64 header_page;
 
         {
-            Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = create_paged(pager, sizeof(int));
+            auto pager = make_pager(pfile, pager::create(pfile, 128_u64));
+            header_page = create_paged_sync(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
             for (int key = 0; key < 32; key++) {
-                tinsert(t, key, 10*key);
+                coroutine::drive(tinsert(t, key, 10*key));
 
                 for (int i = 0; i <= key; i++)
-                    REQUIRE(*tfind<int>(t, i) == 10*i);
+                    REQUIRE(*coroutine::drive(tfind<int>(t, i)) == 10*i);
             }
         }
 
         {
-            Pager pager(pfile);
+            auto pager = make_pager(pfile);
             BTreePaged t(&pager, header_page);
 
             for (int key = 0; key < 32; key++)
-                REQUIRE(*tfind<int>(t, key) == 10*key);
+                REQUIRE(*coroutine::drive(tfind<int>(t, key)) == 10*key);
         }
     }
 
@@ -45,20 +53,20 @@ TEST_CASE("insert", "[plexdb.btree.paged]") {
         U64 header_page;
 
         {
-            Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = create_paged(pager, sizeof(int));
+            auto pager = make_pager(pfile, pager::create(pfile, 128_u64));
+            header_page = create_paged_sync(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
-            for (int key = 0; key < 5; key++) tinsert(t, key, 10*key);
-            for (int key = 0; key < 5; key++) tinsert(t, key, 100*key);
+            for (int key = 0; key < 5; key++) coroutine::drive(tinsert(t, key, 10*key));
+            for (int key = 0; key < 5; key++) coroutine::drive(tinsert(t, key, 100*key));
         }
 
         {
-            Pager pager(pfile);
+            auto pager = make_pager(pfile);
             BTreePaged t(&pager, header_page);
 
             for (int key = 0; key < 5; key++)
-                REQUIRE(*tfind<int>(t, key) == 100*key);
+                REQUIRE(*coroutine::drive(tfind<int>(t, key)) == 100*key);
         }
     }
 
@@ -67,19 +75,19 @@ TEST_CASE("insert", "[plexdb.btree.paged]") {
         U64 header_page;
 
         {
-            Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = create_paged(pager, sizeof(int));
+            auto pager = make_pager(pfile, pager::create(pfile, 128_u64));
+            header_page = create_paged_sync(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
-            for (int key = 31; key >= 0; key--) tinsert(t, key, 10*key);
+            for (int key = 31; key >= 0; key--) coroutine::drive(tinsert(t, key, 10*key));
         }
 
         {
-            Pager pager(pfile);
+            auto pager = make_pager(pfile);
             BTreePaged t(&pager, header_page);
 
             for (int key = 0; key < 32; key++)
-                REQUIRE(*tfind<int>(t, key) == 10*key);
+                REQUIRE(*coroutine::drive(tfind<int>(t, key)) == 10*key);
         }
     }
 
@@ -101,26 +109,26 @@ TEST_CASE("insert", "[plexdb.btree.paged]") {
         };
 
         {
-            Pager pager(pfile, pager::create(pfile, 256_u64));
-            header_page = create_paged(pager, 9);
+            auto pager = make_pager(pfile, pager::create(pfile, 256_u64));
+            header_page = create_paged_sync(pager, 9);
             BTreePaged t(&pager, header_page);
 
             U64 max_value_length = 0;
             for (auto& e : entries) {
-                insert(t, e.key, e.value.data(), e.value.size());
+                coroutine::drive(insert(t, e.key, e.value.data(), e.value.size()));
                 max_value_length = std::max(max_value_length, e.value.size());
             }
         }
 
         {
-            Pager pager(pfile);
+            auto pager = make_pager(pfile);
             BTreePaged t(&pager, header_page);
 
             std::vector<U8> tmp;
             tmp.resize(5);
             for (auto& e : entries) {
                 tmp.resize(e.value.size());
-                REQUIRE(find(t, e.key, tmp.data(), tmp.size()));
+                REQUIRE(coroutine::drive(find(t, e.key, tmp.data(), tmp.size())));
                 REQUIRE(tmp == e.value);
             }
         }
@@ -133,19 +141,19 @@ TEST_CASE("remove", "[plexdb.btree.paged]") {
         U64 header_page;
 
         {
-            Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = create_paged(pager, sizeof(int));
+            auto pager = make_pager(pfile, pager::create(pfile, 128_u64));
+            header_page = create_paged_sync(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
-            for (int key = 0; key < 32; key++) tinsert(t, key, 10*key);
-            for (int key = 0; key < 32; key++) remove(t, key);
+            for (int key = 0; key < 32; key++) coroutine::drive(tinsert(t, key, 10*key));
+            for (int key = 0; key < 32; key++) coroutine::drive(remove(t, key));
         }
 
         {
-            Pager pager(pfile);
+            auto pager = make_pager(pfile);
             BTreePaged t(&pager, header_page);
-            for (int key = 0; key < 32; key++) 
-                REQUIRE(find(t, key, nullptr, 0) == false);
+            for (int key = 0; key < 32; key++)
+                REQUIRE(coroutine::drive(find(t, key, nullptr, 0)) == false);
         }
     }
 
@@ -154,19 +162,19 @@ TEST_CASE("remove", "[plexdb.btree.paged]") {
         U64 header_page;
 
         {
-            Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = create_paged(pager, sizeof(int));
+            auto pager = make_pager(pfile, pager::create(pfile, 128_u64));
+            header_page = create_paged_sync(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
-            for (int key = 0; key < 16; key++) tinsert(t, key, 10*key);
-            for (int key = 15; key >= 0; key--) remove(t, key);
+            for (int key = 0; key < 16; key++) coroutine::drive(tinsert(t, key, 10*key));
+            for (int key = 15; key >= 0; key--) coroutine::drive(remove(t, key));
         }
 
         {
-            Pager pager(pfile);
+            auto pager = make_pager(pfile);
             BTreePaged t(&pager, header_page);
-            for (int key = 0; key < 16; key++) 
-                REQUIRE(find(t, key, nullptr, 0) == false);
+            for (int key = 0; key < 16; key++)
+                REQUIRE(coroutine::drive(find(t, key, nullptr, 0)) == false);
         }
     }
 
@@ -175,21 +183,21 @@ TEST_CASE("remove", "[plexdb.btree.paged]") {
         U64 header_page;
 
         {
-            Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = create_paged(pager, sizeof(int));
+            auto pager = make_pager(pfile, pager::create(pfile, 128_u64));
+            header_page = create_paged_sync(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
-            for (int key = 0; key < 8; key++) tinsert(t, key, 10*key);
-            for (int key = 0; key < 8; key++) remove(t, key);
-            for (int key = 0; key < 8; key++) tinsert(t, key, 100*key);
+            for (int key = 0; key < 8; key++) coroutine::drive(tinsert(t, key, 10*key));
+            for (int key = 0; key < 8; key++) coroutine::drive(remove(t, key));
+            for (int key = 0; key < 8; key++) coroutine::drive(tinsert(t, key, 100*key));
         }
 
         {
-            Pager pager(pfile);
+            auto pager = make_pager(pfile);
             BTreePaged t(&pager, header_page);
 
-            for (int key = 0; key < 8; key++) 
-                REQUIRE(*tfind<int>(t, key) == 100*key);
+            for (int key = 0; key < 8; key++)
+                REQUIRE(*coroutine::drive(tfind<int>(t, key)) == 100*key);
         }
     }
 }
@@ -201,25 +209,25 @@ TEST_CASE("truncate", "[plexdb.btree.paged]" ) {
         U64 header_page;
 
         {
-            Pager pager(pfile, pager::create(pfile, 128_u64));
-            header_page = create_paged(pager, sizeof(int));
+            auto pager = make_pager(pfile, pager::create(pfile, 128_u64));
+            header_page = create_paged_sync(pager, sizeof(int));
             BTreePaged t(&pager, header_page);
 
-            for (int key = 0; key < 1000; key++) tinsert(t, key, 10*key);
-            REQUIRE(size(t) == 1000);
+            for (int key = 0; key < 1000; key++) coroutine::drive(tinsert(t, key, 10*key));
+            REQUIRE(coroutine::drive(size(t)) == 1000);
 
-            truncate(t);
-            REQUIRE(size(t) == 0);
+            coroutine::drive(truncate(t));
+            REQUIRE(coroutine::drive(size(t)) == 0);
             // @note we can't assert page count because new root pages may be allocated near the end, stopping trimming
             // @todo introduce tracking of free pages for testing purposes
             // @todo investigate if we should reallocate the root page
         }
 
         {
-            Pager pager(pfile);
+            auto pager = make_pager(pfile);
             BTreePaged t(&pager, header_page);
 
-            REQUIRE(size(t) == 0);
+            REQUIRE(coroutine::drive(size(t)) == 0);
         }
     }
 }

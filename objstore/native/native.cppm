@@ -7,6 +7,8 @@ export module objstore.native;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.os.uring;
+import plexdb.aio;
 import plexdb.dynamic.containers;
 import plexdb.btree;
 import plexdb.tagged_union;
@@ -346,7 +348,7 @@ namespace type_codes {
     void append_result_void(Frame& f);
     void append_result_set_keyspace(Frame& f, String8 keyspace);
     void append_result_schema_change(Frame& f, String8 change_type, String8 target, String8 keyspace, String8 table);
-    void append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl);
+    coroutine::Task<> append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl);
     void append_result_virtual_rows(Frame& f, engine::VirtualRows& vr);
 
     // ========================================================================

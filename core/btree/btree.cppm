@@ -1,3 +1,6 @@
+module;
+#include <coroutine>
+
 export module plexdb.btree;
 
 // should transactions be exported? probably not
@@ -6,64 +9,57 @@ export import plexdb.btree.paged;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.coroutine;
 import plexdb.btree.detail;
 
 export namespace plexdb::btree {
     // ========================================================================
     // untyped interface
-    //      basic interface, @todo dont rw lock for all searches and allow
-    //      updating with offsets
     // ========================================================================
     template<BTree BT>
-    void insert(BT& btree, KeyType key, const U8* in_value, U64 size, U64 offset=0) {
+    coroutine::Task<void> insert(BT& btree, KeyType key, const U8* in_value, U64 size, U64 offset=0) {
         typename BT::Transaction t{&btree};
 
-        U8* value = insert_impl(t, key);
-
-        assert_true(offset + size <= read_header(t)->value_stride, "enough space in value");
+        U8* value = co_await insert_impl(t, key);
         os::memory_copy(value + offset, in_value, size);
     }
 
     template<BTree BT>
-    bool update(BT& btree, KeyType key, const U8* in_value, U64 size, U64 offset=0) {
+    coroutine::Task<bool> update(BT& btree, KeyType key, const U8* in_value, U64 size, U64 offset=0) {
         typename BT::Transaction t{&btree};
 
-        if (Search s = search_impl(t, key)) {
-            assert_true(offset + size <= read_header(t)->value_stride, "enough space in value");
+        if (Search s = co_await search_impl(t, key)) {
             os::memory_copy(s.value + offset, in_value, size);
-            return true;
+            co_return true;
         }
-        return false;
-    }
-
-
-    template<BTree BT>
-    U8* view(BT& btree, KeyType key) {
-        typename BT::Transaction t{&btree};
-
-        if (Search s = search_impl(t, key)) {
-            return s.value;
-        }
-        return nullptr;
+        co_return false;
     }
 
     template<BTree BT>
-    bool find(BT& btree, KeyType key, U8* out_value, U64 size, U64 offset=0) {
+    coroutine::Task<U8*> view(BT& btree, KeyType key) {
         typename BT::Transaction t{&btree};
 
-        if (Search s = search_impl(t, key)) {
-            assert_true(offset + size <= read_header(t)->value_stride, "enough space in value");
+        if (Search s = co_await search_impl(t, key)) {
+            co_return s.value;
+        }
+        co_return nullptr;
+    }
+
+    template<BTree BT>
+    coroutine::Task<bool> find(BT& btree, KeyType key, U8* out_value, U64 size, U64 offset=0) {
+        typename BT::Transaction t{&btree};
+
+        if (Search s = co_await search_impl(t, key)) {
             os::memory_copy(out_value, s.value + offset, size);
-            return true;
+            co_return true;
         }
-        return false;
+        co_return false;
     }
 
     template<BTree BT>
-    bool remove(BT& btree, KeyType key) {
+    coroutine::Task<bool> remove(BT& btree, KeyType key) {
         typename BT::Transaction t{&btree};
-
-        return remove_impl(t, key);
+        co_return co_await remove_impl(t, key);
     }
 
     template<BTree BT, typename T = U8>
@@ -74,9 +70,17 @@ export namespace plexdb::btree {
         Iterator() = default;
         explicit Iterator(BT& btree) : t(&btree) {}
 
-        Iterator& operator++() { this->impl = next_iterator_impl(this->t, impl); return *this; }
+        coroutine::Task<void> advance() {
+            this->impl = co_await next_iterator_impl(this->t, impl);
+        }
 
-        const T& operator*() { return *reinterpret_cast<const T*>(values(this->impl.leaf, *read_header(this->t))[this->impl.idx]); }
+        const T& operator*() const {
+            // Use header fields cached in impl to avoid async header read
+            Header h{};
+            h.value_stride = impl.value_stride;
+            h.max_keys_per_leaf = impl.max_keys_per_leaf;
+            return *reinterpret_cast<const T*>(values(this->impl.leaf, h)[this->impl.idx]);
+        }
 
         // @note does not compare transactions
         bool operator==(const Iterator& other) const { return impl == other.impl; }
@@ -84,10 +88,10 @@ export namespace plexdb::btree {
     };
 
     template<BTree BT>
-    Iterator<BT> begin(BT& btree) {
-        Iterator it{btree};
-        it.impl = begin_iterator_impl(it.t);
-        return move(it);
+    coroutine::Task<Iterator<BT>> begin(BT& btree) {
+        Iterator<BT> it{btree};
+        it.impl = co_await begin_iterator_impl(it.t);
+        co_return move(it);
     }
 
     template<BTree BT>
@@ -98,10 +102,10 @@ export namespace plexdb::btree {
     }
 
     template<SearchStrategy Strategy, BTree BT>
-    Iterator<BT> find_it(BT& btree, KeyType key) {
+    coroutine::Task<Iterator<BT>> find_it(BT& btree, KeyType key) {
         Iterator<BT> it{btree};
-        it.impl = search_iterator_impl<Strategy>(it.t, key);
-        return move(it);
+        it.impl = co_await search_iterator_impl<Strategy>(it.t, key);
+        co_return move(it);
     }
 
     // ========================================================================
@@ -109,30 +113,30 @@ export namespace plexdb::btree {
     // ========================================================================
     template<typename T, BTree BT>
         requires TriviallyCopyable<T>
-    void tinsert(BT& btree, KeyType key, const T& in_value) {
-        insert(btree, key, reinterpret_cast<const U8*>(&in_value), sizeof(T));
+    coroutine::Task<void> tinsert(BT& btree, KeyType key, const T& in_value) {
+        co_await insert(btree, key, reinterpret_cast<const U8*>(&in_value), sizeof(T));
     }
 
     template<typename T, BTree BT>
         requires TriviallyCopyable<T>
-    bool tupdate(BT& btree, KeyType key, const T& value) {
-        return update(btree, key, reinterpret_cast<const U8*>(&value), sizeof(T));
+    coroutine::Task<bool> tupdate(BT& btree, KeyType key, const T& value) {
+        co_return co_await update(btree, key, reinterpret_cast<const U8*>(&value), sizeof(T));
     }
 
     template<typename T, BTree BT>
         requires TriviallyCopyable<T> && TriviallyConstructible<T>
-    Optional<T> tfind(BT& btree, KeyType key) {
+    coroutine::Task<Optional<T>> tfind(BT& btree, KeyType key) {
         T value;
-        if (find(btree, key, reinterpret_cast<U8*>(&value), sizeof(T)))
-            return Optional{value};
-        return {};
+        if (co_await find(btree, key, reinterpret_cast<U8*>(&value), sizeof(T)))
+            co_return Optional{value};
+        co_return Optional<T>{};
     }
 
     template<typename T, BTree BT>
-    Iterator<BT,T> tbegin(BT& btree) {
+    coroutine::Task<Iterator<BT,T>> tbegin(BT& btree) {
         Iterator<BT,T> it{btree};
-        it.impl = begin_iterator_impl(it.t);
-        return move(it);
+        it.impl = co_await begin_iterator_impl(it.t);
+        co_return move(it);
     }
 
     template<typename T, BTree BT>
@@ -143,21 +147,21 @@ export namespace plexdb::btree {
     }
 
     template<typename T, SearchStrategy Strategy, BTree BT>
-    Iterator<BT,T> tfind_it(BT& btree, KeyType key) {
+    coroutine::Task<Iterator<BT,T>> tfind_it(BT& btree, KeyType key) {
         Iterator<BT,T> it{btree};
-        it.impl = search_iterator_impl<Strategy>(it.t, key);
-        return move(it);
+        it.impl = co_await search_iterator_impl<Strategy>(it.t, key);
+        co_return move(it);
     }
 
     template<BTree BT>
-    U64 size(BT& btree) {
+    coroutine::Task<U64> size(BT& btree) {
         typename BT::Transaction t{&btree};
-        return read_header(t)->size;
+        co_return (co_await read_header(t))->size;
     }
 
     template<BTree BT>
-    void truncate(BT& btree) {
+    coroutine::Task<void> truncate(BT& btree) {
         typename BT::Transaction t{&btree};
-        truncate_impl(t);
+        co_await truncate_impl(t);
     }
 }

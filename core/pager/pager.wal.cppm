@@ -2,6 +2,8 @@ export module plexdb.pager.wal;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.aio;
+import plexdb.coroutine;
 
 import plexdb.pager.types;
 
@@ -29,7 +31,7 @@ export namespace plexdb::pager {
         };
 
         os::Handle file = os::zero_handle();
-        Header header    = {};
+        Header header   = {};
 
         Wal() = default;
         explicit Wal(os::Handle file);
@@ -43,25 +45,21 @@ export namespace plexdb::pager {
         operator bool() const { return !os::is_zero_handle(this->file); }
     };
 
-    // Write WAL header with page_size and fresh random salt; sets frame_count = 0.
+    // ========================================================================
+    // Sync operations — constructor / crash-recovery paths only.
+    // These use blocking OS calls and must NOT be called from a coroutine.
+    // ========================================================================
     void wal_create(Wal& wal, U64 page_size);
-
-    // Read the WAL header; returns true if magic and page_size match.
     bool wal_load(Wal& wal, U64 expected_page_size);
-
-    // Returns true if the WAL has a committed (frame_count > 0) transaction.
     bool wal_has_committed(const Wal& wal);
 
-    // Append one page frame to the WAL (does not sync or commit).
-    // page_idx == MAX_U64 for the pager header frame.
-    void wal_append_frame(Wal& wal, U64 page_idx, const U8* data);
-
-    // Sync pending frames then atomically commit by writing frame_count to the header.
-    void wal_commit(Wal& wal);
-
-    // Replay all committed WAL frames into the database file and sync.
-    void wal_checkpoint(Wal& wal, os::Handle db_file, U64 base_offset);
-
-    // Reset: set frame_count = 0 in the header so the WAL is no longer committed.
-    void wal_reset(Wal& wal);
+    // ========================================================================
+    // Async operations — always require a FileIOContext.
+    // WAL only writes to its own file; reading frames for checkpoint is the
+    // pager's responsibility (see wal_read_frame).
+    // ========================================================================
+    coroutine::Task<> wal_append_frame(Wal& wal, aio::FileIOContext& ctx, U64 page_idx, const U8* data);
+    coroutine::Task<> wal_commit(Wal& wal, aio::FileIOContext& ctx);
+    coroutine::Task<> wal_read_frame(Wal& wal, aio::FileIOContext& ctx, U64 frame_idx, Wal::Frame& frame_out, U8* data_out);
+    coroutine::Task<> wal_reset(Wal& wal, aio::FileIOContext& ctx);
 }

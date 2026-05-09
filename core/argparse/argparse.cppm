@@ -48,9 +48,9 @@ export namespace plexdb::argparse {
     };
 
     Parser make_parser(const char* prog_name, const char* description = "");
-    void   add_positional(Parser& parser, const char* name, const char* description = "");
-    void   add_flag(Parser& parser, const char* long_name, const char* short_name = "", const char* description = "");
-    void   add_option(Parser& parser, const char* long_name, const char* short_name = "", const char* description = "", const char* default_value = "");
+    U64    add_positional(Parser& parser, const char* name, const char* description = "");
+    U64    add_flag(Parser& parser, const char* long_name, const char* short_name = "", const char* description = "");
+    U64    add_option(Parser& parser, const char* long_name, const char* short_name = "", const char* description = "", const char* default_value = "");
 
     ParseResult parse(const Parser& parser, int argc, char* argv[]);
     void        print_help(const Parser& parser);

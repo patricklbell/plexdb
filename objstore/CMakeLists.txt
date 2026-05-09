@@ -185,7 +185,9 @@ if(PLEXDB_ENABLE_TESTS)
             ${OBJSTORE_TEST_SOURCES}
         PUBLIC
             FILE_SET CXX_MODULES
-            BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
+            BASE_DIRS
+                ${CMAKE_CURRENT_SOURCE_DIR}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../core
             FILES
                 ${OBJSTORE_TEST_MODULE_SOURCES}
     )

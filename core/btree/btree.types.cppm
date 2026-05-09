@@ -1,6 +1,7 @@
 export module plexdb.btree.types;
 
 import plexdb.base;
+import plexdb.coroutine;
 
 export namespace plexdb::btree {
     using KeyType = U64;
@@ -36,14 +37,14 @@ export namespace plexdb::btree {
 
     template<typename T>
     concept Transaction = requires(T& t, NodeRef ref) {
-        { read_header(t) } -> SameAs<const Header*>;
-        { update_header(t) } -> SameAs<Header*>;
+        { read_header(t) } -> SameAs<coroutine::Task<const Header*>>;
+        { update_header(t) } -> SameAs<coroutine::Task<Header*>>;
 
-        { create_internal(t) } -> SameAs<NodeRef>;
-        { create_leaf(t) } -> SameAs<NodeRef>;
-        { read_node(t, ref) } -> SameAs<const Node*>;
-        { update_node(t, ref) } -> SameAs<Node*>;
-        { delete_node(t, ref) } -> SameAs<void>;
+        { create_internal(t) } -> SameAs<coroutine::Task<NodeRef>>;
+        { create_leaf(t) } -> SameAs<coroutine::Task<NodeRef>>;
+        { read_node(t, ref) } -> SameAs<coroutine::Task<const Node*>>;
+        { update_node(t, ref) } -> SameAs<coroutine::Task<Node*>>;
+        { delete_node(t, ref) } -> SameAs<coroutine::Task<>>;
     };
 
     template<typename B>

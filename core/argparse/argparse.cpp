@@ -13,28 +13,31 @@ namespace plexdb::argparse {
         return p;
     }
 
-    void add_positional(Parser& parser, const char* name, const char* description) {
+    U64 add_positional(Parser& parser, const char* name, const char* description) {
         PositionalDef def{};
         snprintf(def.name,        MAX_NAME_LEN, "%s", name);
         snprintf(def.description, MAX_DESC_LEN, "%s", description);
         push_back(parser.positionals, def);
+        return parser.positionals.cap - 1;
     }
 
-    void add_flag(Parser& parser, const char* long_name, const char* short_name, const char* description) {
+    U64 add_flag(Parser& parser, const char* long_name, const char* short_name, const char* description) {
         FlagDef def{};
         snprintf(def.long_name,   MAX_NAME_LEN, "%s", long_name);
         snprintf(def.short_name,  8,            "%s", short_name);
         snprintf(def.description, MAX_DESC_LEN, "%s", description);
         push_back(parser.flags, def);
+        return parser.flags.cap - 1;
     }
 
-    void add_option(Parser& parser, const char* long_name, const char* short_name, const char* description, const char* default_value) {
+    U64 add_option(Parser& parser, const char* long_name, const char* short_name, const char* description, const char* default_value) {
         OptionDef def{};
         snprintf(def.long_name,     MAX_NAME_LEN,  "%s", long_name);
         snprintf(def.short_name,    8,             "%s", short_name);
         snprintf(def.description,   MAX_DESC_LEN,  "%s", description);
         snprintf(def.default_value, MAX_VALUE_LEN, "%s", default_value);
         push_back(parser.options, def);
+        return parser.options.cap - 1;
     }
 
     ParseResult parse(const Parser& parser, int argc, char* argv[]) {

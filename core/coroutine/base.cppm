@@ -171,6 +171,17 @@ export namespace plexdb::coroutine {
         void destroy() { if (handle) { handle.destroy(); handle = nullptr; } }
     };
 
+    template<typename T>
+    T drive(coroutine::Task<T> task) {
+        task.resume();
+        while (!task.done()) { task.resume(); }
+        return move(task.value());
+    }
+    inline void drive(coroutine::Task<void> task) {
+        task.resume();
+        while (!task.done()) { task.resume(); }
+    }
+
     // ========================================================================
     // Awaitable<OnSuspend, OnResume>
     //   Generic bridge between a coroutine and an external async event source

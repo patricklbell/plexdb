@@ -44,7 +44,8 @@ export namespace plexdb::aio {
     coroutine::Task<Error> file_sync (FileIOContext& ctx, os::Handle file);
 
     // ========================================================================
-    // Network I/O context — event loop facing only
+    // Network I/O context
+    //   @note event loop facing only
     // ========================================================================
     struct NetworkIOContext {
         SubmitFunctor*   submit;

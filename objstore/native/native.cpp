@@ -136,9 +136,7 @@ namespace objstore::native {
     }
 
     coroutine::Task<bool> try_append_tcp_read(const tcp::Request& req, DynamicArray<U8>& buf) {
-        auto opt = co_await tcp::acquire(req);
-        if (!opt) co_return false;
-        auto& rbuf = *opt;
+        auto rbuf = co_await tcp::acquire(req);
         if (auto err = co_await tcp::read(req, &rbuf); err != tcp::Error::None) {
             tcp::release(req, &rbuf);
             co_return false;
@@ -230,14 +228,13 @@ namespace objstore::native {
     // ========================================================================
     coroutine::Task<> send_block(const tcp::Request& req, const U8* data, U64 len) {
         while (len > 0) {
-            auto buf_opt = co_await tcp::acquire(req);
-            assert_true(static_cast<bool>(buf_opt), "buffer starvation in send_block");
-            tcp::RWBuffer& buf = *buf_opt;
+            auto buf = co_await tcp::acquire(req);
             U64 chunk = min(len, U64(buf.length));
             os::memory_copy(buf.view.ptr, data, chunk);
             buf.length = chunk;
             co_await tcp::write(req, &buf);
             tcp::release(req, &buf);
+
             data += chunk;
             len  -= chunk;
         }
@@ -436,7 +433,7 @@ namespace objstore::native {
             append_cql_string(f, table);
     }
 
-    void append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl) {
+    coroutine::Task<> append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl) {
         append_be_s32(f, result_codes::ROWS);
 
         bool has_select = result.select_col_indices.length > 0;
@@ -467,15 +464,16 @@ namespace objstore::native {
         if (result.rows.has_value()) {
             auto& rows = *result.rows;
             U64 row_limit = result.row_limit_count;
-            for (auto& row_it = rows.begin(); row_it != rows.end() && U64(row_count) < row_limit; ++row_it) {
-                auto col_range = *row_it;
-                auto& col_it = col_range.begin();
-                auto& col_end_it = col_range.end();
-                for (U64 ci = 0; ci < tbl->cols.length && col_it != col_end_it; ci++, ++col_it) {
+            RowIterator& row_it  = rows.start;
+            RowIterator& row_end = rows.stop;
+            while (row_it != row_end && U64(row_count) < row_limit) {
+                ColumnRange col_range = co_await row_it.deref();
+                for (U64 ci = 0; ci < tbl->cols.length && col_range.start != col_range.stop; ci++, ++col_range.start) {
                     if (is_selected(ci))
-                        append_cql_value(f, *col_it, tbl->cols[ci].type);
+                        append_cql_value(f, *col_range.start, tbl->cols[ci].type);
                 }
                 row_count++;
+                co_await row_it.advance();
             }
         }
 
@@ -590,9 +588,9 @@ namespace objstore::native {
                 auto tbl = schema::read_table(engine.schema, *ks, result.table).value;
                 assert_true(tbl != nullptr, "table not found for rows result");
                 Frame frame{.body = {}, .req = req, .op = op_codes::RESULT, .stream = stream};
-                append_result_rows(frame, result, tbl);
+                co_await append_result_rows(frame, result, tbl);
                 co_await send_native_frame<Version, Compressed>(frame);
-                objstore::log::db_response_returned_rows(btree::size(tbl->btree));
+                objstore::log::db_response_returned_rows(co_await btree::size(tbl->btree));
             }break;
             case engine::ResultKind::VirtualRows:{
                 assert_true(result.virtual_rows.has_value(), "virtual rows missing");
@@ -772,7 +770,7 @@ namespace objstore::native {
 
                 auto bind_specs   = engine::collect_bind_variables(engine, *cql_opt);
                 auto bound_values = read_query_parameter_values<Version>(p, body_end, bind_specs);
-                engine::ExecutionResult result = engine::execute(engine, *cql_opt, move(bound_values));
+                engine::ExecutionResult result = co_await engine::execute(engine, *cql_opt, move(bound_values));
 
                 if (co_await send_error_if_failed<Version, Compressed>(result, &req, stream)) {
                     objstore::log::db_operation_duration(os::monotonic_us() - t0);
@@ -846,7 +844,7 @@ namespace objstore::native {
                 }
 
                 auto bound_values = read_query_parameter_values<Version>(p, body_end, entry->bind_variables);
-                engine::ExecutionResult result = engine::execute(engine, prepared_id, move(bound_values));
+                engine::ExecutionResult result = co_await engine::execute(engine, prepared_id, move(bound_values));
 
                 if (co_await send_error_if_failed<Version, Compressed>(result, &req, stream)) {
                     objstore::log::db_operation_duration(os::monotonic_us() - t0);

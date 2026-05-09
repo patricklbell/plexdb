@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/benchmark/catch_benchmark.hpp>
+#include <coroutine>
 #include <algorithm>
 #include <vector>
 #include <numeric>
@@ -9,6 +10,7 @@ import plexdb.os;
 import plexdb.arena;
 import plexdb.btree;
 import plexdb.btree.print;
+import plexdb.coroutine;
 
 using namespace plexdb;
 using namespace plexdb::btree;
@@ -19,10 +21,10 @@ TEST_CASE("insert", "[plexdb.btree.in-memory]" ) {
 
         for (int key = 0; key < 32; key++) {
             int value = 10*key;
-            tinsert(t, key, value);
+            coroutine::drive(tinsert(t, key, value));
 
             for (int i = 0; i <= key; i++) {
-                REQUIRE(*tfind<int>(t, i) == 10*i);
+                REQUIRE(*coroutine::drive(tfind<int>(t, i)) == 10*i);
             }
         }
     }
@@ -32,10 +34,10 @@ TEST_CASE("insert", "[plexdb.btree.in-memory]" ) {
 
         for (int key = 0; key < 32; key++) {
             int value = 10*key;
-            tinsert(t, key, value);
+            coroutine::drive(tinsert(t, key, value));
 
             for (int i = 0; i <= key; i++) {
-                REQUIRE(*tfind<int>(t, i) == 10*i);
+                REQUIRE(*coroutine::drive(tfind<int>(t, i)) == 10*i);
             }
         }
     }
@@ -45,13 +47,13 @@ TEST_CASE("insert", "[plexdb.btree.in-memory]" ) {
         for (int max_leaf = 3; max_leaf <= 5; max_leaf++) {
             for (int max_internal = 3; max_internal <= 5; max_internal++) {
                 BTreeInMemory t(max_internal, max_leaf, sizeof(int));
-        
-                for (int key = 0; key < max_leaf*max_internal+1; key++) {    
+
+                for (int key = 0; key < max_leaf*max_internal+1; key++) {
                     int value = 10*key;
-                    tinsert(t, key, value);
-    
+                    coroutine::drive(tinsert(t, key, value));
+
                     for (int i = 0; i <= key; i++) {
-                        REQUIRE(*tfind<int>(t, i) == 10*i);
+                        REQUIRE(*coroutine::drive(tfind<int>(t, i)) == 10*i);
                     }
                 }
             }
@@ -63,16 +65,16 @@ TEST_CASE("insert", "[plexdb.btree.in-memory]" ) {
 
         for (int key = 0; key < 5; key++) {
             int value = 10*key;
-            tinsert(t, key, value);
+            coroutine::drive(tinsert(t, key, value));
         }
 
         for (int key = 0; key < 5; key++) {
             int new_value = 100 * key;
-            tinsert(t, key, new_value);
+            coroutine::drive(tinsert(t, key, new_value));
         }
 
         for (int key = 0; key < 5; key++) {
-            REQUIRE(*tfind<int>(t, key) == 100 * key);
+            REQUIRE(*coroutine::drive(tfind<int>(t, key)) == 100 * key);
         }
     }
 
@@ -81,13 +83,13 @@ TEST_CASE("insert", "[plexdb.btree.in-memory]" ) {
 
         for (int key = 31; key >= 0; key--) {
             int value = 10*key;
-            tinsert(t, key, value);
+            coroutine::drive(tinsert(t, key, value));
         }
 
         // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
 
         for (int key = 0; key < 32; key++) {
-            REQUIRE(*tfind<int>(t, key) == 10*key);
+            REQUIRE(*coroutine::drive(tfind<int>(t, key)) == 10*key);
         }
     }
 
@@ -107,25 +109,25 @@ TEST_CASE("insert", "[plexdb.btree.in-memory]" ) {
 
         U64 max_value_length = 0;
         for (auto& e : entries) {
-            insert(t, e.key, e.value.data(), e.value.size());
+            coroutine::drive(insert(t, e.key, e.value.data(), e.value.size()));
             max_value_length = max(max_value_length, e.value.size());
         }
-        
+
         std::vector<U8> tmp;
         tmp.reserve(max_value_length);
 
         for (auto& e : entries) {
             tmp.resize(e.value.size());
-            REQUIRE(find(t, e.key, tmp.data(), tmp.size()));
+            REQUIRE(coroutine::drive(find(t, e.key, tmp.data(), tmp.size())));
             REQUIRE(tmp == e.value);
         }
 
         for (auto& e : entries) {
-            remove(t, e.key);
+            coroutine::drive(remove(t, e.key));
             for (auto& f : entries) {
                 if (f.key != e.key && f.key > e.key) {
                     tmp.resize(f.value.size());
-                    REQUIRE(find(t, f.key, tmp.data(), tmp.size()));
+                    REQUIRE(coroutine::drive(find(t, f.key, tmp.data(), tmp.size())));
                     REQUIRE(tmp == f.value);
                 }
             }
@@ -136,7 +138,7 @@ TEST_CASE("insert", "[plexdb.btree.in-memory]" ) {
         BTreeInMemory t(5, 7, sizeof(int));
 
         meter.measure([&t] (int i) {
-            tinsert(t, i, i);
+            coroutine::drive(tinsert(t, i, i));
         });
     };
 }
@@ -147,15 +149,15 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
 
         for (int key = 0; key < 32; key++) {
             int value = 10*key;
-            tinsert(t, key, value);
+            coroutine::drive(tinsert(t, key, value));
             // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
         }
 
         for (int key = 0; key < 32; key++) {
-            remove(t, key);
+            coroutine::drive(remove(t, key));
             // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
             for (int i = key+1; i < 32; i++) {
-                REQUIRE(*tfind<int>(t, i) == 10*i);
+                REQUIRE(*coroutine::drive(tfind<int>(t, i)) == 10*i);
             }
         }
     }
@@ -165,15 +167,15 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
 
         for (int key = 0; key < 16; key++) {
             int value = 10*key;
-            tinsert(t, key, value);
+            coroutine::drive(tinsert(t, key, value));
             // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
         }
 
         for (int key = 15; key >= 0; key--) {
-            remove(t, key);
+            coroutine::drive(remove(t, key));
             // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
             for (int i = 0; i < key; i++) {
-                REQUIRE(*tfind<int>(t, i) == 10*i);
+                REQUIRE(*coroutine::drive(tfind<int>(t, i)) == 10*i);
             }
         }
     }
@@ -182,18 +184,18 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
         for (int max_leaf = 3; max_leaf <= 5; max_leaf++) {
             for (int max_internal = 3; max_internal <= 5; max_internal++) {
                 BTreeInMemory t(max_internal, max_leaf, sizeof(int));
-        
+
                 for (int key = 0; key < max_leaf*max_internal*max_internal; key++) {
                     int value = 10*key;
-                    tinsert(t, key, value);
+                    coroutine::drive(tinsert(t, key, value));
                     // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
                 }
 
                 for (int key = 0; key < max_leaf*max_internal*max_internal; key++) {
-                    remove(t, key);
+                    coroutine::drive(remove(t, key));
                     // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
                     for (int i = key+1; i < max_leaf*max_internal*max_internal; i++) {
-                        REQUIRE(*tfind<int>(t, i) == 10*i);
+                        REQUIRE(*coroutine::drive(tfind<int>(t, i)) == 10*i);
                     }
                 }
             }
@@ -206,28 +208,28 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
         int kept = 3;
         for (int key = 0; key < kept; key++) {
             int value = 10*key;
-            tinsert(t, key, value);
+            coroutine::drive(tinsert(t, key, value));
             // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
         }
 
         for (int max_key = kept; max_key <= 9; max_key++) {
             std::vector<int> elements(max_key-(kept-1));
             std::iota(elements.begin(), elements.end(), kept);
-            
+
             do {
                 // insert in consecutive order
                 for (int key = kept; key <= max_key; key++) {
                     int value = 10*key;
-                    tinsert(t, key, value);
+                    coroutine::drive(tinsert(t, key, value));
                     // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
                 }
-                
+
                 // remove in permutation order
                 for (size_t i = 0; i < elements.size(); i++) {
-                    remove(t, elements[i]);
+                    coroutine::drive(remove(t, elements[i]));
                     // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
                     for (size_t j = i+1; j < elements.size(); j++) {
-                        REQUIRE(*tfind<int>(t, elements[j]) == 10*elements[j]);
+                        REQUIRE(*coroutine::drive(tfind<int>(t, elements[j])) == 10*elements[j]);
                     }
                 }
 
@@ -242,23 +244,23 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
 
         for (int key = 0; key < 8; key++) {
             int value = 10*key;
-            tinsert(t, key, value);
+            coroutine::drive(tinsert(t, key, value));
             INFO(to_str(make_tag<int>(&t)));
         }
 
         for (int key = 0; key < 8; key++) {
-            remove(t, key);
+            coroutine::drive(remove(t, key));
             // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
         }
 
         for (int key = 0; key < 8; key++) {
             int value = 100 * key;
-            tinsert(t, key, value);
+            coroutine::drive(tinsert(t, key, value));
             // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
         }
 
         for (int key = 0; key < 8; key++) {
-            REQUIRE(*tfind<int>(t, key) == 100 * key);
+            REQUIRE(*coroutine::drive(tfind<int>(t, key)) == 100 * key);
         }
     }
 }
@@ -269,17 +271,17 @@ TEST_CASE("truncate", "[plexdb.btree.in-memory]" ) {
 
         for (int key = 0; key < 32; key++) {
             int value = 10*key;
-            tinsert(t, key, value);
+            coroutine::drive(tinsert(t, key, value));
         }
-        REQUIRE(size(t) == 32);
+        REQUIRE(coroutine::drive(size(t)) == 32);
 
-        truncate(t);
-        REQUIRE(size(t) == 0);
+        coroutine::drive(truncate(t));
+        REQUIRE(coroutine::drive(size(t)) == 0);
 
         for (int key = 0; key < 64; key++) {
             int value = 10*key;
-            tinsert(t, key, value);
+            coroutine::drive(tinsert(t, key, value));
         }
-        REQUIRE(size(t) == 64);
+        REQUIRE(coroutine::drive(size(t)) == 64);
     }
 }

@@ -3,17 +3,17 @@ cmake_minimum_required(VERSION 3.28)
 # =============================================================================
 # Project setup
 # =============================================================================
-project(core)
+project(plexdb_core)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/compiler_config.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/options.cmake)
 
-option(CORE_ENABLE_IO_URING "Enable using io_uring for io" ON)
+option(plexdb_CORE_ENABLE_IO_URING "Enable using io_uring for io" ON)
 
 # =============================================================================
 # Third part dependencies
 # =============================================================================
-if(CORE_ENABLE_IO_URING)
+if(plexdb_CORE_ENABLE_IO_URING)
   include(FindPkgConfig)
   pkg_check_modules(liburing REQUIRED IMPORTED_TARGET GLOBAL liburing>=2.0)
 endif()
@@ -58,21 +58,21 @@ target_link_libraries(profiling
 # Library
 # =============================================================================
 # Modules
-add_library(core_modules STATIC)
-add_library(plexdb::core_modules ALIAS core_modules)
+add_library(plexdb_core_modules STATIC)
+add_library(plexdb::core_modules ALIAS plexdb_core_modules)
 
-target_compile_features(core_modules PUBLIC cxx_std_23)
-set_target_properties(core_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_definitions(core_modules PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${CORE_ENABLE_IO_URING}>,1,0>)
+target_compile_features(plexdb_core_modules PUBLIC cxx_std_23)
+set_target_properties(plexdb_core_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_definitions(plexdb_core_modules PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${CORE_ENABLE_IO_URING}>,1,0>)
 
-target_include_directories(core_modules
+target_include_directories(plexdb_core_modules
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../macros
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
         ${CMAKE_CURRENT_SOURCE_DIR}/log
 )
 
-target_sources(core_modules
+target_sources(plexdb_core_modules
     PUBLIC
         FILE_SET CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
@@ -123,21 +123,21 @@ target_sources(core_modules
             threads/threads.cppm
 )
 
-target_link_libraries(core_modules
+target_link_libraries(plexdb_core_modules
     PRIVATE
         plexdb::compiler_config
         plexdb::profiling
 )
 
 # Static library
-add_library(core STATIC)
-add_library(plexdb::core ALIAS core)
+add_library(plexdb_core STATIC)
+add_library(plexdb::core ALIAS plexdb_core)
 
-target_compile_features(core PUBLIC cxx_std_23)
-set_target_properties(core PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_definitions(core PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${CORE_ENABLE_IO_URING}>,1,0>)
+target_compile_features(plexdb_core PUBLIC cxx_std_23)
+set_target_properties(plexdb_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_definitions(plexdb_core PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${CORE_ENABLE_IO_URING}>,1,0>)
 
-target_include_directories(core
+target_include_directories(plexdb_core
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../macros
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
@@ -146,7 +146,7 @@ target_include_directories(core
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tracy
 )
 
-target_sources(core
+target_sources(plexdb_core
     PRIVATE
         aio/aio.cpp
         argparse/argparse.cpp
@@ -175,9 +175,9 @@ target_sources(core
         threads/threads.cpp
 )
 
-target_link_libraries(core
+target_link_libraries(plexdb_core
     PUBLIC
-        core_modules
+        plexdb::core_modules
     PRIVATE
         plexdb::compiler_config
         $<$<BOOL:${CORE_ENABLE_IO_URING}>:PkgConfig::liburing>
@@ -199,25 +199,33 @@ if(PLEXDB_ENABLE_TESTS)
     FetchContent_MakeAvailable(Catch2)
   endif()
 
-  add_executable(core_tests)
+  add_executable(plexdb_core_tests)
 
-  target_compile_definitions(core PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${CORE_ENABLE_IO_URING}>,1,0>)
+  target_compile_definitions(plexdb_core PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${CORE_ENABLE_IO_URING}>,1,0>)
 
   file(GLOB_RECURSE CORE_TEST_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
     )
-  target_sources(core_tests
+  file(GLOB_RECURSE CORE_TEST_MODULE_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cppm"
+    )
+  target_sources(plexdb_core_tests
         PRIVATE
             ${CORE_TEST_SOURCES}
+        PUBLIC
+            FILE_SET CXX_MODULES
+            BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
+            FILES
+                ${CORE_TEST_MODULE_SOURCES}
     )
 
-  target_include_directories(core_tests
+  target_include_directories(plexdb_core_tests
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/log
             ${CMAKE_CURRENT_SOURCE_DIR}/test
     )
 
-  target_link_libraries(core_tests
+  target_link_libraries(plexdb_core_tests
         PRIVATE
             plexdb::compiler_config
             stdc++exp # std::stacktrace may require link experimental c++ library

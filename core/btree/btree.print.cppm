@@ -1,7 +1,11 @@
+module;
+#include <coroutine>
+
 export module plexdb.btree.print;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.coroutine;
 import plexdb.btree;
 import plexdb.btree.detail;
 
@@ -26,14 +30,15 @@ namespace plexdb {
 
     template<typename T, typename Transaction>
     AutoString8 btree_to_str_recursive(Transaction& t, const Node* node, U64 depth, const String8& prepend, bool end) {
-        const auto& h = *read_header(t);
+        auto sync_get = [](auto task) { task.resume(); return move(task.value()); };
+        const Header& h = *sync_get(read_header(t));
 
         AutoString8 res = prepend + String8(end ? " └" : " ├");
         res += node_to_str<T>(node, h, depth == h.depth) + "\n";
         if (depth < h.depth) {
             auto cs = children(node, h);
             for (auto& child_ref : cs) {
-                const Node* child = read_node(t, child_ref);
+                const Node* child = sync_get(read_node(t, child_ref));
                 res += btree_to_str_recursive<T>(t, child, depth+1, prepend + (end ? "   " : " | "), &child_ref == cs.end()-1);
             }
         }
@@ -43,12 +48,14 @@ namespace plexdb {
     export template<typename T, typename BTree>
         requires Either<BTree, BTreeInMemory, BTreePaged>
     AutoString8 to_str(const Tag<T, BTree>& tag) {
+        auto sync_get = [](auto task) { task.resume(); return move(task.value()); };
         using Transaction = typename BTree::Transaction;
         Transaction t{tag.value};
 
+        const Header& h = *sync_get(read_header(t));
         AutoString8 res = ""_as;
-        res += "[tree, depth=" + to_str(read_header(t)->depth) + "]\n";
-        res += btree_to_str_recursive<T>(t, read_node(t, read_header(t)->root), 0, "", true);
+        res += "[tree, depth=" + to_str(h.depth) + "]\n";
+        res += btree_to_str_recursive<T>(t, sync_get(read_node(t, h.root)), 0, "", true);
         return res;
     }
 }

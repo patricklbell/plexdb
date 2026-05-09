@@ -1,9 +1,11 @@
 module;
 #include "macros.h"
+#include <coroutine>
 
 module objstore.repl;
 
 import plexdb.base;
+import plexdb.coroutine;
 import plexdb.os;
 import plexdb.tagged_union;
 
@@ -66,7 +68,7 @@ namespace objstore::repl {
     void run(os::Handle istream, os::Handle ostream, engine::Engine& eng) {
         constexpr U64 INPUT_BUFFER_SIZE = 4096;
         char input_buf[INPUT_BUFFER_SIZE];
-        
+
         os::stream_write(ostream, PROMPT);
 
         while (true) {
@@ -93,8 +95,8 @@ namespace objstore::repl {
                     break;
                 }
 
-                engine::ExecutionResult result = engine::execute(eng, *stmt_opt);
-                
+                engine::ExecutionResult result = coroutine::drive(engine::execute(eng, *stmt_opt));
+
                 U64 row_count = 0;
                 if (result.rows && result.resolved_table) {
                     const schema::Table* tbl = result.resolved_table;
@@ -129,19 +131,21 @@ namespace objstore::repl {
                     }
 
                     U64 row_limit = result.row_limit_count;
-                    for (auto& row_it = result.rows->begin(); row_it != result.rows->end() && row_count < row_limit; ++row_it, ++row_count) {
-                        auto col_range = *row_it;
-                        auto& col_it = col_range.begin();
-                        auto& col_end_it = col_range.end();
+                    RowIterator& row_it  = result.rows->start;
+                    RowIterator& row_end = result.rows->stop;
+                    while (row_it != row_end && row_count < row_limit) {
+                        ColumnRange col_range = coroutine::drive(row_it.deref());
                         bool first = true;
-                        for (U64 ci = 0; ci < tbl->cols.length && col_it != col_end_it; ci++, ++col_it) {
+                        for (U64 ci = 0; ci < tbl->cols.length && col_range.start != col_range.stop; ci++, ++col_range.start) {
                             if (!is_selected(ci)) continue;
                             os::stream_write(ostream, first ? " " : " | ");
-                            AutoString8 val_str = to_str(*col_it, tbl->cols[ci].type);
+                            AutoString8 val_str = to_str(*col_range.start, tbl->cols[ci].type);
                             os::stream_write(ostream, val_str.c_str, val_str.length);
                             first = false;
                         }
                         os::stream_write(ostream, "\n");
+                        coroutine::drive(row_it.advance());
+                        ++row_count;
                     }
                 } else if (result.virtual_rows) {
                     auto& vr = *result.virtual_rows;
@@ -168,7 +172,7 @@ namespace objstore::repl {
                         ++row_count;
                     }
                 }
-                
+
                 write_result(ostream, result, row_count);
 
                 // @note guaranteed to be valid index since there is a trailing \0

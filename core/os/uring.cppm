@@ -1,8 +1,12 @@
+module;
+#include <coroutine>
+
 export module plexdb.os.uring;
 
 import plexdb.os;
 import plexdb.base;
 import plexdb.tagged_union;
+import plexdb.coroutine;
 
 using namespace plexdb;
 
@@ -151,6 +155,56 @@ export namespace plexdb::uring {
         U64 queue_depth;
         U64 entries;
     };
-    
+
     Stats get_stats(const Ring& ring);
+
+    // ========================================================================
+    // buffer pool
+    // ========================================================================
+    constexpr U32 INVALID_BUFFER_IDX = MAX_U32;
+
+    // Manages a fixed pool of ring buffers with coroutine back-pressure.
+    // MaxWaiters bounds the number of coroutines that can simultaneously wait
+    // for a free buffer slot.
+    template<U64 MaxWaiters>
+    struct BufferPool {
+        U32 buffer_count = 0;
+        U32 next_free = 0;
+        DynamicArray<bool> in_use;
+        RingFifo<std::coroutine_handle<>, MaxWaiters> waiters;
+
+        explicit BufferPool(U32 count) : buffer_count(count), next_free(0), in_use(count) {}
+
+        U32 try_acquire() {
+            U32 start = next_free;
+            U32 cur = start;
+            do {
+                if (!in_use[cur]) {
+                    in_use[cur] = true;
+                    next_free = (cur + 1) % buffer_count;
+                    return cur;
+                }
+                cur = (cur + 1) % buffer_count;
+            } while (cur != start);
+            return INVALID_BUFFER_IDX;
+        }
+
+        coroutine::Task<U32> acquire() {
+            while (true) {
+                U32 idx = try_acquire();
+                if (idx != INVALID_BUFFER_IDX) co_return idx;
+                co_await coroutine::Awaitable{
+                    [this](std::coroutine_handle<> h) { push_front(waiters, h); },
+                    []() {}
+                };
+            }
+        }
+
+        void release(U32 idx) {
+            in_use[idx] = false;
+            if (!empty(waiters)) {
+                pop_front(waiters).resume();
+            }
+        }
+    };
 }

@@ -2,6 +2,7 @@ export module plexdb.btree.paged;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.coroutine;
 import plexdb.btree.types;
 import plexdb.pager;
 
@@ -19,6 +20,7 @@ export namespace plexdb::btree {
             Transaction();
             Transaction(BTreePaged* btree);
             Transaction(Transaction&& t);
+            Transaction& operator=(Transaction&& other);
             ~Transaction();
 
             Transaction(const Transaction& other) = delete;
@@ -27,7 +29,7 @@ export namespace plexdb::btree {
             BTreePaged* t;
         };
     };
-    U64 create_paged(Pager& pager, U64 value_stride);
+    coroutine::Task<U64> create_paged(Pager& pager, U64 value_stride);
 
     BTreePaged::Transaction scope(const BTreePaged::Transaction& t);
 }

@@ -31,7 +31,7 @@ export namespace objstore::tcp {
         U64 idx;
     };
 
-    using AcquireRWBufferFunctor = AutoFunctor<coroutine::Task<Optional<RWBuffer>>(Connection*)>;
+    using AcquireRWBufferFunctor = AutoFunctor<coroutine::Task<RWBuffer>(Connection*)>;
     using ReleaseRWBufferFunctor = AutoFunctor<void(Connection*,const RWBuffer*)>;
     using AsyncReadFunctor = AutoFunctor<coroutine::Task<Error>(Connection*,RWBuffer*)>;
     using AsyncWriteFunctor = AutoFunctor<coroutine::Task<Error>(Connection*,const RWBuffer*)>;
@@ -56,7 +56,7 @@ export namespace objstore::tcp {
         std::coroutine_handle<> waiting_rwc;
     };
 
-    inline coroutine::Task<Optional<RWBuffer>> acquire(const Request& req) { co_return co_await (*req.acquire)(req.connection); }
+    inline coroutine::Task<RWBuffer> acquire(const Request& req) { co_return co_await (*req.acquire)(req.connection); }
     inline void release(const Request& req, const RWBuffer* buffer) { return (*req.release)(req.connection, buffer); }
     coroutine::Task<Error> read(const Request& req, RWBuffer* buffer) { co_return co_await (*req.read)(req.connection, buffer); }
     coroutine::Task<Error> write(const Request& req, const RWBuffer* buffer) { co_return co_await (*req.write)(req.connection, buffer); }

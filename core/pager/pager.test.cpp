@@ -12,8 +12,28 @@
 import plexdb.base;
 import plexdb.os;
 import plexdb.pager;
+import plexdb.pager.types;
+import plexdb.coroutine;
+import plexdb.pager.test_helpers;
 
 using namespace plexdb;
+using namespace pager_test;
+
+namespace pager_sync {
+    using Wal = pager::Wal;
+    inline U64 new_page(Pager& p) { return coroutine::drive(pager::new_page(p)); }
+    inline U8* rwpage(Pager& p, U64 idx) { return coroutine::drive(pager::rwpage(p, idx)); }
+    inline const U8* rpage(Pager& p, U64 idx) { return coroutine::drive(pager::rpage(p, idx)); }
+    inline void delete_page(Pager& p, U64 idx) { coroutine::drive(pager::delete_page(p, idx)); }
+    inline void fflush(Pager& p) { coroutine::drive(pager::fflush(p)); }
+    inline void wal_create(pager::Wal& w, U64 page_size) { pager::wal_create(w, page_size); }
+    inline void wal_append_frame(pager::Wal& w, U64 page_idx, const U8* data) {
+        coroutine::drive(pager::wal_append_frame(w, g_sync_ctx, page_idx, data));
+    }
+    inline void wal_commit(pager::Wal& w) {
+        coroutine::drive(pager::wal_commit(w, g_sync_ctx));
+    }
+}
 
 TEST_CASE("write and check read back", "[plexdb.pager]" ) {
     os::File f{os::file_tmp()};
@@ -25,17 +45,17 @@ TEST_CASE("write and check read back", "[plexdb.pager]" ) {
     REQUIRE(sizeof(data) <= page_size);
 
     {
-        auto pager = Pager(f, pager::create(f, page_size));
+        auto pager = make_pager(f, pager::create(f, page_size));
 
-        pidx = pager::new_page(pager);
-        U8* buffer = pager::rwpage(pager, pidx);
+        pidx = pager_sync::new_page(pager);
+        U8* buffer = pager_sync::rwpage(pager, pidx);
         os::memory_copy(buffer, data, sizeof(data));
     }
 
     {
-        auto pager = Pager(f);
+        auto pager = make_pager(f);
         REQUIRE(pager.header.page_size == page_size);
-        REQUIRE(ArrayView(data) == pager::rpage(pager, pidx));
+        REQUIRE(ArrayView(data) == pager_sync::rpage(pager, pidx));
     }
 }
 
@@ -44,24 +64,24 @@ TEST_CASE("write many pages and check free reclaims space", "[plexdb.pager]" ) {
     REQUIRE(!os::is_zero_handle(f));
 
     U64 page_size = 32;
-    auto pager = Pager(f, pager::create(f, page_size));
+    auto pager = make_pager(f, pager::create(f, page_size));
 
     U64 initial_pages = pager.header.page_count;
     U64 initial_bytes = os::file_get_stats(f).byte_count;
 
     std::vector<U64> pages{};
     for (int i = 0; i < 1000; i++) {
-        pages.push_back(pager::new_page(pager));
+        pages.push_back(pager_sync::new_page(pager));
     }
 
     SECTION("forward free") {
         for (const auto& page : std::views::reverse(pages)) {
-            pager::delete_page(pager, page);
+            pager_sync::delete_page(pager, page);
         }
     }
     SECTION("reverse free") {
         for (const auto& page : pages) {
-            pager::delete_page(pager, page);
+            pager_sync::delete_page(pager, page);
         }
     }
     SECTION("random free") {
@@ -69,7 +89,7 @@ TEST_CASE("write many pages and check free reclaims space", "[plexdb.pager]" ) {
         std::shuffle(pages.begin(), pages.end(), rng);
 
         for (const auto& page : pages) {
-            pager::delete_page(pager, page);
+            pager_sync::delete_page(pager, page);
         }
     }
 
@@ -87,9 +107,9 @@ TEST_CASE("write many pages and check random free does not increase size", "[ple
     U64 total_bytes_after_write;
     std::vector<U64> pages{};
     {
-        auto pager = Pager(f, pager::create(f, page_size));
+        auto pager = make_pager(f, pager::create(f, page_size));
         for (int i = 0; i < 1000; i++) {
-            pages.push_back(pager::new_page(pager));
+            pages.push_back(pager_sync::new_page(pager));
         }
 
         total_pages_after_write = pager.header.page_count;
@@ -100,9 +120,9 @@ TEST_CASE("write many pages and check random free does not increase size", "[ple
         std::mt19937 rng(GENERATE(take(1, random(0_u32, MAX_U32))));
         std::shuffle(pages.begin(), pages.end(), rng);
 
-        auto pager = Pager(f);
+        auto pager = make_pager(f);
         for (int i = 0; i < 100; i++) {
-            pager::delete_page(pager, pages[i]);
+            pager_sync::delete_page(pager, pages[i]);
         }
 
         REQUIRE(pager.header.page_count <= total_pages_after_write);
@@ -116,17 +136,17 @@ TEST_CASE("pager handles different page sizes and writes", "[plexdb.pager]") {
 
     U64 page_size = GENERATE(32_u64, 128_u64, 4096_u64, 65536_u64);
 
-    auto pager = Pager(f, pager::create(f, page_size));
+    auto pager = make_pager(f, pager::create(f, page_size));
 
     // full page write
     std::vector<U8> buffer(page_size, 0xAA);
-    U64 pidx = pager::new_page(pager);
-    os::memory_copy(pager::rwpage(pager, pidx), buffer.data(), buffer.size());
-    REQUIRE(ArrayView(buffer.data(), sizeof(U8), buffer.size()) == pager::rpage(pager, pidx));
+    U64 pidx = pager_sync::new_page(pager);
+    os::memory_copy(pager_sync::rwpage(pager, pidx), buffer.data(), buffer.size());
+    REQUIRE(ArrayView(buffer.data(), sizeof(U8), buffer.size()) == pager_sync::rpage(pager, pidx));
 
     // zero-length write does not alter content
-    os::memory_copy(pager::rwpage(pager, pidx), buffer.data(), 0);
-    REQUIRE(ArrayView(buffer.data(), sizeof(U8), buffer.size()) == pager::rpage(pager, pidx));
+    os::memory_copy(pager_sync::rwpage(pager, pidx), buffer.data(), 0);
+    REQUIRE(ArrayView(buffer.data(), sizeof(U8), buffer.size()) == pager_sync::rpage(pager, pidx));
 }
 
 TEST_CASE("pager randomized stress and reuse freed pages", "[plexdb.pager]") {
@@ -134,17 +154,17 @@ TEST_CASE("pager randomized stress and reuse freed pages", "[plexdb.pager]") {
     REQUIRE(!os::is_zero_handle(f));
 
     U64 page_size = 64;
-    auto pager = Pager(f, pager::create(f, page_size));
+    auto pager = make_pager(f, pager::create(f, page_size));
 
     std::vector<U64> pages;
-    for(int i = 0; i < 500; ++i) pages.push_back(pager::new_page(pager));
+    for(int i = 0; i < 500; ++i) pages.push_back(pager_sync::new_page(pager));
 
     std::mt19937 rng(123);
     std::shuffle(pages.begin(), pages.end(), rng);
-    for(int i = 0; i < 200; ++i) pager::delete_page(pager, pages[i]);
+    for(int i = 0; i < 200; ++i) pager_sync::delete_page(pager, pages[i]);
 
     for(int i = 0; i < 200; ++i) {
-        pager::new_page(pager);
+        pager_sync::new_page(pager);
     }
 }
 
@@ -153,13 +173,13 @@ TEST_CASE("pager flush and file size consistency", "[plexdb.pager]") {
     REQUIRE(!os::is_zero_handle(f));
 
     U64 page_size = 128;
-    auto pager = Pager(f, pager::create(f, page_size));
+    auto pager = make_pager(f, pager::create(f, page_size));
 
-    U64 pidx = pager::new_page(pager);
+    U64 pidx = pager_sync::new_page(pager);
     std::vector<U8> buffer(page_size, 0x55);
-    os::memory_copy(pager::rwpage(pager, pidx), buffer.data(), buffer.size());
+    os::memory_copy(pager_sync::rwpage(pager, pidx), buffer.data(), buffer.size());
 
-    pager::fflush(pager);
+    pager_sync::fflush(pager);
     REQUIRE(os::file_get_stats(f).byte_count >= page_size);
 }
 
@@ -168,9 +188,9 @@ TEST_CASE("pager large-scale allocation", "[plexdb.pager]") {
     REQUIRE(!os::is_zero_handle(f));
 
     U64 page_size = 32;
-    auto pager = Pager(f, pager::create(f, page_size));
+    auto pager = make_pager(f, pager::create(f, page_size));
 
-    for(int i = 0; i < 10000; ++i) pager::new_page(pager);
+    for(int i = 0; i < 10000; ++i) pager_sync::new_page(pager);
     REQUIRE(pager.header.page_count >= 10000); // account for extra pages needed internally
 }
 
@@ -179,9 +199,9 @@ TEST_CASE("pager alignment and padding", "[plexdb.pager]") {
     REQUIRE(!os::is_zero_handle(f));
 
     U64 page_size = 40;
-    auto pager = Pager(f, pager::create(f, page_size));
+    auto pager = make_pager(f, pager::create(f, page_size));
 
-    pager::new_page(pager);
+    pager_sync::new_page(pager);
     REQUIRE(os::file_get_stats(f).byte_count % page_size == 0);
 }
 
@@ -192,14 +212,14 @@ TEST_CASE("pager partial writes do not corrupt", "[plexdb.pager]") {
     U64 page_size = 64;
     U64 pidx;
     {
-        auto pager = Pager(f, pager::create(f, page_size));
-        pidx = pager::new_page(pager);
+        auto pager = make_pager(f, pager::create(f, page_size));
+        pidx = pager_sync::new_page(pager);
         std::vector<U8> buffer(page_size, 0xAA);
-        os::memory_copy(pager::rwpage(pager, pidx), buffer.data(), page_size / 2);
+        os::memory_copy(pager_sync::rwpage(pager, pidx), buffer.data(), page_size / 2);
     }
 
-    auto pager = Pager(f);
-    auto readback = pager::rpage(pager, pidx);
+    auto pager = make_pager(f);
+    auto readback = pager_sync::rpage(pager, pidx);
     for(U64 i = 0; i < page_size / 2; ++i) REQUIRE(readback[i] == 0xAA);
 }
 
@@ -208,15 +228,15 @@ TEST_CASE("pager repeated reopen and free consistency", "[plexdb.pager]") {
     REQUIRE(!os::is_zero_handle(f));
 
     {
-        auto pager = Pager(f, pager::create(f, 32));
-        U64 pidx = pager::new_page(pager);
-        pager::delete_page(pager, pidx);
+        auto pager = make_pager(f, pager::create(f, 32));
+        U64 pidx = pager_sync::new_page(pager);
+        pager_sync::delete_page(pager, pidx);
     }
 
     {
-        auto pager = Pager(f);
-        U64 pidx = pager::new_page(pager);
-        pager::delete_page(pager, pidx);
+        auto pager = make_pager(f);
+        U64 pidx = pager_sync::new_page(pager);
+        pager_sync::delete_page(pager, pidx);
     }
 }
 
@@ -243,9 +263,9 @@ TEST_CASE("WAL: write and read back via WAL-enabled pager", "[plexdb.pager.wal]"
         os::Handle wal = os::file_open(wal_path);
         auto hdr = pager::create(db, page_size);
         {
-            auto p = Pager(db, wal, hdr);
-            pidx = pager::new_page(p);
-            os::memory_copy(pager::rwpage(p, pidx), data, sizeof(data));
+            auto p = make_pager(db, wal, hdr);
+            pidx = pager_sync::new_page(p);
+            os::memory_copy(pager_sync::rwpage(p, pidx), data, sizeof(data));
         }  // p destroyed: fflush via WAL, file_sync
         os::file_close(db);
         os::file_close(wal);
@@ -255,8 +275,8 @@ TEST_CASE("WAL: write and read back via WAL-enabled pager", "[plexdb.pager.wal]"
         os::Handle db  = os::file_open(db_path);
         os::Handle wal = os::file_open(wal_path);
         {
-            auto p = Pager(db, wal);
-            const U8* rb = pager::rpage(p, pidx);
+            auto p = make_pager(db, wal);
+            const U8* rb = pager_sync::rpage(p, pidx);
             for (U64 i = 0; i < sizeof(data); i++)
                 REQUIRE(rb[i] == data[i]);
         }
@@ -289,9 +309,9 @@ TEST_CASE("WAL: committed WAL replays after abrupt process exit", "[plexdb.pager
         os::Handle db = os::file_open(db_path);
         auto hdr = pager::create(db, page_size);
         {
-            auto p = Pager(db, hdr);
-            pidx = pager::new_page(p);
-            os::memory_copy(pager::rwpage(p, pidx), original, sizeof(original));
+            auto p = make_pager(db, hdr);
+            pidx = pager_sync::new_page(p);
+            os::memory_copy(pager_sync::rwpage(p, pidx), original, sizeof(original));
         }
         os::file_close(db);
     }
@@ -306,14 +326,14 @@ TEST_CASE("WAL: committed WAL replays after abrupt process exit", "[plexdb.pager
         os::Handle child_db  = os::file_open(db_path);
         os::Handle child_wal = os::file_open(wal_path);
 
-        pager::Wal wal{child_wal};
-        pager::wal_create(wal, page_size);
+        pager_sync::Wal wal{child_wal};
+        pager_sync::wal_create(wal, page_size);
 
         U8* buf = os::allocate_zero(page_size);
         os::file_read(child_db, Rng1U64{.start=page_size*pidx, .end=page_size*(pidx+1)}, buf);
         os::memory_copy(buf, modified, sizeof(modified));
-        pager::wal_append_frame(wal, pidx, buf);
-        pager::wal_commit(wal);
+        pager_sync::wal_append_frame(wal, pidx, buf);
+        pager_sync::wal_commit(wal);
 
         os::deallocate(buf);
         os::process_exit(0);  // crash: no checkpoint
@@ -325,8 +345,8 @@ TEST_CASE("WAL: committed WAL replays after abrupt process exit", "[plexdb.pager
         os::Handle db  = os::file_open(db_path);
         os::Handle wal = os::file_open(wal_path);
         {
-            auto p = Pager(db, wal);
-            const U8* rb = pager::rpage(p, pidx);
+            auto p = make_pager(db, wal);
+            const U8* rb = pager_sync::rpage(p, pidx);
             for (U64 i = 0; i < sizeof(modified); i++)
                 REQUIRE(rb[i] == modified[i]);
         }
@@ -358,9 +378,9 @@ TEST_CASE("WAL: uncommitted frames do not modify the database", "[plexdb.pager.w
         os::Handle db = os::file_open(db_path);
         auto hdr = pager::create(db, page_size);
         {
-            auto p = Pager(db, hdr);
-            pidx = pager::new_page(p);
-            os::memory_copy(pager::rwpage(p, pidx), original, sizeof(original));
+            auto p = make_pager(db, hdr);
+            pidx = pager_sync::new_page(p);
+            os::memory_copy(pager_sync::rwpage(p, pidx), original, sizeof(original));
         }
         os::file_close(db);
     }
@@ -373,13 +393,13 @@ TEST_CASE("WAL: uncommitted frames do not modify the database", "[plexdb.pager.w
         os::Handle child_db  = os::file_open(db_path);
         os::Handle child_wal = os::file_open(wal_path);
 
-        pager::Wal wal{child_wal};
-        pager::wal_create(wal, page_size);
+        pager_sync::Wal wal{child_wal};
+        pager_sync::wal_create(wal, page_size);
 
         U8* buf = os::allocate_zero(page_size);
         os::file_read(child_db, Rng1U64{.start=page_size*pidx, .end=page_size*(pidx+1)}, buf);
         os::memory_copy(buf, modified, sizeof(modified));
-        pager::wal_append_frame(wal, pidx, buf);
+        pager_sync::wal_append_frame(wal, pidx, buf);
         // @note no wal_commit — frames are uncommitted
 
         os::deallocate(buf);
@@ -392,8 +412,8 @@ TEST_CASE("WAL: uncommitted frames do not modify the database", "[plexdb.pager.w
         os::Handle db  = os::file_open(db_path);
         os::Handle wal = os::file_open(wal_path);
         {
-            auto p = Pager(db, wal);
-            const U8* rb = pager::rpage(p, pidx);
+            auto p = make_pager(db, wal);
+            const U8* rb = pager_sync::rpage(p, pidx);
             for (U64 i = 0; i < sizeof(original); i++)
                 REQUIRE(rb[i] == original[i]);
         }
@@ -425,9 +445,9 @@ TEST_CASE("WAL: SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]
         os::Handle db = os::file_open(db_path);
         auto hdr = pager::create(db, page_size);
         {
-            auto p = Pager(db, hdr);
-            pidx = pager::new_page(p);
-            os::memory_copy(pager::rwpage(p, pidx), original, sizeof(original));
+            auto p = make_pager(db, hdr);
+            pidx = pager_sync::new_page(p);
+            os::memory_copy(pager_sync::rwpage(p, pidx), original, sizeof(original));
         }
         os::file_close(db);
     }
@@ -442,14 +462,14 @@ TEST_CASE("WAL: SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]
         os::Handle child_db  = os::file_open(db_path);
         os::Handle child_wal = os::file_open(wal_path);
 
-        pager::Wal wal{child_wal};
-        pager::wal_create(wal, page_size);
+        pager_sync::Wal wal{child_wal};
+        pager_sync::wal_create(wal, page_size);
 
         U8* buf = os::allocate_zero(page_size);
         os::file_read(child_db, Rng1U64{.start=page_size*pidx, .end=page_size*(pidx+1)}, buf);
         os::memory_copy(buf, modified, sizeof(modified));
-        pager::wal_append_frame(wal, pidx, buf);
-        pager::wal_commit(wal);
+        pager_sync::wal_append_frame(wal, pidx, buf);
+        pager_sync::wal_commit(wal);
 
         os::deallocate(buf);
 
@@ -471,8 +491,8 @@ TEST_CASE("WAL: SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]
         os::Handle db  = os::file_open(db_path);
         os::Handle wal = os::file_open(wal_path);
         {
-            auto p = Pager(db, wal);
-            const U8* rb = pager::rpage(p, pidx);
+            auto p = make_pager(db, wal);
+            const U8* rb = pager_sync::rpage(p, pidx);
             for (U64 i = 0; i < sizeof(modified); i++)
                 REQUIRE(rb[i] == modified[i]);
         }

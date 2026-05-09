@@ -1,41 +1,44 @@
 module;
 #include "macros.h"
+#include <coroutine>
 
 module objstore.engine.schema;
 
 import plexdb.threads;
 import plexdb.tagged_union;
 import plexdb.dynamic.tagged_union;
+import plexdb.coroutine;
 
 using namespace plexdb;
 
 namespace objstore::schema {
-    // @note str length must be set to decide read length
-    void get_str(blob::BlobDynamicPaged& blob, const AutoString8& str, U64* offset) {
-        blob::get(blob, reinterpret_cast<U8*>(str.c_str), str.length, *offset);
+    coroutine::Task<void> get_str(blob::BlobDynamicPaged& blob, const AutoString8& str, U64* offset) {
+        co_await blob::get(blob, reinterpret_cast<U8*>(str.c_str), str.length, *offset);
         *offset += str.length;
     };
 
-    void update_str(blob::BlobDynamicPaged& blob, String8 str, U64* offset) {
-        blob::update(blob, reinterpret_cast<const U8*>(str.data), str.length, *offset);
+    coroutine::Task<void> update_str(blob::BlobDynamicPaged& blob, String8 str, U64* offset) {
+        co_await blob::update(blob, reinterpret_cast<const U8*>(str.data), str.length, *offset);
         *offset += str.length;
     };
 
     // @todo small schema storage optimization
-    Schema::Schema(Pager* in_pager, U64 page) {
-        this->schema_blob = blob::BlobStaticPaged(in_pager, page, sizeof(SchemaHeader));
+    coroutine::Task<Schema> Schema::load(Pager* in_pager, U64 page) {
+        Schema schema{};
+
+        schema.schema_blob = co_await blob::BlobStaticPaged::load(in_pager, page, sizeof(SchemaHeader));
 
         SchemaHeader schema_header{};
-        blob::tget(this->schema_blob, &schema_header);
+        co_await blob::tget(schema.schema_blob, &schema_header);
 
-        this->keyspaces_blob = blob::BlobDynamicPaged(in_pager, schema_header.keyspaces_page);
-        this->tables_blob = blob::BlobDynamicPaged(in_pager, schema_header.tables_page);
-        this->columns_blob = blob::BlobDynamicPaged(in_pager, schema_header.columns_page);
+        schema.keyspaces_blob = co_await blob::BlobDynamicPaged::load(in_pager, schema_header.keyspaces_page);
+        schema.tables_blob    = co_await blob::BlobDynamicPaged::load(in_pager, schema_header.tables_page);
+        schema.columns_blob   = co_await blob::BlobDynamicPaged::load(in_pager, schema_header.columns_page);
 
         //
         // allocate storage and cache blob contents in memory
         //
-        for (U64 keyspace_offset_bytes = 0; keyspace_offset_bytes < keyspaces_blob.size_bytes;) {
+        for (U64 keyspace_offset_bytes = 0; keyspace_offset_bytes < schema.keyspaces_blob.size_bytes;) {
             KeyspaceStorage ks_storage{
                 .offset_in_blob_bytes = keyspace_offset_bytes,
                 .header = {},
@@ -46,15 +49,15 @@ namespace objstore::schema {
                 .do_durable_writes = false,
             };
 
-            blob::tget(this->keyspaces_blob, &ks_storage.header, &keyspace_offset_bytes);
+            co_await blob::tget(schema.keyspaces_blob, &ks_storage.header, &keyspace_offset_bytes);
 
             ks_storage.name = AutoString8{ks_storage.header.name_length};
-            get_str(this->keyspaces_blob, ks_storage.name, &keyspace_offset_bytes);
+            co_await get_str(schema.keyspaces_blob, ks_storage.name, &keyspace_offset_bytes);
 
-            push_back(this->storage.keyspaces, move(ks_storage));
+            push_back(schema.storage.keyspaces, move(ks_storage));
         }
 
-        for (U64 table_offset_bytes = 0; table_offset_bytes < tables_blob.size_bytes;) {
+        for (U64 table_offset_bytes = 0; table_offset_bytes < schema.tables_blob.size_bytes;) {
             TableStorage tbl_storage{
                 .offset_in_blob_bytes = table_offset_bytes,
                 .header = {},
@@ -62,44 +65,43 @@ namespace objstore::schema {
                 .columns = {},
             };
 
-            blob::tget(this->tables_blob, &tbl_storage.header, &table_offset_bytes);
+            co_await blob::tget(schema.tables_blob, &tbl_storage.header, &table_offset_bytes);
 
             tbl_storage.name = AutoString8{tbl_storage.header.name_length};
-            get_str(this->tables_blob, tbl_storage.name, &table_offset_bytes);
+            co_await get_str(schema.tables_blob, tbl_storage.name, &table_offset_bytes);
 
-            assert_true(tbl_storage.header.keyspace_idx < this->storage.keyspaces.length, "invalid keyspace idx");
-            KeyspaceStorage& ks_storage = this->storage.keyspaces[tbl_storage.header.keyspace_idx];
-            push_back(ks_storage.tables, this->storage.tables.length);
+            assert_true(tbl_storage.header.keyspace_idx < schema.storage.keyspaces.length, "invalid keyspace idx");
+            KeyspaceStorage& ks_storage = schema.storage.keyspaces[tbl_storage.header.keyspace_idx];
+            push_back(ks_storage.tables, schema.storage.tables.length);
 
-            push_back(this->storage.tables, move(tbl_storage));
+            push_back(schema.storage.tables, move(tbl_storage));
         }
 
-        for (U64 column_offset_bytes = 0; column_offset_bytes < columns_blob.size_bytes;) {
+        for (U64 column_offset_bytes = 0; column_offset_bytes < schema.columns_blob.size_bytes;) {
             ColumnStorage col_storage{
                 .offset_in_blob_bytes = column_offset_bytes,
                 .header = {},
                 .name = {},
             };
 
-            blob::tget(this->columns_blob, &col_storage.header, &column_offset_bytes);
+            co_await blob::tget(schema.columns_blob, &col_storage.header, &column_offset_bytes);
 
             col_storage.name = AutoString8{col_storage.header.name_length};
-            get_str(this->columns_blob, col_storage.name, &column_offset_bytes);
+            co_await get_str(schema.columns_blob, col_storage.name, &column_offset_bytes);
 
-            assert_true(col_storage.header.table_idx < this->storage.tables.length, "invalid table idx");
-            TableStorage& tbl_storage = this->storage.tables[col_storage.header.table_idx];
-            push_back(tbl_storage.columns, this->storage.columns.length);
+            assert_true(col_storage.header.table_idx < schema.storage.tables.length, "invalid table idx");
+            TableStorage& tbl_storage = schema.storage.tables[col_storage.header.table_idx];
+            push_back(tbl_storage.columns, schema.storage.columns.length);
 
-            push_back(this->storage.columns, move(col_storage));
+            push_back(schema.storage.columns, move(col_storage));
         }
 
-
         //
-        // resolves indices and contruct views
+        // resolves indices and construct views
         //
-        reserve(this->keyspaces, this->storage.keyspaces.length);
-        for (U64 ks_idx = 0; ks_idx < this->storage.keyspaces.length; ks_idx++) {
-            const KeyspaceStorage& ks_storage = this->storage.keyspaces[ks_idx];
+        reserve(schema.keyspaces, schema.storage.keyspaces.length);
+        for (U64 ks_idx = 0; ks_idx < schema.storage.keyspaces.length; ks_idx++) {
+            const KeyspaceStorage& ks_storage = schema.storage.keyspaces[ks_idx];
             Keyspace ks {
                 .idx = ks_idx,
                 .tombstone = ks_storage.header.tombstone,
@@ -107,7 +109,7 @@ namespace objstore::schema {
                 .tbls = {},
             };
             for (const auto& tbl_idx: ks_storage.tables) {
-                const TableStorage& tbl_storage = this->storage.tables[tbl_idx];
+                const TableStorage& tbl_storage = schema.storage.tables[tbl_idx];
 
                 Table tbl {
                     .idx = tbl_idx,
@@ -120,7 +122,7 @@ namespace objstore::schema {
 
                 reserve(tbl.cols, tbl_storage.columns.length);
                 for (const auto& col_idx: tbl_storage.columns) {
-                    const ColumnStorage& col_storage = this->storage.columns[col_idx];
+                    const ColumnStorage& col_storage = schema.storage.columns[col_idx];
 
                     Column col {
                         .tombstone = col_storage.header.tombstone,
@@ -132,16 +134,18 @@ namespace objstore::schema {
                 }
                 push_back(ks.tbls, move(tbl));
             }
-            push_back(this->keyspaces, move(ks));
+            push_back(schema.keyspaces, move(ks));
         }
+
+        co_return move(schema);
     }
 
-    U64 create_schema(Pager& pager) {
-        U64 schema_page = blob::create_paged_static(pager, sizeof(SchemaHeader));
+    coroutine::Task<U64> create_schema(Pager& pager) {
+        U64 schema_page = co_await blob::create_paged_static(pager, sizeof(SchemaHeader));
 
-        U64 keyspaces_page = blob::create_paged_dynamic(pager, 0);
-        U64 tables_page    = blob::create_paged_dynamic(pager, 0);
-        U64 columns_page   = blob::create_paged_dynamic(pager, 0);
+        U64 keyspaces_page = co_await blob::create_paged_dynamic(pager, 0);
+        U64 tables_page    = co_await blob::create_paged_dynamic(pager, 0);
+        U64 columns_page   = co_await blob::create_paged_dynamic(pager, 0);
 
         SchemaHeader header{
             .keyspaces_page = keyspaces_page,
@@ -149,10 +153,10 @@ namespace objstore::schema {
             .columns_page = columns_page,
         };
 
-        blob::BlobStaticPaged schema_blob(&pager, schema_page, sizeof(SchemaHeader));
-        blob::tupdate(schema_blob, &header);
+        blob::BlobStaticPaged schema_blob = co_await blob::BlobStaticPaged::load(&pager, schema_page, sizeof(SchemaHeader));
+        co_await blob::tupdate(schema_blob, &header);
 
-        return schema_page;
+        co_return schema_page;
     }
 
     //
@@ -183,6 +187,10 @@ namespace objstore::schema {
         }
         return {nullptr, Error::MissingColumn};
     }
+
+    Result<Keyspace*> read_keyspace(Schema& schema, String8 name) { return read_keyspace_impl(schema, name); }
+    Result<Table*>    read_table(Schema& schema, Keyspace& ks, String8 name) { return read_table_impl(schema, ks, name); }
+    Result<Column*>   read_column(Schema& schema, Table& tbl, String8 name) { return read_column_impl(schema, tbl, name); }
 
     [[nodiscard("option may be invalid")]]
     static Result<void> apply_keyspace_replication_option(KeyspaceStorage& storage, const OptionValue& option) {
@@ -284,11 +292,10 @@ namespace objstore::schema {
             }
         }
 
-        // @todo should we error if not replication class is provided or continue being more permissive?
         return {Error::None};
     }
 
-    Result<Keyspace*> create_keyspace(Schema& schema, const CreateKeyspace& create) {
+    coroutine::Task<Result<Keyspace*>> create_keyspace(Schema& schema, const CreateKeyspace& create) {
         assert_true(read_keyspace_impl(schema, create.name).error == Error::MissingKeyspace, "keyspace already exists");
 
         U64 offset_bytes = schema.keyspaces_blob.size_bytes;
@@ -306,21 +313,19 @@ namespace objstore::schema {
             .do_durable_writes = true,
         };
         if (auto res = apply_keyspace_options(ks_storage, create.options); res.error != Error::None) {
-            return {nullptr, res.error, res.message};
+            co_return Result<Keyspace*>{nullptr, res.error, res.message};
         }
 
         KeyspaceStorage& ks_storage_ref = push_back(schema.storage.keyspaces, move(ks_storage));
 
-        blob::resize(
+        co_await blob::resize(
             schema.keyspaces_blob, offset_bytes +
-            // fixed
             sizeof(ks_storage_ref.header) +
-            // variable length
             ks_storage_ref.name.length
         );
 
-        blob::tupdate(schema.keyspaces_blob, &ks_storage_ref.header, &offset_bytes);
-        update_str(schema.keyspaces_blob, ks_storage_ref.name, &offset_bytes);
+        co_await blob::tupdate(schema.keyspaces_blob, &ks_storage_ref.header, &offset_bytes);
+        co_await update_str(schema.keyspaces_blob, ks_storage_ref.name, &offset_bytes);
 
         Keyspace ks {
             .idx = schema.storage.keyspaces.length-1,
@@ -328,12 +333,10 @@ namespace objstore::schema {
             .name = ks_storage_ref.name,
             .tbls = {},
         };
-        return {&push_back(schema.keyspaces, move(ks))};
+        co_return Result<Keyspace*>{&push_back(schema.keyspaces, move(ks))};
     }
-    Result<Keyspace*> read_keyspace(Schema& schema, String8 name) {
-        return read_keyspace_impl(schema, name);
-    }
-    Result<void> delete_keyspace(Schema& schema, String8 name) {
+
+    coroutine::Task<Result<void>> delete_keyspace(Schema& schema, String8 name) {
         auto ks_res = read_keyspace_impl(schema, name);
         if (ks_res.error == Error::None) {
             const auto& ks = ks_res.value;
@@ -343,10 +346,10 @@ namespace objstore::schema {
             ks_storage.header.tombstone = true;
 
             U64 offset = ks_storage.offset_in_blob_bytes + offsetof(KeyspaceHeader, tombstone);
-            tupdate(schema.keyspaces_blob, &ks_storage.header.tombstone, &offset);
-            return {};
+            co_await blob::tupdate(schema.keyspaces_blob, &ks_storage.header.tombstone, &offset);
+            co_return Result<void>{};
         }
-        return {ks_res.error, ks_res.message};
+        co_return Result<void>{ks_res.error, ks_res.message};
     }
 
     static Optional<U64> get_primary_key_col_idx(const CreateTable& create) {
@@ -355,7 +358,6 @@ namespace objstore::schema {
         for (U64 col_idx = 0; col_idx < create.column_definitions.length; col_idx++) {
             const auto& col_def = create.column_definitions[col_idx];
 
-            // @todo error code/message
             if (has_primary_key && col_def.primary_key) {
                 return {};
             }
@@ -390,16 +392,16 @@ namespace objstore::schema {
         return {};
     }
 
-    Result<Table*> create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
+    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
         assert_true_not_implemented(create.options.value.length == 0, "CREATE TABLE WITH options are not implemented");
         assert_true(read_table_impl(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
 
         auto primary_key_col_idx_opt = get_primary_key_col_idx(create);
-        if (!primary_key_col_idx_opt) // @todo error code/message
-            return {nullptr, Error::MissingPrimaryKey, "table needs a primary key"};
+        if (!primary_key_col_idx_opt)
+            co_return Result<Table*>{nullptr, Error::MissingPrimaryKey, "table needs a primary key"};
         U64 primary_key_col_idx = *primary_key_col_idx_opt;
 
-        U64 btree_page = btree::create_paged(*schema.tables_blob.pager, sizeof(U64));
+        U64 btree_page = co_await btree::create_paged(*schema.tables_blob.pager, sizeof(U64));
 
         U64 offset_bytes = schema.tables_blob.size_bytes;
 
@@ -416,16 +418,14 @@ namespace objstore::schema {
         };
         TableStorage& tbl_storage_ref = push_back(schema.storage.tables, move(tbl_storage));
 
-        blob::resize(
+        co_await blob::resize(
             schema.tables_blob, offset_bytes +
-            // fixed
             sizeof(tbl_storage_ref.header) +
-            // variable length
             tbl_storage_ref.name.length
         );
 
-        blob::tupdate(schema.tables_blob, &tbl_storage_ref.header, &offset_bytes);
-        update_str(schema.tables_blob, tbl_storage_ref.name, &offset_bytes);
+        co_await blob::tupdate(schema.tables_blob, &tbl_storage_ref.header, &offset_bytes);
+        co_await update_str(schema.tables_blob, tbl_storage_ref.name, &offset_bytes);
 
         Table tbl {
             .idx = schema.storage.tables.length-1,
@@ -443,23 +443,21 @@ namespace objstore::schema {
 
             if (read_column_impl(schema, tbl, col_def.name.identifier).error != Error::MissingColumn) {
                 // @todo hard delete
-                delete_table(schema, ks, create.name.table_name);
-                return {nullptr, Error::ColumnNameCollision};
+                co_await delete_table(schema, ks, create.name.table_name);
+                co_return Result<Table*>{nullptr, Error::ColumnNameCollision};
             }
 
-            if (auto res = create_column(schema, tbl_ref, col_def); res.error != Error::None)  {
+            if (auto res = co_await create_column(schema, tbl_ref, col_def); res.error != Error::None) {
                 // @todo hard delete
-                delete_table(schema, ks, create.name.table_name);
-                return {nullptr, res.error, res.message};
+                co_await delete_table(schema, ks, create.name.table_name);
+                co_return Result<Table*>{nullptr, res.error, res.message};
             }
         }
 
-        return {&tbl_ref};
+        co_return Result<Table*>{&tbl_ref};
     }
-    Result<Table*> read_table(Schema& schema, Keyspace& ks, String8 name) {
-        return read_table_impl(schema, ks, name);
-    }
-    Result<void> delete_table(Schema& schema, Keyspace& ks, String8 name) {
+
+    coroutine::Task<Result<void>> delete_table(Schema& schema, Keyspace& ks, String8 name) {
         auto tbl_res = read_table_impl(schema, ks, name);
         if (tbl_res.error != Error::None) {
             const auto& tbl = tbl_res.value;
@@ -469,13 +467,13 @@ namespace objstore::schema {
             tbl_storage.header.tombstone = true;
 
             U64 offset = tbl_storage.offset_in_blob_bytes + offsetof(TableHeader, tombstone);
-            tupdate(schema.tables_blob, &tbl_storage.header.tombstone, &offset);
-            return {};
+            co_await blob::tupdate(schema.tables_blob, &tbl_storage.header.tombstone, &offset);
+            co_return Result<void>{};
         }
-        return {tbl_res.error, tbl_res.message};
+        co_return Result<void>{tbl_res.error, tbl_res.message};
     }
 
-    Result<Column*> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create) {
+    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create) {
         // @todo implement proper static column semantics (shared across clustering rows within a partition)
         assert_true_not_implemented(!create._static, "static column storage is not implemented");
         assert_true_not_implemented(!create.mask, "column MASKED WITH is not implemented");
@@ -495,28 +493,24 @@ namespace objstore::schema {
         };
         ColumnStorage& col_storage_ref = push_back(schema.storage.columns, move(col_storage));
 
-        blob::resize(
+        co_await blob::resize(
             schema.columns_blob, offset_bytes +
-            // fixed
             sizeof(col_storage_ref.header) +
-            // variable length
             col_storage_ref.name.length
         );
 
-        blob::tupdate(schema.columns_blob, &col_storage_ref.header, &offset_bytes);
-        update_str(schema.columns_blob, col_storage_ref.name, &offset_bytes);
+        co_await blob::tupdate(schema.columns_blob, &col_storage_ref.header, &offset_bytes);
+        co_await update_str(schema.columns_blob, col_storage_ref.name, &offset_bytes);
 
         Column col {
             .tombstone = col_storage_ref.header.tombstone,
             .name = col_storage_ref.name,
             .type = col_storage_ref.header.type,
         };
-        return {&push_back(tbl.cols, move(col))};
+        co_return Result<Column*>{&push_back(tbl.cols, move(col))};
     }
-    Result<Column*> read_column(Schema& schema, Table& tbl, String8 name) {
-        return read_column_impl(schema, tbl, name);
-    }
-    Result<void> delete_column(Schema& schema, Table& tbl, String8 name) {
+
+    coroutine::Task<Result<void>> delete_column(Schema& schema, Table& tbl, String8 name) {
         auto col_res = read_column_impl(schema, tbl, name);
         if (col_res.error != Error::None) {
             const auto& col = col_res.value;
@@ -528,12 +522,12 @@ namespace objstore::schema {
                     String8(col_storage.name.c_str, col_storage.name.length) == name) {
                     col_storage.header.tombstone = true;
                     U64 offset = col_storage.offset_in_blob_bytes + offsetof(ColumnHeader, tombstone);
-                    tupdate(schema.columns_blob, &col_storage.header.tombstone, &offset);
+                    co_await blob::tupdate(schema.columns_blob, &col_storage.header.tombstone, &offset);
                     break;
                 }
             }
-            return {};
+            co_return Result<void>{};
         }
-        return {col_res.error, col_res.message};
+        co_return Result<void>{col_res.error, col_res.message};
     }
 }

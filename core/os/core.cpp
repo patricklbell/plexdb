@@ -19,8 +19,26 @@ module plexdb.os.core;
 import plexdb.base;
 
 namespace plexdb::os {
-    File::~File()                   { file_close(this->handle); }
-    File::operator Handle() const   { return this->handle; }
+    File::File(Handle h): handle(h) {}
+    File::File(File&& other) noexcept: handle(other.handle) {
+        other.handle = zero_handle();
+    }
+    File& File::operator=(File&& other) noexcept {
+        if (this != &other) {
+            if (!is_zero_handle(this->handle)) file_close(this->handle);
+
+            handle = other.handle;
+            other.handle = zero_handle();
+        }
+
+        return *this;
+    }
+    File::~File() {
+        if (!is_zero_handle(this->handle)) file_close(this->handle);
+    }
+    File::operator Handle() const {
+        return this->handle;
+    }
 
 #if PLEXDB_OS_LINUX
     // ========================================================================
@@ -335,7 +353,7 @@ namespace plexdb::os {
 
             U32 count = 0;
             for (long i = 0; i < ret && count < max; i++) {
-                assert_true(events[i].res >= 0 || events[i].res == -EINPROGRESS, 
+                assert_true(events[i].res >= 0 || events[i].res == -EINPROGRESS,
                     "unexpected negative result in drain");
 
                 out[count].token = events[i].data;

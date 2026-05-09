@@ -1,3 +1,6 @@
+module;
+#include <coroutine>
+
 export module objstore.engine;
 
 export import objstore.engine.types;
@@ -10,12 +13,14 @@ import objstore.engine.statements;
 import objstore.engine.io;
 
 import plexdb.base;
+import plexdb.coroutine;
 import plexdb.os;
 import plexdb.tagged_union;
 import plexdb.dynamic.tagged_union;
 import plexdb.pager;
 import plexdb.blob;
 import plexdb.btree;
+import plexdb.aio;
 
 using namespace plexdb;
 
@@ -43,15 +48,16 @@ export namespace objstore::engine {
     // engine
     // ========================================================================
     struct Engine {
-        Pager* pager;
+        Pager* pager = nullptr;
         schema::Schema schema;
         AutoString8 current_keyspace{""};
         MapFixedSentinel<U64, PreparedEntry, MAX_PREPARED_STATEMENTS> prepared_cache;
 
-        Engine(Pager* in_pager);
+        Engine() = default;
+        static coroutine::Task<Engine> create(Pager* in_pager);
     };
 
-    void create_database(Pager& pager);
+    coroutine::Task<void> create_database(Pager& pager);
 
     enum class ExecutionStatus : U16 {
         Success         = 0x0000,
@@ -103,9 +109,9 @@ export namespace objstore::engine {
         DynamicArray<U64> select_col_indices = {};
     };
 
-    ExecutionResult execute(Engine& engine, const Statement& statement);
-    ExecutionResult execute(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values);
-    ExecutionResult execute(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values);
+    coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement);
+    coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values);
+    coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values);
 
     // ========================================================================
     // bind variables
