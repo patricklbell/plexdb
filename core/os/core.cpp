@@ -1,6 +1,6 @@
 module;
-#include "macros.h"
-#include <profiling/tracy.hpp>
+#include <plexdb/macros/macros.h>
+#include <plexdb/support/tracy/tracy.hpp>
 #if PLEXDB_OS_LINUX
     #include <stdlib.h>
     #include <fcntl.h>

@@ -1,7 +1,7 @@
 module;
 #include <source_location>
 #include <stacktrace>
-#include "macros.h"
+#include <plexdb/macros/macros.h>
 
 export module plexdb.coroutine.debug;
 

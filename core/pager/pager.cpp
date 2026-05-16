@@ -1,7 +1,7 @@
 module;
-#include "macros.h"
+#include <plexdb/macros/macros.h>
 #include <coroutine>
-#include <profiling/tracy.hpp>
+#include <plexdb/support/tracy/tracy.hpp>
 
 module plexdb.pager;
 

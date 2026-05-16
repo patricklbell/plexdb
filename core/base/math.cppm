@@ -1,5 +1,5 @@
 module;
-#include "macros.h"
+#include <plexdb/macros/macros.h>
 
 // @todo used only for std::numeric_limits
 #include <limits>

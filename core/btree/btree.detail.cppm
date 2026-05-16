@@ -1,6 +1,6 @@
 module;
 #include <coroutine>
-#include <profiling/tracy.hpp>
+#include <plexdb/support/tracy/tracy.hpp>
 
 export module plexdb.btree.detail;
 

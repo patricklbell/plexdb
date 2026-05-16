@@ -30,10 +30,10 @@ if(NOT TARGET plexdb::compiler_config)
 
   target_compile_definitions(plexdb_compiler_config INTERFACE
         $<$<BOOL:${PLEXDB_DEBUG}>:PLEXDB_DEBUG=1>
-        $<$<BOOL:${PLEXDB_ENABLE_LOGGING}>:PLEXDB_ENABLE_LOGGING=1>
+        $<$<BOOL:${PLEXDB_ENABLE_PLUGINS}>:PLEXDB_ENABLE_PLUGINS=1>
         $<$<BOOL:${PLEXDB_ENABLE_USER_KILL_SIGNAL}>:PLEXDB_ENABLE_USER_KILL_SIGNAL=1>
     )
   target_link_options(plexdb_compiler_config INTERFACE
-        $<$<BOOL:${PLEXDB_ENABLE_LOGGING}>:-rdynamic>
+        $<$<BOOL:${PLEXDB_ENABLE_PLUGINS}>:-rdynamic>
     )
 endif()

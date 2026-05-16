@@ -1,6 +1,6 @@
 module;
 #include <coroutine>
-#include "macros.h"
+#include <plexdb/macros/macros.h>
 
 export module plexdb.coroutine.extra;
 
@@ -24,7 +24,7 @@ export namespace plexdb::coroutine {
         FlushableTArray(TArrayView<T,Length> b, F f) : buffer(b), length(0), flush(f) {}
         ~FlushableTArray() { assert_true(this->length == 0, "coroutine::FlushableTArray needs to be manually flushed before destructor, this should never happen!"); }
     };
-    
+
     template<typename F, typename T, typename Length = size_t>
         requires TArrayFlushFunction<F,T,Length>
     Task<> flush_if_needed(FlushableTArray<F,T,Length>& arr) {
@@ -46,10 +46,10 @@ export namespace plexdb::coroutine {
 
         while (src != end) {
             co_await flush_if_needed(arr);
-            
+
             U64 count = min(static_cast<U64>(end - src), arr.buffer.length - arr.length);
             assert_true(count > 0, "string8 buffer is zero length");
-            
+
             // @todo memory copy
             for (U64 i = 0; i < count; i++) {
                 arr.buffer.ptr[arr.length++] = src[i];

@@ -7,7 +7,15 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -24,55 +32,33 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-19 \
             -DCMAKE_C_COMPILER=clang-19 \
-            -DPLEXDB_DEBUG=OFF \
-            -DPLEXDB_ENABLE_TESTS=OFF \
             -DBUILD_SHARED_LIBS=OFF
 
       - name: Build
         run: ninja -C build
-
-      - name: Package core
-        run: |
-          mkdir -p pkg/core/lib pkg/core/modules pkg/core/macros
-          cp build/core/libplexdb_core.a pkg/core/lib/
-          find core -name '*.cppm' | while read f; do
-            mkdir -p "pkg/core/modules/$(dirname "$f")"
-            cp "$f" "pkg/core/modules/$f"
-          done
-          cp macros/macros.h pkg/core/macros/
-          tar -czf plexdb-core-linux-x64.tar.gz -C pkg core
 
       - name: Build OTLP plugin
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
           ninja -C build
-        working-directory: objstore/plugins/log_otel
+        working-directory: plugins/otel
 
-      - name: Package objstore
+      - name: Collect artifacts
         run: |
-          cp build/objstore/objstore_server objstore-linux-x64
+          cp build/cql/plexdb_cql_server                  plexdb-cql-linux-${{ matrix.arch }}
+          cp build/keyvalue/plexdb_keyvalue_server        plexdb-keyvalue-linux-${{ matrix.arch }}
+          cp plugins/otel/build/libplexdb_otel_plugin.so  libplexdb_otel_plugin-linux-${{ matrix.arch }}.so
 
-      - name: Package OTLP plugin
-        run: cp objstore/plugins/log_otel/build/libobjstore_log_otel.so .
-
-      - name: Upload objstore
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: objstore-linux-x64
-          path: objstore-linux-x64
-
-      - name: Upload core
-        uses: actions/upload-artifact@v4
-        with:
-          name: plexdb-core-linux-x64
-          path: plexdb-core-linux-x64.tar.gz
-
-      - name: Upload OTLP plugin
-        uses: actions/upload-artifact@v4
-        with:
-          name: libobjstore_log_otel
-          path: libobjstore_log_otel.so
+          name: linux-${{ matrix.arch }}
+          path: |
+            plexdb-cql-linux-${{ matrix.arch }}
+            plexdb-keyvalue-linux-${{ matrix.arch }}
+            plexdb-core-linux-${{ matrix.arch }}.tar.gz
+            libplexdb_otel_plugin-linux-${{ matrix.arch }}.so
 
   release:
     needs: build
@@ -81,25 +67,23 @@ jobs:
       contents: write
 
     steps:
-      - name: Download objstore
+      - name: Download x64 artifacts
         uses: actions/download-artifact@v4
         with:
-          name: objstore-linux-x64
+          name: linux-x64
 
-      - name: Download core
+      - name: Download arm64 artifacts
         uses: actions/download-artifact@v4
         with:
-          name: plexdb-core-linux-x64
-
-      - name: Download OTLP plugin
-        uses: actions/download-artifact@v4
-        with:
-          name: libobjstore_log_otel
+          name: linux-arm64
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            objstore-linux-x64
-            plexdb-core-linux-x64.tar.gz
-            libobjstore_log_otel.so
+            plexdb-cql-linux-x64
+            plexdb-keyvalue-linux-x64
+            libplexdb_otel_plugin-linux-x64.so
+            plexdb-cql-linux-arm64
+            plexdb-keyvalue-linux-arm64
+            libplexdb_otel_plugin-linux-arm64.so

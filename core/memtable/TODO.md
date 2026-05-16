@@ -1,5 +1,6 @@
 ## Core Data Structure
 - [ ] Implement a balanced tree (Red-Black, AVL, or skip list) for memtable.
+  - [ ] Reuse in memory btree implementation? 
 - [ ] Maintain sorted key-value pairs in memory.
 - [ ] Support basic operations:
   - [ ] `put(key, value)` → insert or update key.

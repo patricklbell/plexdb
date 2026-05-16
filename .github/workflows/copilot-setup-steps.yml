@@ -26,32 +26,41 @@ jobs:
             libgrpc++-dev libprotobuf-dev protobuf-compiler protobuf-compiler-grpc
 
       - name: Configure CMake
-        run: cmake -B build -G Ninja -DPLEXDB_ENABLE_TESTS=ON -DPLEXDB_ENABLE_LOGGING=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+        run: cmake -B build -G Ninja \
+          -DCMAKE_CXX_COMPILER=clang++-19 \
+          -DCMAKE_C_COMPILER=clang-19 \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DPLEXDB_ENABLE_TESTS=ON \
+          -DPLEXDB_ENABLE_PLUGINS=ON
 
       - name: Build
         run: ninja -C build
 
       - name: Build OTLP plugin
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19
           ninja -C build
-        working-directory: objstore/plugins/log_otel
-      
-      - name: Build log file plugin
+        working-directory: plugins/otel
+
+      - name: Build log plugin
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+          cmake -B build -G Ninja \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_BUILD_TYPE=Debug
           ninja -C build
-        working-directory: objstore/plugins/log_file
+        working-directory: plugins/log
 
       - name: Install cql_node_example dependencies
         run: npm install
-        working-directory: extra/cql_node_example
-      
+        working-directory: tools/cql_node_example
+
       - name: Install cql_py_example dependencies
         run: |
           curl -Ls https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           uv sync --no-build-isolation-package cassandra-driver
-        working-directory: extra/cql_py_example
+        working-directory: tools/cql_py_example

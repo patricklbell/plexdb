@@ -1,0 +1,45 @@
+name: Cassandra Stress
+
+on:
+  workflow_dispatch:
+    inputs:
+      ops:
+        description: "Operations per workload (write + read)"
+        required: false
+        default: "100000"
+        type: string
+      threads:
+        description: "Concurrent client threads"
+        required: false
+        default: "16"
+        type: string
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19
+
+      - name: Build
+        run: |
+          ninja -C build plexdb_cql_server
+
+      - name: Run Cassandra stress
+        run: |
+          ARGS="-n ${{ inputs.ops }} -t ${{ inputs.threads }}"
+          bash tools/cql_stress/run.sh $ARGS || true

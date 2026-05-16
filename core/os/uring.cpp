@@ -1,5 +1,5 @@
 module;
-#include "macros.h"
+#include <plexdb/macros/macros.h>
 
 #if CORE_ENABLE_IO_URING
     #if !PLEXDB_OS_LINUX
@@ -60,7 +60,7 @@ namespace plexdb::uring {
         settings->available = os::get_kernel_features()->io_uring.supported &&
             (settings->available_buffer_bytes > 0) &&
             (settings->available_buffer_count > 0) &&
-            (settings->available_ring_count > 0) && 
+            (settings->available_ring_count > 0) &&
             (page_size >= minimum_recommended_buffer_size);
 
         // @note buffer_size must be page-aligned for io_uring_register_buffers mlock accounting
@@ -183,7 +183,7 @@ namespace plexdb::uring {
             , buffer_count(buffer_count) {
             assert_true(buffer_size > 0, "zero buffer size");
             assert_true(buffer_count > 0, "zero buffer count");
-            
+
             // allocate memory - must be page-aligned for io_uring_register_buffers
             U64 page_size = os::get_system_info()->page_size;
             int err = posix_memalign((void**)&this->buffers, page_size, buffer_size*buffer_count);
@@ -350,7 +350,7 @@ namespace plexdb::uring {
             assert_true(static_cast<bool>(ring), "invalid ring");
             auto* uring_ring = static_cast<io_uring*>(ring.ring_vptr);
             io_uring_cqe* cqe = nullptr;
-            
+
             if (io_uring_peek_cqe(uring_ring, &cqe) == 0 && cqe) {
                 U64 user_data = (U64)io_uring_cqe_get_data(cqe);
                 EventTypeTag type = decode_type(user_data);
@@ -444,7 +444,7 @@ namespace plexdb::uring {
 
             int server_fd = handle_to_fd(ring.server);
             U64 user_data = encode_user_data(TYPE_ACCEPT, 0);
-            
+
             io_uring_prep_accept(sqe, server_fd, nullptr, nullptr, 0);
             io_uring_sqe_set_data(sqe, (void*)user_data);
             return true;
@@ -460,7 +460,7 @@ namespace plexdb::uring {
 
             int server_fd = handle_to_fd(ring.server);
             U64 user_data = encode_user_data(TYPE_MULTISHOT_ACCEPT, 0);
-            
+
             io_uring_prep_multishot_accept(sqe, server_fd, nullptr, nullptr, 0);
             io_uring_sqe_set_data(sqe, (void*)user_data);
             return true;
@@ -477,7 +477,7 @@ namespace plexdb::uring {
             int client_fd = handle_to_fd(client);
             assert_true(client_fd >= 0, "invalid fd, cannot be encoded in io_uring unsigned user data");
             U64 user_data = encode_user_data(TYPE_CLOSE, client_fd);
-            
+
             io_uring_prep_close(sqe, client_fd);
             io_uring_sqe_set_data(sqe, (void*)user_data);
             return true;
@@ -496,7 +496,7 @@ namespace plexdb::uring {
 
             int client_fd = handle_to_fd(client);
             U64 user_data = encode_user_data(TYPE_READ, buffer_idx);
-            
+
             auto* iovecs = static_cast<iovec*>(ring.iovecs_vptr);
             io_uring_prep_read_fixed(sqe, client_fd, iovecs[buffer_idx].iov_base, byte_count, byte_offset, buffer_idx);
             io_uring_sqe_set_data(sqe, (void*)user_data);
@@ -515,7 +515,7 @@ namespace plexdb::uring {
 
             int client_fd = handle_to_fd(client);
             U64 user_data = encode_user_data(TYPE_WRITE, buffer_idx);
-            
+
             auto* iovecs = static_cast<iovec*>(ring.iovecs_vptr);
             io_uring_prep_write_fixed(sqe, client_fd, iovecs[buffer_idx].iov_base, byte_count, byte_offset, buffer_idx);
             io_uring_sqe_set_data(sqe, (void*)user_data);

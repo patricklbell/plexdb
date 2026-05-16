@@ -1,0 +1,90 @@
+name: keyvalue Conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_filter:
+        description: "pytest -k expression to select tests (empty = all)"
+        required: false
+        default: ""
+      redis_py_ref:
+        description: "redis-py git ref/tag for test content (default: v4.6.0)"
+        required: false
+        default: "v4.6.0"
+
+jobs:
+  keyvalue-conformance:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 redis-tools
+
+      - name: Configure and build server
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19
+          ninja -C build plexdb_keyvalue_server
+
+      - name: Install uv
+        run: |
+          curl -Ls https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Run keyvalue conformance tests
+        run: |
+          ARGS="-b build/keyvalue/keyvalue_server -r ${{ inputs.redis_py_ref || 'v4.6.0' }}"
+          if [ -n "${{ inputs.test_filter }}" ]; then
+            ARGS="$ARGS -t '${{ inputs.test_filter }}'"
+          fi
+          bash tools/keyvalue_tests/run.sh $ARGS 2>&1 | tee "$RUNNER_TEMP/keyvalue_test_output.txt" || true
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          python3 - "$RUNNER_TEMP/keyvalue_test_output.txt" << 'PYEOF'
+          import os, re, sys
+
+          text = open(sys.argv[1]).read() if len(sys.argv) > 1 else ""
+          counts = {}
+          for line in reversed(text.splitlines()):
+              stripped = line.strip("= \t")
+              if any(w in stripped for w in ("passed", "failed", "error", "no tests ran")):
+                  for pat, key in [
+                      (r"(\d+) passed",   "Passed"),
+                      (r"(\d+) failed",   "Failed"),
+                      (r"(\d+) error",    "Errors"),
+                      (r"(\d+) skipped",  "Skipped"),
+                      (r"(\d+) warning",  "Warnings"),
+                  ]:
+                      m = re.search(pat, stripped)
+                      if m:
+                          counts[key] = int(m.group(1))
+                  break
+
+          total = sum(counts.values())
+          passed = counts.get("Passed", 0)
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("### keyvalue Conformance Test Results\n\n")
+              f.write(f"Tests sourced from [redis/redis-py](https://github.com/redis/redis-py) ")
+              f.write("`tests/test_commands.py`\n\n")
+              if counts:
+                  f.write(f"**{passed} / {total} passed**\n\n")
+                  f.write("| Result | Count |\n|--------|-------|\n")
+                  for key in ("Passed", "Failed", "Errors", "Skipped", "Warnings"):
+                      if key in counts:
+                          f.write(f"| {key} | {counts[key]} |\n")
+              else:
+                  f.write("_No test results found — check the run log._\n")
+              f.write("\n")
+              f.write("Use `workflow_dispatch` to run with custom filters:\n")
+              f.write("- `test_filter`: pytest `-k` expression (e.g. `test_get`, `test_set`)\n")
+              f.write("- `redis_py_ref`: git ref/tag for redis-py test content\n")
+          PYEOF

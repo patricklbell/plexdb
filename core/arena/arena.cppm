@@ -1,5 +1,5 @@
 module;
-#include "macros.h"
+#include <plexdb/macros/macros.h>
 
 export module plexdb.arena;
 

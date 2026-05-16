@@ -1,7 +1,7 @@
 module;
 #include <string.h>
 #include <stdio.h>
-#include "macros.h"
+#include <plexdb/macros/macros.h>
 
 module plexdb.argparse;
 

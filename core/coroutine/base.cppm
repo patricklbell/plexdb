@@ -2,7 +2,7 @@ module;
 #include <coroutine>
 #include <exception>
 
-#include "macros.h"
+#include <plexdb/macros/macros.h>
 
 export module plexdb.coroutine.base;
 

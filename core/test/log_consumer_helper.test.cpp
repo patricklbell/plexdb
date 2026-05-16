@@ -2,7 +2,7 @@
 #include <catch2/catch_message.hpp>
 #include <catch2/reporters/catch_reporter_event_listener.hpp>
 #include <catch2/reporters/catch_reporter_registrars.hpp>
-#include "log_abi.h"
+#include <plexb/plugin_abi/plugin_abi.h>
 
 #include <map>
 #include <string>
@@ -11,9 +11,6 @@
 
 namespace {
 
-// ============================================================================
-// log buffer state — plain struct, manipulated by free functions
-// ============================================================================
 struct LogBuffer {
     std::map<std::pair<uint32_t,uint32_t>, std::string>        stat_names;
     std::map<uint32_t, std::string>                            producer_names;
@@ -71,9 +68,6 @@ void log_buffer_register_producer_meta(LogBuffer& lb, uint32_t producer_id, cons
     }
 }
 
-// ============================================================================
-// level string
-// ============================================================================
 const char* level_str(uint32_t lvl) {
     switch (lvl) {
         case PLEXDB_LOG_TRACE: return "TRACE";
@@ -85,9 +79,6 @@ const char* level_str(uint32_t lvl) {
     }
 }
 
-// ============================================================================
-// consumer callback
-// ============================================================================
 void on_log_event(const PlexdbLogEvent* event, void* /*ctx*/) {
     switch (event->type) {
         case PLEXDB_LOG_PRODUCER_REGISTERED:
@@ -129,9 +120,6 @@ void on_log_event(const PlexdbLogEvent* event, void* /*ctx*/) {
     }
 }
 
-// ============================================================================
-// Catch2 listener — activates/deactivates log capture per test case
-// ============================================================================
 struct LogListener : Catch::EventListenerBase {
     using EventListenerBase::EventListenerBase;
 
@@ -145,11 +133,11 @@ struct LogListener : Catch::EventListenerBase {
 CATCH_REGISTER_LISTENER(LogListener)
 
 // @note Static init order: consumer only sees messages fired after registration.
-//   Producer catch-up is replayed (see log_abi.h load-order contract).
+//   Producer catch-up is replayed (see abi.h load-order contract).
 struct LogConsumerInstaller {
-    LogConsumerInstaller()  { plexdb_log_register_consumer(on_log_event, nullptr); }
-    ~LogConsumerInstaller() { plexdb_log_unregister_consumer(on_log_event, nullptr); }
+    LogConsumerInstaller()  { plexdb_plugin_register_consumer(on_log_event, nullptr); }
+    ~LogConsumerInstaller() { plexdb_plugin_unregister_consumer(on_log_event, nullptr); }
 };
 static LogConsumerInstaller g_log_install;
 
-} // namespace
+}

@@ -2,9 +2,9 @@ name: Test
 
 on:
   push:
-    branches: [master, main]
+    branches: [master]
   pull_request:
-    branches: [master, main]
+    branches: [master]
 
 jobs:
   test:
@@ -20,7 +20,14 @@ jobs:
             libgrpc++-dev libprotobuf-dev protobuf-compiler protobuf-compiler-grpc
 
       - name: Configure
-        run: cmake -B build -G Ninja -DPLEXDB_ENABLE_TESTS=ON -DPLEXDB_ENABLE_LOGGING=ON -DPLEXDB_DEBUG=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
+        run: |
+          cmake -B build -G Ninja \
+            -DPLEXDB_ENABLE_TESTS=ON \
+            -DPLEXDB_ENABLE_PLUGINS=ON \
+            -DPLEXDB_DEBUG=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19
 
       - name: Build
         run: ninja -C build
@@ -30,17 +37,30 @@ jobs:
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
           ninja -C build
-        working-directory: objstore/plugins/log_otel
-      
-      - name: Build file plugin
+        working-directory: cql/plugins/otel
+
+      - name: Build log plugin
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_C_COMPILER=clang-19
           ninja -C build
-        working-directory: objstore/plugins/log_file
+        working-directory: cql/plugins/log
 
       - name: Run core tests
         run: ./build/core/core_tests --skip-benchmarks
 
-      - name: Run objstore tests
-        run: ./build/objstore/objstore_tests --skip-benchmarks
+      - name: Run cql tests
+        run: ./build/cql/cql_tests --skip-benchmarks
+
+      - name: Run keyvalue tests
+        run: ./build/keyvalue/keyvalue_tests
+
+  cql-conformance:
+    needs: test
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/cql-conformance.yml
+
+  keyvalue-conformance:
+    needs: test
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/keyvalue-conformance.yml

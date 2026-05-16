@@ -8,7 +8,7 @@ module;
 // exposing macros.h or using STL in c++20
 #include <source_location>
 
-#include "macros.h"
+#include <plexdb/macros/macros.h>
 
 export module plexdb.base.types;
 

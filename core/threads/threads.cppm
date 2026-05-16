@@ -1,5 +1,5 @@
 module;
-#include "macros.h"
+#include <plexdb/macros/macros.h>
 
 export module plexdb.threads;
 
@@ -14,7 +14,7 @@ export namespace plexdb::threads {
         Arena arenas[2];
         bool is_main = false;
     };
-    
+
     void     equip(Context* in_ctx);
     Context* get_context();
     Arena*   get_scratch(TArrayView<Arena*,U64> conflicts);
@@ -88,7 +88,7 @@ export namespace plexdb::threads {
         Scope(Scope&&) noexcept;
         Scope& operator=(Scope&&) noexcept;
     };
-    
+
     inline Scope scratch(TArrayView<Arena*,U64> conflicts) { return Scope(get_scratch(conflicts)); }
     inline Scope scratch()                                 { return scratch(TArrayView<Arena*,U64>()); }
 }

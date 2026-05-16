@@ -1,0 +1,6 @@
+# Fetched upstream tests and Python artefacts
+redis_tests/
+.venv/
+__pycache__/
+*.pyc
+*.log

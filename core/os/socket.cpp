@@ -1,5 +1,5 @@
 module;
-#include "macros.h"
+#include <plexdb/macros/macros.h>
 
 #if PLEXDB_OS_LINUX
     #include <sys/socket.h>
@@ -27,7 +27,7 @@ namespace plexdb::os {
 
         Handle socket_open() {
             int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-            
+
             if (fd < 0) {
                 return zero_handle();
             }
@@ -46,7 +46,7 @@ namespace plexdb::os {
         bool socket_set_option(Handle socket, SocketOption option, bool enable) {
             int fd = handle_to_fd(socket);
             int opt = enable ? 1 : 0;
-            
+
             switch (option) {
                 case SocketOption::NonBlocking: {
                     int flags = fcntl(fd, F_GETFL, 0);
@@ -115,7 +115,7 @@ namespace plexdb::os {
 
         SocketResult socket_send(Handle socket, const void* data, U32 length) {
             ssize_t result = ::send(handle_to_fd(socket), data, length, 0);
-            
+
             assert_true(result <= MAX_S32, "send length out of range, this should never happen!");
             if (result >= 0)                            return {static_cast<U32>(result), SocketError::None};
             int err = errno;
@@ -127,7 +127,7 @@ namespace plexdb::os {
 
         SocketResult socket_receive(Handle socket, void* data, U32 length) {
             ssize_t result = ::recv(handle_to_fd(socket), data, length, 0);
-            
+
             assert_true(result <= MAX_S32, "send length out of range, this should never happen!");
             if (result > 0)                             return {static_cast<U32>(result), SocketError::None};
             if (result == 0)                            return {0, SocketError::ConnectionClosed};
@@ -200,7 +200,7 @@ namespace plexdb::os {
         bool socket_set_option(Handle socket, SocketOption option, bool enabled) {
             SOCKET s = handle_to_sock(socket);
             int opt = enabled ? 1 : 0;
-            
+
             switch (option) {
                 case SocketOption::NonBlocking: {
                     u_long mode = enabled ? 1 : 0;
@@ -255,7 +255,7 @@ namespace plexdb::os {
         SocketResult socket_send(Handle socket, const void* data, U32 length) {
             int result = ::send(handle_to_sock(socket), (const char*)data, length, 0);
             if (result >= 0) return {static_cast<U32>(result), SocketError::None};
-            
+
             int err = WSAGetLastError();
             if (err == WSAEWOULDBLOCK)  return {0, SocketError::WouldBlock};
             if (err == WSAECONNRESET)   return {0, SocketError::ConnectionReset};
@@ -266,7 +266,7 @@ namespace plexdb::os {
             int result = ::recv(handle_to_sock(socket), (char*)data, length, 0);
             if (result > 0)     return {static_cast<U32>(result), SocketError::None};
             if (result == 0)    return {0, SocketError::ConnectionClosed};
-            
+
             int err = WSAGetLastError();
             if (err == WSAEWOULDBLOCK)  return {0, SocketError::WouldBlock};
             if (err == WSAECONNRESET)   return {0, SocketError::ConnectionReset};
