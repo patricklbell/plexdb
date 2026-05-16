@@ -8,7 +8,7 @@ out/
 _codeql_detected_source_root
 *.db
 *.stats
-objstore.pid
+*.pid
 **/.venv
 **/node_modules
 **/__pycache__
