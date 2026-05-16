@@ -8,7 +8,7 @@ module;
 #include <lexy/input/string_input.hpp>
 #include <lexy/input_location.hpp>
 
-#define LEXY_LIT_CI(x) lexy::dsl::ascii::case_folding(LEXY_LIT(x))
+#include <plexdb/support/lexy/macros.h>
 
 module cql.parsers;
 
