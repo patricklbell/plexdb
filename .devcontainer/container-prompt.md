@@ -9,8 +9,8 @@ Only the following domains are required and expected to be reachable:
 | `archive.ubuntu.com`, `security.ubuntu.com` | Ubuntu apt packages |
 | `apt.llvm.org` | Clang-19 apt repository |
 | `github.com`, `objects.githubusercontent.com`, `api.github.com` | CMake FetchContent (Catch2, lexy), git operations |
-| `registry.npmjs.org` | npm packages (`extra/cql_node_example`) |
-| `pypi.org`, `files.pythonhosted.org` | Python packages (`extra/cql_py_example`) |
+| `registry.npmjs.org` | npm packages (`tools/cql_node_example`) |
+| `pypi.org`, `files.pythonhosted.org` | Python packages (`tools/cql_py_example`) |
 | `astral.sh` | uv installer for Python toolchain |
 
 Outbound traffic to any other domain is unexpected and likely not needed.
@@ -19,7 +19,7 @@ Outbound traffic to any other domain is unexpected and likely not needed.
 
 ```sh
 # Configure (Debug)
-cmake -B build -G Ninja -DPLEXDB_ENABLE_TESTS=ON -DPLEXDB_ENABLE_LOGGING=ON \
+cmake -B build -G Ninja -DPLEXDB_ENABLE_TESTS=ON -DPLEXDB_ENABLE_PLUGINS=ON \
   -DCMAKE_BUILD_TYPE=Debug
 
 # Build everything
@@ -27,7 +27,7 @@ ninja -C build
 
 # Run tests
 build/core/core_tests --skip-benchmarks
-build/objstore/objstore_tests --skip-benchmarks
+build/cql/cql_tests --skip-benchmarks
 ```
 
 ## Docker access (read-only)
