@@ -13,8 +13,8 @@ import plexdb.aio;
 import plexdb.server.test_helpers;
 
 import keyvalue.store;
-import keyvalue.protocol;
 import keyvalue.resp;
+import keyvalue.resp.protocol;
 
 using namespace plexdb;
 using namespace plexdb::os;
@@ -356,7 +356,7 @@ TEST_CASE("RESP inline command", "[resp.server]") {
 
 // ============================================================================
 TEST_CASE("RESP protocol: parse round-trip", "[resp.protocol]") {
-    using namespace keyvalue::protocol;
+    using namespace keyvalue::resp::protocol;
 
     DynamicArray<U8> buf;
 

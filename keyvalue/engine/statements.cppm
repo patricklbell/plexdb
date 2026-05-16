@@ -43,6 +43,8 @@ export namespace keyvalue {
     struct TypeOf {
         AutoString8 key;
     };
+    struct Cmd {};
+    struct ClientGetName {};
     struct SelectDb {
         U64 index;
     };
@@ -62,7 +64,7 @@ export namespace keyvalue {
             Del, Exists, Mget, Mset,
             Keys, Scan,
             FlushDb, FlushAll, DbSize,
-            TypeOf, SelectDb, Client, Info,
+            TypeOf, Cmd, SelectDb, ClientGetName, Client, Info,
             Unknown
         > value;
     };

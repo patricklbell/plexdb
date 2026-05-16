@@ -10,10 +10,10 @@ import plexdb.tcp;
 import plexdb.coroutine;
 import plexdb.dynamic.containers;
 import keyvalue.store;
-import keyvalue.protocol;
 import keyvalue.parsers;
 import keyvalue.engine;
 import keyvalue.log;
+import keyvalue.resp.protocol;
 
 using namespace plexdb;
 using namespace plexdb::tcp;
@@ -67,39 +67,40 @@ export namespace keyvalue::resp {
             DynamicArray<U8> write_buf{};
 
             while (true) {
-                while (true) {
-                    U64 consumed = 0;
-                    auto statement_opt = parsers::parse(read_buf.ptr, read_buf.length, &consumed);
+                U64 consumed = 0;
+                auto [parse_res, stmt] = parsers::parse(read_buf.ptr, read_buf.length, &consumed);
 
-                    if (!statement_opt) {
-                        clear(write_buf);
-                        protocol::append_error(write_buf, "ERR", "Protocol error");
-                        co_await send_block(req, write_buf.ptr, write_buf.length);
-                        log::db_connection_count(--active_connections);
-                        co_return;
-                    }
-
-                    clear(write_buf);
-                    S64 t0 = os::monotonic_us();
-                    bool keep_alive = engine::execute(store, *statement_opt, write_buf);
-                    log::db_operation_duration(os::monotonic_us() - t0);
-
-                    if (write_buf.length > 0)
-                        co_await send_block(req, write_buf.ptr, write_buf.length);
-
-                    U64 remaining = read_buf.length - consumed;
-                    if (remaining > 0)
-                        os::memory_move(read_buf.ptr, read_buf.ptr + consumed, remaining);
-                    resize(read_buf, remaining);
-
-                    if (!keep_alive) {
+                if (parse_res == parsers::ParseResult::Incomplete) {
+                    if (!co_await try_append(req, read_buf)) {
                         log::db_connection_count(--active_connections);
                         co_return;
                     }
                     continue;
                 }
 
-                if (!co_await try_append(req, read_buf)) {
+                if (parse_res == parsers::ParseResult::Error) {
+                    clear(write_buf);
+                    protocol::append_error(write_buf, "ERR", "Protocol error");
+                    co_await send_block(req, write_buf.ptr, write_buf.length);
+                    log::db_connection_count(--active_connections);
+                    co_return;
+                }
+
+                clear(write_buf);
+                S64 t0 = os::monotonic_us();
+                auto result = engine::execute(store, stmt);
+                bool keep_alive = protocol::encode_result(result, write_buf);
+                log::db_operation_duration(os::monotonic_us() - t0);
+
+                if (write_buf.length > 0)
+                    co_await send_block(req, write_buf.ptr, write_buf.length);
+
+                U64 remaining = read_buf.length - consumed;
+                if (remaining > 0)
+                    os::memory_move(read_buf.ptr, read_buf.ptr + consumed, remaining);
+                resize(read_buf, remaining);
+
+                if (!keep_alive) {
                     log::db_connection_count(--active_connections);
                     co_return;
                 }
@@ -116,6 +117,7 @@ export namespace keyvalue::resp {
                 return {"failed to bind server socket"};
             if (!os::socket_listen(socket, 128))
                 return {"failed to listen on server socket"};
+            log::db_connection_max(128);
 
             auto tcp_server = tcp::create_tcp_server(socket, &connection_handler, io_poll, use_uring);
             on_ready_callback();

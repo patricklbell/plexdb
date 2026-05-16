@@ -7,7 +7,6 @@ project(resp)
 
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../core core)
-  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../support/lexy lexy)
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../support/tracy tracy)
 endif()
 
@@ -34,15 +33,15 @@ target_sources(plexdb_keyvalue
             engine/statements.cppm
             log/log.cppm
             parsers/parsers.cppm
-            protocol/protocol.cppm
             resp/resp.cppm
+            resp/resp.protocol.cppm
             store/store.cppm
     PRIVATE
         engine/engine.cpp
         log/log.cpp
         parsers/parsers.cpp
-        protocol/protocol.cpp
         resp/resp.cpp
+        resp/resp.protocol.cpp
         store/store.cpp
 )
 
@@ -52,8 +51,6 @@ target_link_libraries(plexdb_keyvalue
         plexdb::core
         plexdb::core::macros
         plexdb::support::tracy
-        plexdb::support::lexy
-        foonathan::lexy::core # @note pulled in by support
 )
 
 # =============================================================================
