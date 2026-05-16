@@ -9,13 +9,13 @@ import plexdb.os;
 namespace plexdb::arena {
     export constexpr U64 default_page_size = 1000u;
     export constexpr U64 HEADER_SIZE = 128u;
-    
+
     export struct ArenaPage {
         ArenaPage* prev;
         ArenaPage* current;
-    
+
         ArenaPage* free_stack;
-    
+
         U64 page_offset;
         U64 page_size;
         U64 base_offset;

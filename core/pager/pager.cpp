@@ -10,38 +10,30 @@ import plexdb.os;
 import plexdb.threads;
 import plexdb.arena;
 import plexdb.aio;
-import plexdb.coroutine;
 
 namespace plexdb::pager {
-    inline static U64 get_cache_size(Pager& pager) {
+    static U64 get_cache_size(Pager& pager) {
         return pager.header.page_size + sizeof(Pager::ReadCacheEntry);
     }
-    inline static Pager::ReadCacheEntry* get_cache_entry(Pager& pager, U64 idx) {
+    static Pager::ReadCacheEntry* get_cache_entry(Pager& pager, U64 idx) {
         static_assert(sizeof(*pager.read_cache) == 1, "ptr arithmetic");
         U64 cache_idx = idx % pager.read_cache_count;
         return reinterpret_cast<Pager::ReadCacheEntry*>(
             pager.read_cache + cache_idx*get_cache_size(pager)
         );
     }
-    inline static U8* get_cache_data(Pager& pager, U64 idx) {
+    static U8* get_cache_data(Pager& pager, U64 idx) {
         static_assert(sizeof(*pager.read_cache) == 1, "ptr arithmetic");
         U64 cache_idx = idx % pager.read_cache_count;
         return pager.read_cache + cache_idx*get_cache_size(pager) + sizeof(Pager::ReadCacheEntry);
     }
-
-    // Sync helpers — used only by constructors and maybe_recover_wal.
-    static void read_header(Pager& pager) {
-        os::file_read(
-            pager.file,
-            Rng1U64{
-                .start=pager.base_offset,
-                .end  =pager.base_offset + sizeof(pager.header),
-            },
-            &pager.header
-        );
+    static void init_read_cache(Pager& pager) {
+        pager.read_cache = os::allocate_zero(get_cache_size(pager)*pager.read_cache_count);
     }
-    static void write_header(Pager& pager) {
-        os::file_write(
+
+    static coroutine::Task<> read_header(Pager& pager) {
+        co_await aio::file_read(
+            *pager.file_io_ctx,
             pager.file,
             Rng1U64{
                 .start=pager.base_offset,
@@ -51,97 +43,115 @@ namespace plexdb::pager {
         );
     }
 
-    Header create(os::Handle file, U64 page_size, U64 base_offset) {
+    coroutine::Task<Header> create(aio::FileIOContext& file_io_ctx, os::Handle file, U64 page_size, U64 base_offset) {
         assert_true(sizeof(Header) <= page_size, "header does not fit in root page");
         assert_true(page_size % sizeof(U64) == 0, "invalid page size alignment");
 
         Header header{
-            .magic = HEADER_MAGIC,
-            .version = HEADER_CURRENT_VERSION,
+            .magic=HEADER_MAGIC,
+            .version=HEADER_CURRENT_VERSION,
             .page_size=page_size,
             .page_count=1, // header page
             .root_page=MAX_U64,
         };
 
         os::file_resize_zero(file, base_offset + header.page_count*header.page_size);
-        os::file_write(file, Rng1U64{ .start=base_offset, .end=base_offset+sizeof(header) }, &header);
+        co_await aio::file_write(file_io_ctx, file, Rng1U64{ .start=base_offset, .end=base_offset + sizeof(header) }, &header);
 
-        return header;
+        co_return header;
     }
 
-    static void init_read_cache(Pager& pager) {
-        pager.read_cache = os::allocate_zero(get_cache_size(pager)*pager.read_cache_count);
-    }
-
-    // Sync WAL recovery — only called from constructors, uses blocking OS calls.
-    // Pager writes the DB pages; WAL provides only its own file handle here.
-    static void maybe_recover_wal(Pager& pager) {
-        if (!pager.wal) return;
-        if (!wal_load(pager.wal, pager.header.page_size)) return;
-        if (!wal_has_committed(pager.wal)) return;
+    static coroutine::Task<> maybe_recover_wal(Pager& pager) {
+        if (!pager.wal) co_return;
+        if (!co_await wal::try_load(pager.wal, *pager.file_io_ctx, pager.header.page_size)) co_return;
+        if (!co_await wal::has_committed(pager.wal, *pager.file_io_ctx)) co_return;
 
         U64 page_size = pager.wal.header.page_size;
-        U8* buf = os::allocate(max(page_size, static_cast<U64>(sizeof(Header))));
+        {
+            threads::Scope scratch = threads::scratch();
+            U8* buf = arena::push_array<U8>(*scratch.arena, max(page_size, static_cast<U64>(sizeof(Header))));
+            for (U64 i = 0; i < pager.wal.header.frame_count; i++) {
+                U64 offset = sizeof(wal::Header) + i * (sizeof(wal::Frame) + page_size);
 
-        for (U64 i = 0; i < pager.wal.header.frame_count; i++) {
-            U64 offset = sizeof(Wal::Header) + i * (sizeof(Wal::Frame) + page_size);
+                wal::Frame frame{};
+                co_await aio::file_read(*pager.file_io_ctx, pager.wal.file, Rng1U64{.start=offset, .end=offset+sizeof(wal::Frame)}, &frame);
 
-            Wal::Frame frame{};
-            os::file_read(pager.wal.file, Rng1U64{.start=offset, .end=offset+sizeof(Wal::Frame)}, &frame);
+                U64 data_size = frame.page_idx == MAX_U64 ? sizeof(Header) : page_size;
+                co_await aio::file_read(*pager.file_io_ctx, pager.wal.file, Rng1U64{.start=offset + sizeof(wal::Frame), .end=offset + sizeof(wal::Frame) + data_size}, buf);
 
-            U64 data_size = frame.page_idx == MAX_U64 ? sizeof(Header) : page_size;
-            os::file_read(pager.wal.file, Rng1U64{.start=offset+sizeof(Wal::Frame), .end=offset+sizeof(Wal::Frame)+data_size}, buf);
-
-            if (frame.page_idx == MAX_U64) {
-                os::file_write(pager.file, Rng1U64{.start=pager.base_offset, .end=pager.base_offset+sizeof(Header)}, buf);
-            } else {
-                U64 db_start = pager.base_offset + page_size * frame.page_idx;
-                os::file_write(pager.file, Rng1U64{.start=db_start, .end=db_start+page_size}, buf);
+                if (frame.page_idx == MAX_U64) {
+                    co_await aio::file_write(*pager.file_io_ctx, pager.file, Rng1U64{.start=pager.base_offset, .end=pager.base_offset + sizeof(Header)}, buf);
+                } else {
+                    U64 db_start = pager.base_offset + page_size * frame.page_idx;
+                    co_await aio::file_write(*pager.file_io_ctx, pager.file, Rng1U64{.start=db_start, .end=db_start + page_size}, buf);
+                }
             }
         }
-        os::file_sync(pager.file);
 
-        os::deallocate(buf);
+        co_await aio::file_sync(*pager.file_io_ctx, pager.file);
 
-        // Reset WAL synchronously.
         pager.wal.header.frame_count = 0;
-        os::file_write(pager.wal.file,
+        co_await aio::file_write(
+            *pager.file_io_ctx,
+            pager.wal.file,
             Rng1U64{
-                .start=offsetof(Wal::Header, frame_count),
-                .end  =offsetof(Wal::Header, frame_count)+sizeof(U64)
+                .start=offsetof(wal::Header, frame_count),
+                .end  =offsetof(wal::Header, frame_count) + sizeof(U64)
             },
-            &pager.wal.header.frame_count);
-        os::file_sync(pager.wal.file);
+            &pager.wal.header.frame_count
+        );
+        co_await aio::file_sync(*pager.file_io_ctx, pager.wal.file);
 
-        read_header(pager);
+        co_await read_header(pager);
     }
 
-    Pager::Pager(os::Handle file, U64 base_offset, U64 read_cache)
-      : file(file), base_offset(base_offset), read_cache_count(read_cache) {
-        read_header(*this);
-        init_read_cache(*this);
-    }
-    Pager::Pager(os::Handle file, const Header& header, U64 base_offset, U64 read_cache)
-       : file(file), base_offset(base_offset), header(header), read_cache_count(read_cache) {
+    Pager::Pager(aio::FileIOContext* file_io_ctx, os::Handle file, const Header& header, U64 base_offset, U64 read_cache)
+       : file_io_ctx(file_io_ctx), file(file), base_offset(base_offset), header(header), read_cache_count(read_cache) {
         init_read_cache(*this);
     }
 
-    Pager::Pager(os::Handle file, os::Handle wal_file, U64 base_offset, U64 read_cache)
-      : file(file), base_offset(base_offset), read_cache_count(read_cache), wal(wal_file) {
-        read_header(*this);
-        maybe_recover_wal(*this);
-        init_read_cache(*this);
+    coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, U64 base_offset, U64 read_cache) {
+        p.file_io_ctx = file_io_ctx;
+        p.file = file;
+        p.base_offset = base_offset;
+        p.read_cache_count = read_cache;
+        co_await read_header(p);
+        init_read_cache(p);
     }
-    Pager::Pager(os::Handle file, os::Handle wal_file, const Header& header, U64 base_offset, U64 read_cache)
-       : file(file), base_offset(base_offset), header(header), read_cache_count(read_cache), wal(wal_file) {
-        wal_create(this->wal, header.page_size);
-        init_read_cache(*this);
+
+    coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, os::Handle wal_file, U64 base_offset, U64 read_cache) {
+        p.file_io_ctx = file_io_ctx;
+        p.file = file;
+        p.base_offset = base_offset;
+        p.read_cache_count = read_cache;
+        p.wal = Wal{wal_file};
+        co_await read_header(p);
+        co_await maybe_recover_wal(p);
+        init_read_cache(p);
+    }
+
+    coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, os::Handle wal_file, const Header& header, U64 base_offset, U64 read_cache) {
+        wal::Header wal_hdr = co_await wal::create(*file_io_ctx, wal_file, header.page_size);
+        p.file_io_ctx = file_io_ctx;
+        p.file = file;
+        p.base_offset = base_offset;
+        p.header = header;
+        p.read_cache_count = read_cache;
+        init_read_cache(p);
+        p.wal = Wal{wal_file, wal_hdr};
+    }
+
+    coroutine::Task<> destroy(Pager& p) {
+        if (p.file_io_ctx) {
+            co_await fflush(p);
+            p.file_io_ctx = nullptr;
+        }
     }
 
     Pager::Pager(Pager&& other):
+        file_io_ctx(other.file_io_ctx),
         file(other.file),
         base_offset(other.base_offset),
-        file_io_ctx(other.file_io_ctx),
         header(other.header),
         header_in_write_set(other.header_in_write_set),
         read_cache_count(other.read_cache_count),
@@ -155,99 +165,8 @@ namespace plexdb::pager {
         other.read_cache = nullptr;
     }
 
-    // Sync flush for destructor/move-assignment — exempted from the async requirement.
-    static void sync_flush(Pager& pager) {
-        if (os::is_zero_handle(pager.file)) return;
-
-        if (pager.wal) {
-            // Full WAL path: append frames, commit, checkpoint, reset — all sync.
-            U64 page_size = pager.wal.header.page_size;
-            if (page_size == 0) page_size = pager.header.page_size;
-
-            for (auto& idx : pager.write_set) {
-                auto entry = get_cache_entry(pager, idx);
-                if (idx < pager.header.page_count) {
-                    U64 offset = sizeof(Wal::Header) + pager.wal.header.frame_count * (sizeof(Wal::Frame) + page_size);
-                    Wal::Frame frame{};
-                    frame.page_idx = idx;
-                    U64 dw = 0; os::memory_copy(&dw, get_cache_data(pager, idx), sizeof(U64));
-                    frame.checksum = pager.wal.header.salt ^ idx ^ dw;
-                    os::file_resize_zero(pager.wal.file, offset + sizeof(Wal::Frame) + page_size);
-                    os::file_write(pager.wal.file, Rng1U64{.start=offset, .end=offset+sizeof(Wal::Frame)}, &frame);
-                    os::file_write(pager.wal.file, Rng1U64{.start=offset+sizeof(Wal::Frame), .end=offset+sizeof(Wal::Frame)+page_size}, get_cache_data(pager, idx));
-                    pager.wal.header.frame_count++;
-                }
-                entry->in_write_set = false;
-            }
-            if (pager.header_in_write_set) {
-                U64 offset = sizeof(Wal::Header) + pager.wal.header.frame_count * (sizeof(Wal::Frame) + page_size);
-                Wal::Frame frame{};
-                frame.page_idx = MAX_U64;
-                U64 dw = 0; os::memory_copy(&dw, &pager.header, sizeof(U64));
-                frame.checksum = pager.wal.header.salt ^ MAX_U64 ^ dw;
-                os::file_resize_zero(pager.wal.file, offset + sizeof(Wal::Frame) + sizeof(Header));
-                os::file_write(pager.wal.file, Rng1U64{.start=offset, .end=offset+sizeof(Wal::Frame)}, &frame);
-                os::file_write(pager.wal.file, Rng1U64{.start=offset+sizeof(Wal::Frame), .end=offset+sizeof(Wal::Frame)+sizeof(Header)}, &pager.header);
-                pager.wal.header.frame_count++;
-                pager.header_in_write_set = false;
-            }
-
-            if (pager.wal.header.frame_count > 0) {
-                // Commit WAL.
-                os::file_sync(pager.wal.file);
-                os::file_write(pager.wal.file,
-                    Rng1U64{.start=offsetof(Wal::Header, frame_count), .end=offsetof(Wal::Header, frame_count)+sizeof(U64)},
-                    &pager.wal.header.frame_count);
-                os::file_sync(pager.wal.file);
-
-                // Checkpoint: pager writes DB pages.
-                U8* buf = os::allocate(max(page_size, static_cast<U64>(sizeof(Header))));
-                for (U64 i = 0; i < pager.wal.header.frame_count; i++) {
-                    U64 offset = sizeof(Wal::Header) + i * (sizeof(Wal::Frame) + page_size);
-                    Wal::Frame frame{};
-                    os::file_read(pager.wal.file, Rng1U64{.start=offset, .end=offset+sizeof(Wal::Frame)}, &frame);
-                    U64 data_size = frame.page_idx == MAX_U64 ? sizeof(Header) : page_size;
-                    os::file_read(pager.wal.file, Rng1U64{.start=offset+sizeof(Wal::Frame), .end=offset+sizeof(Wal::Frame)+data_size}, buf);
-
-                    if (frame.page_idx == MAX_U64) {
-                        os::file_write(pager.file, Rng1U64{.start=pager.base_offset, .end=pager.base_offset+sizeof(Header)}, buf);
-                    } else {
-                        U64 db_start = pager.base_offset + page_size * frame.page_idx;
-                        os::file_write(pager.file, Rng1U64{.start=db_start, .end=db_start+page_size}, buf);
-                    }
-                }
-                os::deallocate(buf);
-                os::file_sync(pager.file);
-
-                // Reset WAL.
-                pager.wal.header.frame_count = 0;
-                os::file_write(pager.wal.file,
-                    Rng1U64{.start=offsetof(Wal::Header, frame_count), .end=offsetof(Wal::Header, frame_count)+sizeof(U64)},
-                    &pager.wal.header.frame_count);
-                os::file_sync(pager.wal.file);
-            }
-        } else {
-            for (auto& idx : pager.write_set) {
-                auto entry = get_cache_entry(pager, idx);
-                if (idx < pager.header.page_count) {
-                    U64 offset = pager.base_offset + pager.header.page_size * idx;
-                    os::file_write(pager.file, Rng1U64{.start=offset, .end=offset+pager.header.page_size}, get_cache_data(pager, idx));
-                }
-                entry->in_write_set = false;
-            }
-            if (pager.header_in_write_set) {
-                write_header(pager);
-                pager.header_in_write_set = false;
-            }
-            os::file_sync(pager.file);
-        }
-
-        clear(pager.write_set);
-        arena::clear(pager.write_arena);
-    }
-
     Pager::~Pager() {
-        sync_flush(*this);
+        assert_true(file_io_ctx == nullptr, "pager destroyed without destroy()");
         os::deallocate(this->read_cache);
     }
 
@@ -256,7 +175,7 @@ namespace plexdb::pager {
             return *this;
         }
 
-        sync_flush(*this);
+        assert_true(file_io_ctx == nullptr, "pager overwritten without destroy()");
         os::deallocate(this->read_cache);
 
         file = other.file;
@@ -277,9 +196,10 @@ namespace plexdb::pager {
         return *this;
     }
 
-    void set_root(Pager& pager, U64 page) {
+    coroutine::Task<> set_root(Pager& pager, U64 page) {
         pager.header.root_page = page;
         pager.header_in_write_set = true;
+        co_return;
     }
 
     coroutine::Task<const U8*> rpage(Pager& pager, U64 idx) {
@@ -294,8 +214,12 @@ namespace plexdb::pager {
 
         auto data = get_cache_data(pager, idx);
         auto offset = pager.base_offset + pager.header.page_size * idx;
-        auto err = co_await aio::file_read(*pager.file_io_ctx, pager.file, offset, static_cast<U32>(pager.header.page_size), data);
-        assert_true(err == aio::Error::None, "async page read failed");
+        co_await aio::file_read(
+            *pager.file_io_ctx,
+            pager.file,
+            Rng1U64{.start=offset, .end=offset + pager.header.page_size},
+            data
+        );
         entry->idx = idx;
         co_return data;
     }
@@ -313,8 +237,12 @@ namespace plexdb::pager {
         if (entry->idx != idx) {
             auto data = get_cache_data(pager, idx);
             auto offset = pager.base_offset + pager.header.page_size * idx;
-            auto err = co_await aio::file_read(*pager.file_io_ctx, pager.file, offset, static_cast<U32>(pager.header.page_size), data);
-            assert_true(err == aio::Error::None, "async page read failed");
+            co_await aio::file_read(
+                *pager.file_io_ctx,
+                pager.file,
+                Rng1U64{.start=offset, .end=offset + pager.header.page_size},
+                data
+            );
         }
 
         entry->idx = idx;
@@ -334,44 +262,53 @@ namespace plexdb::pager {
                 auto entry = get_cache_entry(pager, idx);
                 assert_true(entry->idx != 0, "header page found in write set");
                 if (idx < pager.header.page_count) {
-                    co_await wal_append_frame(pager.wal, ctx, idx, get_cache_data(pager, idx));
+                    co_await wal::append_frame(pager.wal, ctx, idx, get_cache_data(pager, idx));
                     frames_appended++;
                 }
                 entry->in_write_set = false;
             }
             if (pager.header_in_write_set) {
-                co_await wal_append_frame(pager.wal, ctx, MAX_U64, reinterpret_cast<U8*>(&pager.header));
+                co_await wal::append_frame(pager.wal, ctx, MAX_U64, reinterpret_cast<U8*>(&pager.header));
                 pager.header_in_write_set = false;
                 frames_appended++;
             }
 
             if (frames_appended > 0) {
-                co_await wal_commit(pager.wal, ctx);
+                co_await wal::commit(pager.wal, ctx);
 
                 // Checkpoint: pager reads WAL frames and writes DB pages.
                 U64 page_size = pager.wal.header.page_size;
-                U8* buf = os::allocate(max(page_size, static_cast<U64>(sizeof(Header))));
+                {
+                    threads::Scope scratch = threads::scratch();
+                    U8* buf = arena::push_array<U8>(*scratch.arena, max(page_size, static_cast<U64>(sizeof(Header))));
+                    for (U64 i = 0; i < pager.wal.header.frame_count; i++) {
+                        wal::Frame frame{};
+                        co_await wal::read_frame(pager.wal, ctx, i, frame, buf);
 
-                for (U64 i = 0; i < pager.wal.header.frame_count; i++) {
-                    Wal::Frame frame{};
-                    co_await wal_read_frame(pager.wal, ctx, i, frame, buf);
-
-                    if (frame.page_idx == MAX_U64) {
-                        auto err = co_await aio::file_write(ctx, pager.file, pager.base_offset, static_cast<U32>(sizeof(Header)), buf);
-                        assert_true(err == aio::Error::None, "async checkpoint header write failed");
-                    } else {
-                        U64 db_start = pager.base_offset + page_size * frame.page_idx;
-                        auto err = co_await aio::file_write(ctx, pager.file, db_start, static_cast<U32>(page_size), buf);
-                        assert_true(err == aio::Error::None, "async checkpoint page write failed");
+                        if (frame.page_idx == MAX_U64) {
+                            co_await aio::file_write(
+                                ctx,
+                                pager.file,
+                                Rng1U64{pager.base_offset, pager.base_offset + sizeof(Header)},
+                                buf
+                            );
+                        } else {
+                            U64 db_start = pager.base_offset + page_size * frame.page_idx;
+                            co_await aio::file_write(
+                                ctx,
+                                pager.file,
+                                Rng1U64{.start=db_start, .end=db_start + page_size},
+                                buf
+                            );
+                        }
                     }
                 }
 
-                os::deallocate(buf);
+                {
+                    co_await aio::file_sync(ctx, pager.file);
+                }
 
-                auto err = co_await aio::file_sync(ctx, pager.file);
-                assert_true(err == aio::Error::None, "async checkpoint db sync failed");
-
-                co_await wal_reset(pager.wal, ctx);
+                co_await wal::reset(pager.wal, ctx);
             }
         } else {
             for (auto& idx : pager.write_set) {
@@ -379,20 +316,25 @@ namespace plexdb::pager {
                 assert_true(entry->idx != 0, "header page found in write set");
                 if (idx < pager.header.page_count) {
                     U64 offset = pager.base_offset + pager.header.page_size * idx;
-                    auto err = co_await aio::file_write(ctx, pager.file, offset, static_cast<U32>(pager.header.page_size), get_cache_data(pager, idx));
-                    assert_true(err == aio::Error::None, "async page write failed");
+                    co_await aio::file_write(
+                        ctx,
+                        pager.file,
+                        Rng1U64{.start=offset, .end=offset + pager.header.page_size},
+                        get_cache_data(pager, idx)
+                    );
                 }
                 entry->in_write_set = false;
             }
             if (pager.header_in_write_set) {
-                auto err = co_await aio::file_write(ctx, pager.file,
-                    pager.base_offset, static_cast<U32>(sizeof(pager.header)),
-                    reinterpret_cast<const U8*>(&pager.header));
-                assert_true(err == aio::Error::None, "async header write failed");
+                co_await aio::file_write(
+                    ctx,
+                    pager.file,
+                    Rng1U64{.start=pager.base_offset, .end=pager.base_offset + sizeof(pager.header)},
+                    &pager.header
+                );
                 pager.header_in_write_set = false;
             }
-            auto err = co_await aio::file_sync(ctx, pager.file);
-            assert_true(err == aio::Error::None, "async file sync failed");
+            co_await aio::file_sync(ctx, pager.file);
         }
 
         clear(pager.write_set);

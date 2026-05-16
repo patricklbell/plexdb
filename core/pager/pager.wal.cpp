@@ -13,8 +13,8 @@ import plexdb.coroutine;
 
 import plexdb.pager.types;
 
-namespace plexdb::pager {
-    static constexpr U64 WAL_HEADER_FRAME_IDX = MAX_U64;
+namespace plexdb::wal {
+    static constexpr U64 HEADER_FRAME_IDX = MAX_U64;
 
     static U64 frame_checksum(U64 salt, U64 page_idx, const U8* data) {
         U64 data_word = 0;
@@ -23,14 +23,12 @@ namespace plexdb::pager {
     }
 
     static U64 frame_offset(const Wal& wal, U64 frame_idx) {
-        return sizeof(Wal::Header) + frame_idx * (sizeof(Wal::Frame) + wal.header.page_size);
+        return sizeof(Header) + frame_idx * (sizeof(Frame) + wal.header.page_size);
     }
 
-    // ========================================================================
-    // constructors
-    // ========================================================================
-
     Wal::Wal(os::Handle file) : file(file) {}
+
+    Wal::Wal(os::Handle file, const Header& header) : file(file), header(header) {}
 
     Wal::Wal(Wal&& other) noexcept : file(other.file), header(other.header) {
         other.file = os::zero_handle();
@@ -47,119 +45,127 @@ namespace plexdb::pager {
 
     Wal::~Wal() {}
 
-    // ========================================================================
-    // sync operations (constructor / crash-recovery paths)
-    // ========================================================================
+    coroutine::Task<Header> create(aio::FileIOContext& ctx, os::Handle file, U64 page_size) {
+        assert_true(!os::is_zero_handle(file), "wal::create requires valid file handle");
 
-    void wal_create(Wal& wal, U64 page_size) {
-        assert_true(!os::is_zero_handle(wal.file), "wal_create requires valid file handle");
-
-        U64 salt = static_cast<U64>(os::monotonic_us()) ^ (U64)(uintptr_t)(&wal);
-
-        wal.header = Wal::Header{
-            .magic       = WAL_MAGIC,
-            .version     = WAL_CURRENT_VERSION,
+        Header header{
+            .magic       = MAGIC,
+            .version     = CURRENT_VERSION,
             .page_size   = page_size,
-            .salt        = salt,
+            .salt        = static_cast<U64>(os::monotonic_us()) ^ file.u64[0],
             .frame_count = 0,
         };
-        os::file_resize_zero(wal.file, sizeof(Wal::Header));
-        os::file_write(wal.file, Rng1U64{.start=0, .end=sizeof(Wal::Header)}, &wal.header);
-        os::file_sync(wal.file);
+        os::file_resize_zero(file, sizeof(Header));
+        co_await aio::file_write(ctx, file, Rng1U64{.start=0, .end=sizeof(Header)}, &header);
+        co_await aio::file_sync(ctx, file);
+
+        co_return header;
     }
 
-    bool wal_load(Wal& wal, U64 expected_page_size) {
-        assert_true(!os::is_zero_handle(wal.file), "wal_load requires valid file handle");
+    coroutine::Task<bool> try_load(Wal& wal, aio::FileIOContext& ctx, U64 expected_page_size) {
+        assert_true(!os::is_zero_handle(wal.file), "wal::try_load requires valid file handle");
 
         os::FileStats stats = os::file_get_stats(wal.file);
-        if (stats.byte_count < sizeof(Wal::Header))
-            return false;
+        if (stats.byte_count < sizeof(Header)) {
+            co_return false;
+        }
 
-        Wal::Header h{};
-        os::file_read(wal.file, Rng1U64{.start=0, .end=sizeof(Wal::Header)}, &h);
+        Header h{};
+        co_await aio::file_read(ctx, wal.file, Rng1U64{.start=0, .end=sizeof(Header)}, &h);
 
-        if (h.magic != WAL_MAGIC)              return false;
-        if (h.page_size != expected_page_size) return false;
+        if (h.magic != MAGIC)              co_return false;
+        if (h.page_size != expected_page_size) co_return false;
 
         wal.header = h;
-        return true;
+        co_return true;
     }
 
-    bool wal_has_committed(const Wal& wal) {
-        return wal.header.frame_count > 0;
+    coroutine::Task<bool> has_committed(const Wal& wal, [[maybe_unused]] aio::FileIOContext& ctx) {
+        co_return wal.header.frame_count > 0;
     }
 
-    // ========================================================================
-    // async operations — WAL writes to its own file only
-    // ========================================================================
-
-    coroutine::Task<> wal_append_frame(Wal& wal, aio::FileIOContext& ctx, U64 page_idx, const U8* data) {
-        assert_true(!os::is_zero_handle(wal.file), "wal_append_frame requires valid file handle");
+    coroutine::Task<> append_frame(Wal& wal, aio::FileIOContext& ctx, U64 page_idx, const U8* data) {
+        assert_true(!os::is_zero_handle(wal.file), "wal::append_frame requires valid file handle");
 
         U64 offset = frame_offset(wal, wal.header.frame_count);
-        Wal::Frame frame{
+        Frame frame{
             .page_idx = page_idx,
             .checksum = frame_checksum(wal.header.salt, page_idx, data),
         };
 
-        U64 data_size = page_idx == WAL_HEADER_FRAME_IDX ? sizeof(Header) : wal.header.page_size;
-        os::file_resize_zero(wal.file, offset + sizeof(Wal::Frame) + data_size);
+        U64 data_size = page_idx == HEADER_FRAME_IDX ? sizeof(Header) : wal.header.page_size;
+        os::file_resize_zero(wal.file, offset + sizeof(Frame) + data_size);
 
-        auto err = co_await aio::file_write(ctx, wal.file, offset, sizeof(Wal::Frame), reinterpret_cast<const U8*>(&frame));
-        assert_true(err == aio::Error::None, "async wal frame header write failed");
-
-        err = co_await aio::file_write(ctx, wal.file, offset + sizeof(Wal::Frame), static_cast<U32>(data_size), data);
-        assert_true(err == aio::Error::None, "async wal frame data write failed");
+        co_await aio::file_write(
+            ctx,
+            wal.file,
+            Rng1U64{.start=offset, .end=offset + sizeof(Frame)},
+            &frame
+        );
+        co_await aio::file_write(
+            ctx,
+            wal.file,
+            Rng1U64{.start=offset + sizeof(Frame), .end=offset + sizeof(Frame) + data_size},
+            data
+        );
 
         wal.header.frame_count++;
     }
 
-    coroutine::Task<> wal_commit(Wal& wal, aio::FileIOContext& ctx) {
-        assert_true(!os::is_zero_handle(wal.file), "wal_commit requires valid file handle");
+    coroutine::Task<> commit(Wal& wal, aio::FileIOContext& ctx) {
+        assert_true(!os::is_zero_handle(wal.file), "wal::commit requires valid file handle");
         assert_true(wal.header.frame_count > 0, "nothing to commit");
 
-        auto err = co_await aio::file_sync(ctx, wal.file);
-        assert_true(err == aio::Error::None, "async wal pre-commit sync failed");
-
-        err = co_await aio::file_write(ctx, wal.file,
-            offsetof(Wal::Header, frame_count), sizeof(U64),
-            reinterpret_cast<const U8*>(&wal.header.frame_count));
-        assert_true(err == aio::Error::None, "async wal commit write failed");
-
-        err = co_await aio::file_sync(ctx, wal.file);
-        assert_true(err == aio::Error::None, "async wal post-commit sync failed");
+        co_await aio::file_sync(ctx, wal.file);
+        co_await aio::file_write(
+            ctx,
+            wal.file,
+            Rng1U64{.start=offsetof(Header, frame_count), .end=offsetof(Header, frame_count) + sizeof(U64)},
+            &wal.header.frame_count
+        );
+        co_await aio::file_sync(ctx, wal.file);
     }
 
-    coroutine::Task<> wal_read_frame(Wal& wal, aio::FileIOContext& ctx, U64 frame_idx, Wal::Frame& frame_out, U8* data_out) {
-        assert_true(!os::is_zero_handle(wal.file), "wal_read_frame requires valid file handle");
+    coroutine::Task<> read_frame(Wal& wal, aio::FileIOContext& ctx, U64 frame_idx, Frame& frame_out, U8* data_out) {
+        assert_true(!os::is_zero_handle(wal.file), "wal::read_frame requires valid file handle");
         assert_true(frame_idx < wal.header.frame_count, "wal frame index out of range");
 
         U64 offset = frame_offset(wal, frame_idx);
         U64 data_size = wal.header.page_size;
 
-        auto err = co_await aio::file_read(ctx, wal.file, offset, sizeof(Wal::Frame), reinterpret_cast<U8*>(&frame_out));
-        assert_true(err == aio::Error::None, "async wal frame header read failed");
+        co_await aio::file_read(
+            ctx,
+            wal.file,
+            Rng1U64{.start=offset, .end=offset + sizeof(Frame)},
+            reinterpret_cast<U8*>(&frame_out)
+        );
 
-        if (frame_out.page_idx == WAL_HEADER_FRAME_IDX)
+        if (frame_out.page_idx == HEADER_FRAME_IDX) {
             data_size = sizeof(Header);
+        }
 
-        err = co_await aio::file_read(ctx, wal.file, offset + sizeof(Wal::Frame), static_cast<U32>(data_size), data_out);
-        assert_true(err == aio::Error::None, "async wal frame data read failed");
+        co_await aio::file_read(
+            ctx,
+            wal.file,
+            Rng1U64{.start=offset + sizeof(Frame), .end=offset + sizeof(Frame) + data_size},
+            data_out
+        );
 
         U64 expected = frame_checksum(wal.header.salt, frame_out.page_idx, data_out);
         assert_true(frame_out.checksum == expected, "WAL frame checksum mismatch");
     }
 
-    coroutine::Task<> wal_reset(Wal& wal, aio::FileIOContext& ctx) {
-        assert_true(!os::is_zero_handle(wal.file), "wal_reset requires valid file handle");
+    coroutine::Task<> reset(Wal& wal, aio::FileIOContext& ctx) {
+        assert_true(!os::is_zero_handle(wal.file), "wal::reset requires valid file handle");
 
         wal.header.frame_count = 0;
-        auto err = co_await aio::file_write(ctx, wal.file,
-            offsetof(Wal::Header, frame_count), sizeof(U64),
-            reinterpret_cast<const U8*>(&wal.header.frame_count));
-        assert_true(err == aio::Error::None, "async wal reset write failed");
 
-        err = co_await aio::file_sync(ctx, wal.file);
-        assert_true(err == aio::Error::None, "async wal reset sync failed");
+        co_await aio::file_write(
+            ctx,
+            wal.file,
+            Rng1U64{.start=offsetof(Header, frame_count), .end=offsetof(Header, frame_count) + sizeof(U64)},
+            &wal.header.frame_count
+        );
+        co_await aio::file_sync(ctx, wal.file);
     }
 }

@@ -1,11 +1,47 @@
 module;
 #include "macros.h"
 
+// @todo used only for std::numeric_limits
+#include <limits>
+
 export module plexdb.base.math;
 
 import plexdb.base.types;
 
+namespace plexdb {
+    template<typename T>
+    struct UnsignedHelper;
+
+    template<> struct UnsignedHelper<S8>  { using type = U8;  };
+    template<> struct UnsignedHelper<S16> { using type = U16; };
+    template<> struct UnsignedHelper<S32> { using type = U32; };
+    template<> struct UnsignedHelper<S64> { using type = U64; };
+
+    template<> struct UnsignedHelper<U8>  { using type = U8;  };
+    template<> struct UnsignedHelper<U16> { using type = U16; };
+    template<> struct UnsignedHelper<U32> { using type = U32; };
+    template<> struct UnsignedHelper<U64> { using type = U64; };
+}
+
 export namespace plexdb {
+    template<typename T>
+    concept IsUnsigned = requires { T(0); T(-1); } && (T(-1) > T(0));
+
+    template<typename T>
+    concept IsSigned = !IsUnsigned<T>;
+
+    template<typename T>
+    concept Integer = requires(T a, T b) {
+        T(0);
+        T(1);
+        a + b;
+        a - b;
+        a * b;
+        a / b;
+        a % b;
+        a & b;
+    };
+
     // ========================================================================
     // ranges
     // ========================================================================
@@ -33,13 +69,13 @@ export namespace plexdb {
         ((result = (result <= static_cast<T>(rest)) ? result : static_cast<T>(rest)), ...);
         return result;
     }
-    
+
     template<typename T>
-        requires Unsigned<T> && Integer<T>
+        requires IsUnsigned<T> && Integer<T>
     inline constexpr T ceil_div(const T& a, const T& b) { return (a  + b - 1) / b; }
 
     template<typename T>
-        requires Signed<T> && Integer<T>
+        requires IsSigned<T> && Integer<T>
     inline constexpr T ceil_div(const T& a, const T& b) { return 1 + (a - 1) / b; }
 
     template<typename T>
@@ -85,5 +121,29 @@ export namespace plexdb {
 
     inline constexpr bool has_single_bit(U64 x) {
         return bit_count(x) == 1;
+    }
+
+    template<typename T>
+    using Unsigned = typename UnsignedHelper<T>::type;
+
+    template<typename To, typename From>
+        requires Integer<To> && Integer<From>
+    inline constexpr To bounds_checked_cast(const From& value) {
+        constexpr auto to_min = std::numeric_limits<To>::min();
+        constexpr auto to_max = std::numeric_limits<To>::max();
+
+        if constexpr (IsSigned<From> && IsSigned<To>) {
+            assert_true(value >= static_cast<From>(to_min), "overflow in numeric conversion");
+            assert_true(value <= static_cast<From>(to_max), "underoverflow in numeric conversion");
+        } else if constexpr (IsSigned<From> && IsUnsigned<To>) {
+            assert_true(value >= 0, "underflow in numeric conversion");
+            assert_true(static_cast<Unsigned<From>>(value) <= static_cast<Unsigned<From>>(to_max), "overflow in numeric conversion");
+        } else if constexpr (IsUnsigned<From> && IsSigned<To>) {
+            assert_true(value <= static_cast<From>(to_max), "overflow in numeric conversion");
+        } else {
+            assert_true(value <= static_cast<From>(to_max), "overflow in numeric conversion");
+        }
+
+        return static_cast<To>(value);
     }
 }

@@ -142,8 +142,8 @@ namespace objstore::native {
             co_return false;
         }
         U64 old = buf.length;
-        resize(buf, old + rbuf.length);
-        os::memory_copy(buf.ptr + old, rbuf.view.ptr, rbuf.length);
+        resize(buf, old + rbuf.view.length);
+        os::memory_copy(buf.ptr + old, rbuf.view.ptr, rbuf.view.length);
         tcp::release(req, &rbuf);
         co_return true;
     }
@@ -229,9 +229,9 @@ namespace objstore::native {
     coroutine::Task<> send_block(const tcp::Request& req, const U8* data, U64 len) {
         while (len > 0) {
             auto buf = co_await tcp::acquire(req);
-            U64 chunk = min(len, U64(buf.length));
+            U64 chunk = min(len, static_cast<U64>(buf.length));
             os::memory_copy(buf.view.ptr, data, chunk);
-            buf.length = chunk;
+            buf.view.length = chunk;
             co_await tcp::write(req, &buf);
             tcp::release(req, &buf);
 
@@ -603,7 +603,6 @@ namespace objstore::native {
     }
 
     // ========================================================================
-    // negotiate_connection
     //   Handles the pre-startup phase. Processes OPTIONS and STARTUP using
     //   unframed v4-style envelopes, negotiates version and compression,
     //   sends READY, and returns true on success.
@@ -617,6 +616,11 @@ namespace objstore::native {
             U8 resp_op, U8 resp_ver, U8 resp_flags, S16 stream,
             const U8* body, U32 body_len
         ) -> coroutine::Task<> {
+            log::native_info(fmt(
+                "TX negotiate: op=%02x(%s) flags=%02x stream=%d",
+                resp_op, (const char*)op_codes_to_str(resp_op), resp_flags, (int)stream
+            ));
+
             U8 hdr[V4_FRAME_HEADER_BYTE_COUNT] = {
                 U8(0x80u | resp_ver), resp_flags,
                 U8(U16(stream) >> 8), U8(stream),

@@ -567,12 +567,15 @@ export namespace objstore::native {
     template<typename F>
     concept OnReady = requires(F f) { f(); };
 
-    Optional<String8> run(U16 port, os::Notifier& interrupt, volatile bool& should_exit, engine::Engine& engine, OnReady auto&& on_ready_callback, bool use_uring = true) {
+    Optional<String8> run(
+        U16 port, engine::Engine& engine,
+        OnReady auto&& on_ready_callback, bool use_uring,
+        aio::EventConsumer& file_io_consumer, aio::EventConsumer& signal_consumer, os::Poll& io_poll
+    ) {
         const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> { TracyFiberEnter("request")
             NegotiatedProtocol negotiated_protocol{};
             bool ok = co_await negotiate_connection(req, &negotiated_protocol);
             if (!ok) {
-                co_await tcp::close(req);
                 TracyFiberLeave; co_return;
             }
 
@@ -585,7 +588,6 @@ export namespace objstore::native {
                 co_await post_startup_loop<4, false>(engine, req);
             }
 
-            co_await tcp::close(req);
             TracyFiberLeave; co_return;
         };
 
@@ -600,16 +602,14 @@ export namespace objstore::native {
             if (!os::socket_listen(socket, 128))
                 return {"failed to listen on server socket"};
 
+            auto tcp_server = tcp::create_tcp_server(socket, &connection_handler, io_poll, use_uring);
+
             on_ready_callback();
 
-            tcp::Listener listener{socket, use_uring};
-            tcp::listen(
-                listener,
-                connection_handler,
-                interrupt, should_exit
-            );
+            aio::run_blocking_event_loop(io_poll, file_io_consumer, signal_consumer, tcp_server.consumer);
         }
 
         return {};
     }
+
 }

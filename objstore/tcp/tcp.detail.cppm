@@ -6,9 +6,9 @@ export module objstore.tcp.detail;
 
 import plexdb.os;
 import plexdb.os.uring;
+import plexdb.aio;
 import plexdb.base;
 import plexdb.arena;
-import plexdb.tagged_union;
 import plexdb.coroutine;
 import objstore.tcp.types;
 import objstore.log;
@@ -16,552 +16,511 @@ import objstore.log;
 using namespace plexdb;
 
 namespace objstore::tcp {
-    // @note fat struct, not always meaningfull depending on the handler
+    // @note fat struct, not always meaningful depending on the handler
     struct BufferInfo {
         PLEXDB_DEBUG_X(U32 buffer_idx = -1;)
         os::Handle client = os::zero_handle();
     };
+}
 
-
-    // ========================================================================
-    // io_uring implementation
-    // ========================================================================
-    export void listen_uring(
-        uring::Ring& ring, Stats& stats,
-        const ConnectionHandler auto& connection_handler,
-        const os::Notifier& interrupt, volatile bool& should_exit
-    ) {
-        assert_true(static_cast<bool>(ring), "cannot listen to invalid uring");
-        objstore::log::db_connection_max(MAX_CONCURRENT_CONNECTIONS);
-
-        // state
+export namespace objstore::tcp {
+    struct UringListenerState {
+        uring::Ring ring;
+        Stats stats;
         MapFixedSentinel<os::Handle, Connection, 2_u64*MAX_CONCURRENT_CONNECTIONS, os::zero_handle()> client_to_connection;
-        DynamicArray<BufferInfo> buffer_infos{ring.buffer_count};
-        uring::BufferPool<MAX_CONCURRENT_CONNECTIONS> buffer_pool{ring.buffer_count};
+        DynamicArray<BufferInfo> buffer_infos;
+        uring::BufferPool<MAX_CONCURRENT_CONNECTIONS> buffer_pool;
+        AcquireBufferFunctor acquire_fn;
+        ReleaseBufferFunctor release_fn;
+        ReadToBufferFunctor  read_fn;
+        WriteFromBufferFunctor write_fn;
 
-        // helpers
-        auto close_and_cleanup = [&](const os::Handle& client, bool is_in_close_handler) {
-            auto it = find_it(client_to_connection, client);
-            if (it == client_to_connection.end()) {
-                return false;
+        UringListenerState(uring::Ring r)
+            : ring(plexdb::move(r))
+            , buffer_infos(ring.buffer_count)
+            , buffer_pool(ring.buffer_count)
+        {}
+
+        UringListenerState(UringListenerState&&) = default;
+
+        ~UringListenerState() {
+            if (ring) {
+                for (auto& it : client_to_connection) {
+                    Connection& conn = it.second;
+                    if (conn.waiting_rwc) {
+                        conn.count_rwc = 0;
+                        conn.error_rwc = Error::ConnectionClosed;
+                        std::coroutine_handle<> h = conn.waiting_rwc;
+                        conn.waiting_rwc = std::coroutine_handle<>{};
+                        h.resume();
+                    }
+                    conn.task.reset();
+                    uring::sqe_push_close(ring, it.second.client);
+                }
+                uring::sqe_submit_non_blocking(ring);
             }
+        }
+    };
 
-            auto& connection = it->second;
-            connection.client = os::zero_handle(); // @note marks connection as closed
+    struct SocketListenerState {
+        static constexpr U32 BUFFER_SIZE  = 64_kb;
+        static constexpr U32 BUFFER_COUNT = MAX_CONCURRENT_CONNECTIONS;
+        static constexpr os::PollEventMask DEFAULT_EVENTS =
+            os::PollEventMask::Read | os::PollEventMask::Error | os::PollEventMask::HangUp;
+        static constexpr os::PollEventMask WRITE_EVENTS =
+            DEFAULT_EVENTS | os::PollEventMask::Write;
 
-            stats.active_connections--;
-            objstore::log::db_connection_count(stats.active_connections);
-
-            if (!is_in_close_handler) {
-                uring::sqe_push_close(ring, client);
-            } else if (connection.waiting_rwc) {
-                // @note coroutine should not r/w/c after this and run to completion
-                connection.count_rwc = 0;
-                connection.error_rwc = Error::ConnectionClosed;
-                connection.waiting_rwc.resume();
-                assert_true(static_cast<bool>(connection.task) && connection.task->done(), "connection handler task did not complete after resuming from close");
-            }
-
-            connection.task.reset();
-            remove_it(client_to_connection, it);
-            return true;
+        enum Op : U8 {
+            None = 0,
+            WaitWrite = 1,
+            WaitRead = 2,
         };
 
-        // user api
-        AcquireRWBufferFunctor uring_acquire_rwbuffer_functor{[&](Connection* connection) -> coroutine::Task<RWBuffer> {
-            U32 idx = co_await buffer_pool.acquire();
-            BufferInfo& info = buffer_infos[idx];
-            info.client = connection->client;
-            PLEXDB_DEBUG_X(info.buffer_idx = idx;)
+        os::Handle socket;
+        Stats stats;
+        os::Poll* poll;
+        MapFixedSentinel<os::Handle, Connection, 2_u64*MAX_CONCURRENT_CONNECTIONS> client_to_connection;
+        MapFixedSentinel<os::Handle, Op, 2_u64*MAX_CONCURRENT_CONNECTIONS> waiting_op;
+        DynamicArray<BufferInfo> buffer_infos;
+        uring::BufferPool<MAX_CONCURRENT_CONNECTIONS> buffer_pool;
+        U8* socket_buffers;
+        AcquireBufferFunctor acquire_fn;
+        ReleaseBufferFunctor release_fn;
+        ReadToBufferFunctor  read_fn;
+        WriteFromBufferFunctor write_fn;
+
+        SocketListenerState(os::Handle s, os::Poll* p)
+            : socket(s), poll(p)
+            , buffer_infos{BUFFER_COUNT}
+            , buffer_pool{BUFFER_COUNT}
+            , socket_buffers{os::allocate(U64(BUFFER_SIZE) * BUFFER_COUNT)}
+        {}
+
+        // Move constructor: transfer socket_buffers ownership, null out source
+        SocketListenerState(SocketListenerState&& o) noexcept
+            : socket(o.socket), stats(plexdb::move(o.stats)), poll(o.poll)
+            , client_to_connection(plexdb::move(o.client_to_connection))
+            , waiting_op(plexdb::move(o.waiting_op))
+            , buffer_infos(plexdb::move(o.buffer_infos))
+            , buffer_pool(plexdb::move(o.buffer_pool))
+            , socket_buffers(o.socket_buffers)
+            , acquire_fn(plexdb::move(o.acquire_fn))
+            , release_fn(plexdb::move(o.release_fn))
+            , read_fn(plexdb::move(o.read_fn))
+            , write_fn(plexdb::move(o.write_fn))
+        {
+            o.socket_buffers = nullptr;
+        }
+
+        ~SocketListenerState() {
+            for (auto& it : client_to_connection) {
+                Connection& conn = it.second;
+                if (!os::is_zero_handle(conn.client)) {
+                    os::poll_dont_unblock_on(*poll, conn.client);
+                    os::socket_close(conn.client);
+                    conn.client = os::zero_handle();
+                }
+                if (conn.waiting_rwc) {
+                    conn.error_rwc = Error::ConnectionClosed;
+                    std::coroutine_handle<> h = conn.waiting_rwc;
+                    conn.waiting_rwc = std::coroutine_handle<>{};
+                    h.resume();
+                }
+                conn.task.reset();
+            }
+            if (socket_buffers) os::deallocate(socket_buffers);
+        }
+    };
+
+    aio::EventConsumer listen_uring_start(
+        UringListenerState* in_s,
+        const ConnectionHandler auto* in_handler,
+        os::Poll& poll
+    ) {
+        assert_true(static_cast<bool>(in_s->ring), "cannot listen to invalid uring");
+        assert_true(!os::is_zero_handle(in_s->ring.event_fd), "uring ring missing event_fd");
+        objstore::log::db_connection_max(MAX_CONCURRENT_CONNECTIONS);
+
+        in_s->acquire_fn = AcquireBufferFunctor{[in_s](Connection* connection) -> coroutine::Task<RWBuffer> {
+            U32 idx = co_await in_s->buffer_pool.acquire();
+            in_s->buffer_infos[idx].client = connection->client;
+            PLEXDB_DEBUG_X(in_s->buffer_infos[idx].buffer_idx = idx;)
             co_return RWBuffer{
-                .view   = TArrayView<U8,U32>(ring.buffers + idx * ring.buffer_size, ring.buffer_size),
-                .length = ring.buffer_size,
+                .view   = TArrayView<U8,U32>(in_s->ring.buffers + U64(idx) * in_s->ring.buffer_size, 0),
+                .length = in_s->ring.buffer_size,
                 .idx    = idx,
             };
         }};
 
-        ReleaseRWBufferFunctor uring_release_rwbuffer_functor{[&]([[maybe_unused]] Connection* connection, const RWBuffer* buffer) {
-            buffer_infos[buffer->idx].client = os::zero_handle();
-            buffer_pool.release(buffer->idx);
+        in_s->release_fn = ReleaseBufferFunctor{[in_s]([[maybe_unused]] Connection*, const RWBuffer* buffer) {
+            in_s->buffer_infos[buffer->idx].client = os::zero_handle();
+            in_s->buffer_pool.release(bounds_checked_cast<U32>(buffer->idx));
         }};
 
-        AsyncReadFunctor uring_async_read_functor{[&](Connection* connection, RWBuffer* buffer) -> coroutine::Task<Error> {
+        in_s->read_fn = ReadToBufferFunctor{[in_s](Connection* connection, RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(connection->client), "invalid read on closed connection");
-            assert_true(!connection->waiting_rwc, "connection already has coroutine pending, this should never happen!");
-            assert_true(buffer_infos[buffer->idx].client == connection->client, "buffer has not been acquire or acquired for a different connection");
+            assert_true(!connection->waiting_rwc, "connection already has coroutine pending");
+            assert_true(in_s->buffer_infos[buffer->idx].client == connection->client,
+                "buffer not acquired for this connection");
 
-            U32 byte_offset = buffer->view.ptr - (ring.buffers + buffer->idx*ring.buffer_size);
-            U32 byte_count = buffer->length;
+            U32 byte_offset = bounds_checked_cast<U32>(buffer->view.ptr - (in_s->ring.buffers + buffer->idx * in_s->ring.buffer_size));
+            U32 max_byte_count  = bounds_checked_cast<U32>(buffer->length);
 
             co_return co_await coroutine::Awaitable{
-                [&](std::coroutine_handle<> h) {
+                [in_s, connection, buffer, byte_offset, max_byte_count](std::coroutine_handle<> h) {
                     connection->waiting_rwc = h;
-                    uring::sqe_push_read(ring, connection->client, buffer->idx, byte_offset, byte_count);
+                    uring::sqe_push_read(in_s->ring, connection->client, bounds_checked_cast<U32>(buffer->idx), byte_offset, max_byte_count);
                 },
-                [&]() -> Error {
+                [connection, buffer]() -> Error {
+                    buffer->view.length = connection->count_rwc;
                     connection->waiting_rwc = std::coroutine_handle<>{};
-                    buffer->length = connection->count_rwc;
                     return connection->error_rwc;
                 }
             };
         }};
 
-        AsyncWriteFunctor uring_async_write_functor{[&](Connection* connection, const RWBuffer* buffer) -> coroutine::Task<Error> {
+        in_s->write_fn = WriteFromBufferFunctor{[in_s](Connection* connection, const RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(connection->client), "invalid write on closed connection");
-            assert_true(!connection->waiting_rwc, "connection already has coroutine pending, this should never happen!");
+            assert_true(!connection->waiting_rwc, "connection already has coroutine pending");
 
-            U32 byte_offset = buffer->view.ptr - (ring.buffers + buffer->idx*ring.buffer_size);
-            U32 byte_count = buffer->length;
+            U32 byte_offset = bounds_checked_cast<U32>(buffer->view.ptr - (in_s->ring.buffers + buffer->idx * in_s->ring.buffer_size));
+            U32 target_byte_count  = bounds_checked_cast<U32>(buffer->view.length);
 
             co_return co_await coroutine::Awaitable{
-                [&](std::coroutine_handle<> h) {
+                [in_s, connection, buffer, byte_offset, target_byte_count](std::coroutine_handle<> h) {
                     connection->waiting_rwc = h;
-                    uring::sqe_push_write(ring, connection->client, buffer->idx, byte_offset, byte_count);
+                    uring::sqe_push_write(in_s->ring, connection->client, bounds_checked_cast<U32>(buffer->idx), byte_offset, target_byte_count);
                 },
-                [&]() -> Error {
+                [connection, target_byte_count]() -> Error {
                     connection->waiting_rwc = std::coroutine_handle<>{};
-                    assert_true(connection->error_rwc != Error::None || connection->count_rwc == byte_count, "unexpected/unhandled partial write resumption");
+                    assert_true(connection->error_rwc != Error::None || connection->count_rwc == target_byte_count,
+                        "unexpected partial write resumption");
                     return connection->error_rwc;
                 }
             };
         }};
 
-        AsyncCloseFunctor uring_async_close_functor{[&](Connection* connection) -> coroutine::Task<> {
-            assert_true(!os::is_zero_handle(connection->client), "invalid close on closed connection");
-            assert_true(!connection->waiting_rwc, "connection already has coroutine pending, this should never happen!");
+        uring::sqe_push_multishot_accept(in_s->ring);
+        uring::sqe_submit_non_blocking(in_s->ring);
+        os::poll_unblock_on(poll, in_s->ring.event_fd);
 
-            co_return co_await coroutine::Awaitable{
-                [&](std::coroutine_handle<> h) {
-                    connection->waiting_rwc = h;
-                    uring::sqe_push_close(ring, connection->client);
-                },
-                [&]() {
-                    connection->waiting_rwc = std::coroutine_handle<>{};
-                }
-            };
-        }};
+        return aio::EventConsumer{
+            .max_events = U64(in_s->ring.buffer_count) + 2,
+            .on_unblock = aio::OnUnblockFunctor{
+                [in_s, in_handler]([[maybe_unused]] const TArrayView<os::PollEvent>& events) mutable -> bool {
+                    auto close_and_cleanup = [in_s](const os::Handle& client, bool is_in_close_handler) {
+                        auto it = find_it(in_s->client_to_connection, client);
+                        if (it == in_s->client_to_connection.end()) return false;
 
-        // handlers
-        // @note handles client responding to the server's read submission
-        auto handle_read_completion = [&](const uring::ReadEvent& read) {
-            assert_true_not_implemented(read.error == uring::Error::None, "TCP read error handling is not implemented");
+                        Connection& connection = it->second;
+                        connection.client = os::zero_handle();
 
-            BufferInfo& info = buffer_infos[read.buffer_idx];
-            PLEXDB_DEBUG_X(assert_true(info.buffer_idx == read.buffer_idx, "buffer info was not written before read completion"));
+                        in_s->stats.active_connections--;
+                        objstore::log::db_connection_count(in_s->stats.active_connections);
 
-            Connection* connection = find(client_to_connection, info.client);
-            assert_true(connection != nullptr, "connection dropped before read completion");
-            assert_true(static_cast<bool>(connection->waiting_rwc), "read completion for connection without waiting coroutine, this should never happen!");
+                        if (!is_in_close_handler) {
+                            uring::sqe_push_close(in_s->ring, client);
+                        }
 
-            stats.total_bytes_read += read.bytes_read;
+                        connection.task.reset();
+                        remove_it(in_s->client_to_connection, it);
+                        return true;
+                    };
 
-            connection->error_rwc = read.bytes_read == 0 ? Error::ConnectionClosed : Error::None;
-            connection->count_rwc = read.bytes_read;
-            connection->waiting_rwc.resume();
-        };
+                    if (!uring::ring_drain_event_fd(in_s->ring)) return true;
 
-        // @note handles completion of write from server to client
-        auto handle_write_completion = [&](const uring::WriteEvent& write) {
-            assert_true_not_implemented(write.error == uring::Error::None, "TCP write error handling is not implemented");
+                    uring::sqe_submit_non_blocking(in_s->ring);
 
-            BufferInfo& info = buffer_infos[write.buffer_idx];
-            PLEXDB_DEBUG_X(assert_true(info.buffer_idx == write.buffer_idx, "buffer info was not written before handler needed it"));
+                    while (uring::cqe_get_size(in_s->ring) > 0) {
+                        auto cqe = uring::cqe_top(in_s->ring);
+                        uring::cqe_pop(in_s->ring, 1);
 
-            Connection* connection = find(client_to_connection, info.client);
-            assert_true(connection != nullptr, "connection dropped before write completion");
-
-            stats.total_bytes_written += write.bytes_written;
-
-            connection->error_rwc = Error::None;
-            connection->count_rwc = write.bytes_written;
-            connection->waiting_rwc.resume();
-        };
-
-        auto handle_accept_completion = [&](const auto& accept) {
-            assert_true_not_implemented(accept.error == uring::Error::None, "TCP accept error handling is not implemented");
-
-            using T = RemoveCVRef<decltype(accept)>;
-            static_assert(Either<T, uring::AcceptEvent, uring::MultishotAcceptEvent>);
-
-            if constexpr (!SameAs<T, uring::MultishotAcceptEvent>) {
-                // re-arm to accept future connections ASAP
-                uring::sqe_push_accept(ring);
-            }
-
-            socket_set_option(accept.client, os::SocketOption::NoDelay, true);
-
-            // store new connection
-            Connection& connection = find_or_insert(client_to_connection, accept.client);
-            connection.client = accept.client;
-            stats.total_connections++;
-            stats.active_connections++;
-            objstore::log::db_connection_count(stats.active_connections);
-
-            connection.req = Request{
-                .connection = &connection,
-                .acquire = &uring_acquire_rwbuffer_functor,
-                .release = &uring_release_rwbuffer_functor,
-                .read = &uring_async_read_functor,
-                .write = &uring_async_write_functor,
-                .close = &uring_async_close_functor,
-            };
-
-            // eagerly begin task to handle request
-            connection.task = connection_handler(connection.req);
-        };
-
-        auto handle_close_completion = [&](const uring::CloseEvent& close) {
-            assert_true_not_implemented(close.error == uring::Error::None, "TCP close error handling is not implemented");
-
-            close_and_cleanup(close.client, /*is_in_close_handler*/ true);
-        };
-
-        // event loop
-        os::Poll poll_until_server_or_interrupt{};
-        poll_unblock_on(poll_until_server_or_interrupt, interrupt);
-        poll_unblock_on(poll_until_server_or_interrupt, ring.server);
-
-        uring::sqe_push_multishot_accept(ring);
-
-        while (!should_exit) {
-            uring::sqe_submit_non_blocking(ring);
-
-            U32 cqe_entry_count = cqe_get_size(ring);
-            U32 cqe_entry_processed_count = 0;
-            for (U32 cqe_entry_idx = 0; cqe_entry_idx < cqe_entry_count; cqe_entry_idx++) {
-                auto cqe = cqe_top(ring);
-                cqe_pop(ring, 1);
-
-                if (!static_cast<bool>(cqe)) {
-                    continue;
-                }
-
-                cqe_entry_processed_count++;
-                visit(cqe, [&](const auto& cqe) {
-                    using T = RemoveCVRef<decltype(cqe)>;
-                    if constexpr (SameAs<T, uring::ReadEvent>) {
-                        handle_read_completion(cqe);
-                    } else if constexpr (SameAs<T, uring::WriteEvent>) {
-                        handle_write_completion(cqe);
-                    } else if constexpr (Either<T, uring::AcceptEvent, uring::MultishotAcceptEvent>) {
-                        handle_accept_completion(cqe);
-                    } else if constexpr (SameAs<T, uring::CloseEvent>) {
-                        handle_close_completion(cqe);
-                    } else if constexpr (SameAs<T, uring::FileReadEvent>) {
-                        // @note file I/O completions handled by pager, not TCP event loop
-                    } else if constexpr (SameAs<T, uring::FileWriteEvent>) {
-                        // @note file I/O completions handled by pager, not TCP event loop
-                    } else if constexpr (SameAs<T, uring::FileSyncEvent>) {
-                        // @note file I/O completions handled by pager, not TCP event loop
-                    } else {
-                        static_assert(!SameAs<T,T>);
+                        visit(cqe, [&](const auto& ev) {
+                            using T = RemoveCVRef<decltype(ev)>;
+                            if constexpr (SameAs<T, uring::ReadEvent>) {
+                                assert_true_not_implemented(ev.error == uring::Error::None, "TCP read error handling not implemented");
+                                BufferInfo& info = in_s->buffer_infos[ev.buffer_idx];
+                                Connection* conn = find(in_s->client_to_connection, info.client);
+                                assert_true(conn != nullptr, "connection dropped before read completion");
+                                in_s->stats.total_bytes_read += ev.bytes_read;
+                                conn->error_rwc = ev.bytes_read == 0 ? Error::ConnectionClosed : Error::None;
+                                conn->count_rwc = ev.bytes_read;
+                                conn->waiting_rwc.resume();
+                                if (static_cast<bool>(conn->task) && conn->task->done())
+                                    close_and_cleanup(info.client, /*is_in_close_handler=*/false);
+                            } else if constexpr (SameAs<T, uring::WriteEvent>) {
+                                assert_true_not_implemented(ev.error == uring::Error::None, "TCP write error handling not implemented");
+                                BufferInfo& info = in_s->buffer_infos[ev.buffer_idx];
+                                Connection* conn = find(in_s->client_to_connection, info.client);
+                                assert_true(conn != nullptr, "connection dropped before write completion");
+                                in_s->stats.total_bytes_written += ev.bytes_written;
+                                conn->error_rwc = Error::None;
+                                conn->count_rwc = ev.bytes_written;
+                                conn->waiting_rwc.resume();
+                                if (static_cast<bool>(conn->task) && conn->task->done())
+                                    close_and_cleanup(info.client, /*is_in_close_handler=*/false);
+                            } else if constexpr (Either<T, uring::AcceptEvent, uring::MultishotAcceptEvent>) {
+                                assert_true_not_implemented(ev.error == uring::Error::None, "TCP accept error handling not implemented");
+                                if constexpr (!SameAs<T, uring::MultishotAcceptEvent>) {
+                                    uring::sqe_push_accept(in_s->ring);
+                                }
+                                os::socket_set_option(ev.client, os::SocketOption::NoDelay, true);
+                                Connection& conn = find_or_insert(in_s->client_to_connection, ev.client);
+                                conn.client = ev.client;
+                                in_s->stats.total_connections++;
+                                in_s->stats.active_connections++;
+                                objstore::log::db_connection_count(in_s->stats.active_connections);
+                                conn.req = Request{
+                                    .connection = &conn,
+                                    .acquire = &in_s->acquire_fn,
+                                    .release = &in_s->release_fn,
+                                    .read    = &in_s->read_fn,
+                                    .write   = &in_s->write_fn,
+                                };
+                                conn.task = (*in_handler)(conn.req);
+                            } else if constexpr (SameAs<T, uring::CloseEvent>) {
+                                assert_true_not_implemented(ev.error == uring::Error::None, "TCP close error handling not implemented");
+                                close_and_cleanup(ev.client, /*is_in_close_handler*/ true);
+                            }
+                        });
                     }
-                });
-            }
 
-            if (cqe_entry_processed_count == 0) {
-                // @blocking wait until either the callers interrupt or a write to the server socket unblocks us
-                block_until_poll_unblocks(poll_until_server_or_interrupt);
+                    uring::sqe_submit_non_blocking(in_s->ring);
+                    return true;
+                }
             }
-        }
-
-        // cleanup
-        for (auto& it : client_to_connection) {
-            uring::sqe_push_close(ring, it.second.client);
-        }
-        // @note silently drops pending request tasks @todo api
+        };
     }
 
-    // @note non-io_uring async fallback using os::Poll + non-blocking sockets.
-    export void listen_socket(
-        os::Handle socket, Stats& stats,
-        const ConnectionHandler auto& connection_handler,
-        const os::Notifier& interrupt, volatile bool& should_exit
+    aio::EventConsumer listen_socket_start(
+        SocketListenerState* in_s,
+        const ConnectionHandler auto* in_handler,
+        os::Poll& poll
     ) {
         objstore::log::db_connection_max(MAX_CONCURRENT_CONNECTIONS);
 
-        constexpr U32 BUFFER_SIZE  = 64_kb;
-        constexpr U32 BUFFER_COUNT = MAX_CONCURRENT_CONNECTIONS;
-        constexpr U8 WAIT_READ  = 1;
-        constexpr U8 WAIT_WRITE = 2;
-        constexpr os::PollEventMask SOCKET_DEFAULT_POLL_EVENTS =
-            os::PollEventMask::Read | os::PollEventMask::Error | os::PollEventMask::HangUp;
-        constexpr os::PollEventMask SOCKET_WRITE_POLL_EVENTS =
-            SOCKET_DEFAULT_POLL_EVENTS | os::PollEventMask::Write;
+        os::socket_set_option(in_s->socket, os::SocketOption::NonBlocking, true);
 
-        MapFixedSentinel<os::Handle, Connection, 2_u64*MAX_CONCURRENT_CONNECTIONS> client_to_connection;
-        MapFixedSentinel<os::Handle, U8, 2_u64*MAX_CONCURRENT_CONNECTIONS> waiting_op;
-        DynamicArray<BufferInfo> buffer_infos{BUFFER_COUNT};
-        uring::BufferPool<MAX_CONCURRENT_CONNECTIONS> buffer_pool{BUFFER_COUNT};
-        U8* socket_buffers = os::allocate(U64(BUFFER_SIZE) * BUFFER_COUNT);
+        constexpr U32 BUFFER_SIZE = SocketListenerState::BUFFER_SIZE;
 
-        // non-blocking accept + non-blocking client I/O, coroutine handlers suspend on socket readiness.
-        os::socket_set_option(socket, os::SocketOption::NonBlocking, true);
-
-        os::Poll poll{};
-        poll_unblock_on(poll, interrupt);
-        poll_unblock_on(poll, socket);
-
-        auto close_and_cleanup = [&](const os::Handle& client) {
-            auto it = find_it(client_to_connection, client);
-            if (it == client_to_connection.end()) {
-                return;
-            }
-
-            Connection& connection = it->second;
-            if (!os::is_zero_handle(connection.client)) {
-                os::socket_close(connection.client);
-                connection.client = os::zero_handle();
-            }
-
-            if (stats.active_connections > 0) {
-                stats.active_connections--;
-                objstore::log::db_connection_count(stats.active_connections);
-            }
-
-            auto w_it = find_it(waiting_op, client);
-            if (w_it != waiting_op.end()) {
-                remove_it(waiting_op, w_it);
-            }
-
-            if (connection.waiting_rwc) {
-                // connection.client is zero — read/write resume lambdas return false → ConnectionClosed
-                std::coroutine_handle<> h = connection.waiting_rwc;
-                connection.waiting_rwc = std::coroutine_handle<>{};
-                h.resume();
-            }
-
-            connection.task.reset();
-            remove_it(client_to_connection, it);
-        };
-
-        AcquireRWBufferFunctor socket_acquire_functor{[&](Connection* connection) -> coroutine::Task<RWBuffer> {
-            U32 idx = co_await buffer_pool.acquire();
-            buffer_infos[idx].client = connection->client;
-            PLEXDB_DEBUG_X(buffer_infos[idx].buffer_idx = idx;)
+        in_s->acquire_fn = AcquireBufferFunctor{[in_s](Connection* conn) -> coroutine::Task<RWBuffer> {
+            U32 idx = co_await in_s->buffer_pool.acquire();
+            in_s->buffer_infos[idx].client = conn->client;
+            PLEXDB_DEBUG_X(in_s->buffer_infos[idx].buffer_idx = idx;)
             co_return RWBuffer{
-                .view   = TArrayView<U8,U32>(socket_buffers + idx * BUFFER_SIZE, BUFFER_SIZE),
+                .view   = TArrayView<U8,U32>(in_s->socket_buffers + U64(idx) * BUFFER_SIZE, 0),
                 .length = BUFFER_SIZE,
                 .idx    = idx,
             };
         }};
 
-        ReleaseRWBufferFunctor socket_release_functor{[&](Connection*, const RWBuffer* buffer) {
-            buffer_infos[buffer->idx].client = os::zero_handle();
-            buffer_pool.release(buffer->idx);
+        in_s->release_fn = ReleaseBufferFunctor{[in_s]([[maybe_unused]] Connection*, const RWBuffer* buffer) {
+            in_s->buffer_infos[buffer->idx].client = os::zero_handle();
+            in_s->buffer_pool.release(bounds_checked_cast<U32>(buffer->idx));
         }};
 
-        AsyncReadFunctor socket_read_functor{[&](Connection* connection, RWBuffer* buffer) -> coroutine::Task<Error> {
-            assert_true(!os::is_zero_handle(connection->client), "invalid read on closed connection");
-            assert_true(!connection->waiting_rwc, "connection already has coroutine pending, this should never happen!");
+        in_s->read_fn = ReadToBufferFunctor{[in_s](Connection* conn, RWBuffer* buffer) -> coroutine::Task<Error> {
+            assert_true(!os::is_zero_handle(conn->client), "invalid read on closed connection");
+            assert_true(!conn->waiting_rwc, "connection already has coroutine pending");
 
-            // @note save before the loop: buffer->length is zeroed on error paths but must not
-            // shrink to 0 on WouldBlock retry
-            const U32 recv_length = U32(buffer->length);
+            const U32 max_byte_count = bounds_checked_cast<U32>(buffer->length);
             while (true) {
-                auto result = os::socket_receive(connection->client, buffer->view.ptr, recv_length);
+                auto result = os::socket_receive(conn->client, buffer->view.ptr, max_byte_count);
                 if (result.byte_count > 0 && result.error == os::SocketError::None) {
-                    buffer->length = result.byte_count;
-                    stats.total_bytes_read += result.byte_count;
+                    buffer->view.length = result.byte_count;
+                    in_s->stats.total_bytes_read += result.byte_count;
                     co_return Error::None;
                 }
 
                 buffer->length = 0;
                 switch (result.error) {
-                    case os::SocketError::None:{
-                        co_return Error::ConnectionClosed; // zero-length read signal connection closed
-                    }break;
-                    // handle async would block by deferring until poll event resumes this task
-                    case os::SocketError::WouldBlock:{
+                    case os::SocketError::None:
+                        co_return Error::ConnectionClosed;
+                    case os::SocketError::WouldBlock: {
                         bool ready = co_await coroutine::Awaitable{
-                            [&](std::coroutine_handle<> h) {
-                                connection->waiting_rwc = h;
-                                find_or_insert(waiting_op, connection->client) = WAIT_READ;
+                            [in_s, conn](std::coroutine_handle<> h) {
+                                conn->waiting_rwc = h;
+                                find_or_insert(in_s->waiting_op, conn->client) = SocketListenerState::WaitRead;
                             },
-                            [&]() -> bool {
-                                return !os::is_zero_handle(connection->client);
-                            }
+                            [conn]() -> bool { return !os::is_zero_handle(conn->client); }
                         };
-                        if (!ready) {
-                            co_return Error::ConnectionClosed;
-                        }
+                        if (!ready) co_return Error::ConnectionClosed;
                         continue;
-                    }break;
+                    }
                     case os::SocketError::Timeout:
                     case os::SocketError::ConnectionClosed:
                     case os::SocketError::ConnectionRefused:
-                    case os::SocketError::ConnectionReset:{
+                    case os::SocketError::ConnectionReset:
                         co_return Error::ConnectionClosed;
-                    }
-                    case os::SocketError::Other:{
+                    case os::SocketError::Other:
                         co_return Error::Other;
-                    }
                 }
                 assert_true(false, "unhandled socket error");
                 co_return Error::Other;
             }
         }};
 
-        AsyncWriteFunctor socket_write_functor{[&](Connection* connection, const RWBuffer* buffer) -> coroutine::Task<Error> {
-            assert_true(!os::is_zero_handle(connection->client), "invalid write on closed connection");
-            assert_true(!connection->waiting_rwc, "connection already has coroutine pending, this should never happen!");
+        in_s->write_fn = WriteFromBufferFunctor{[in_s](Connection* conn, const RWBuffer* buffer) -> coroutine::Task<Error> {
+            assert_true(!os::is_zero_handle(conn->client), "invalid write on closed connection");
+            assert_true(!conn->waiting_rwc, "connection already has coroutine pending");
 
-            U64 sent = 0;
-            while (sent < buffer->length) {
-                auto result = os::socket_send(connection->client, buffer->view.ptr + sent, buffer->length - sent);
+            U64 current_byte_count = 0;
+            U64 target_byte_count = buffer->view.length;
+            while (current_byte_count < target_byte_count) {
+                auto result = os::socket_send(conn->client, buffer->view.ptr + current_byte_count, target_byte_count - current_byte_count);
                 if (result.byte_count > 0 && result.error == os::SocketError::None) {
-                    sent += result.byte_count;
-                    stats.total_bytes_written += result.byte_count;
+                    current_byte_count += result.byte_count;
+                    in_s->stats.total_bytes_written += result.byte_count;
                     continue;
                 }
 
                 switch (result.error) {
-                    case os::SocketError::None:{
-                        assert_true(false, "zero length write with no error condition set, this should never happen!");
-                    }break;
-                    // handle async would block by deferring until poll event resumes this task
-                    case os::SocketError::WouldBlock:{
+                    case os::SocketError::None:
+                        assert_true(false, "zero-length write with no error");
+                        break;
+                    case os::SocketError::WouldBlock: {
                         bool ready = co_await coroutine::Awaitable{
-                            [&](std::coroutine_handle<> h) {
-                                connection->waiting_rwc = h;
-                                find_or_insert(waiting_op, connection->client) = WAIT_WRITE;
-                                os::poll_update(poll, connection->client, SOCKET_WRITE_POLL_EVENTS);
+                            [in_s, conn](std::coroutine_handle<> h) {
+                                conn->waiting_rwc = h;
+                                find_or_insert(in_s->waiting_op, conn->client) = SocketListenerState::Op::WaitWrite;
+                                os::poll_update_mask(*in_s->poll, conn->client, SocketListenerState::WRITE_EVENTS);
                             },
-                            [&]() -> bool {
-                                if (os::is_zero_handle(connection->client)) {
-                                    return false;
-                                }
-                                os::poll_update(poll, connection->client, SOCKET_DEFAULT_POLL_EVENTS);
+                            [in_s, conn]() -> bool {
+                                if (os::is_zero_handle(conn->client)) return false;
+                                os::poll_update_mask(*in_s->poll, conn->client, SocketListenerState::DEFAULT_EVENTS);
                                 return true;
                             }
                         };
-                        if (!ready) {
-                            co_return Error::ConnectionClosed;
-                        }
+                        if (!ready) co_return Error::ConnectionClosed;
                         continue;
-                    }break;
+                    }
                     case os::SocketError::Timeout:
                     case os::SocketError::ConnectionClosed:
                     case os::SocketError::ConnectionRefused:
-                    case os::SocketError::ConnectionReset:{
+                    case os::SocketError::ConnectionReset:
                         co_return Error::ConnectionClosed;
-                    }
-                    case os::SocketError::Other:{
+                    case os::SocketError::Other:
                         co_return Error::Other;
-                    }
                 }
                 assert_true(false, "unhandled socket error");
                 co_return Error::Other;
             }
 
+            assert_true(current_byte_count == target_byte_count, "sent more bytes over socket than expected");
             co_return Error::None;
         }};
 
-        AsyncCloseFunctor socket_close_functor{[&](Connection* connection) -> coroutine::Task<> {
-            if (!os::is_zero_handle(connection->client)) {
-                os::socket_close(connection->client);
-            }
-            auto w_it = find_it(waiting_op, connection->client);
-            if (w_it != waiting_op.end()) {
-                remove_it(waiting_op, w_it);
-            }
-            connection->client = os::zero_handle();
-            co_return;
-        }};
+        os::poll_unblock_on(poll, in_s->socket, SocketListenerState::DEFAULT_EVENTS);
 
-        Array<os::PollEvent, max(128_u32, MAX_CONCURRENT_CONNECTIONS + 2)> events_storage{};
-        while (!should_exit) {
-            CappedTArrayView<os::PollEvent> events(events_storage.values, events_storage.length, 0);
-            poll_wait(poll, &events);
+        return aio::EventConsumer{
+            .max_events = U64(MAX_CONCURRENT_CONNECTIONS) + 2,
+            .on_unblock = aio::OnUnblockFunctor{
+                [in_s, in_handler](const TArrayView<os::PollEvent>& events) mutable -> bool {
+                    auto close_and_cleanup = [in_s](const os::Handle& client) {
+                        auto it = find_it(in_s->client_to_connection, client);
+                        if (it == in_s->client_to_connection.end()) return;
 
-            for (const auto& event : events) {
-                bool has_read  = (U32(event.events) & U32(os::PollEventMask::Read)) != 0;
-                bool has_write = (U32(event.events) & U32(os::PollEventMask::Write)) != 0;
-                bool has_err   = (U32(event.events) & U32(os::PollEventMask::Error)) != 0;
-                bool has_hup   = (U32(event.events) & U32(os::PollEventMask::HangUp)) != 0;
-
-                if (event.handle == interrupt.read) {
-                    continue;
-                }
-
-                if (event.handle == socket) {
-                    while (true) {
-                        os::Handle client = os::socket_accept(socket);
-                        if (os::is_zero_handle(client)) {
-                            break;
+                        Connection& conn = it->second;
+                        if (!os::is_zero_handle(conn.client)) {
+                            os::poll_dont_unblock_on(*in_s->poll, conn.client);
+                            os::socket_close(conn.client);
+                            conn.client = os::zero_handle();
                         }
 
-                        if (stats.active_connections >= MAX_CONCURRENT_CONNECTIONS) {
-                            stats.dropped_connections++;
-                            os::socket_close(client);
+                        if (in_s->stats.active_connections > 0) {
+                            in_s->stats.active_connections--;
+                            objstore::log::db_connection_count(in_s->stats.active_connections);
+                        }
+
+                        auto w_it = find_it(in_s->waiting_op, client);
+                        if (w_it != in_s->waiting_op.end()) remove_it(in_s->waiting_op, w_it);
+
+                        if (conn.waiting_rwc) {
+                            std::coroutine_handle<> h = conn.waiting_rwc;
+                            conn.waiting_rwc = std::coroutine_handle<>{};
+                            h.resume();
+                        }
+
+                        conn.task.reset();
+                        remove_it(in_s->client_to_connection, it);
+                    };
+
+                    for (const auto& event : events) {
+                        bool has_read  = ((event.events) & os::PollEventMask::Read  ) != os::PollEventMask::None;
+                        bool has_write = ((event.events) & os::PollEventMask::Write ) != os::PollEventMask::None;
+                        bool has_err   = ((event.events) & os::PollEventMask::Error ) != os::PollEventMask::None;
+                        bool has_hup   = ((event.events) & os::PollEventMask::HangUp) != os::PollEventMask::None;
+
+                        if (event.handle == in_s->socket) {
+                            while (true) {
+                                os::Handle client = os::socket_accept(in_s->socket);
+                                if (os::is_zero_handle(client)) break;
+
+                                if (in_s->stats.active_connections >= MAX_CONCURRENT_CONNECTIONS) {
+                                    in_s->stats.dropped_connections++;
+                                    os::socket_close(client);
+                                    continue;
+                                }
+
+                                os::socket_set_option(client, os::SocketOption::NonBlocking, true);
+                                os::socket_set_option(client, os::SocketOption::NoDelay, true);
+                                os::poll_unblock_on(*in_s->poll, client, SocketListenerState::DEFAULT_EVENTS);
+
+                                Connection& conn = find_or_insert(in_s->client_to_connection, client);
+                                conn.client = client;
+                                in_s->stats.total_connections++;
+                                in_s->stats.active_connections++;
+                                objstore::log::db_connection_count(in_s->stats.active_connections);
+
+                                conn.req = Request{
+                                    .connection = &conn,
+                                    .acquire    = &in_s->acquire_fn,
+                                    .release    = &in_s->release_fn,
+                                    .read       = &in_s->read_fn,
+                                    .write      = &in_s->write_fn,
+                                };
+                                conn.task = (*in_handler)(conn.req);
+
+                                if (static_cast<bool>(conn.task) && conn.task->done()) {
+                                    close_and_cleanup(client);
+                                }
+                            }
                             continue;
                         }
 
-                        os::socket_set_option(client, os::SocketOption::NonBlocking, true);
-                        os::socket_set_option(client, os::SocketOption::NoDelay, true);
-                        poll_unblock_on(
-                            poll,
-                            client,
-                            SOCKET_DEFAULT_POLL_EVENTS
-                        );
-
-                        Connection& connection = find_or_insert(client_to_connection, client);
-                        connection.client = client;
-                        stats.total_connections++;
-                        stats.active_connections++;
-                        objstore::log::db_connection_count(stats.active_connections);
-
-                        connection.req = Request{
-                            .connection = &connection,
-                            .acquire    = &socket_acquire_functor,
-                            .release    = &socket_release_functor,
-                            .read       = &socket_read_functor,
-                            .write      = &socket_write_functor,
-                            .close      = &socket_close_functor,
-                        };
-                        // eagerly begin task to handle connection
-                        connection.task = connection_handler(connection.req);
-
-                        if (static_cast<bool>(connection.task) && connection.task->done()) {
-                            close_and_cleanup(client);
+                        Connection* conn = find(in_s->client_to_connection, event.handle);
+                        if (conn == nullptr) {
+                            continue;
                         }
-                    }
-                    continue;
-                }
 
-                Connection* connection = find(client_to_connection, event.handle);
-                if (connection == nullptr) {
-                    continue;
-                }
-
-                if (has_err || has_hup) {
-                    close_and_cleanup(event.handle);
-                    continue;
-                }
-
-                auto waiting_it = find_it(waiting_op, event.handle);
-                if (waiting_it != waiting_op.end() && static_cast<bool>(connection->waiting_rwc)) {
-                    bool ready_for_waiting =
-                        (waiting_it->second == WAIT_READ  && has_read) ||
-                        (waiting_it->second == WAIT_WRITE && has_write);
-                    if (ready_for_waiting) {
-                        std::coroutine_handle<> h = connection->waiting_rwc;
-                        connection->waiting_rwc = std::coroutine_handle<>{};
-                        remove_it(waiting_op, waiting_it);
-                        h.resume();
-                        if (static_cast<bool>(connection->task) && connection->task->done()) {
+                        if (has_err || has_hup) {
                             close_and_cleanup(event.handle);
+                            continue;
+                        }
+
+                        if (!static_cast<bool>(conn->waiting_rwc)) {
+                            continue;
+                        }
+
+                        auto waiting_it = find_it(in_s->waiting_op, event.handle);
+                        if (waiting_it != in_s->waiting_op.end()) {
+                            bool ready =
+                                (waiting_it->second == SocketListenerState::Op::WaitRead  && has_read) ||
+                                (waiting_it->second == SocketListenerState::Op::WaitWrite && has_write);
+                            if (ready) {
+                                std::coroutine_handle<> h = conn->waiting_rwc;
+                                conn->waiting_rwc = std::coroutine_handle<>{};
+                                remove_it(in_s->waiting_op, waiting_it);
+                                h.resume();
+                                if (static_cast<bool>(conn->task) && conn->task->done()) {
+                                    close_and_cleanup(event.handle);
+                                }
+                            }
                         }
                     }
+                    return true;
                 }
             }
-        }
-
-        for (auto& it : client_to_connection) {
-            if (!os::is_zero_handle(it.second.client)) {
-                os::socket_close(it.second.client);
-            }
-        }
-        os::deallocate(socket_buffers);
+        };
     }
 }

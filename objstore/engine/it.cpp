@@ -21,12 +21,12 @@ namespace objstore {
     // column iterator
     //   @todo move mask logic into io
     // ========================================================================
-    coroutine::Task<ColumnIterator> ColumnIterator::load(Pager* pager, const schema::Table* table, U64 page_idx) {
-        ColumnIterator it{};
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx) {
         it.table = table;
         assert_true(it.table->cols.length != 0, "column cannot be empty, it must at least have a PK");
 
-        blob::BlobDynamicPaged row_blob = co_await blob::BlobDynamicPaged::load(pager, page_idx);
+        blob::BlobDynamicPaged row_blob;
+        co_await blob::load(row_blob, pager, page_idx);
 
         resize(it.row_data, row_blob.size_bytes);
         co_await blob::get(row_blob, it.row_data.ptr, row_blob.size_bytes);
@@ -44,7 +44,6 @@ namespace objstore {
             os::memory_copy(&it.current_mask, it.row_data.ptr + io::COLUMN_COUNT_BYTE_COUNT, sizeof(it.current_mask));
         }
 
-        co_return move(it);
     }
 
     ColumnValue ColumnIterator::operator*() { ZoneScopedN("it::column_read");
@@ -108,7 +107,8 @@ namespace objstore {
     // row iterator
     // ========================================================================
     coroutine::Task<ColumnRange> RowIterator::deref() {
-        ColumnIterator col_it = co_await ColumnIterator::load(this->pager, this->table, *this->pk_hash_it);
+        ColumnIterator col_it;
+        co_await load(col_it, this->pager, this->table, *this->pk_hash_it);
         co_return ColumnRange{
             .start = move(col_it),
             .stop  = ColumnIterator{},

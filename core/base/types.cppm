@@ -45,7 +45,6 @@ namespace plexdb {
     template<typename Ret, typename... Args>   struct FunctionHelper<Ret(Args...)>      { using ret = Ret; static constexpr bool is = true; };
     template<typename Ret, typename... Args>   struct FunctionHelper<Ret(Args..., ...)> { using ret = Ret; static constexpr bool is = true; };
 
-
     template<bool b, typename T, typename F> struct ConditionalHelper               { using type = T; };
     template<typename T, typename F>         struct ConditionalHelper<false, T, F>  { using type = F; };
 }
@@ -342,24 +341,6 @@ export namespace plexdb {
     template<typename T, typename ... U>
     concept Either = (SameAs<T, U> || ...);
 
-    template<typename T>
-    concept Unsigned = requires { T(0); T(-1); } && (T(-1) > T(0));
-
-    template<typename T>
-    concept Signed = !Unsigned<T>;
-
-    template<typename T>
-    concept Integer = requires(T a, T b) {
-        T(0);
-        T(1);
-        a + b;
-        a - b;
-        a * b;
-        a / b;
-        a % b;
-        a & b;
-    };
-
     // ========================================================================
     // pair
     // ========================================================================
@@ -372,7 +353,7 @@ export namespace plexdb {
         B second{};
 
         Pair() = default;
-        Pair(A first, B second) : first(first), second(second) {}
+        Pair(A first, B second) : first(plexdb::move(first)), second(plexdb::move(second)) {}
     };
 
     template<typename T> struct IsPairHelper                        { static constexpr bool is = false; };
@@ -868,8 +849,20 @@ export namespace plexdb {
     };
 
     template<typename T, typename V>
-    Tag<T,V> make_tag(V* in_value) {
+    Tag<T,V> create_tag(V* in_value) {
         return Tag<T,V>(in_value);
+    }
+
+    // ========================================================================
+    // array placement new
+    //   @note builtin placement new may store the length requiring extra allocation
+    // ========================================================================
+    template <typename T>
+    T* default_construct_placement_array(T* array, size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            new (&array[i]) T();
+        }
+        return array;
     }
 }
 

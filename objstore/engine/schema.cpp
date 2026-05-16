@@ -23,17 +23,15 @@ namespace objstore::schema {
     };
 
     // @todo small schema storage optimization
-    coroutine::Task<Schema> Schema::load(Pager* in_pager, U64 page) {
-        Schema schema{};
-
-        schema.schema_blob = co_await blob::BlobStaticPaged::load(in_pager, page, sizeof(SchemaHeader));
+    coroutine::Task<> load(Schema& schema, Pager* in_pager, U64 page) {
+        co_await blob::load(schema.schema_blob, in_pager, page, sizeof(SchemaHeader));
 
         SchemaHeader schema_header{};
         co_await blob::tget(schema.schema_blob, &schema_header);
 
-        schema.keyspaces_blob = co_await blob::BlobDynamicPaged::load(in_pager, schema_header.keyspaces_page);
-        schema.tables_blob    = co_await blob::BlobDynamicPaged::load(in_pager, schema_header.tables_page);
-        schema.columns_blob   = co_await blob::BlobDynamicPaged::load(in_pager, schema_header.columns_page);
+        co_await blob::load(schema.keyspaces_blob, in_pager, schema_header.keyspaces_page);
+        co_await blob::load(schema.tables_blob,    in_pager, schema_header.tables_page);
+        co_await blob::load(schema.columns_blob,   in_pager, schema_header.columns_page);
 
         //
         // allocate storage and cache blob contents in memory
@@ -137,7 +135,6 @@ namespace objstore::schema {
             push_back(schema.keyspaces, move(ks));
         }
 
-        co_return move(schema);
     }
 
     coroutine::Task<U64> create_schema(Pager& pager) {
@@ -153,7 +150,8 @@ namespace objstore::schema {
             .columns_page = columns_page,
         };
 
-        blob::BlobStaticPaged schema_blob = co_await blob::BlobStaticPaged::load(&pager, schema_page, sizeof(SchemaHeader));
+        blob::BlobStaticPaged schema_blob;
+        co_await blob::load(schema_blob, &pager, schema_page, sizeof(SchemaHeader));
         co_await blob::tupdate(schema_blob, &header);
 
         co_return schema_page;

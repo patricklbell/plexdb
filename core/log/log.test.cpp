@@ -1,11 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include "log_abi.h"
 
-#include <string>
-
 import plexdb.base;
 import plexdb.log;
 
+using namespace plexdb;
 using namespace plexdb::log;
 
 TEST_CASE("log level to_str", "[plexdb.log]") {
@@ -128,7 +127,7 @@ TEST_CASE("stat registration fires stat_meta", "[plexdb.log]") {
     CHECK(tc.meta_count == 1);
     CHECK(tc.last_meta_producer == p.id);
     CHECK(tc.last_meta_stat_id == s.id);
-    CHECK(std::string(tc.last_meta_name) == "requests_per_sec");
+    CHECK(String8(tc.last_meta_name) == "requests_per_sec");
     CHECK(tc.last_meta_stat_type == PLEXDB_STAT_GAUGE);
 
     plexdb_log_unregister_consumer(test_on_event, &tc);
@@ -147,11 +146,11 @@ TEST_CASE("stat type counter and gauge", "[plexdb.log]") {
     stat(counter, 5);
     CHECK(tc.meta_count >= 1);
     CHECK(tc.last_meta_stat_type == PLEXDB_STAT_COUNTER);
-    CHECK(std::string(tc.last_meta_name) == "total_requests");
+    CHECK(String8(tc.last_meta_name) == "total_requests");
 
     stat(gauge, 10);
     CHECK(tc.last_meta_stat_type == PLEXDB_STAT_GAUGE);
-    CHECK(std::string(tc.last_meta_name) == "active_connections");
+    CHECK(String8(tc.last_meta_name) == "active_connections");
 
     plexdb_log_unregister_consumer(test_on_event, &tc);
 }
@@ -190,7 +189,7 @@ TEST_CASE("message with message_id", "[plexdb.log]") {
         message(p, Level::Debug, "SELECT 1", "query.text");
         CHECK(tc.message_count == 1);
         CHECK(tc.last_level == static_cast<uint32_t>(Level::Debug));
-        CHECK(std::string(tc.last_message_id) == "query.text");
+        CHECK(String8(tc.last_message_id) == "query.text");
     }
 
     plexdb_log_unregister_consumer(test_on_event, &tc);

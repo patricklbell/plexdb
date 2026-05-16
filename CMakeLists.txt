@@ -12,5 +12,5 @@ option(OBJSTORE_ENABLE "Build objstore" ON)
 # =============================================================================
 add_subdirectory(core)
 if(OBJSTORE_ENABLE)
-    add_subdirectory(objstore)
+  add_subdirectory(objstore)
 endif()

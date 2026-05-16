@@ -10,7 +10,7 @@ import plexdb.os;
 import plexdb.threads;
 import plexdb.pager;
 import plexdb.pager.test_helpers;
-import plexdb.coroutine;
+import plexdb.aio;
 
 import objstore.engine;
 import objstore.native;
@@ -18,7 +18,6 @@ import objstore.native;
 using namespace plexdb;
 using namespace plexdb::os;
 using namespace objstore;
-using namespace pager_test;
 
 namespace {
     constexpr int NATIVE_TEST_PORT_BASE = 23000;
@@ -69,7 +68,7 @@ namespace {
         }
     };
 
-    Bytes make_startup(int16_t stream = 0) {
+    Bytes create_startup(int16_t stream = 0) {
         Bytes b;
         b.u16(1);
         b.cql_string("CQL_VERSION");
@@ -78,13 +77,13 @@ namespace {
         return b;
     }
 
-    Bytes make_options(int16_t stream = 0) {
+    Bytes create_options(int16_t stream = 0) {
         Bytes b;
         b.prepend_header(0x05, stream);
         return b;
     }
 
-    Bytes make_query(const char* cql, int16_t stream = 0) {
+    Bytes create_query(const char* cql, int16_t stream = 0) {
         Bytes b;
         b.cql_long_string(cql);
         b.u16(0x0001); // consistency = ONE
@@ -168,14 +167,13 @@ TEST_CASE("Native protocol STARTUP handshake", "[objstore.native]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
-    volatile bool should_exit = false;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         server_ready.wait();
@@ -183,19 +181,20 @@ TEST_CASE("Native protocol STARTUP handshake", "[objstore.native]") {
         socket_set_timeout(client, 2000);
         CHECK(socket_connect(client, "127.0.0.1", (U16)port));
 
-        send_frame(client, make_startup());
+        send_frame(client, create_startup());
         auto resp = recv_frame(client);
         CHECK(resp.version == 0x84);
         CHECK(resp.opcode  == 0x02);
         CHECK(resp.body_len == 0);
 
-        should_exit = true;
         os::signal_notify_safe(interrupt_notifier);
     });
 
-    native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
-        server_ready.signal();
-    });
+    os::Poll poll{};
+    aio::EventConsumer file_io_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+    auto signal_consumer = aio::create_notifier_consumer(interrupt_notifier, poll);
+    native::run(port, engine, [&server_ready]() { server_ready.signal(); }, false, file_io_consumer, signal_consumer, poll);
+    destroy_test_pager(pager);
 }
 
 TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[objstore.native]") {
@@ -204,14 +203,13 @@ TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[objstore.native]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
-    volatile bool should_exit = false;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         server_ready.wait();
@@ -219,7 +217,7 @@ TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[objstore.native]") {
         socket_set_timeout(client, 2000);
         CHECK(socket_connect(client, "127.0.0.1", (U16)port));
 
-        send_frame(client, make_options());
+        send_frame(client, create_options());
         auto resp = recv_frame(client);
         CHECK(resp.version == 0x84);
         CHECK(resp.opcode  == 0x06);
@@ -228,13 +226,14 @@ TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[objstore.native]") {
         CHECK(body_contains(resp, "3.0.0"));
         CHECK(body_contains(resp, "COMPRESSION"));
 
-        should_exit = true;
         os::signal_notify_safe(interrupt_notifier);
     });
 
-    native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
-        server_ready.signal();
-    });
+    os::Poll poll{};
+    aio::EventConsumer file_io_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+    auto signal_consumer = aio::create_notifier_consumer(interrupt_notifier, poll);
+    native::run(port, engine, [&server_ready]() { server_ready.signal(); }, false, file_io_consumer, signal_consumer, poll);
+    destroy_test_pager(pager);
 }
 
 TEST_CASE("Native protocol CQL DDL and DML operations", "[objstore.native]") {
@@ -243,14 +242,13 @@ TEST_CASE("Native protocol CQL DDL and DML operations", "[objstore.native]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
-    volatile bool should_exit = false;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         server_ready.wait();
@@ -258,61 +256,62 @@ TEST_CASE("Native protocol CQL DDL and DML operations", "[objstore.native]") {
         socket_set_timeout(client, 2000);
         CHECK(socket_connect(client, "127.0.0.1", (U16)port));
 
-        send_frame(client, make_startup());
+        send_frame(client, create_startup());
         CHECK(recv_frame(client).opcode == 0x02);
 
-        send_frame(client, make_query("CREATE KEYSPACE ks;"));
+        send_frame(client, create_query("CREATE KEYSPACE ks;"));
         auto resp = recv_frame(client);
         CHECK(resp.opcode == 0x08);
         CHECK(result_kind(resp) == 0x0005);
         CHECK(body_contains(resp, "CREATED"));
         CHECK(body_contains(resp, "KEYSPACE"));
 
-        send_frame(client, make_query("CREATE TABLE ks.users (id int PRIMARY KEY, name text, age int);"));
+        send_frame(client, create_query("CREATE TABLE ks.users (id int PRIMARY KEY, name text, age int);"));
         resp = recv_frame(client);
         CHECK(resp.opcode == 0x08);
         CHECK(result_kind(resp) == 0x0005);
         CHECK(body_contains(resp, "TABLE"));
 
-        send_frame(client, make_query("INSERT INTO ks.users (id, name, age) VALUES (1, 'Alice', 30);"));
+        send_frame(client, create_query("INSERT INTO ks.users (id, name, age) VALUES (1, 'Alice', 30);"));
         resp = recv_frame(client);
         CHECK(resp.opcode == 0x08);
         CHECK(result_kind(resp) == 0x0001);
 
-        send_frame(client, make_query("INSERT INTO ks.users (id, name, age) VALUES (2, 'Bob', 25);"));
+        send_frame(client, create_query("INSERT INTO ks.users (id, name, age) VALUES (2, 'Bob', 25);"));
         resp = recv_frame(client);
         CHECK(resp.opcode == 0x08);
         CHECK(result_kind(resp) == 0x0001);
 
-        send_frame(client, make_query("SELECT * FROM ks.users;"));
+        send_frame(client, create_query("SELECT * FROM ks.users;"));
         resp = recv_frame(client);
         CHECK(resp.opcode == 0x08);
         CHECK(result_kind(resp) == 0x0002);
         CHECK(body_contains(resp, "Alice"));
         CHECK(body_contains(resp, "Bob"));
 
-        send_frame(client, make_query("USE ks;"));
+        send_frame(client, create_query("USE ks;"));
         resp = recv_frame(client);
         CHECK(resp.opcode == 0x08);
         CHECK(result_kind(resp) == 0x0003);
 
-        send_frame(client, make_query("DROP TABLE ks.users;"));
+        send_frame(client, create_query("DROP TABLE ks.users;"));
         resp = recv_frame(client);
         CHECK(resp.opcode == 0x08);
         CHECK(result_kind(resp) == 0x0005);
 
-        send_frame(client, make_query("DROP KEYSPACE ks;"));
+        send_frame(client, create_query("DROP KEYSPACE ks;"));
         resp = recv_frame(client);
         CHECK(resp.opcode == 0x08);
         CHECK(result_kind(resp) == 0x0005);
 
-        should_exit = true;
         os::signal_notify_safe(interrupt_notifier);
     });
 
-    native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
-        server_ready.signal();
-    });
+    os::Poll poll{};
+    aio::EventConsumer file_io_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+    auto signal_consumer = aio::create_notifier_consumer(interrupt_notifier, poll);
+    native::run(port, engine, [&server_ready]() { server_ready.signal(); }, false, file_io_consumer, signal_consumer, poll);
+    destroy_test_pager(pager);
 }
 
 TEST_CASE("Native protocol error responses", "[objstore.native]") {
@@ -321,14 +320,13 @@ TEST_CASE("Native protocol error responses", "[objstore.native]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
-    volatile bool should_exit = false;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         server_ready.wait();
@@ -336,25 +334,26 @@ TEST_CASE("Native protocol error responses", "[objstore.native]") {
         socket_set_timeout(client, 2000);
         CHECK(socket_connect(client, "127.0.0.1", (U16)port));
 
-        send_frame(client, make_startup());
+        send_frame(client, create_startup());
         CHECK(recv_frame(client).opcode == 0x02);
 
-        send_frame(client, make_query("SELECT * FROM no_such_ks.no_table;"));
+        send_frame(client, create_query("SELECT * FROM no_such_ks.no_table;"));
         auto resp = recv_frame(client);
         CHECK(resp.opcode == 0x00);
 
-        send_frame(client, make_query("SELECT * FROM missing.tbl;", /*stream=*/42));
+        send_frame(client, create_query("SELECT * FROM missing.tbl;", /*stream=*/42));
         resp = recv_frame(client);
         CHECK(resp.opcode == 0x00);
         CHECK(resp.stream == 42);
 
-        should_exit = true;
         os::signal_notify_safe(interrupt_notifier);
     });
 
-    native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
-        server_ready.signal();
-    });
+    os::Poll poll{};
+    aio::EventConsumer file_io_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+    auto signal_consumer = aio::create_notifier_consumer(interrupt_notifier, poll);
+    native::run(port, engine, [&server_ready]() { server_ready.signal(); }, false, file_io_consumer, signal_consumer, poll);
+    destroy_test_pager(pager);
 }
 
 TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") {
@@ -365,14 +364,13 @@ TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") 
 
     {
         U64 page_size = 4_kb;
-        pager::create(db_file, page_size);
-        auto pager = make_pager(db_file);
-        coroutine::drive(engine::create_database(pager));
-        engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+        auto pager = create_test_pager(db_file, page_size);
+        aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+        engine::Engine engine;
+        aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
 
         os::Notifier interrupt_notifier;
         threads::Semaphore server_ready{0};
-        volatile bool should_exit = false;
 
         threads::Thread client_thread = threads::launch("test-client", [&]() {
             server_ready.wait();
@@ -380,34 +378,35 @@ TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") 
             socket_set_timeout(client, 2000);
             CHECK(socket_connect(client, "127.0.0.1", (U16)port1));
 
-            send_frame(client, make_startup());
+            send_frame(client, create_startup());
             CHECK(recv_frame(client).opcode == 0x02);
 
-            send_frame(client, make_query("CREATE KEYSPACE pks;"));
+            send_frame(client, create_query("CREATE KEYSPACE pks;"));
             CHECK(recv_frame(client).opcode == 0x08);
 
-            send_frame(client, make_query("CREATE TABLE pks.data (id int PRIMARY KEY, val text);"));
+            send_frame(client, create_query("CREATE TABLE pks.data (id int PRIMARY KEY, val text);"));
             CHECK(recv_frame(client).opcode == 0x08);
 
-            send_frame(client, make_query("INSERT INTO pks.data (id, val) VALUES (99, 'persisted');"));
+            send_frame(client, create_query("INSERT INTO pks.data (id, val) VALUES (99, 'persisted');"));
             CHECK(recv_frame(client).opcode == 0x08);
 
-            should_exit = true;
             os::signal_notify_safe(interrupt_notifier);
         });
 
-        native::run(port1, interrupt_notifier, should_exit, engine, [&server_ready]() {
-            server_ready.signal();
-        });
+        os::Poll poll{};
+        aio::EventConsumer file_io_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+        auto signal_consumer = aio::create_notifier_consumer(interrupt_notifier, poll);
+        native::run(port1, engine, [&server_ready]() { server_ready.signal(); }, false, file_io_consumer, signal_consumer, poll);
+        destroy_test_pager(pager);
     }
 
     {
-        auto pager = make_pager(db_file);
-        engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+        auto pager = test_pager(db_file);
+        engine::Engine engine;
+        aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
 
         os::Notifier interrupt_notifier;
         threads::Semaphore server_ready{0};
-        volatile bool should_exit = false;
 
         threads::Thread client_thread = threads::launch("test-client", [&]() {
             server_ready.wait();
@@ -415,22 +414,23 @@ TEST_CASE("Native protocol data persists across restarts", "[objstore.native]") 
             socket_set_timeout(client, 2000);
             CHECK(socket_connect(client, "127.0.0.1", (U16)port2));
 
-            send_frame(client, make_startup());
+            send_frame(client, create_startup());
             CHECK(recv_frame(client).opcode == 0x02);
 
-            send_frame(client, make_query("SELECT * FROM pks.data;"));
+            send_frame(client, create_query("SELECT * FROM pks.data;"));
             auto resp = recv_frame(client);
             CHECK(resp.opcode == 0x08);
             CHECK(result_kind(resp) == 0x0002);
             CHECK(body_contains(resp, "persisted"));
 
-            should_exit = true;
             os::signal_notify_safe(interrupt_notifier);
         });
 
-        native::run(port2, interrupt_notifier, should_exit, engine, [&server_ready]() {
-            server_ready.signal();
-        });
+        os::Poll poll{};
+        aio::EventConsumer file_io_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+        auto signal_consumer = aio::create_notifier_consumer(interrupt_notifier, poll);
+        native::run(port2, engine, [&server_ready]() { server_ready.signal(); }, false, file_io_consumer, signal_consumer, poll);
+        destroy_test_pager(pager);
     }
 }
 
@@ -440,14 +440,13 @@ TEST_CASE("Native protocol system.local virtual view", "[objstore.native]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
-    volatile bool should_exit = false;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         server_ready.wait();
@@ -455,11 +454,11 @@ TEST_CASE("Native protocol system.local virtual view", "[objstore.native]") {
         socket_set_timeout(client, 2000);
         CHECK(socket_connect(client, "127.0.0.1", (U16)port));
 
-        send_frame(client, make_startup());
+        send_frame(client, create_startup());
         CHECK(recv_frame(client).opcode == 0x02);
 
         // system.local
-        send_frame(client, make_query("SELECT * FROM system.local;"));
+        send_frame(client, create_query("SELECT * FROM system.local;"));
         {
             auto resp = recv_frame(client);
             CHECK(resp.opcode == 0x08);
@@ -471,7 +470,7 @@ TEST_CASE("Native protocol system.local virtual view", "[objstore.native]") {
         }
 
         // system.peers
-        send_frame(client, make_query("SELECT * FROM system.peers;"));
+        send_frame(client, create_query("SELECT * FROM system.peers;"));
         {
             auto resp = recv_frame(client);
             CHECK(resp.opcode == 0x08);
@@ -480,20 +479,21 @@ TEST_CASE("Native protocol system.local virtual view", "[objstore.native]") {
         }
 
         // system.peers_v2
-        send_frame(client, make_query("SELECT * FROM system.peers_v2;"));
+        send_frame(client, create_query("SELECT * FROM system.peers_v2;"));
         {
             auto resp = recv_frame(client);
             CHECK(resp.opcode == 0x08);
             CHECK(result_kind(resp) == 0x0002);
         }
 
-        should_exit = true;
         os::signal_notify_safe(interrupt_notifier);
     });
 
-    native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
-        server_ready.signal();
-    });
+    os::Poll poll{};
+    aio::EventConsumer file_io_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+    auto signal_consumer = aio::create_notifier_consumer(interrupt_notifier, poll);
+    native::run(port, engine, [&server_ready]() { server_ready.signal(); }, false, file_io_consumer, signal_consumer, poll);
+    destroy_test_pager(pager);
 }
 
 TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
@@ -502,14 +502,13 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
-    volatile bool should_exit = false;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         server_ready.wait();
@@ -517,17 +516,17 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
         socket_set_timeout(client, 2000);
         CHECK(socket_connect(client, "127.0.0.1", (U16)port));
 
-        send_frame(client, make_startup());
+        send_frame(client, create_startup());
         CHECK(recv_frame(client).opcode == 0x02);
 
-        send_frame(client, make_query("CREATE KEYSPACE test_ks;"));
+        send_frame(client, create_query("CREATE KEYSPACE test_ks;"));
         CHECK(recv_frame(client).opcode == 0x08);
 
-        send_frame(client, make_query("CREATE TABLE test_ks.users (id int PRIMARY KEY, name text);"));
+        send_frame(client, create_query("CREATE TABLE test_ks.users (id int PRIMARY KEY, name text);"));
         CHECK(recv_frame(client).opcode == 0x08);
 
         // system_schema.keyspaces
-        send_frame(client, make_query("SELECT * FROM system_schema.keyspaces;"));
+        send_frame(client, create_query("SELECT * FROM system_schema.keyspaces;"));
         {
             auto resp = recv_frame(client);
             CHECK(resp.opcode == 0x08);
@@ -539,7 +538,7 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
         }
 
         // system_schema.tables
-        send_frame(client, make_query("SELECT * FROM system_schema.tables;"));
+        send_frame(client, create_query("SELECT * FROM system_schema.tables;"));
         {
             auto resp = recv_frame(client);
             CHECK(resp.opcode == 0x08);
@@ -551,7 +550,7 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
         }
 
         // system_schema.columns
-        send_frame(client, make_query("SELECT * FROM system_schema.columns;"));
+        send_frame(client, create_query("SELECT * FROM system_schema.columns;"));
         {
             auto resp = recv_frame(client);
             CHECK(resp.opcode == 0x08);
@@ -562,18 +561,19 @@ TEST_CASE("Native protocol system_schema virtual views", "[objstore.native]") {
             CHECK(body_contains(resp, "clustering"));
         }
 
-        send_frame(client, make_query("DROP TABLE test_ks.users;"));
+        send_frame(client, create_query("DROP TABLE test_ks.users;"));
         CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, make_query("DROP KEYSPACE test_ks;"));
+        send_frame(client, create_query("DROP KEYSPACE test_ks;"));
         CHECK(recv_frame(client).opcode == 0x08);
 
-        should_exit = true;
         os::signal_notify_safe(interrupt_notifier);
     });
 
-    native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
-        server_ready.signal();
-    });
+    os::Poll poll{};
+    aio::EventConsumer file_io_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+    auto signal_consumer = aio::create_notifier_consumer(interrupt_notifier, poll);
+    native::run(port, engine, [&server_ready]() { server_ready.signal(); }, false, file_io_consumer, signal_consumer, poll);
+    destroy_test_pager(pager);
 }
 
 namespace {
@@ -596,14 +596,13 @@ TEST_CASE("Native protocol collection serialization", "[objstore.native]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
-    volatile bool should_exit = false;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         server_ready.wait();
@@ -611,10 +610,10 @@ TEST_CASE("Native protocol collection serialization", "[objstore.native]") {
         socket_set_timeout(client, 2000);
         CHECK(socket_connect(client, "127.0.0.1", (U16)port));
 
-        send_frame(client, make_startup());
+        send_frame(client, create_startup());
         CHECK(recv_frame(client).opcode == 0x02);
 
-        send_frame(client, make_query("SELECT * FROM system.local;"));
+        send_frame(client, create_query("SELECT * FROM system.local;"));
         auto resp = recv_frame(client);
         CHECK(resp.opcode == 0x08);
         CHECK(result_kind(resp) == 0x0002);
@@ -628,13 +627,14 @@ TEST_CASE("Native protocol collection serialization", "[objstore.native]") {
                                          0x00, 0x00, 0x00, 0x01,
                                          0x30}));
 
-        should_exit = true;
         os::signal_notify_safe(interrupt_notifier);
     });
 
-    native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
-        server_ready.signal();
-    });
+    os::Poll poll{};
+    aio::EventConsumer file_io_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+    auto signal_consumer = aio::create_notifier_consumer(interrupt_notifier, poll);
+    native::run(port, engine, [&server_ready]() { server_ready.signal(); }, false, file_io_consumer, signal_consumer, poll);
+    destroy_test_pager(pager);
 }
 
 TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native][!mayfail]") {
@@ -643,14 +643,13 @@ TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native][!mayfail]") 
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
-    volatile bool should_exit = false;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         server_ready.wait();
@@ -658,13 +657,13 @@ TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native][!mayfail]") 
         socket_set_timeout(client, 2000);
         CHECK(socket_connect(client, "127.0.0.1", (U16)port));
 
-        send_frame(client, make_startup());
+        send_frame(client, create_startup());
         CHECK(recv_frame(client).opcode == 0x02);
 
-        send_frame(client, make_query("CREATE KEYSPACE prep_ks;"));
+        send_frame(client, create_query("CREATE KEYSPACE prep_ks;"));
         CHECK(recv_frame(client).opcode == 0x08);
 
-        send_frame(client, make_query("CREATE TABLE prep_ks.data (id int PRIMARY KEY, name text, score double);"));
+        send_frame(client, create_query("CREATE TABLE prep_ks.data (id int PRIMARY KEY, name text, score double);"));
         CHECK(recv_frame(client).opcode == 0x08);
 
         // PREPARE an INSERT statement with bind markers
@@ -713,7 +712,7 @@ TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native][!mayfail]") 
                 CHECK(result_kind(exec_resp) == 0x0001);
             }
 
-            send_frame(client, make_query("SELECT * FROM prep_ks.data;"));
+            send_frame(client, create_query("SELECT * FROM prep_ks.data;"));
             auto select_resp = recv_frame(client);
             CHECK(select_resp.opcode == 0x08);
             CHECK(result_kind(select_resp) == 0x0002);
@@ -768,20 +767,21 @@ TEST_CASE("Native protocol PREPARE and EXECUTE", "[objstore.native][!mayfail]") 
                 CHECK(result_kind(exec_resp) == 0x0001);
             }
 
-            send_frame(client, make_query("SELECT * FROM prep_ks.data WHERE id = 99;"));
+            send_frame(client, create_query("SELECT * FROM prep_ks.data WHERE id = 99;"));
             auto select_resp = recv_frame(client);
             CHECK(select_resp.opcode == 0x08);
             CHECK(result_kind(select_resp) == 0x0002);
             CHECK(body_contains(select_resp, "Bob"));
         }
 
-        should_exit = true;
         os::signal_notify_safe(interrupt_notifier);
     });
 
-    native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
-        server_ready.signal();
-    });
+    os::Poll poll{};
+    aio::EventConsumer file_io_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+    auto signal_consumer = aio::create_notifier_consumer(interrupt_notifier, poll);
+    native::run(port, engine, [&server_ready]() { server_ready.signal(); }, false, file_io_consumer, signal_consumer, poll);
+    destroy_test_pager(pager);
 }
 
 TEST_CASE("Native protocol QUERY with bind values", "[objstore.native][!mayfail]") {
@@ -790,14 +790,13 @@ TEST_CASE("Native protocol QUERY with bind values", "[objstore.native][!mayfail]
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
 
     os::Notifier interrupt_notifier;
     threads::Semaphore server_ready{0};
-    volatile bool should_exit = false;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         server_ready.wait();
@@ -805,12 +804,12 @@ TEST_CASE("Native protocol QUERY with bind values", "[objstore.native][!mayfail]
         socket_set_timeout(client, 2000);
         CHECK(socket_connect(client, "127.0.0.1", (U16)port));
 
-        send_frame(client, make_startup());
+        send_frame(client, create_startup());
         CHECK(recv_frame(client).opcode == 0x02);
 
-        send_frame(client, make_query("CREATE KEYSPACE qbind_ks;"));
+        send_frame(client, create_query("CREATE KEYSPACE qbind_ks;"));
         CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, make_query("CREATE TABLE qbind_ks.items (id int PRIMARY KEY, label text, weight double);"));
+        send_frame(client, create_query("CREATE TABLE qbind_ks.items (id int PRIMARY KEY, label text, weight double);"));
         CHECK(recv_frame(client).opcode == 0x08);
 
         // positional bind values
@@ -833,7 +832,7 @@ TEST_CASE("Native protocol QUERY with bind values", "[objstore.native][!mayfail]
             CHECK(resp.opcode == 0x08);
             CHECK(result_kind(resp) == 0x0001);
 
-            send_frame(client, make_query("SELECT * FROM qbind_ks.items;"));
+            send_frame(client, create_query("SELECT * FROM qbind_ks.items;"));
             auto sel = recv_frame(client);
             CHECK(sel.opcode == 0x08);
             CHECK(result_kind(sel) == 0x0002);
@@ -863,18 +862,19 @@ TEST_CASE("Native protocol QUERY with bind values", "[objstore.native][!mayfail]
             CHECK(resp.opcode == 0x08);
             CHECK(result_kind(resp) == 0x0001);
 
-            send_frame(client, make_query("SELECT * FROM qbind_ks.items WHERE id = 13;"));
+            send_frame(client, create_query("SELECT * FROM qbind_ks.items WHERE id = 13;"));
             auto sel = recv_frame(client);
             CHECK(sel.opcode == 0x08);
             CHECK(result_kind(sel) == 0x0002);
             CHECK(body_contains(sel, "Gizmo"));
         }
 
-        should_exit = true;
         os::signal_notify_safe(interrupt_notifier);
     });
 
-    native::run(port, interrupt_notifier, should_exit, engine, [&server_ready]() {
-        server_ready.signal();
-    });
+    os::Poll poll{};
+    aio::EventConsumer file_io_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+    auto signal_consumer = aio::create_notifier_consumer(interrupt_notifier, poll);
+    native::run(port, engine, [&server_ready]() { server_ready.signal(); }, false, file_io_consumer, signal_consumer, poll);
+    destroy_test_pager(pager);
 }

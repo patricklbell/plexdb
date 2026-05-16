@@ -38,7 +38,8 @@ export namespace plexdb::uring {
     // - IORING_OP_CLOSE: close operation support
     // - Multishot accept support (kernel 5.19+)
     struct Ring {
-        os::Handle server = os::zero_handle();
+        os::Handle server   = os::zero_handle();
+        os::Handle event_fd = os::zero_handle(); // readable when CQEs are available (for epoll integration)
         void* ring_vptr = nullptr;
         U8* buffers = nullptr;
         void* iovecs_vptr = nullptr;
@@ -157,6 +158,10 @@ export namespace plexdb::uring {
     };
 
     Stats get_stats(const Ring& ring);
+
+    // Reads from the ring's event_fd to clear its "readable" state.
+    // Returns true if events were pending. Must be called after epoll fires on event_fd.
+    bool ring_drain_event_fd(Ring& ring);
 
     // ========================================================================
     // buffer pool

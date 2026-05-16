@@ -13,3 +13,8 @@ endif()
 if(NOT DEFINED PLEXDB_ENABLE_TRACY_PROFILER)
   option(PLEXDB_ENABLE_TRACY_PROFILER "Enable collection of tracy profiling data (only enable if you know what this means)" OFF)
 endif()
+# @todo detect debugger
+# @todo investigate how gdb interferes with these
+if(NOT DEFINED PLEXDB_ENABLE_USER_KILL_SIGNAL)
+  option(PLEXDB_ENABLE_USER_KILL_SIGNAL "Enable treating SIGUSR1 as a kill signal and ignoring SIGNINT and SIGTERM (can help when attaching debuggers)" OFF)
+endif()

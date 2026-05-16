@@ -10,6 +10,7 @@ import plexdb.base;
 import plexdb.coroutine;
 import plexdb.os;
 import plexdb.threads;
+import plexdb.aio;
 import plexdb.os.uring;
 import objstore.tcp;
 
@@ -56,7 +57,6 @@ TEST_CASE("receives request", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
     threads::Semaphore done{0};
-    volatile bool should_exit = false;
     AutoString8 received;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
@@ -66,20 +66,21 @@ TEST_CASE("receives request", "[objstore.tcp]") {
             socket_send_all(client, "HELLO", 5);
         }
         done.wait();
-        should_exit = true;
         server.stop();
     });
 
-    Listener listener{server.socket, try_uring};
-    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+    os::Poll poll{};
+    auto handler = [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
         auto buf = co_await tcp::acquire(req);
         CHECK(co_await tcp::read(req, &buf) == Error::None);
-        received = AutoString8{buf.view.ptr, buf.length};
+        received = AutoString8{buf.view.ptr, buf.view.length};
         tcp::release(req, &buf);
 
         done.signal();
-        co_await tcp::close(req);
-    }, server.interrupt, should_exit);
+    };
+    auto tcp = create_tcp_server(server.socket, &handler, poll, try_uring);
+    auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
+    aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 
     REQUIRE(received == "HELLO");
 }
@@ -88,7 +89,6 @@ TEST_CASE("receives large request", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
     threads::Semaphore done{0};
-    volatile bool should_exit = false;
     U64 total_received = 0;
     constexpr U64 DATA_SIZE = 32 * 1024;
 
@@ -101,23 +101,24 @@ TEST_CASE("receives large request", "[objstore.tcp]") {
             socket_send_all(client, data.data(), data.size());
         }
         done.wait();
-        should_exit = true;
         server.stop();
     });
 
-    Listener listener{server.socket};
-    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+    os::Poll poll{};
+    auto handler = [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
         U64 total = 0;
         while (total < DATA_SIZE) {
             auto buf = co_await tcp::acquire(req);
             CHECK(co_await tcp::read(req, &buf) == Error::None);
-            total += buf.length;
+            total += buf.view.length;
             tcp::release(req, &buf);
         }
         total_received = total;
         done.signal();
-        co_await tcp::close(req);
-    }, server.interrupt, should_exit);
+    };
+    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
+    aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 
     REQUIRE(total_received >= DATA_SIZE);
 }
@@ -126,7 +127,6 @@ TEST_CASE("handles multiple sequential connections", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
     threads::Semaphore connection_sem{0};
-    volatile bool should_exit = false;
     std::atomic<int> connection_count{0};
     constexpr int NUM_CONNECTIONS = 5;
 
@@ -134,25 +134,25 @@ TEST_CASE("handles multiple sequential connections", "[objstore.tcp]") {
         for (int i = 0; i < NUM_CONNECTIONS; i++) {
             Socket client{socket_open()};
             CHECK(socket_connect(client, "127.0.0.1", server.port));
-            char msg[16]; snprintf(msg, sizeof(msg), "MSG%d", i);
-            socket_send_all(client, msg, (int)strlen(msg));
+            auto msg = fmt("MSG%d", i);
+            socket_send_all(client, msg, msg.length);
             connection_sem.wait();
         }
-        should_exit = true;
         server.stop();
     });
 
-    Listener listener{server.socket};
-    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+    os::Poll poll{};
+    auto handler = [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
         auto buf = co_await tcp::acquire(req);
-        
         CHECK(co_await tcp::read(req, &buf) == Error::None);
         tcp::release(req, &buf);
 
         connection_count++;
         connection_sem.signal();
-        co_await tcp::close(req);
-    }, server.interrupt, should_exit);
+    };
+    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
+    aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 
     REQUIRE(connection_count == NUM_CONNECTIONS);
 }
@@ -161,7 +161,6 @@ TEST_CASE("handles concurrent connections", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
     threads::Semaphore request_sem{0};
-    volatile bool should_exit = false;
     std::atomic<int> request_count{0};
     constexpr int NUM_CLIENTS = 4;
 
@@ -178,21 +177,21 @@ TEST_CASE("handles concurrent connections", "[objstore.tcp]") {
         }
         for (auto& t : clients) t = {};
         for (int i = 0; i < NUM_CLIENTS; i++) request_sem.wait();
-        should_exit = true;
         server.stop();
     });
 
-    Listener listener{server.socket};
-    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+    os::Poll poll{};
+    auto handler = [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
         auto buf = co_await tcp::acquire(req);
-        
         CHECK(co_await tcp::read(req, &buf) == Error::None);
         tcp::release(req, &buf);
 
         request_count++;
         request_sem.signal();
-        co_await tcp::close(req);
-    }, server.interrupt, should_exit);
+    };
+    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
+    aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 
     REQUIRE(request_count == NUM_CLIENTS);
 }
@@ -201,32 +200,30 @@ TEST_CASE("handles client disconnect", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
     threads::Semaphore done{0};
-    volatile bool should_exit = false;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         { Socket client{socket_open()}; CHECK(socket_connect(client, "127.0.0.1", server.port)); }
         done.wait();
-        should_exit = true;
         server.stop();
     });
 
-    Listener listener{server.socket};
-    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+    os::Poll poll{};
+    auto handler = [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
         auto buf = co_await tcp::acquire(req);
-        
         CHECK(co_await tcp::read(req, &buf) == Error::ConnectionClosed);
         tcp::release(req, &buf);
 
         done.signal();
-        co_await tcp::close(req);
-    }, server.interrupt, should_exit);
+    };
+    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
+    aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 }
 
 TEST_CASE("tracks statistics correctly", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
     threads::Semaphore done{0};
-    volatile bool should_exit = false;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         {
@@ -235,30 +232,29 @@ TEST_CASE("tracks statistics correctly", "[objstore.tcp]") {
             socket_send_all(client, "TESTDATA", 8);
         }
         done.wait();
-        should_exit = true;
         server.stop();
     });
 
-    Listener listener{server.socket};
-    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+    os::Poll poll{};
+    auto handler = [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
         auto buf = co_await tcp::acquire(req);
-        
         CHECK(co_await tcp::read(req, &buf) == Error::None);
         tcp::release(req, &buf);
 
         done.signal();
-        co_await tcp::close(req);
-    }, server.interrupt, should_exit);
+    };
+    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
+    aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 
-    REQUIRE(listener.stats.total_connections >= 1);
-    REQUIRE(listener.stats.total_bytes_read >= 8);
+    REQUIRE(tcp.stats->total_connections >= 1);
+    REQUIRE(tcp.stats->total_bytes_read >= 8);
 }
 
 TEST_CASE("binary data with null bytes", "[objstore.tcp]") {
     TestServer server(get_unique_port());
 
     threads::Semaphore done{0};
-    volatile bool should_exit = false;
     std::vector<U8> received;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
@@ -269,21 +265,21 @@ TEST_CASE("binary data with null bytes", "[objstore.tcp]") {
             socket_send_all(client, binary_data, 10);
         }
         done.wait();
-        should_exit = true;
         server.stop();
     });
 
-    Listener listener{server.socket};
-    listen(listener, [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
+    os::Poll poll{};
+    auto handler = [&](Request req) -> coroutine::Task<void, coroutine::Start::Eager> {
         auto buf = co_await tcp::acquire(req);
-        
         CHECK(co_await tcp::read(req, &buf) == Error::None);
         received.assign(buf.view.ptr, buf.view.ptr + buf.length);
         tcp::release(req, &buf);
 
         done.signal();
-        co_await tcp::close(req);
-    }, server.interrupt, should_exit);
+    };
+    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
+    aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 
     REQUIRE(received.size() >= 10);
     REQUIRE(received[0] == 0x01);

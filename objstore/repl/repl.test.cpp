@@ -13,7 +13,7 @@ import plexdb.base;
 import plexdb.os;
 import plexdb.pager;
 import plexdb.pager.test_helpers;
-import plexdb.coroutine;
+import plexdb.aio;
 
 import objstore.engine;
 import objstore.repl;
@@ -21,7 +21,6 @@ import objstore.repl;
 using namespace plexdb;
 using namespace plexdb::os;
 using namespace objstore;
-using namespace pager_test;
 
 namespace {
     static Handle fd_to_handle(int fd) { return Handle{.u32={static_cast<U32>(fd)}}; }
@@ -79,16 +78,17 @@ TEST_CASE("REPL create keyspace and table", "[objstore.repl][!mayfail]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine eng = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    drive_test_pager(engine::create_database(pager));
+    engine::Engine eng;
+    drive_test_pager(engine::init(eng, &pager));
 
     const char* input =
         "CREATE KEYSPACE test WITH replication = 'SimpleStrategy';\n"
         "CREATE TABLE test.items (id int PRIMARY KEY, name text);\n";
 
     std::string out = run_repl_batch(eng, input);
+    destroy_test_pager(pager);
     REQUIRE(contains(out, "SUCCESS"));
 }
 
@@ -97,10 +97,10 @@ TEST_CASE("REPL insert and select", "[objstore.repl]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine eng = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    drive_test_pager(engine::create_database(pager));
+    engine::Engine eng;
+    drive_test_pager(engine::init(eng, &pager));
 
     const char* input =
         "CREATE KEYSPACE ks;\n"
@@ -109,6 +109,7 @@ TEST_CASE("REPL insert and select", "[objstore.repl]") {
         "SELECT * FROM ks.t;\n";
 
     std::string out = run_repl_batch(eng, input);
+    destroy_test_pager(pager);
     REQUIRE(contains(out, "hello"));
     REQUIRE(contains(out, "1 rows"));
 }
@@ -118,12 +119,13 @@ TEST_CASE("REPL reports parse error gracefully", "[objstore.repl]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine eng = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    drive_test_pager(engine::create_database(pager));
+    engine::Engine eng;
+    drive_test_pager(engine::init(eng, &pager));
 
     std::string out = run_repl_batch(eng, "NOT VALID CQL;\n");
+    destroy_test_pager(pager);
     REQUIRE(contains(out, "ERROR"));
 }
 
@@ -132,10 +134,10 @@ TEST_CASE("REPL displays column headers on SELECT", "[objstore.repl]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
-    pager::create(db_file, page_size);
-    auto pager = make_pager(db_file);
-    coroutine::drive(engine::create_database(pager));
-    engine::Engine eng = coroutine::drive(engine::Engine::create(&pager));
+    auto pager = create_test_pager(db_file, page_size);
+    drive_test_pager(engine::create_database(pager));
+    engine::Engine eng;
+    drive_test_pager(engine::init(eng, &pager));
 
     const char* input =
         "CREATE KEYSPACE ks;\n"
@@ -144,6 +146,7 @@ TEST_CASE("REPL displays column headers on SELECT", "[objstore.repl]") {
         "SELECT * FROM ks.t;\n";
 
     std::string out = run_repl_batch(eng, input);
+    destroy_test_pager(pager);
     REQUIRE(contains(out, "id"));
     REQUIRE(contains(out, "score"));
     REQUIRE(contains(out, "42"));

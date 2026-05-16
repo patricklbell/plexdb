@@ -563,7 +563,7 @@ export namespace plexdb {
     // occupancy array
     // ========================================================================
     template<typename T, U64 element_count, typename O = U64>
-        requires Unsigned<O>
+        requires IsUnsigned<O>
     struct OccupancyArray {
         Array<T, element_count> array;
 
@@ -623,7 +623,8 @@ export namespace plexdb {
 
     // ========================================================================
     // fixed slot map
-    // @warn uses 0 as a sentinel value
+    // @warn does not call destructor on value
+    // @warn uses 0 as the default sentinel value
     // ========================================================================
     template<typename K, typename V, U64 C, K S = {}>
     struct MapFixedSentinel {

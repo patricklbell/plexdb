@@ -9,7 +9,7 @@ Pre-built binaries and the core static library are attached to each [GitHub rele
 | Asset | Description |
 |---|---|
 | `objstore` | Server executable (Linux x86-64) |
-| `core-linux-x64.tar.gz` | Static library + C++23 module sources |
+| `plexb-core-linux-x64.tar.gz` | Static library + C++23 module sources |
 | `libobjstore_log_otel.so` | OTLP/gRPC metrics plugin (load via `LD_PRELOAD`) |
 
 ## Usage

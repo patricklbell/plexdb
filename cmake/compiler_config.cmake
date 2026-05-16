@@ -8,10 +8,12 @@ if(NOT TARGET plexdb::compiler_config)
 
         $<$<CXX_COMPILER_ID:GNU>:-Wall>
         $<$<CXX_COMPILER_ID:GNU>:-Wextra>
+        $<$<CXX_COMPILER_ID:GNU>:-Werror>
         $<$<CXX_COMPILER_ID:GNU>:-fno-rtti>
 
         $<$<CXX_COMPILER_ID:Clang>:-Wall>
         $<$<CXX_COMPILER_ID:Clang>:-Wextra>
+        $<$<CXX_COMPILER_ID:Clang>:-Werror>
         $<$<CXX_COMPILER_ID:Clang>:-Wdangling>
         $<$<CXX_COMPILER_ID:Clang>:-fno-rtti>
     )
@@ -29,6 +31,7 @@ if(NOT TARGET plexdb::compiler_config)
   target_compile_definitions(plexdb_compiler_config INTERFACE
         $<$<BOOL:${PLEXDB_DEBUG}>:PLEXDB_DEBUG=1>
         $<$<BOOL:${PLEXDB_ENABLE_LOGGING}>:PLEXDB_ENABLE_LOGGING=1>
+        $<$<BOOL:${PLEXDB_ENABLE_USER_KILL_SIGNAL}>:PLEXDB_ENABLE_USER_KILL_SIGNAL=1>
     )
   target_link_options(plexdb_compiler_config INTERFACE
         $<$<BOOL:${PLEXDB_ENABLE_LOGGING}>:-rdynamic>

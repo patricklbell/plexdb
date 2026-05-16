@@ -47,7 +47,7 @@ export namespace plexdb::argparse {
         char option_values[MAX_OPTIONS][MAX_VALUE_LEN];
     };
 
-    Parser make_parser(const char* prog_name, const char* description = "");
+    Parser create_parser(const char* prog_name, const char* description = "");
     U64    add_positional(Parser& parser, const char* name, const char* description = "");
     U64    add_flag(Parser& parser, const char* long_name, const char* short_name = "", const char* description = "");
     U64    add_option(Parser& parser, const char* long_name, const char* short_name = "", const char* description = "", const char* default_value = "");

@@ -31,19 +31,17 @@ export namespace objstore::tcp {
         U64 idx;
     };
 
-    using AcquireRWBufferFunctor = AutoFunctor<coroutine::Task<RWBuffer>(Connection*)>;
-    using ReleaseRWBufferFunctor = AutoFunctor<void(Connection*,const RWBuffer*)>;
-    using AsyncReadFunctor = AutoFunctor<coroutine::Task<Error>(Connection*,RWBuffer*)>;
-    using AsyncWriteFunctor = AutoFunctor<coroutine::Task<Error>(Connection*,const RWBuffer*)>;
-    using AsyncCloseFunctor = AutoFunctor<coroutine::Task<>(Connection*)>;
+    using AcquireBufferFunctor   = AutoFunctor<coroutine::Task<RWBuffer>(Connection*)>;
+    using ReleaseBufferFunctor   = AutoFunctor<void(Connection*,const RWBuffer*)>;
+    using ReadToBufferFunctor    = AutoFunctor<coroutine::Task<Error>(Connection*,RWBuffer*)>;
+    using WriteFromBufferFunctor = AutoFunctor<coroutine::Task<Error>(Connection*,const RWBuffer*)>;
 
     struct Request {
         Connection* connection;
-        AcquireRWBufferFunctor* acquire;
-        ReleaseRWBufferFunctor* release;
-        AsyncReadFunctor* read;
-        AsyncWriteFunctor* write;
-        AsyncCloseFunctor* close;
+        AcquireBufferFunctor* acquire;
+        ReleaseBufferFunctor* release;
+        ReadToBufferFunctor* read;
+        WriteFromBufferFunctor* write;
     };
 
     struct Connection {
@@ -58,10 +56,9 @@ export namespace objstore::tcp {
 
     inline coroutine::Task<RWBuffer> acquire(const Request& req) { co_return co_await (*req.acquire)(req.connection); }
     inline void release(const Request& req, const RWBuffer* buffer) { return (*req.release)(req.connection, buffer); }
-    coroutine::Task<Error> read(const Request& req, RWBuffer* buffer) { co_return co_await (*req.read)(req.connection, buffer); }
-    coroutine::Task<Error> write(const Request& req, const RWBuffer* buffer) { co_return co_await (*req.write)(req.connection, buffer); }
-    coroutine::Task<> close(const Request& req) { co_return co_await (*req.close)(req.connection); }
-    
+    inline coroutine::Task<Error> read(const Request& req, RWBuffer* buffer) { co_return co_await (*req.read)(req.connection, buffer); }
+    inline coroutine::Task<Error> write(const Request& req, const RWBuffer* buffer) { co_return co_await (*req.write)(req.connection, buffer); }
+
     template<typename F>
     concept ConnectionHandler = requires(F f, Request connection) {
         { f(connection) } -> SameAs<coroutine::Task<void, coroutine::Start::Eager>>;

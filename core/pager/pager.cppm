@@ -1,6 +1,6 @@
 export module plexdb.pager;
 
-export import plexdb.pager.wal;
+import plexdb.pager.wal;
 import plexdb.pager.types;
 
 import plexdb.base;
@@ -15,17 +15,14 @@ export namespace plexdb::pager {
     // @todo lru
     // @todo experiment with segmented LFU or CLOCK
     struct Pager {
+        aio::FileIOContext* file_io_ctx = nullptr;
+
         static constexpr U64 alignment = sizeof(U64);
         os::Handle file = os::zero_handle();
         U64 base_offset = 0;
-        
-        aio::FileIOContext* file_io_ctx = nullptr;
 
         Header header = {};
         bool header_in_write_set = false;
-
-        // @todo
-        U64 root_page = 2;
 
         // pager flushes writes to disk when cache read collision occurs. @profile
         // a collision requires that the page is in the write set, otherwise the
@@ -44,10 +41,7 @@ export namespace plexdb::pager {
         Wal wal;
 
         Pager() = default;
-        Pager(os::Handle file, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
-        Pager(os::Handle file, const Header& header, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
-        Pager(os::Handle file, os::Handle wal_file, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
-        Pager(os::Handle file, os::Handle wal_file, const Header& header, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
+        Pager(aio::FileIOContext* file_io_ctx, os::Handle file, const Header& header, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
         Pager(Pager&& other);
         ~Pager();
 
@@ -59,9 +53,18 @@ export namespace plexdb::pager {
         operator bool() const { return !os::is_zero_handle(this->file); }
     };
 
-    Header create(os::Handle file, U64 page_size, U64 base_offset=0);
+    coroutine::Task<Header> create(aio::FileIOContext& file_io_ctx, os::Handle file, U64 page_size, U64 base_offset=0);
 
-    void set_root(Pager& pager, U64 page);
+    // open: reads header from disk and optionally recovers WAL
+    coroutine::Task<> init(Pager& pager, aio::FileIOContext* file_io_ctx, os::Handle file, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
+    coroutine::Task<> init(Pager& pager, aio::FileIOContext* file_io_ctx, os::Handle file, os::Handle wal_file, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
+    // open with known header: async only because it creates the WAL header on disk
+    coroutine::Task<> init(Pager& pager, aio::FileIOContext* file_io_ctx, os::Handle file, os::Handle wal_file, const Header& header, U64 base_offset=0, U64 read_cache=DEFAULT_READ_CACHE);
+
+    // flush pending writes and mark pager as closed (destructor then only frees memory)
+    coroutine::Task<> destroy(Pager& pager);
+
+    coroutine::Task<> set_root(Pager& pager, U64 page);
 
     coroutine::Task<const U8*> rpage(Pager& pager, U64 idx);
     coroutine::Task<U8*> rwpage(Pager& pager, U64 idx);

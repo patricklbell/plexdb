@@ -99,11 +99,13 @@ target_sources(plexdb_core_modules
             btree/btree.types.cppm
             coroutine/base.cppm
             coroutine/coroutine.cppm
+            coroutine/debug.cppm
             coroutine/extra.cppm
             dynamic/containers.cppm
             dynamic/function.cppm
             dynamic/tagged_union.cppm
             log/log.cppm
+            os/aio.cppm
             os/core.cppm
             os/os.cppm
             os/signal.cppm
@@ -127,6 +129,7 @@ target_link_libraries(plexdb_core_modules
     PRIVATE
         plexdb::compiler_config
         plexdb::profiling
+        stdc++exp # std::stacktrace may require linking experimental c++ library
 )
 
 # Static library
@@ -163,6 +166,7 @@ target_sources(plexdb_core
         btree/btree.detail.cpp
         btree/btree.node.cpp
         log/log.cpp
+        os/aio.cpp
         os/core.cpp
         os/signal.cpp
         os/socket.cpp
@@ -199,7 +203,7 @@ if(PLEXDB_ENABLE_TESTS)
     FetchContent_MakeAvailable(Catch2)
   endif()
 
-  add_executable(plexdb_core_tests)
+  add_executable(core_tests)
 
   target_compile_definitions(plexdb_core PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${CORE_ENABLE_IO_URING}>,1,0>)
 
@@ -209,7 +213,7 @@ if(PLEXDB_ENABLE_TESTS)
   file(GLOB_RECURSE CORE_TEST_MODULE_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cppm"
     )
-  target_sources(plexdb_core_tests
+  target_sources(core_tests
         PRIVATE
             ${CORE_TEST_SOURCES}
         PUBLIC
@@ -219,16 +223,16 @@ if(PLEXDB_ENABLE_TESTS)
                 ${CORE_TEST_MODULE_SOURCES}
     )
 
-  target_include_directories(plexdb_core_tests
+  target_include_directories(core_tests
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/log
             ${CMAKE_CURRENT_SOURCE_DIR}/test
     )
 
-  target_link_libraries(plexdb_core_tests
+  target_link_libraries(core_tests
         PRIVATE
             plexdb::compiler_config
-            stdc++exp # std::stacktrace may require link experimental c++ library
+            stdc++exp # std::stacktrace may require linking experimental c++ library
             plexdb::core
             Catch2::Catch2WithMain
     )

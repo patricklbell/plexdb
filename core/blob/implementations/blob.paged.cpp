@@ -10,10 +10,9 @@ import plexdb.coroutine;
 import plexdb.blob.paged.detail;
 
 namespace plexdb::blob {
-    coroutine::Task<BlobStaticPaged> BlobStaticPaged::load(Pager* in_pager, U64 in_page, U64 in_size) {
+    coroutine::Task<> load(BlobStaticPaged& blob, Pager* in_pager, U64 in_page, U64 in_size) {
         const auto& page_size = in_pager->header.page_size;
 
-        BlobStaticPaged blob{};
         blob.pager = in_pager;
         blob.size_bytes = in_size;
 
@@ -23,7 +22,7 @@ namespace plexdb::blob {
             U64* pages_ptr = reinterpret_cast<U64*>(os::allocate(sizeof(U64)));
             pages_ptr[0] = in_page;
             blob.pages = TArrayView<U64,U64>(pages_ptr, 1);
-            co_return move(blob);
+            co_return;
         }
 
         // @note first header page is implicit
@@ -55,8 +54,6 @@ namespace plexdb::blob {
 
             blob.pages = TArrayView(pages_ptr, pages_count);
         }
-
-        co_return move(blob);
     }
 
     BlobStaticPaged::BlobStaticPaged(BlobStaticPaged&& other):
@@ -91,7 +88,7 @@ namespace plexdb::blob {
 
     coroutine::Task<U64> create_paged_static(Pager& pager, U64 size) {
         const auto& page_size = pager.header.page_size;
-        assert_true(page_size >= 2*sizeof(U64), "enough space in page");
+        assert_true(page_size >= 2*sizeof(U64), "not enough space in page to fit blob header");
 
         if (size <= page_size) {
             co_return co_await pager::new_page(pager);
@@ -133,10 +130,9 @@ namespace plexdb::blob {
         co_return root;
     }
 
-    coroutine::Task<BlobDynamicPaged> BlobDynamicPaged::load(Pager* in_pager, U64 in_page) {
+    coroutine::Task<> load(BlobDynamicPaged& blob, Pager* in_pager, U64 in_page) {
         const auto& page_size = in_pager->header.page_size;
 
-        BlobDynamicPaged blob{};
         blob.pager = in_pager;
 
         const U64 entry_count_per_page = page_size/sizeof(U64) - 1;
@@ -162,7 +158,7 @@ namespace plexdb::blob {
         // @note done if no headers to traverse
         if (header_page_count == 0) {
             blob.header_pages = TArrayView<U64, U64>();
-            co_return move(blob);
+            co_return;
         }
 
         blob.header_pages = TArrayView(&pages_ptr[data_page_count], 0_u64);
@@ -188,8 +184,6 @@ namespace plexdb::blob {
 
         assert_true(blob.header_pages.length == header_page_count, "header page view matches calculation");
         assert_true(blob.data_pages.length == data_page_count, "data page view matches calculation");
-
-        co_return move(blob);
     }
 
     BlobDynamicPaged::BlobDynamicPaged(BlobDynamicPaged&& other):
@@ -230,7 +224,8 @@ namespace plexdb::blob {
 
         // @todo @perf avoid allocations and unnecessary reads
         if (initial_size != 0) {
-            BlobDynamicPaged blob = co_await BlobDynamicPaged::load(&pager, page);
+            BlobDynamicPaged blob;
+            co_await load(blob, &pager, page);
             co_await resize_impl(blob, initial_size);
         }
 

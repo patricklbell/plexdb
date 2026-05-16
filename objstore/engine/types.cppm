@@ -72,23 +72,23 @@ export namespace objstore {
     }
 
 
-    constexpr Type make_basic(BasicType d) {
+    constexpr Type create_basic(BasicType d) {
         return Type{.ctype = CollectionType::basic, .basic = {.value_dtype = d}};
     }
 
-    constexpr Type make_list(BasicType el) {
+    constexpr Type create_list(BasicType el) {
         return Type{.ctype = CollectionType::list, .list = {.element_dtype = el}};
     }
 
-    constexpr Type make_set(BasicType key) {
+    constexpr Type create_set(BasicType key) {
         return Type{.ctype = CollectionType::set, .set = {.key_dtype = key}};
     }
 
-    constexpr Type make_map(BasicType key, BasicType val) {
+    constexpr Type create_map(BasicType key, BasicType val) {
         return Type{.ctype = CollectionType::map, .map = {.key_dtype = key, .value_dtype = val}};
     }
 
-    constexpr Type make_vector(BasicType el, U64 count) {
+    constexpr Type create_vector(BasicType el, U64 count) {
         return Type{.ctype = CollectionType::vector, .vector = {.element_dtype = el, .count = count}};
     }
 }

@@ -356,9 +356,16 @@ export namespace plexdb::btree {
             }
         }
 
-        n_root->key_count = 0;
-        h.size = 0;
-        h.depth = 0;
+        NodeRef old_root_ref = h.root;
+        NodeRef new_root_ref = co_await create_leaf(t_truncate);
+        Node* new_root = co_await update_node(t_truncate, new_root_ref);
+        init_node(new_root);
+        auto& h_write = *(co_await update_header(t_truncate));
+        h_write.root   = new_root_ref;
+        h_write.leaves = new_root_ref;
+        h_write.size   = 0;
+        h_write.depth  = 0;
+        co_await delete_node(t_truncate, old_root_ref);
     }
 
     // ========================================================================

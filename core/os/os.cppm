@@ -1,6 +1,7 @@
 export module plexdb.os;
 
 export import plexdb.dynamic.containers;
+export import plexdb.os.aio;
 export import plexdb.os.core;
 export import plexdb.os.function;
 export import plexdb.os.socket;

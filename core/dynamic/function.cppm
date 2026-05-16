@@ -78,11 +78,13 @@ export namespace plexdb {
 
         Ret operator()(Args... args) {
             assert_true(this->data != nullptr && this->vtable != nullptr, "called null function");
+            if constexpr (SameAs<Ret, void>) { if (!this->data || !this->vtable) return; }
             return this->vtable->invoke(this->data, forward<Args>(args)...);
         }
 
         Ret operator()(Args... args) const {
             assert_true(this->data != nullptr && this->vtable != nullptr, "called null function");
+            if constexpr (SameAs<Ret, void>) { if (!this->data || !this->vtable) return; }
             return this->vtable->invoke(const_cast<void*>(this->data), forward<Args>(args)...);
         }
 

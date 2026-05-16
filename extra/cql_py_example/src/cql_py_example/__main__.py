@@ -56,7 +56,7 @@ def main():
         VALUES (?, ?, ?, ?, ?, ?)
         """)
 
-        for t in np.arange(0, 6000, 0.1):
+        for t in np.arange(0, 600, 0.1):
             data = generate_telemetry(t)
 
             session.execute(

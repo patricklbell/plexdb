@@ -1,13 +1,19 @@
 #include "macros.h"
 #include <profiling/tracy.hpp>
 #include <coroutine>
+#include <signal.h>
 
 import plexdb.base;
 import plexdb.coroutine;
 import plexdb.os;
+import plexdb.os.uring;
+import plexdb.tagged_union;
 import plexdb.pager;
+import plexdb.pager.types;
 import plexdb.argparse;
 import plexdb.threads;
+import plexdb.arena;
+import plexdb.aio;
 
 import objstore.engine;
 import objstore.repl;
@@ -16,33 +22,23 @@ import objstore.native;
 using namespace objstore;
 using namespace plexdb;
 
-void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-    println("Assert failed \"", msg, "\" at ", function_name, " in ", file_name, ":", to_str(line_number));
-
-    #if PLEXDB_DEBUG
-        PLEXDB_TRAP;
-    #else
-        os::process_exit(1);
-    #endif
-}
-
 os::Notifier g_signal_notifier{};
-volatile bool g_should_stop = false;
+static volatile sig_atomic_t g_signal_count = 0;
 
-void signal_handler(int) {
-    g_should_stop = true;
-    os::signal_notify_safe(g_signal_notifier);
-}
+static void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
+static void signal_handler(int);
+static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(bool force_sync, TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll);
 
 int main(int argc, char* argv[]) {
     plexdb::threads::Context main_thread_ctx{.arenas={},.is_main=true};
     plexdb::threads::equip(&main_thread_ctx);
 
     os::signal_ignore_pipe();
+    os::signal_ignore_reload();
     set_assert_handler(assert_handler);
     os::signal_register_kill(signal_handler);
 
-    auto arg_parser = argparse::make_parser("objstore", "Object store database server");
+    auto arg_parser = argparse::create_parser("objstore", "Object store database server");
 
     U64 db_path_arg  = argparse::add_positional(arg_parser, "db_path", "Path to the database file");
     U64 port_arg     = argparse::add_option(arg_parser, "--port", "-p", "TCP port to listen on", "9042");
@@ -73,46 +69,114 @@ int main(int argc, char* argv[]) {
 
     String8 pid_file_path = "objstore.pid";
     {
-        os::File pid_file{os::file_open(pid_file_path)};
+        os::File pid_file{os::file_open(pid_file_path, os::AccessFlags(os::READ|os::WRITE|os::TRUNCATE))};
         AutoString8 pid_str = to_str(os::get_process_info()->pid);
         os::file_write(pid_file, {.start=0,.end=pid_str.length}, pid_str.c_str);
     }
 
-    U64 page_size = 4_kb;
-    os::File db_file{os::file_open(db_path)};
-    bool db_create = os::file_get_stats(db_file).byte_count == 0;
-
-    if (db_create) {
-        println("created new database \"", db_path, "\"");
-        pager::create(db_file, page_size);
-    }
-    Pager pager;
-
-    Optional<os::File> opt_wal_file;
-    if (no_wal) {
-        pager = Pager{db_file};
-    } else {
-        opt_wal_file = os::File{os::file_open(db_path + ".wal"_as)};
-        pager = Pager{db_file, static_cast<os::Handle>(*opt_wal_file)};
-    }
-
+    os::Poll io_poll{};
     {
+        threads::Scope scratch = threads::scratch();
+
+        TaggedUnion<uring::Ring, os::AIOContext> file_io_resource;
+        auto [file_io_ctx, file_io_consumer] = create_file_io_context(run_repl, file_io_resource, *scratch.arena, io_poll);
+
+        U64 page_size = 4_kb;
+        os::File db_file{os::file_open(db_path)};
+        bool db_create = os::file_get_stats(db_file).byte_count == 0;
+
+        Optional<os::File> opt_wal_file;
+        Pager pager;
         if (db_create) {
-            coroutine::drive(engine::create_database(pager));
+            pager::Header header = aio::drive(pager::create(file_io_ctx, db_file, page_size), file_io_consumer, io_poll);
+            if (no_wal) {
+                pager = Pager{&file_io_ctx, static_cast<os::Handle>(db_file), header};
+            } else {
+                opt_wal_file = os::File{os::file_open(db_path + ".wal"_as)};
+                aio::drive(pager::init(pager, &file_io_ctx, db_file, static_cast<os::Handle>(*opt_wal_file), header), file_io_consumer, io_poll);
+            }
+            aio::drive(engine::create_database(pager), file_io_consumer, io_poll);
+            println("created new database \"", db_path, "\"");
+        } else {
+            if (no_wal) {
+                aio::drive(pager::init(pager, &file_io_ctx, db_file), file_io_consumer, io_poll);
+            } else {
+                opt_wal_file = os::File{os::file_open(db_path + ".wal"_as)};
+                aio::drive(pager::init(pager, &file_io_ctx, db_file, static_cast<os::Handle>(*opt_wal_file)), file_io_consumer, io_poll);
+            }
         }
-        engine::Engine engine = coroutine::drive(engine::Engine::create(&pager));
+
+        engine::Engine engine;
+        aio::drive(engine::init(engine, &pager), file_io_consumer, io_poll);
 
         if (run_repl) {
             repl::run(engine);
         } else {
-            auto on_ready = [&port, no_uring]() { println("listening on port ", to_str(port), no_uring ? " (native protocol, sync sockets)" : " (native protocol)"); };
-            Optional<String8> err = native::run(port, g_signal_notifier, g_should_stop, engine, on_ready, !no_uring);
+            auto on_ready = [&port, no_uring]() {
+                println("listening on port ", to_str(port), no_uring ? " (native protocol, async sockets)" : " (native protocol)");
+            };
+            auto signal_consumer = aio::create_notifier_consumer(g_signal_notifier, io_poll);
+            Optional<String8> err = native::run(
+                port, engine, on_ready, !no_uring,
+                file_io_consumer, signal_consumer, io_poll
+            );
             if (err) println(*err);
         }
 
-        println("shutting down");
+        aio::drive(pager::destroy(pager), file_io_consumer, io_poll);
     }
+
+    println("shutting down");
 
     os::file_delete(pid_file_path);
     return 0;
+}
+
+static void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
+    println("Assert failed \"", msg, "\" at ", function_name, " in ", file_name, ":", to_str(line_number));
+
+    #if PLEXDB_DEBUG
+        PLEXDB_TRAP;
+    #else
+        os::process_exit(1);
+    #endif
+}
+
+static void signal_handler(int) {
+    g_signal_count += 1;
+    if (g_signal_count > 1) {
+        os::process_exit(1);
+    }
+    os::signal_notify_safe(g_signal_notifier);
+}
+
+static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(bool force_sync, TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll) {
+    if (!force_sync) {
+        auto* rs = uring::get_ring_settings();
+        if (rs->recommended) {
+            U64 page_size = os::get_system_info()->page_size;
+            uring::GlobalIOBudget budget = uring::compute_io_budget(page_size);
+            if (budget.file_buffer_count > 0 && budget.file_buffer_size > 0) {
+                uring::Ring ring{os::zero_handle(), budget.file_queue_depth, budget.file_buffer_size, budget.file_buffer_count};
+                if (ring && !os::is_zero_handle(ring.event_fd)) {
+                    resource = plexdb::move(ring);
+                    return aio::create_uring_async_file_io_context(&get<uring::Ring>(resource), arena, poll);
+                }
+            }
+        }
+
+        os::Handle notifier = os::aio_notifier_create();
+        if (!os::is_zero_handle(notifier)) {
+            os::AIOContext aio_ctx{128, notifier};
+            if (aio_ctx) {
+                resource = plexdb::move(aio_ctx);
+                return aio::create_aio_async_file_io_context(&get<os::AIOContext>(resource), arena, poll);
+            }
+        }
+    }
+
+    return {
+        aio::create_sync_file_io_context(),
+        aio::EventConsumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}}
+    };
 }

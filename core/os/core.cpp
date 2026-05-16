@@ -87,6 +87,7 @@ namespace plexdb::os {
         if (!(flags&WRITE)) l_flags  = O_RDONLY;
         l_flags |= O_CREAT;
         if (flags&APPEND)   l_flags |= O_APPEND;
+        if (flags&TRUNCATE) l_flags |= O_TRUNC;
 
         mode_t l_mode = S_IRUSR | S_IWUSR;
         if (flags&EXECUTE) l_mode |= S_IXUSR;

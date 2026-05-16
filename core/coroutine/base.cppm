@@ -1,10 +1,13 @@
 module;
 #include <coroutine>
+#include <exception>
+
 #include "macros.h"
 
 export module plexdb.coroutine.base;
 
 import plexdb.base;
+import plexdb.coroutine.debug;
 
 export namespace plexdb::coroutine {
     // ========================================================================
@@ -22,18 +25,25 @@ export namespace plexdb::coroutine {
     //         first real suspension or co_return.
     // ========================================================================
     template<typename T = void, Start S = Start::Lazy>
-    struct Task;
+    struct [[nodiscard]] Task;
 
     template<typename T, Start S>
-    struct Task {
+    struct [[nodiscard]] Task {
         // ====================================================================
         // built-in api (e.g. co_await)
         // ====================================================================
         struct promise_type {
             Optional<T> result;
             std::coroutine_handle<> continuation = std::noop_coroutine();
+#ifdef PLEXDB_EXCEPTIONS
+            std::exception_ptr exception;
+#endif
+            // @note zero bytes in release builds via [[no_unique_address]] + empty type.
+            [[no_unique_address]]
+            Conditional<debug::enabled, debug::Frame, debug::EmptyFrame> debug_frame;
 
             Task get_return_object() noexcept {
+                debug::capture_frame_from_stacktrace(debug_frame);
                 return Task{std::coroutine_handle<promise_type>::from_promise(*this)};
             }
 
@@ -46,6 +56,7 @@ export namespace plexdb::coroutine {
                 struct Awaiter {
                     bool await_ready() noexcept { return false; }
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
+                        debug::pop_frame(h.promise().debug_frame);
                         return h.promise().continuation;
                     }
                     void await_resume() noexcept {}
@@ -54,17 +65,32 @@ export namespace plexdb::coroutine {
             }
 
             void return_value(T value) { result.emplace(move(value)); }
-            void unhandled_exception() { }
+            void unhandled_exception() {
+#ifdef PLEXDB_EXCEPTIONS
+                exception = std::current_exception();
+#endif
+                if constexpr (debug::enabled) {
+                    println("unhandled exception in coroutine, async stack:");
+                    debug::print_async_stack();
+                }
+            }
         };
 
         bool await_ready() const noexcept { return handle.done(); }
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
+            debug::push_frame(handle.promise().debug_frame);
             handle.promise().continuation = caller;
             return handle;
         }
 
-        T await_resume() { return move(handle.promise().result.value()); }
+        T await_resume() {
+#ifdef PLEXDB_EXCEPTIONS
+            if (handle.promise().exception)
+                std::rethrow_exception(handle.promise().exception);
+#endif
+            return move(handle.promise().result.value());
+        }
 
         // ====================================================================
         // manual api
@@ -72,8 +98,20 @@ export namespace plexdb::coroutine {
         void resume() { handle.resume(); }
         bool done() const { return handle.done(); }
         bool has_value() const { return handle.promise().result.has_value(); }
-        T& value() & { assert_true(has_value(), "coroutine result is not ready"); return handle.promise().result.value(); }
-        const T& value() const & { assert_true(has_value(), "coroutine result is not ready"); return handle.promise().result.value(); }
+        T& value() & {
+#ifdef PLEXDB_EXCEPTIONS
+            if (handle.promise().exception) std::rethrow_exception(handle.promise().exception);
+#endif
+            assert_true(has_value(), "coroutine result is not ready");
+            return handle.promise().result.value();
+        }
+        const T& value() const & {
+#ifdef PLEXDB_EXCEPTIONS
+            if (handle.promise().exception) std::rethrow_exception(handle.promise().exception);
+#endif
+            assert_true(has_value(), "coroutine result is not ready");
+            return handle.promise().result.value();
+        }
 
         // ====================================================================
         // constructors/destructors
@@ -100,14 +138,20 @@ export namespace plexdb::coroutine {
     };
 
     template<Start S>
-    struct Task<void, S> {
+    struct [[nodiscard]] Task<void, S> {
         // ====================================================================
         // built-in api (e.g. co_await)
         // ====================================================================
         struct promise_type {
             std::coroutine_handle<> continuation = std::noop_coroutine();
+#ifdef PLEXDB_EXCEPTIONS
+            std::exception_ptr exception;
+#endif
+            [[no_unique_address]]
+            Conditional<debug::enabled, debug::Frame, debug::EmptyFrame> debug_frame;
 
             Task get_return_object() noexcept {
+                debug::capture_frame_from_stacktrace(debug_frame);
                 return Task{std::coroutine_handle<promise_type>::from_promise(*this)};
             }
 
@@ -121,6 +165,7 @@ export namespace plexdb::coroutine {
                     // @note coroutine pauses after final_suspend, meaning ~Task needs to call destroy
                     bool await_ready() noexcept { return false; }
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
+                        debug::pop_frame(h.promise().debug_frame);
                         return h.promise().continuation;
                     }
                     void await_resume() noexcept {}
@@ -129,17 +174,31 @@ export namespace plexdb::coroutine {
             }
 
             void return_void() noexcept {}
-            void unhandled_exception() { }
+            void unhandled_exception() {
+#ifdef PLEXDB_EXCEPTIONS
+                exception = std::current_exception();
+#endif
+                if constexpr (debug::enabled) {
+                    println("unhandled exception in coroutine, async stack:");
+                    debug::print_async_stack();
+                }
+            }
         };
 
         bool await_ready() const noexcept { return handle.done(); }
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
+            debug::push_frame(handle.promise().debug_frame);
             handle.promise().continuation = caller;
             return handle;
         }
 
-        void await_resume() noexcept {}
+        void await_resume() {
+#ifdef PLEXDB_EXCEPTIONS
+            if (handle.promise().exception)
+                std::rethrow_exception(handle.promise().exception);
+#endif
+        }
 
         // ====================================================================
         // manual api
@@ -171,17 +230,6 @@ export namespace plexdb::coroutine {
         void destroy() { if (handle) { handle.destroy(); handle = nullptr; } }
     };
 
-    template<typename T>
-    T drive(coroutine::Task<T> task) {
-        task.resume();
-        while (!task.done()) { task.resume(); }
-        return move(task.value());
-    }
-    inline void drive(coroutine::Task<void> task) {
-        task.resume();
-        while (!task.done()) { task.resume(); }
-    }
-
     // ========================================================================
     // Awaitable<OnSuspend, OnResume>
     //   Generic bridge between a coroutine and an external async event source
@@ -206,13 +254,24 @@ export namespace plexdb::coroutine {
     //     };
     // ========================================================================
     template<typename OnSuspend, typename OnResume>
-    struct Awaitable {
+    struct [[nodiscard]] Awaitable {
         OnSuspend on_suspend;
         OnResume  on_resume;
 
         bool await_ready() noexcept { return false; }
-        void await_suspend(std::coroutine_handle<> h) noexcept { on_suspend(h); }
-        decltype(auto) await_resume() noexcept { return on_resume(); }
+
+        void await_suspend(std::coroutine_handle<> h) noexcept {
+            debug::save_frame(_saved_frame);
+            on_suspend(h);
+        }
+
+        decltype(auto) await_resume() noexcept {
+            debug::restore_frame(_saved_frame);
+            return on_resume();
+        }
+
+        [[no_unique_address]]
+        Conditional<debug::enabled, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
     };
 
     template<typename OnSuspend, typename OnResume>
@@ -223,7 +282,7 @@ export namespace plexdb::coroutine {
     //   @note lazy
     // ========================================================================
     template<typename T>
-    struct Generator {
+    struct [[nodiscard]] Generator {
         // ====================================================================
         // built-in api (e.g. co_await)
         // ====================================================================

@@ -218,6 +218,12 @@
     #define thread_static
 #endif
 
+#ifdef __cpp_exceptions
+    #define PLEXDB_EXCEPTIONS 1
+#else
+    #define PLEXDB_EXCEPTIONS 0
+#endif
+
 #define PLEXDB_CONSTEVAL_TRAP(x) (void)(1 / static_cast<int>(static_cast<bool>(x)))
 
 // OffsetOf

@@ -245,8 +245,8 @@ OtelState* otel_init() {
     auto reader = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
         std::move(metric_exporter), reader_opts);
 
-    s->meter_provider = std::make_shared<metrics_sdk::MeterProvider>(
-        std::make_unique<metrics_sdk::ViewRegistry>(), res);
+    s->meter_provider = std::create_shared<metrics_sdk::MeterProvider>(
+        std::create_unique<metrics_sdk::ViewRegistry>(), res);
     s->meter_provider->AddMetricReader(std::move(reader));
     s->meter = s->meter_provider->GetMeter("plexdb.log");
 
@@ -258,7 +258,7 @@ OtelState* otel_init() {
     auto log_processor = logs_sdk::SimpleLogRecordProcessorFactory::Create(
         std::move(log_exporter));
 
-    s->logger_provider = std::make_shared<logs_sdk::LoggerProvider>(
+    s->logger_provider = std::create_shared<logs_sdk::LoggerProvider>(
         std::move(log_processor), res);
     s->logger = s->logger_provider->GetLogger("plexdb.log", "plexdb");
 

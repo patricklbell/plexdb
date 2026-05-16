@@ -18,8 +18,6 @@ export namespace objstore {
     public:
         ColumnIterator() = default;
 
-        static coroutine::Task<ColumnIterator> load(Pager* pager, const schema::Table* table, U64 page_idx);
-
         ColumnValue operator*();
         ColumnIterator& operator++();
 
@@ -29,6 +27,8 @@ export namespace objstore {
         }
         bool operator!=(const ColumnIterator& other) const { return !(*this == other); }
 
+        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx);
+
     private:
         const schema::Table* table = nullptr;
         DynamicArray<U8> row_data;
@@ -37,6 +37,8 @@ export namespace objstore {
         U64 current_byte_offset = 0;  // absolute byte position into row_data for current column data
         U64 current_mask = 0;
     };
+
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx);
 
     struct ColumnRange {
         ColumnIterator start;

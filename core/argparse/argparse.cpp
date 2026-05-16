@@ -6,7 +6,7 @@ module;
 module plexdb.argparse;
 
 namespace plexdb::argparse {
-    Parser make_parser(const char* prog_name, const char* description) {
+    Parser create_parser(const char* prog_name, const char* description) {
         Parser p{};
         snprintf(p.prog_name,   MAX_NAME_LEN, "%s", prog_name);
         snprintf(p.description, MAX_DESC_LEN, "%s", description);

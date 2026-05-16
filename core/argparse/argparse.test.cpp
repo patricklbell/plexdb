@@ -7,7 +7,7 @@ using namespace plexdb;
 using namespace plexdb::argparse;
 
 TEST_CASE("parse two positional arguments", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "A test program");
+    auto parser = create_parser("test_prog", "A test program");
     add_positional(parser, "db_path", "Path to database");
     add_positional(parser, "port", "Port number");
 
@@ -22,7 +22,7 @@ TEST_CASE("parse two positional arguments", "[plexdb.argparse]") {
 }
 
 TEST_CASE("parse long flag", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "A test program");
+    auto parser = create_parser("test_prog", "A test program");
     add_flag(parser, "--daemon", "-d", "Run as daemon");
 
     const char* argv[] = {"test_prog", "--daemon"};
@@ -33,7 +33,7 @@ TEST_CASE("parse long flag", "[plexdb.argparse]") {
 }
 
 TEST_CASE("parse short flag", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "A test program");
+    auto parser = create_parser("test_prog", "A test program");
     add_flag(parser, "--daemon", "-d", "Run as daemon");
 
     const char* argv[] = {"test_prog", "-d"};
@@ -44,7 +44,7 @@ TEST_CASE("parse short flag", "[plexdb.argparse]") {
 }
 
 TEST_CASE("absent flag returns false", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "A test program");
+    auto parser = create_parser("test_prog", "A test program");
     add_flag(parser, "--daemon", "-d", "Run as daemon");
 
     const char* argv[] = {"test_prog"};
@@ -55,7 +55,7 @@ TEST_CASE("absent flag returns false", "[plexdb.argparse]") {
 }
 
 TEST_CASE("missing positional returns error", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "A test program");
+    auto parser = create_parser("test_prog", "A test program");
     add_positional(parser, "db_path", "Path to database");
 
     const char* argv[] = {"test_prog"};
@@ -66,7 +66,7 @@ TEST_CASE("missing positional returns error", "[plexdb.argparse]") {
 }
 
 TEST_CASE("unknown option returns error", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "A test program");
+    auto parser = create_parser("test_prog", "A test program");
 
     const char* argv[] = {"test_prog", "--unknown"};
     auto result = parse(parser, 2, const_cast<char**>(argv));
@@ -75,7 +75,7 @@ TEST_CASE("unknown option returns error", "[plexdb.argparse]") {
 }
 
 TEST_CASE("unexpected positional returns error", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "A test program");
+    auto parser = create_parser("test_prog", "A test program");
 
     const char* argv[] = {"test_prog", "extra"};
     auto result = parse(parser, 2, const_cast<char**>(argv));
@@ -84,7 +84,7 @@ TEST_CASE("unexpected positional returns error", "[plexdb.argparse]") {
 }
 
 TEST_CASE("--help sets help_requested", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "A test program");
+    auto parser = create_parser("test_prog", "A test program");
     add_positional(parser, "db_path", "Path to database");
 
     const char* argv[] = {"test_prog", "--help"};
@@ -95,7 +95,7 @@ TEST_CASE("--help sets help_requested", "[plexdb.argparse]") {
 }
 
 TEST_CASE("-h sets help_requested", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "A test program");
+    auto parser = create_parser("test_prog", "A test program");
     add_positional(parser, "db_path", "Path to database");
 
     const char* argv[] = {"test_prog", "-h"};
@@ -106,7 +106,7 @@ TEST_CASE("-h sets help_requested", "[plexdb.argparse]") {
 }
 
 TEST_CASE("flags and positionals mixed", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "A test program");
+    auto parser = create_parser("test_prog", "A test program");
     add_positional(parser, "path", "File path");
     add_flag(parser, "--verbose", "-v", "Enable verbose output");
     add_flag(parser, "--dry-run", "", "Dry run mode");
@@ -121,7 +121,7 @@ TEST_CASE("flags and positionals mixed", "[plexdb.argparse]") {
 }
 
 TEST_CASE("option long form is parsed", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "");
+    auto parser = create_parser("test_prog", "");
     add_option(parser, "--port", "-p", "Port number", "8080");
 
     const char* argv[] = {"test_prog", "--port", "9090"};
@@ -132,7 +132,7 @@ TEST_CASE("option long form is parsed", "[plexdb.argparse]") {
 }
 
 TEST_CASE("option short form is parsed", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "");
+    auto parser = create_parser("test_prog", "");
     add_option(parser, "--port", "-p", "Port number", "8080");
 
     const char* argv[] = {"test_prog", "-p", "1234"};
@@ -143,7 +143,7 @@ TEST_CASE("option short form is parsed", "[plexdb.argparse]") {
 }
 
 TEST_CASE("option default value is used when absent", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "");
+    auto parser = create_parser("test_prog", "");
     add_option(parser, "--port", "-p", "Port number", "8080");
 
     const char* argv[] = {"test_prog"};
@@ -154,7 +154,7 @@ TEST_CASE("option default value is used when absent", "[plexdb.argparse]") {
 }
 
 TEST_CASE("option without value returns error", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "");
+    auto parser = create_parser("test_prog", "");
     add_option(parser, "--port", "-p", "Port number", "8080");
 
     const char* argv[] = {"test_prog", "--port"};
@@ -164,7 +164,7 @@ TEST_CASE("option without value returns error", "[plexdb.argparse]") {
 }
 
 TEST_CASE("option mixed with positionals and flags", "[plexdb.argparse]") {
-    auto parser = make_parser("test_prog", "");
+    auto parser = create_parser("test_prog", "");
     add_positional(parser, "db_path", "Database path");
     add_option(parser, "--port", "-p", "Port number", "8080");
     add_flag(parser, "--repl", "-r", "Run REPL");

@@ -15,24 +15,48 @@ import socket
 import subprocess
 import tempfile
 import time
+
 import pytest
-from cassandra.cluster import Cluster, ConsistencyLevel, ExecutionProfile, EXEC_PROFILE_DEFAULT, NoHostAvailable
+from cassandra.cluster import (
+    EXEC_PROFILE_DEFAULT,
+    Cluster,
+    ConsistencyLevel,
+    ExecutionProfile,
+    NoHostAvailable,
+)
 from cassandra.policies import RoundRobinPolicy
+
 
 # ── CLI options ───────────────────────────────────────────────────────────
 def pytest_addoption(parser):
-    parser.addoption("--host", action="store", default="127.0.0.1",
-                     help="CQL contact point")
-    parser.addoption("--port", action="store", default="9042",
-                     help="CQL native transport port")
-    parser.addoption("--binary", action="store", default=None,
-                     help="Path to objstore_server binary; enables auto-restart on crash")
-    parser.addoption("--plugin", action="append", default=[],
-                     help="Path to a plugin .so to load via LD_PRELOAD (may be repeated)")
-    parser.addoption("--log-dir", action="store", default=None,
-                     help="Directory to write per-test server logs")
+    parser.addoption(
+        "--host", action="store", default="127.0.0.1", help="CQL contact point"
+    )
+    parser.addoption(
+        "--port", action="store", default="9042", help="CQL native transport port"
+    )
+    parser.addoption(
+        "--binary",
+        action="store",
+        default=None,
+        help="Path to objstore_server binary; enables auto-restart on crash",
+    )
+    parser.addoption(
+        "--plugin",
+        action="append",
+        default=[],
+        help="Path to a plugin .so to load via LD_PRELOAD (may be repeated)",
+    )
+    parser.addoption(
+        "--log-dir",
+        action="store",
+        default=None,
+        help="Directory to write per-test server logs",
+    )
+
 
 # ── Server manager ────────────────────────────────────────────────────────
+
 
 def _wait_for_port(host, port, attempts=50, delay=0.2):
     for _ in range(attempts):
@@ -43,6 +67,7 @@ def _wait_for_port(host, port, attempts=50, delay=0.2):
         except OSError:
             time.sleep(delay)
     raise RuntimeError(f"Server did not become ready on {host}:{port}")
+
 
 class ServerManager:
     """Manages the objstore_server process lifecycle."""
@@ -59,7 +84,9 @@ class ServerManager:
 
     def _spawn(self):
         # mkstemp gives us a unique path; remove it so the server creates the file fresh.
-        fd, self._db = tempfile.mkstemp(prefix="cql_conformance_", suffix=".db", dir="/tmp")
+        fd, self._db = tempfile.mkstemp(
+            prefix="cql_conformance_", suffix=".db", dir="/tmp"
+        )
         os.close(fd)
         os.remove(self._db)
         env = os.environ.copy()
@@ -85,7 +112,7 @@ class ServerManager:
                 server_cmd = " ".join(shlex.quote(c) for c in cmd)
                 shell_script = (
                     f'LD_PRELOAD="${{LD_PRELOAD:+$LD_PRELOAD:}}{plugin_preload}" '
-                    f'exec {server_cmd}'
+                    f"exec {server_cmd}"
                 )
                 cmd = ["stdbuf", "-oL", "sh", "-c", shell_script]
             else:
@@ -135,6 +162,7 @@ class ServerManager:
             self._log_file.close()
             self._log_file = None
 
+
 @pytest.fixture(scope="session")
 def server_manager(request):
     binary = request.config.getoption("--binary")
@@ -150,9 +178,11 @@ def server_manager(request):
     yield mgr
     mgr.stop()
 
+
 # ── CQL session proxy ─────────────────────────────────────────────────────
 
-def _make_cluster(host, port):
+
+def _create_cluster(host, port):
     profile = ExecutionProfile(
         load_balancing_policy=RoundRobinPolicy(),
         consistency_level=ConsistencyLevel.ONE,
@@ -166,6 +196,7 @@ def _make_cluster(host, port):
         connect_timeout=30,
         control_connection_timeout=30,
     )
+
 
 class CqlSession:
     """Proxy around a cassandra Session; supports disconnect/reconnect between tests."""
@@ -187,7 +218,7 @@ class CqlSession:
                 pass
             self._cluster = None
             self._session = None
-        self._cluster = _make_cluster(host, port)
+        self._cluster = _create_cluster(host, port)
         self._session = self._cluster.connect()  # raises NoHostAvailable on failure
 
     def disconnect(self):
@@ -203,7 +234,9 @@ class CqlSession:
             except Exception:
                 pass
 
+
 # ── Fixtures ──────────────────────────────────────────────────────────────
+
 
 @pytest.fixture(scope="session")
 def cql(request, server_manager):
@@ -214,11 +247,14 @@ def cql(request, server_manager):
         cql_session.connect(host, port)
     except NoHostAvailable:
         if server_manager is None:
-            pytest.exit(f"Cannot connect to objstore at {host}:{port}",
-                        returncode=pytest.ExitCode.INTERNAL_ERROR)
+            pytest.exit(
+                f"Cannot connect to objstore at {host}:{port}",
+                returncode=pytest.ExitCode.INTERNAL_ERROR,
+            )
         # else: cql_test_connection will restart+reconnect before each test
     yield cql_session
     cql_session.shutdown()
+
 
 # Autouse fixture that runs around every test:
 #   setup   — ensure a live CQL connection; restart server + reconnect if needed
@@ -258,6 +294,7 @@ def cql_test_connection(cql, server_manager, request):
                 returncode=pytest.ExitCode.INTERNAL_ERROR,
             )
 
+
 @pytest.fixture(scope="session")
 def this_dc(cql):
     if not cql.connected:
@@ -266,13 +303,17 @@ def this_dc(cql):
     row = cql.execute("SELECT data_center FROM system.local").one()
     yield row[0] if row else "datacenter1"
 
+
 def _unique_ks():
     ms = int(round(time.time() * 1000))
     if _unique_ks.last >= ms:
         ms = _unique_ks.last + 1
     _unique_ks.last = ms
     return f"cqltest{ms}"
+
+
 _unique_ks.last = 0
+
 
 @pytest.fixture(scope="function")
 def test_keyspace(cql, this_dc):
@@ -287,34 +328,42 @@ def test_keyspace(cql, this_dc):
     except Exception:
         pass
 
+
 # objstore is neither Scylla nor Cassandra — skip Scylla-only tests.
 @pytest.fixture(scope="session")
 def scylla_only(cql):
     pytest.skip("Scylla-only test skipped (running on objstore)")
+
 
 # cassandra_bug: on objstore we just run the test normally.
 @pytest.fixture(scope="session")
 def cassandra_bug():
     pass
 
+
 @pytest.fixture(scope="session")
 def has_tablets():
     return False
+
 
 @pytest.fixture(scope="function")
 def skip_without_tablets():
     pytest.skip("Tablets not supported")
 
+
 @pytest.fixture(scope="function")
 def driver_bug_1():
     pass
 
+
 @pytest.fixture(scope="function")
 def random_seed():
     import random
+
     seed = time.time()
     random.seed(seed)
     yield seed
+
 
 @pytest.fixture(scope="function")
 def compact_storage():

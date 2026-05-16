@@ -39,10 +39,9 @@ export namespace plexdb::blob {
         BlobStaticPaged& operator=(const BlobStaticPaged& other) = delete;
 
         explicit operator bool() const { return pager == nullptr; }
-
-        static coroutine::Task<BlobStaticPaged> load(Pager* in_pager, U64 in_page, U64 in_size);
     };
     coroutine::Task<U64> create_paged_static(Pager& pager, U64 size);
+    coroutine::Task<> load(BlobStaticPaged& blob, Pager* in_pager, U64 in_page, U64 in_size);
 
     // A dynamic blob is divided into two parts, the header and body. The header
     // (if present) is a singly linked list, with header containing as entries
@@ -74,8 +73,7 @@ export namespace plexdb::blob {
         // @todo
         BlobDynamicPaged(const BlobDynamicPaged& other) = delete;
         BlobDynamicPaged& operator=(const BlobDynamicPaged& other) = delete;
-
-        static coroutine::Task<BlobDynamicPaged> load(Pager* in_pager, U64 in_page);
     };
     coroutine::Task<U64> create_paged_dynamic(Pager& pager, U64 initial_size = 0);
+    coroutine::Task<> load(BlobDynamicPaged& blob, Pager* in_pager, U64 in_page);
 }

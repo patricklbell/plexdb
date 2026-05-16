@@ -8,6 +8,7 @@ module;
     #include <liburing.h>
     #include <sys/socket.h>
     #include <sys/mman.h>
+    #include <sys/eventfd.h>
     #include <stdlib.h>
     #include <unistd.h>
 #endif
@@ -36,15 +37,15 @@ namespace plexdb::uring {
         DATA_MASK = ~TYPE_MASK
     };
 
-    static U64 encode_user_data(EventTypeTag type, U64 data) {
+    [[maybe_unused]] static U64 encode_user_data(EventTypeTag type, U64 data) {
         return type | (data & DATA_MASK);
     }
 
-    static EventTypeTag decode_type(U64 user_data) {
+    [[maybe_unused]] static EventTypeTag decode_type(U64 user_data) {
         return (EventTypeTag)(user_data & TYPE_MASK);
     }
 
-    static U64 decode_data(U64 user_data) {
+    [[maybe_unused]] static U64 decode_data(U64 user_data) {
         return user_data & DATA_MASK;
     }
 
@@ -229,6 +230,16 @@ namespace plexdb::uring {
                     return;
                 }
             }
+            {
+                int efd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+                if (efd >= 0) {
+                    if (io_uring_register_eventfd(ring, efd) == 0) {
+                        this->event_fd = fd_to_handle(efd);
+                    } else {
+                        ::close(efd);
+                    }
+                }
+            }
 
             // @todo @thread safe
             {
@@ -242,6 +253,12 @@ namespace plexdb::uring {
         Ring::~Ring() {
             if (this->ring_vptr != nullptr) {
                 auto* ring = static_cast<io_uring*>(this->ring_vptr);
+
+                if (!os::is_zero_handle(this->event_fd)) {
+                    io_uring_unregister_eventfd(ring);
+                    ::close(handle_to_fd(this->event_fd));
+                    this->event_fd = os::zero_handle();
+                }
 
                 int err = io_uring_unregister_buffers(ring);
                 assert_true_always(err == 0, "io_uring_unregister_buffers failed");
@@ -261,14 +278,16 @@ namespace plexdb::uring {
             }
         }
 
-        Ring::Ring(Ring&& other) noexcept 
+        Ring::Ring(Ring&& other) noexcept
             : server(other.server)
+            , event_fd(other.event_fd)
             , ring_vptr(other.ring_vptr)
             , buffers(other.buffers)
             , iovecs_vptr(other.iovecs_vptr)
             , buffer_size(other.buffer_size)
             , buffer_count(other.buffer_count) {
-            other.server = os::zero_handle();
+            other.server   = os::zero_handle();
+            other.event_fd = os::zero_handle();
             other.ring_vptr = nullptr;
             other.buffers = nullptr;
             other.iovecs_vptr = nullptr;
@@ -281,14 +300,16 @@ namespace plexdb::uring {
                 if (this->ring_vptr) {
                     this->~Ring();
                 }
-                this->server = other.server;
+                this->server   = other.server;
+                this->event_fd = other.event_fd;
                 this->ring_vptr = other.ring_vptr;
                 this->buffers = other.buffers;
                 this->iovecs_vptr = other.iovecs_vptr;
                 this->buffer_size = other.buffer_size;
                 this->buffer_count = other.buffer_count;
 
-                other.server = os::zero_handle();
+                other.server   = os::zero_handle();
+                other.event_fd = os::zero_handle();
                 other.ring_vptr = nullptr;
                 other.buffers = nullptr;
                 other.iovecs_vptr = nullptr;
@@ -573,12 +594,19 @@ namespace plexdb::uring {
             return stats;
         }
 
+        bool ring_drain_event_fd(Ring& ring) {
+            if (os::is_zero_handle(ring.event_fd)) return false;
+            U64 val = 0;
+            ssize_t r = ::read(handle_to_fd(ring.event_fd), &val, sizeof(val));
+            return r == static_cast<ssize_t>(sizeof(val));
+        }
+
     #else
         // ========================================================================
         // ring
         // ========================================================================
 
-        Ring::Ring(os::Handle server, U32 queue_depth, U64 buffer_size, U32 buffer_count)
+        Ring::Ring(os::Handle server, [[maybe_unused]] U32 queue_depth, U64 buffer_size, U32 buffer_count)
             : server(server)
             , buffers(nullptr)
             , buffer_size(buffer_size)
@@ -586,14 +614,16 @@ namespace plexdb::uring {
 
         Ring::~Ring() {}
 
-        Ring::Ring(Ring&& other) noexcept 
+        Ring::Ring(Ring&& other) noexcept
             : server(other.server)
+            , event_fd(other.event_fd)
             , ring_vptr(other.ring_vptr)
             , buffers(other.buffers)
             , iovecs_vptr(other.iovecs_vptr)
             , buffer_size(other.buffer_size)
             , buffer_count(other.buffer_count) {
-            other.server = os::zero_handle();
+            other.server   = os::zero_handle();
+            other.event_fd = os::zero_handle();
             other.ring_vptr = nullptr;
             other.buffers = nullptr;
             other.iovecs_vptr = nullptr;
@@ -603,14 +633,16 @@ namespace plexdb::uring {
 
         Ring& Ring::operator=(Ring&& other) noexcept {
             if (this != &other) {
-                server = other.server;
+                server   = other.server;
+                event_fd = other.event_fd;
                 ring_vptr = other.ring_vptr;
                 buffers = other.buffers;
                 iovecs_vptr = other.iovecs_vptr;
                 buffer_size = other.buffer_size;
                 buffer_count = other.buffer_count;
 
-                other.server = os::zero_handle();
+                other.server   = os::zero_handle();
+                other.event_fd = os::zero_handle();
                 other.ring_vptr = nullptr;
                 other.buffers = nullptr;
                 other.iovecs_vptr = nullptr;
@@ -624,21 +656,25 @@ namespace plexdb::uring {
             return false;
         }
 
+        bool ring_drain_event_fd([[maybe_unused]] Ring& ring) {
+            return false;
+        }
+
         // ========================================================================
         // completion queue entry
         // ========================================================================
 
-        U32 cqe_get_size(const Ring& ring) {
+        U32 cqe_get_size([[maybe_unused]] const Ring& ring) {
             assert_true_always(false, "io_uring not available on this platform");
             return 0;
         }
 
-        CQE cqe_top(Ring& ring) {
+        CQE cqe_top([[maybe_unused]] Ring& ring) {
             assert_true_always(false, "io_uring not available on this platform");
             return CQE{};
         }
 
-        bool cqe_pop(Ring& ring, U32 count) {
+        bool cqe_pop([[maybe_unused]] Ring& ring, [[maybe_unused]] U32 count) {
             assert_true_always(false, "io_uring not available on this platform");
             return false;
         }
@@ -647,47 +683,47 @@ namespace plexdb::uring {
         // submission queue entry
         // ========================================================================
 
-        bool sqe_push_accept(Ring& ring) {
+        bool sqe_push_accept([[maybe_unused]] Ring& ring) {
             assert_true_always(false, "io_uring not available on this platform");
             return false;
         }
 
-        bool sqe_push_multishot_accept(Ring& ring) {
+        bool sqe_push_multishot_accept([[maybe_unused]] Ring& ring) {
             assert_true_always(false, "io_uring not available on this platform");
             return false;
         }
 
-        bool sqe_push_close(Ring& ring, os::Handle client) {
+        bool sqe_push_close([[maybe_unused]] Ring& ring, [[maybe_unused]] os::Handle client) {
             assert_true_always(false, "io_uring not available on this platform");
             return false;
         }
 
-        bool sqe_push_read(Ring& ring, os::Handle client, U32 buffer_idx, U32 byte_offset, U32 byte_count) {
+        bool sqe_push_read([[maybe_unused]] Ring& ring, [[maybe_unused]] os::Handle client, [[maybe_unused]] U32 buffer_idx, [[maybe_unused]] U32 byte_offset, [[maybe_unused]] U32 byte_count) {
             assert_true_always(false, "io_uring not available on this platform");
             return false;
         }
 
-        bool sqe_push_write(Ring& ring, os::Handle client, U32 buffer_idx, U32 byte_offset, U32 byte_count) {
+        bool sqe_push_write([[maybe_unused]] Ring& ring, [[maybe_unused]] os::Handle client, [[maybe_unused]] U32 buffer_idx, [[maybe_unused]] U32 byte_offset, [[maybe_unused]] U32 byte_count) {
             assert_true_always(false, "io_uring not available on this platform");
             return false;
         }
 
-        bool sqe_push_file_read(Ring& ring, os::Handle file, U32 buffer_idx, U64 file_offset, U32 count, U64 token) {
+        bool sqe_push_file_read([[maybe_unused]] Ring& ring, [[maybe_unused]] os::Handle file, [[maybe_unused]] U32 buffer_idx, [[maybe_unused]] U64 file_offset, [[maybe_unused]] U32 count, [[maybe_unused]] U64 token) {
             assert_true_always(false, "io_uring not available on this platform");
             return false;
         }
 
-        bool sqe_push_file_write(Ring& ring, os::Handle file, U32 buffer_idx, U64 file_offset, U32 count, U64 token) {
+        bool sqe_push_file_write([[maybe_unused]] Ring& ring, [[maybe_unused]] os::Handle file, [[maybe_unused]] U32 buffer_idx, [[maybe_unused]] U64 file_offset, [[maybe_unused]] U32 count, [[maybe_unused]] U64 token) {
             assert_true_always(false, "io_uring not available on this platform");
             return false;
         }
 
-        bool sqe_push_file_sync(Ring& ring, os::Handle file, U64 token) {
+        bool sqe_push_file_sync([[maybe_unused]] Ring& ring, [[maybe_unused]] os::Handle file, [[maybe_unused]] U64 token) {
             assert_true_always(false, "io_uring not available on this platform");
             return false;
         }
 
-        bool sqe_submit_non_blocking(Ring& ring) {
+        bool sqe_submit_non_blocking([[maybe_unused]] Ring& ring) {
             assert_true_always(false, "io_uring not available on this platform");
             return false;
         }
@@ -696,7 +732,7 @@ namespace plexdb::uring {
         // stats
         // ========================================================================
 
-        Stats get_stats(const Ring& ring) {
+        Stats get_stats([[maybe_unused]] const Ring& ring) {
             assert_true_always(false, "io_uring not available on this platform");
             return Stats{};
         }

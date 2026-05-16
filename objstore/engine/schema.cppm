@@ -102,9 +102,9 @@ export namespace objstore::schema {
         blob::BlobDynamicPaged columns_blob;
 
         Schema() = default;
-        static coroutine::Task<Schema> load(Pager* in_pager, U64 page);
     };
 
+    coroutine::Task<> load(Schema& schema, Pager* in_pager, U64 page);
     coroutine::Task<U64> create_schema(Pager& pager);
 
     enum class Error {

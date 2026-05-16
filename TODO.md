@@ -27,3 +27,7 @@
     - Abstract SPSC intra process communication, inter process (UDS), network communication 
     - Recovery
         - Schema recovery from leader's committed log
+
+# Dev notes 
+- aio proper separation between ownership, caller passes ring/ctx and arena
+- Signal cannot interrupt in-progress `aio::drive` startup calls (pager init, engine init) — the signal notifier fd is not registered with `io_poll` until `create_notifier_consumer` is called, so a signal during e.g. a slow WAL recovery queues but does not abort the operation

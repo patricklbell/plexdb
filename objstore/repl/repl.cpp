@@ -5,7 +5,7 @@ module;
 module objstore.repl;
 
 import plexdb.base;
-import plexdb.coroutine;
+import plexdb.aio;
 import plexdb.os;
 import plexdb.tagged_union;
 
@@ -66,6 +66,8 @@ namespace objstore::repl {
     }
 
     void run(os::Handle istream, os::Handle ostream, engine::Engine& eng) {
+        aio::EventConsumer repl_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+        os::Poll repl_poll{};
         constexpr U64 INPUT_BUFFER_SIZE = 4096;
         char input_buf[INPUT_BUFFER_SIZE];
 
@@ -95,7 +97,7 @@ namespace objstore::repl {
                     break;
                 }
 
-                engine::ExecutionResult result = coroutine::drive(engine::execute(eng, *stmt_opt));
+                engine::ExecutionResult result = aio::drive(engine::execute(eng, *stmt_opt), repl_consumer, repl_poll);
 
                 U64 row_count = 0;
                 if (result.rows && result.resolved_table) {
@@ -134,7 +136,7 @@ namespace objstore::repl {
                     RowIterator& row_it  = result.rows->start;
                     RowIterator& row_end = result.rows->stop;
                     while (row_it != row_end && row_count < row_limit) {
-                        ColumnRange col_range = coroutine::drive(row_it.deref());
+                        ColumnRange col_range = aio::drive(row_it.deref(), repl_consumer, repl_poll);
                         bool first = true;
                         for (U64 ci = 0; ci < tbl->cols.length && col_range.start != col_range.stop; ci++, ++col_range.start) {
                             if (!is_selected(ci)) continue;
@@ -144,7 +146,7 @@ namespace objstore::repl {
                             first = false;
                         }
                         os::stream_write(ostream, "\n");
-                        coroutine::drive(row_it.advance());
+                        aio::drive(row_it.advance(), repl_consumer, repl_poll);
                         ++row_count;
                     }
                 } else if (result.virtual_rows) {

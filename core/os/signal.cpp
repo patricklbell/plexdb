@@ -6,6 +6,8 @@ module;
     #include <signal.h>
     #include <stdlib.h>
     #include <sys/epoll.h>
+    #include <fcntl.h>
+    #include <errno.h>
 #endif
 
 module plexdb.os.signal;
@@ -55,16 +57,17 @@ namespace plexdb::os {
         }
 
         void signal_register_kill(SignalHandler handler) {
-            #if PLEXDB_DEBUG
-                // @todo detect debugger
+            #ifdef PLEXDB_ENABLE_USER_KILL_SIGNAL
                 // @note used by custom kill script
                 signal_register_linux(SIGUSR1, handler);
             #else
-                // @todo investigate how gdb interferes with these
-                signal_register_linux(SIGHUP, handler);
                 signal_register_linux(SIGINT, handler);
                 signal_register_linux(SIGTERM, handler);
             #endif
+        }
+
+        void signal_ignore_reload() {
+            signal_register_linux(SIGHUP, SIG_IGN);
         }
 
         void signal_register_stop(SignalHandler handler) {
@@ -143,7 +146,6 @@ namespace plexdb::os {
                 PollEventMask::Read | PollEventMask::Error | PollEventMask::HangUp
             );
         }
-
         void poll_unblock_on(Poll& poll, const Handle& file_or_socket, PollEventMask events) {
             assert_true(!is_zero_handle(file_or_socket), "invalid notifier, cannot poll");
             struct ::epoll_event ev;
@@ -153,7 +155,7 @@ namespace plexdb::os {
             assert_true(res != -1, "epoll_ctl call failed while adding file to epoll");
         }
 
-        void poll_update(Poll& poll, const Handle& file_or_socket, PollEventMask events) {
+        void poll_update_mask(Poll& poll, const Handle& file_or_socket, PollEventMask events) {
             assert_true(static_cast<bool>(poll), "invalid poll, cannot update");
             assert_true(!is_zero_handle(file_or_socket), "invalid handle, cannot update poll");
             struct ::epoll_event ev;
@@ -163,14 +165,41 @@ namespace plexdb::os {
             assert_true(res != -1, "epoll_ctl call failed while updating file in epoll");
         }
 
-        bool block_until_poll_unblocks(Poll& poll) {
+
+        void poll_dont_unblock_on(Poll& poll, const Notifier& notifier) {
+            assert_true(static_cast<bool>(poll), "invalid notifier, cannot poll");
+            poll_dont_unblock_on(poll, notifier.read);
+        }
+        void poll_dont_unblock_on(Poll& poll, const Handle& file_or_socket) {
+            assert_true(!is_zero_handle(file_or_socket), "invalid notifier, cannot remove from poll");
+
+            struct ::epoll_event ev{};
+            int res = ::epoll_ctl(
+                handle_to_fd(poll.handle),
+                EPOLL_CTL_DEL,
+                handle_to_fd(file_or_socket),
+                &ev
+            );
+            assert_true(res != -1 || errno == ENOENT, "epoll_ctl call failed while removing file from epoll");
+        }
+
+        bool block_until_poll_unblocks(const Poll& poll) {
             assert_true(static_cast<bool>(poll), "invalid poll, cannot wait");
             struct ::epoll_event events[1];
             S32 n = ::epoll_wait(handle_to_fd(poll.handle), events, 1, -1);
             return n > 0;
         }
 
-        bool poll_wait(Poll& poll, CappedTArrayView<PollEvent>* out_events) {
+        void drain_notifier(const Notifier& notifier) {
+            int fd = handle_to_fd(notifier.read);
+            int flags = ::fcntl(fd, F_GETFL, 0);
+            ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+            char buf[64];
+            while (::read(fd, buf, sizeof(buf)) > 0) {}
+            ::fcntl(fd, F_SETFL, flags); // restore
+        }
+
+        bool block_until_poll_unblocks_wth_events(const Poll& poll, CappedTArrayView<PollEvent>* out_events) {
             U64 max_out_events_count = out_events->length - out_events->cap;
 
             assert_true(static_cast<bool>(poll), "invalid poll, cannot wait");

@@ -115,9 +115,10 @@ export namespace plexdb::os {
         WRITE       = (1<<1),
         EXECUTE     = (1<<2),
         APPEND      = (1<<3),
+        TRUNCATE    = (1<<4),
         // @todo
-        // SHAREREAD   = (1<<4),
-        // SHAREWRITE  = (1<<5),
+        // SHAREREAD   = (1<<5),
+        // SHAREWRITE  = (1<<6),
     };
 
     struct FileStats {

@@ -52,11 +52,9 @@ export namespace objstore::engine {
         schema::Schema schema;
         AutoString8 current_keyspace{""};
         MapFixedSentinel<U64, PreparedEntry, MAX_PREPARED_STATEMENTS> prepared_cache;
-
-        Engine() = default;
-        static coroutine::Task<Engine> create(Pager* in_pager);
     };
 
+    coroutine::Task<> init(Engine& engine, Pager* in_pager);
     coroutine::Task<void> create_database(Pager& pager);
 
     enum class ExecutionStatus : U16 {

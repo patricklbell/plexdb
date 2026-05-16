@@ -29,6 +29,7 @@ export namespace plexdb::os {
     void signal_register_kill(SignalHandler handler);
     void signal_register_stop(SignalHandler handler);
     void signal_ignore_pipe();
+    void signal_ignore_reload();
     void signal_send_kill(Handle process);
 
     struct Poll {
@@ -55,7 +56,10 @@ export namespace plexdb::os {
     };
 
     constexpr PollEventMask operator|(PollEventMask a, PollEventMask b) {
-        return PollEventMask(U32(a) | U32(b));
+        return PollEventMask(static_cast<U32>(a) | static_cast<U32>(b));
+    }
+    constexpr PollEventMask operator&(PollEventMask a, PollEventMask b) {
+        return PollEventMask(static_cast<U32>(a) & static_cast<U32>(b));
     }
 
     struct PollEvent {
@@ -66,9 +70,15 @@ export namespace plexdb::os {
     void poll_unblock_on(Poll& poll, const Notifier& notifier);
     void poll_unblock_on(Poll& poll, const Handle& file_or_socket);
     void poll_unblock_on(Poll& poll, const Handle& file_or_socket, PollEventMask events);
-    void poll_update(Poll& poll, const Handle& file_or_socket, PollEventMask events);
+    void poll_update_mask(Poll& poll, const Handle& file_or_socket, PollEventMask events);
+
+    void poll_dont_unblock_on(Poll& poll, const Notifier& notifier);
+    void poll_dont_unblock_on(Poll& poll, const Handle& file_or_socket);
+
+    // Drain all pending bytes from the notifier's read end (call after poll fires on it).
+    void drain_notifier(const Notifier& notifier);
 
     // @note blocking call
-    bool block_until_poll_unblocks(Poll& poll);
-    bool poll_wait(Poll& poll, CappedTArrayView<PollEvent>* out_events);
+    bool block_until_poll_unblocks(const Poll& poll);
+    bool block_until_poll_unblocks_wth_events(const Poll& poll, CappedTArrayView<PollEvent>* out_events);
 }

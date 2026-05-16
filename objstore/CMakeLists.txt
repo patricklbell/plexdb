@@ -50,18 +50,18 @@ endif()
 # Library
 # =============================================================================
 # Modules
-add_library(objstore_modules STATIC)
-add_library(plexdb::objstore_modules ALIAS objstore_modules)
+add_library(plexdb_objstore_modules STATIC)
+add_library(plexdb::objstore_modules ALIAS plexdb_objstore_modules)
 
-target_compile_features(objstore_modules PUBLIC cxx_std_23)
-set_target_properties(objstore_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(plexdb_objstore_modules PUBLIC cxx_std_23)
+set_target_properties(plexdb_objstore_modules PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_include_directories(objstore_modules
+target_include_directories(plexdb_objstore_modules
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../macros
 )
 
-target_sources(objstore_modules
+target_sources(plexdb_objstore_modules
     PUBLIC
         FILE_SET CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
@@ -86,7 +86,7 @@ target_sources(objstore_modules
             third_party/lz4/lz4.cppm
 )
 
-target_link_libraries(objstore_modules
+target_link_libraries(plexdb_objstore_modules
     PUBLIC
         plexdb::core
     PRIVATE
@@ -94,18 +94,18 @@ target_link_libraries(objstore_modules
 )
 
 # Static library
-add_library(objstore STATIC)
-add_library(plexdb::objstore ALIAS objstore)
+add_library(plexbd_objstore STATIC)
+add_library(plexdb::objstore ALIAS plexbd_objstore)
 
-target_compile_features(objstore PUBLIC cxx_std_23)
-set_target_properties(objstore PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(plexbd_objstore PUBLIC cxx_std_23)
+set_target_properties(plexbd_objstore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_include_directories(objstore
+target_include_directories(plexbd_objstore
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../macros
 )
 
-target_sources(objstore
+target_sources(plexbd_objstore
     PRIVATE
         engine/engine.cpp
         engine/it.cpp
@@ -120,7 +120,7 @@ target_sources(objstore
         third_party/lz4/lz4.cpp
 )
 
-target_link_libraries(objstore
+target_link_libraries(plexbd_objstore
     PUBLIC
         plexdb::objstore_modules
     PRIVATE
@@ -202,7 +202,7 @@ if(PLEXDB_ENABLE_TESTS)
   target_link_libraries(objstore_tests
         PRIVATE
             plexdb::compiler_config
-            stdc++exp # std::stacktrace may require link experimental c++ library
+            stdc++exp # std::stacktrace may require linking experimental c++ library
             plexdb::objstore
             Catch2::Catch2WithMain
     )
