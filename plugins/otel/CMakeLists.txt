@@ -32,6 +32,7 @@ FetchContent_MakeAvailable(opentelemetry-cpp)
 # =============================================================================
 add_library(plexdb_otel_plugin SHARED)
 target_compile_features(plexdb_otel_plugin PRIVATE cxx_std_20)
+set_target_properties(plexdb_otel_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_sources(plexdb_otel_plugin
     PRIVATE
