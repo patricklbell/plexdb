@@ -3,17 +3,18 @@ module;
 
 export module keyvalue.engine;
 
+export import keyvalue.engine.statements;
+
 import plexdb.base;
 import plexdb.dynamic.containers;
-export import plexdb.btree;
+import plexdb.btree;
 import plexdb.btree.types;
-export import plexdb.blob;
+import plexdb.blob;
 import plexdb.pager;
 import plexdb.coroutine;
+import plexdb.tagged_union;
 
 import keyvalue.glob;
-
-export import keyvalue.engine.statements;
 
 using namespace plexdb;
 
