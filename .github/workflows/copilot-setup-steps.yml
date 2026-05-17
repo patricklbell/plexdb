@@ -22,17 +22,19 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 nodejs npm \
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 \
             libgrpc++-dev libprotobuf-dev protobuf-compiler protobuf-compiler-grpc
 
-      - name: Configure CMake
-        run: cmake -B build -G Ninja \
-          -DCMAKE_CXX_COMPILER=clang++-19 \
-          -DCMAKE_C_COMPILER=clang-19 \
-          -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_SCAN_FOR_MODULES=ON \
-          -DPLEXDB_ENABLE_TESTS=ON \
-          -DPLEXDB_ENABLE_PLUGINS=ON
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DPLEXDB_ENABLE_TESTS=ON \
+            -DPLEXDB_ENABLE_PLUGINS=ON \
+            -DPLEXDB_DEBUG=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_SCAN_FOR_MODULES=ON
 
       - name: Build
         run: ninja -C build
