@@ -3,14 +3,13 @@ module;
 
 export module plexdb.btree;
 
-// should transactions be exported? probably not
 export import plexdb.btree.in_memory;
 export import plexdb.btree.paged;
+export import plexdb.btree.detail;
 
 import plexdb.base;
 import plexdb.os;
 import plexdb.coroutine;
-import plexdb.btree.detail;
 
 export namespace plexdb::btree {
     // ========================================================================

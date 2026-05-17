@@ -58,6 +58,7 @@ export namespace plexdb {
         explicit AutoString8(const U8* in, U64 length);
         explicit AutoString8(const char* str);
         explicit AutoString8(const String8& str);
+        explicit AutoString8(char c, U64 length);
 
         ~AutoString8();
         AutoString8(const AutoString8& other);
@@ -69,8 +70,8 @@ export namespace plexdb {
         AutoString8& operator=(AutoString8&& other) noexcept;
 
         AutoString8& operator+=(const String8& rhs);
-        
-        operator const char*() const; 
+
+        operator const char*() const;
 
         bool operator==(const String8& b) const;
         bool operator==(const char* b) const;
@@ -82,11 +83,11 @@ export namespace plexdb {
     void append(AutoString8& str, const char* first, const char* last);
     void append(AutoString8& str, String8 s);
     void to_lowercase_inplace(AutoString8& str);
-    
+
     U64 hash(const AutoString8& s);
     U64 hash(String8 s);
 
-    AutoString8 operator+(const String8& lhs, const String8& rhs);   
+    AutoString8 operator+(const String8& lhs, const String8& rhs);
     AutoString8 operator""_as(const char* str, size_t len);
 
     AutoString8 to_str(const String8& x);
@@ -139,7 +140,7 @@ export namespace plexdb {
     }
 
     void print(const String8& str);
-    
+
     template <typename... Args>
     void print(const String8& first, const Args&... rest) {
         print(first);

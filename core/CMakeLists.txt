@@ -57,6 +57,9 @@ target_sources(plexdb_core
             base/types.cppm
             blob/implementations/blob.paged.cppm
             blob/implementations/blob.paged.detail.cppm
+            blob/implementations/blob.in_memory.cppm
+            blob/implementations/blob.in_memory.detail.cppm
+            blob/blob.types.cppm
             blob/blob.cppm
             btree/implementations/btree.paged.cppm
             btree/implementations/btree.paged.detail.cppm

@@ -61,9 +61,13 @@ namespace plexdb {
         os::memory_copy(this->c_str, in, this->length);
     }
     AutoString8::AutoString8(const char* str)
-        : AutoString8(reinterpret_cast<const U8*>(str), strlen(str)) {}
+        : AutoString8(reinterpret_cast<const U8*>(str), ::strlen(str)) {}
     AutoString8::AutoString8(const String8& str)
         : AutoString8(reinterpret_cast<const U8*>(str.data), str.length) {}
+    AutoString8::AutoString8(char c, U64 length)
+        : AutoString8(length) {
+        os::memory_set(this->c_str, c, this->length);
+    }
 
     AutoString8::~AutoString8() {
         if (this->c_str)
@@ -140,9 +144,9 @@ namespace plexdb {
         if (str.length >= length) {
             return;
         }
-        
+
         os::deallocate(str.c_str);
-        
+
         str.length = length;
         str.c_str = reinterpret_cast<char*>(os::allocate(str.length+1));
         str.c_str[str.length] = '\0';
@@ -331,26 +335,26 @@ namespace plexdb {
 
         char* append_fmt_callback(const char* buf, void* user, int len) {
             auto* ctx = static_cast<AppendFmtContext*>(user);
-            
+
             const char* src = buf;
             int remaining = len;
-            
+
             while (remaining > 0) {
                 U64 space = ctx->buf_len - *ctx->length_ptr;
-                
+
                 if (space == 0) {
                     ctx->flush_fn(ctx->flush_ctx, ctx->buf_ptr, *ctx->length_ptr);
                     *ctx->length_ptr = 0;
                     space = ctx->buf_len;
                 }
-                
+
                 U64 to_copy = (static_cast<U64>(remaining) < space) ? remaining : space;
                 os::memory_copy(ctx->buf_ptr + *ctx->length_ptr, src, to_copy);
                 *ctx->length_ptr += to_copy;
                 src += to_copy;
                 remaining -= to_copy;
             }
-            
+
             return const_cast<char*>(buf);
         }
     }

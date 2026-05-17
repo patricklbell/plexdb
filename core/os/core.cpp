@@ -68,6 +68,9 @@ namespace plexdb::os {
     void* memory_zero(void* dst, U64 bytes) noexcept {
         return __builtin_memset(dst, 0, bytes);
     }
+    void* memory_set(void* dst, U8 value, U64 bytes) noexcept {
+        return __builtin_memset(dst, value, bytes);
+    }
 
     // ========================================================================
     // file

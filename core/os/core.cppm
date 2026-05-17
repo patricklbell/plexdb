@@ -26,6 +26,7 @@ export namespace plexdb::os {
     void* memory_copy(void* dst, const void* src, U64 bytes) noexcept;
     void* memory_move(void* dst, const void* src, U64 bytes) noexcept;
     void* memory_zero(void* dst, U64 bytes) noexcept;
+    void* memory_set(void* dst, U8 value, U64 bytes) noexcept;
 
     template<class To>
         requires (TriviallyCopyable<To> && TriviallyConstructible<To>)
