@@ -44,7 +44,7 @@ target_include_directories(plexdb_core
 
 target_sources(plexdb_core
     PUBLIC
-        FILE_SET CXX_MODULES
+        FILE_SET CXX_MODULES TYPE CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
             aio/aio.cppm
@@ -169,7 +169,7 @@ if(PLEXDB_ENABLE_TESTS)
       PRIVATE
           ${CORE_TEST_SOURCES}
       PUBLIC
-          FILE_SET CXX_MODULES
+          FILE_SET CXX_MODULES TYPE CXX_MODULES
           BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
           FILES
               ${CORE_TEST_MODULE_SOURCES}

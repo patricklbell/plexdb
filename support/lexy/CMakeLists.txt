@@ -34,7 +34,7 @@ target_include_directories(plexdb_support_lexy
 
 target_sources(plexdb_support_lexy
     PUBLIC
-        FILE_SET CXX_MODULES
+        FILE_SET CXX_MODULES TYPE CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
             error_callback.cppm

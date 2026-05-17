@@ -44,7 +44,7 @@ set_target_properties(plexbd_cql PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_sources(plexbd_cql
     PUBLIC
-        FILE_SET CXX_MODULES
+        FILE_SET CXX_MODULES TYPE CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
             crc/crc.cppm
@@ -137,7 +137,7 @@ if(PLEXDB_ENABLE_TESTS)
         PRIVATE
             ${CQL_TEST_SOURCES}
         PUBLIC
-            FILE_SET CXX_MODULES
+            FILE_SET CXX_MODULES TYPE CXX_MODULES
             BASE_DIRS
                 ${CMAKE_CURRENT_SOURCE_DIR}
                 ${CMAKE_CURRENT_SOURCE_DIR}/../core

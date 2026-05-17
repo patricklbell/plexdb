@@ -26,7 +26,7 @@ set_target_properties(plexdb_keyvalue PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_sources(plexdb_keyvalue
     PUBLIC
-        FILE_SET CXX_MODULES
+        FILE_SET CXX_MODULES TYPE CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
             engine/engine.cppm
@@ -103,7 +103,7 @@ if(PLEXDB_ENABLE_TESTS)
       PRIVATE
           ${KEYVALUE_TEST_SOURCES}
       PUBLIC
-          FILE_SET CXX_MODULES
+          FILE_SET CXX_MODULES TYPE CXX_MODULES
           BASE_DIRS
               ${CMAKE_CURRENT_SOURCE_DIR}
               ${CMAKE_CURRENT_SOURCE_DIR}/../core
