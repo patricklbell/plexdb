@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.28)
 project(plexdb_otel_plugin)
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../core/plugin_abi plugin_abi)
 
 # =============================================================================
@@ -32,7 +34,6 @@ FetchContent_MakeAvailable(opentelemetry-cpp)
 # =============================================================================
 add_library(plexdb_otel_plugin SHARED)
 target_compile_features(plexdb_otel_plugin PRIVATE cxx_std_20)
-set_target_properties(plexdb_otel_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_sources(plexdb_otel_plugin
     PRIVATE
