@@ -74,7 +74,10 @@ namespace keyvalue::parsers {
                 if      (arg_eq(args[i], "NX"))                                            nx = true;
                 else if (arg_eq(args[i], "XX"))                                            xx = true;
                 else if (arg_eq(args[i], "EX")   || arg_eq(args[i], "PX") ||
-                         arg_eq(args[i], "EXAT") || arg_eq(args[i], "PXAT"))              i++;
+                         arg_eq(args[i], "EXAT") || arg_eq(args[i], "PXAT")) {
+                    assert_not_implemented("key expiry");
+                    i++;
+                }
             }
             return Statement{Set{move(args[1]), move(args[2]), nx, xx}};
         }

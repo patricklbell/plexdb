@@ -9,7 +9,7 @@ import plexdb.aio;
 import plexdb.argparse;
 import plexdb.threads;
 import plexdb.arena;
-import keyvalue.store;
+import keyvalue.engine;
 import keyvalue.resp;
 
 using namespace plexdb;
@@ -56,14 +56,14 @@ int main(int argc, char* argv[]) {
 
     os::Poll io_poll{};
     {
-        store::Store store{};
+        engine::Engine engine{};
 
         auto on_ready = [&port]() {
             println("listening on port ", to_str(port), " (RESP)");
         };
 
         auto signal_consumer = aio::create_notifier_consumer(g_signal_notifier, io_poll);
-        Optional<String8> err = resp::run(port, store, on_ready, !no_uring, signal_consumer, io_poll);
+        Optional<String8> err = resp::run(port, engine, on_ready, !no_uring, signal_consumer, io_poll);
         if (err) println(*err);
     }
 

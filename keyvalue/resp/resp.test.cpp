@@ -12,7 +12,7 @@ import plexdb.threads;
 import plexdb.aio;
 import plexdb.server.test_helpers;
 
-import keyvalue.store;
+import keyvalue.engine;
 import keyvalue.resp;
 import keyvalue.resp.protocol;
 
@@ -117,10 +117,10 @@ namespace {
 
     template<typename ClientFn>
     void run_test(int port, ClientFn&& client_fn) {
-        store::Store store{};
+        engine::Engine engine{};
         run_server_test("resp-client", std::forward<ClientFn>(client_fn),
             [&](auto on_ready, auto& signal_consumer, auto& poll) {
-                resp::run((U16)port, store, on_ready, false, signal_consumer, poll);
+                resp::run((U16)port, engine, on_ready, false, signal_consumer, poll);
             });
     }
 }

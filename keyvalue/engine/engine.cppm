@@ -5,11 +5,13 @@ import plexdb.tagged_union;
 import plexdb.dynamic.containers;
 
 export import keyvalue.engine.statements;
-import keyvalue.store;
-
 using namespace plexdb;
 
 export namespace keyvalue::engine {
+    struct Engine {
+        DynamicMap<AutoString8, AutoString8> data;
+    };
+
     struct ResultNull {};
     struct ResultEmptyArr {};
     struct ResultClose {};
@@ -42,5 +44,5 @@ export namespace keyvalue::engine {
         ResultScan, ResultError, ResultClose
     >;
 
-    ExecutionResult execute(store::Store& store, const Statement& statement);
+    ExecutionResult execute(Engine& engine, const Statement& statement);
 }

@@ -35,15 +35,14 @@ target_sources(plexdb_keyvalue
             parsers/parsers.cppm
             resp/resp.cppm
             resp/resp.protocol.cppm
-            store/store.cppm
     PRIVATE
         engine/engine.cpp
         log/log.cpp
         parsers/parsers.cpp
         resp/resp.cpp
         resp/resp.protocol.cpp
-        store/store.cpp
 )
+
 
 target_link_libraries(plexdb_keyvalue
     PRIVATE
