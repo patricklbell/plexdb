@@ -11,6 +11,18 @@ on:
         description: "ScyllaDB git ref for test content (default: master)"
         required: false
         default: "master"
+  workflow_call:
+    inputs:
+      test_filter:
+        type: string
+        description: "pytest -k expression to select tests (empty = all)"
+        required: false
+        default: ""
+      scylla_ref:
+        type: string
+        description: "ScyllaDB git ref for test content (default: master)"
+        required: false
+        default: "master"
 
 jobs:
   cql-conformance:

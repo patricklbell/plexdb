@@ -11,6 +11,18 @@ on:
         description: "redis-py git ref/tag for test content (default: v4.6.0)"
         required: false
         default: "v4.6.0"
+  workflow_call:
+    inputs:
+      test_filter:
+        type: string
+        description: "pytest -k expression to select tests (empty = all)"
+        required: false
+        default: ""
+      redis_py_ref:
+        type: string
+        description: "redis-py git ref/tag for test content (default: v4.6.0)"
+        required: false
+        default: "v4.6.0"
 
 jobs:
   keyvalue-conformance:
