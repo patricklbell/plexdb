@@ -1,4 +1,4 @@
-name: keyvalue Conformance
+name: Key Value Conformance Tests
 
 on:
   workflow_dispatch:

@@ -1,4 +1,4 @@
-name: CQL Conformance
+name: CQL Conformance Tests
 
 on:
   workflow_dispatch:
