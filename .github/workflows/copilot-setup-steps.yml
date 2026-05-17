@@ -30,6 +30,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++-19 \
           -DCMAKE_C_COMPILER=clang-19 \
           -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_SCAN_FOR_MODULES=ON \
           -DPLEXDB_ENABLE_TESTS=ON \
           -DPLEXDB_ENABLE_PLUGINS=ON
 

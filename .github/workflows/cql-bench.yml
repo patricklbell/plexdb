@@ -33,7 +33,8 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-19 \
-            -DCMAKE_C_COMPILER=clang-19
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_SCAN_FOR_MODULES=ON
 
       - name: Build
         run: |
