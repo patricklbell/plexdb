@@ -3,7 +3,6 @@ export module keyvalue.resp.protocol;
 import plexdb.base;
 import plexdb.dynamic.containers;
 import plexdb.os;
-import plexdb.tagged_union;
 
 import keyvalue.engine;
 

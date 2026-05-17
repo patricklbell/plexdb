@@ -3,7 +3,6 @@ module keyvalue.resp.protocol;
 import plexdb.base;
 import plexdb.dynamic.containers;
 import plexdb.os;
-import plexdb.tagged_union;
 
 using namespace plexdb;
 
@@ -62,51 +61,50 @@ namespace keyvalue::resp::protocol {
     void append_null_array(DynamicArray<U8>& buf) { append_str(buf, "*-1\r\n"); }
 
     bool encode_result(const engine::ExecutionResult& result, DynamicArray<U8>& buf) {
-        return visit(result, [&](const auto& r) -> bool {
-            using T = RemoveCVRef<decltype(r)>;
-            if constexpr (SameAs<T, engine::ResultSimpleStr>) {
-                append_simple_string(buf, r.value);
-                return true;
-            } else if constexpr (SameAs<T, engine::ResultNull>) {
-                append_null_bulk_string(buf);
-                return true;
-            } else if constexpr (SameAs<T, engine::ResultEmptyArr>) {
-                append_array_header(buf, 0);
-                return true;
-            } else if constexpr (SameAs<T, engine::ResultBulkStr>) {
-                append_bulk_string(buf, r.value);
-                return true;
-            } else if constexpr (SameAs<T, engine::ResultInt>) {
-                append_integer(buf, r.value);
-                return true;
-            } else if constexpr (SameAs<T, engine::ResultBulkArr>) {
-                append_array_header(buf, S64(r.values.length));
-                for (U64 i = 0; i < r.values.length; i++)
-                    append_bulk_string(buf, r.values[i]);
-                return true;
-            } else if constexpr (SameAs<T, engine::ResultNullBulkArr>) {
-                append_array_header(buf, S64(r.values.length));
-                for (U64 i = 0; i < r.values.length; i++) {
-                    if (r.values[i]) append_bulk_string(buf, *r.values[i]);
-                    else             append_null_bulk_string(buf);
+        if (result.status == engine::ExecutionStatus::Close) {
+            append_simple_string(buf, "OK");
+            return false;
+        }
+        if (result.status == engine::ExecutionStatus::Error) {
+            append_error(buf, "ERR", result.error_message);
+            return true;
+        }
+        if (result.status == engine::ExecutionStatus::NotFound) {
+            append_null_bulk_string(buf);
+            return true;
+        }
+        switch (result.kind) {
+            case engine::ResultKind::None:
+                break;
+            case engine::ResultKind::SimpleStr:
+                append_simple_string(buf, result.str);
+                break;
+            case engine::ResultKind::BulkStr:
+                append_bulk_string(buf, result.str);
+                break;
+            case engine::ResultKind::Int:
+                append_integer(buf, result.integer);
+                break;
+            case engine::ResultKind::Arr:
+                append_array_header(buf, S64(result.arr.length));
+                for (U64 i = 0; i < result.arr.length; i++)
+                    append_bulk_string(buf, result.arr[i]);
+                break;
+            case engine::ResultKind::NullArr:
+                append_array_header(buf, S64(result.null_arr.length));
+                for (U64 i = 0; i < result.null_arr.length; i++) {
+                    if (result.null_arr[i]) append_bulk_string(buf, *result.null_arr[i]);
+                    else                    append_null_bulk_string(buf);
                 }
-                return true;
-            } else if constexpr (SameAs<T, engine::ResultScan>) {
+                break;
+            case engine::ResultKind::Scan:
                 append_array_header(buf, 2);
-                append_bulk_string(buf, r.cursor);
-                append_array_header(buf, S64(r.keys.length));
-                for (U64 i = 0; i < r.keys.length; i++)
-                    append_bulk_string(buf, r.keys[i]);
-                return true;
-            } else if constexpr (SameAs<T, engine::ResultError>) {
-                append_error(buf, "ERR", r.message);
-                return true;
-            } else if constexpr (SameAs<T, engine::ResultClose>) {
-                append_simple_string(buf, "OK");
-                return false;
-            } else {
-                static_assert(!SameAs<T,T>, "missing result case");
-            }
-        });
+                append_bulk_string(buf, result.cursor);
+                append_array_header(buf, S64(result.arr.length));
+                for (U64 i = 0; i < result.arr.length; i++)
+                    append_bulk_string(buf, result.arr[i]);
+                break;
+        }
+        return true;
     }
 }
