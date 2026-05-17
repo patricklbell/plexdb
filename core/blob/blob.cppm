@@ -17,8 +17,7 @@ export namespace plexdb::blob {
     // ========================================================================
     // untyped interface
     // ========================================================================
-    template<Blob B>
-    coroutine::Task<void> update(B& blob, const U8* in_value, U64 size, U64 offset=0) {
+    coroutine::Task<void> update(Blob auto& blob, const U8* in_value, U64 size, U64 offset=0) {
         assert_true(offset + size <= blob.size_bytes, "update fits in blob");
 
         U64 value_offset = 0;
@@ -29,8 +28,7 @@ export namespace plexdb::blob {
         }
     }
 
-    template<Blob B>
-    coroutine::Task<void> get(B& blob, U8* out_value, U64 size, U64 offset=0) {
+    coroutine::Task<void> get(Blob auto& blob, U8* out_value, U64 size, U64 offset=0) {
         assert_true(offset + size <= blob.size_bytes, "gets fits in blob");
 
         U64 value_offset = 0;
@@ -41,26 +39,22 @@ export namespace plexdb::blob {
         }
     }
 
-    template<Blob B>
-    coroutine::Task<void> remove(B& blob) {
+    coroutine::Task<void> remove(Blob auto& blob) {
         co_await remove_impl(blob);
     }
 
-    template<Blob B>
-    coroutine::Task<void> resize(B& blob, U64 new_size) {
-        static_assert(!SameAs<B, BlobStaticPaged>, "cannot resize static blob");
+    coroutine::Task<void> resize(Blob auto& blob, U64 new_size) {
+        static_assert(!SameAs<Decay<decltype(blob)>, BlobStaticPaged>, "cannot resize static blob");
         co_await resize_impl(blob, new_size);
     }
 
-    template<Blob B>
-    coroutine::Task<void> append(B& blob, const U8* in_value, U64 size) {
+    coroutine::Task<void> append(Blob auto& blob, const U8* in_value, U64 size) {
         U64 offset = blob.size_bytes;
         co_await resize(blob, blob.size_bytes + size);
         co_await update(blob, in_value, size, offset);
     }
 
-    template<Blob B>
-    coroutine::Task<void> insert(B& blob, const U8* in_value, U64 size, U64 offset=0) {
+    coroutine::Task<void> insert(Blob auto& blob, const U8* in_value, U64 size, U64 offset=0) {
         if (offset + size > blob.size_bytes) {
             co_await resize(blob, offset + size);
         }
@@ -70,41 +64,41 @@ export namespace plexdb::blob {
     // ========================================================================
     // typed interface
     // ========================================================================
-    template<typename T, Blob B>
+    template<typename T>
         requires TriviallyCopyable<T>
-    coroutine::Task<void> tupdate(B& blob, const T* in_value) {
+    coroutine::Task<void> tupdate(Blob auto& blob, const T* in_value) {
         co_await update(blob, reinterpret_cast<const U8*>(in_value), sizeof(T), 0);
     }
 
-    template<typename T, Blob B>
+    template<typename T>
         requires TriviallyCopyable<T>
-    coroutine::Task<void> tupdate(B& blob, const T* in_value, U64* inout_offset) {
+    coroutine::Task<void> tupdate(Blob auto& blob, const T* in_value, U64* inout_offset) {
         co_await update(blob, reinterpret_cast<const U8*>(in_value), sizeof(T), *inout_offset);
         *inout_offset += sizeof(T);
     }
 
-    template<typename T, Blob B>
+    template<typename T>
         requires TriviallyCopyable<T>
-    coroutine::Task<void> tget(B& blob, T* out_value) {
+    coroutine::Task<void> tget(Blob auto& blob, T* out_value) {
         co_await get(blob, reinterpret_cast<U8*>(out_value), sizeof(T), 0);
     }
 
-    template<typename T, Blob B>
+    template<typename T>
         requires TriviallyCopyable<T>
-    coroutine::Task<void> tget(B& blob, T* out_value, U64* inout_offset) {
+    coroutine::Task<void> tget(Blob auto& blob, T* out_value, U64* inout_offset) {
         co_await get(blob, reinterpret_cast<U8*>(out_value), sizeof(T), *inout_offset);
         *inout_offset += sizeof(T);
     }
 
-    template<typename T, Blob B>
+    template<typename T>
         requires TriviallyCopyable<T>
-    coroutine::Task<void> tappend(B& blob, const T* in_value) {
+    coroutine::Task<void> tappend(Blob auto& blob, const T* in_value) {
         co_await append(blob, reinterpret_cast<const U8*>(in_value), sizeof(T));
     }
 
-    template<typename T, Blob B>
+    template<typename T>
         requires TriviallyCopyable<T>
-    coroutine::Task<void> tinsert(B& blob, const T* in_value) {
+    coroutine::Task<void> tinsert(Blob auto& blob, const T* in_value) {
         co_await insert(blob, reinterpret_cast<const U8*>(in_value), sizeof(T));
     }
 }
