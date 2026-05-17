@@ -110,8 +110,7 @@ export namespace plexdb::btree {
             // acquire lock on returned memory
             Node* n = co_await update_node(t, n_ref);
 
-            auto t_leaf = scope(t);
-            Header& h_write = *(co_await update_header(t_leaf));
+            Header& h_write = *(co_await update_header(t));
             co_return insert_in_leaf(h_write, n, key);
         }
 
@@ -120,15 +119,13 @@ export namespace plexdb::btree {
 
         // internal overflow
         {
-            auto t_int = scope(t);
-
-            const Node* n = co_await read_node(t_int, n_ref);
+            const Node* n = co_await read_node(t, n_ref);
             CountType child_idx = binary_search_first_gt(keys(n), key);
             child_ref = children(n, h)[child_idx];
-            const Node* child = co_await read_node(t_int, child_ref);
+            const Node* child = co_await read_node(t, child_ref);
 
             if (child->key_count == max_keys(h, is_child_leaf)) {
-                co_await split_child(t_int, h, co_await update_node(t_int, n_ref), child_idx, is_child_leaf);
+                co_await split_child(t, h, co_await update_node(t, n_ref), child_idx, is_child_leaf);
 
                 child_idx = (key > keys(n)[child_idx]) ? (child_idx+1) : child_idx;
                 child_ref = children(n, h)[child_idx];
@@ -142,22 +139,20 @@ export namespace plexdb::btree {
     template<Transaction Tx>
     coroutine::Task<U8*> insert_impl(Tx& t, KeyType key) { ZoneScopedN("btree::insert");
         // acquire read on header for duration of insertion
-        auto t_header = scope(t);
-        const auto& h = *(co_await read_header(t_header));
+        const auto& h = *(co_await read_header(t));
 
         // ensure root is not full
         bool is_root_leaf = h.depth == 0;
         {
-            auto t_root = scope(t);
-            const Node* root = co_await read_node(t_root, h.root);
+            const Node* root = co_await read_node(t, h.root);
 
             if (root->key_count == max_keys(h, is_root_leaf)) {
-                NodeRef new_root_ref = co_await create_internal(t_root);
-                Node* new_root = co_await update_node(t_root, new_root_ref);
+                NodeRef new_root_ref = co_await create_internal(t);
+                Node* new_root = co_await update_node(t, new_root_ref);
                 children(new_root, h)[0] = h.root;
-                co_await split_child(t_root, h, new_root, 0, is_root_leaf);
+                co_await split_child(t, h, new_root, 0, is_root_leaf);
 
-                auto& h_write = *(co_await update_header(t_root));
+                auto& h_write = *(co_await update_header(t));
                 h_write.root = new_root_ref;
                 h_write.depth++;
             }
@@ -180,13 +175,11 @@ export namespace plexdb::btree {
     template<Transaction Tx>
     coroutine::Task<Search> search_impl(Tx& t, KeyType key) { ZoneScopedN("btree::search");
         // acquire read on header for duration of search
-        auto t_header = scope(t);
-        const auto& h = *(co_await read_header(t_header));
+        const auto& h = *(co_await read_header(t));
 
         NodeRef n_ref = h.root;
         for (CountType depth = 0; depth < h.depth; depth++) {
-            auto t_node = scope(t);
-            const Node* n = co_await read_node(t_node, n_ref);
+            const Node* n = co_await read_node(t, n_ref);
             CountType idx = binary_search_first_gt(keys(n), key);
             n_ref = children(n, h)[idx];
         }
@@ -209,10 +202,9 @@ export namespace plexdb::btree {
 
     template<Transaction Tx>
     coroutine::Task<bool> remove_impl(Tx& t, KeyType key) { ZoneScopedN("btree::remove");
-        auto t_remove = scope(t);
 
         // acquire read on header for duration of remove
-        const auto& h = *(co_await read_header(t_remove));
+        const auto& h = *(co_await read_header(t));
 
         // traverse to leaf and store path
         Stack<RemoveStackItem> stack{};
@@ -220,9 +212,8 @@ export namespace plexdb::btree {
         Arena stack_arena{/*page_size*/ sizeof(decltype(stack)::Node)*h.depth};
         NodeRef node_ref = h.root;
         for (CountType depth = 0; depth < h.depth; depth++) {
-            auto t_down = scope(t_remove);
 
-            const Node* node = co_await read_node(t_down, node_ref);
+            const Node* node = co_await read_node(t, node_ref);
             CountType idx = binary_search_first_gt(keys(node), key);
             push_front(stack_arena, stack, RemoveStackItem{node_ref, idx});
             node_ref = children(node, h)[idx];
@@ -231,13 +222,13 @@ export namespace plexdb::btree {
         // find and delete key
         CountType idx;
         {
-            const Node* node = co_await read_node(t_remove, node_ref);
+            const Node* node = co_await read_node(t, node_ref);
             idx = binary_search_first_geq(keys(node), key);
             if (idx >= node->key_count || keys(node)[idx] != key)
                 co_return false;
         }
 
-        Node* node = co_await update_node(t_remove, node_ref);
+        Node* node = co_await update_node(t, node_ref);
         delete_from_leaf(h, node, idx);
 
         // fix underflow, propagating upwards as needed
@@ -248,9 +239,9 @@ export namespace plexdb::btree {
                     break;
 
                 NodeRef new_root = children(node, h)[0];
-                co_await delete_node(t_remove, node_ref);
+                co_await delete_node(t, node_ref);
 
-                Header& h_write = *(co_await update_header(t_remove));
+                Header& h_write = *(co_await update_header(t));
                 h_write.root = new_root;
                 h_write.depth--;
                 h_write.size--;
@@ -260,19 +251,19 @@ export namespace plexdb::btree {
             RemoveStackItem* item = front(stack); pop_front(stack);
             NodeRef& parent_ref = item->node;
             CountType& item_idx = item->idx;
-            Node* parent = co_await update_node(t_remove, parent_ref);
+            Node* parent = co_await update_node(t, parent_ref);
 
             // borrow from left or right sibling if it does not break invariant
             NodeRef left_ref = (item_idx > 0) ? children(parent,h)[item_idx-1] : 0;
             Node* left = nullptr;
-            if (left_ref != 0) left = co_await update_node(t_remove, left_ref);
+            if (left_ref != 0) left = co_await update_node(t, left_ref);
             if (left && left->key_count > min_keys(h, is_leaf)) {
                 move_from_left(parent, left, node, item_idx, h, is_leaf);
                 break;
             }
             NodeRef right_ref = (item_idx < parent->key_count) ? children(parent,h)[item_idx+1] : 0;
             Node* right = nullptr;
-            if (right_ref != 0) right = co_await update_node(t_remove, right_ref);
+            if (right_ref != 0) right = co_await update_node(t, right_ref);
             if (right && right->key_count > min_keys(h, is_leaf)) {
                 move_from_right(parent, right, node, item_idx, h, is_leaf);
                 break;
@@ -296,77 +287,76 @@ export namespace plexdb::btree {
         }
         // @note loop contains a return
 
-        (co_await update_header(t_remove))->size--;
+        (co_await update_header(t))->size--;
         co_return true;
     }
 
     template<Transaction Tx>
     coroutine::Task<void> truncate_impl(Tx& t) {
-        auto t_truncate = scope(t);
 
         // acquire read/write on header for duration of truncate
-        auto& h = *(co_await update_header(t_truncate));
+        auto& h = *(co_await update_header(t));
 
         // traverse from first child of root to leaf
         // deleting horizontally in a zig-zag pattern
-        Node* n_root = co_await update_node(t_truncate, h.root);
+        Node* n_root = co_await update_node(t, h.root);
         auto root_children_view = children(n_root, h);
         if (root_children_view.length > 0) {
             NodeRef curr_ref = root_children_view[0];
             for (CountType depth = 1; depth <= h.depth; depth++) {
-                const Node* curr = co_await read_node(t_truncate, curr_ref);
+                const Node* curr = co_await read_node(t, curr_ref);
                 if (curr->prev == 0) {
                     while (curr->next != 0) {
                         NodeRef next_ref = curr->next;
-                        co_await delete_node(t_truncate, curr_ref);
+                        co_await delete_node(t, curr_ref);
 
                         curr_ref = next_ref;
-                        curr = co_await read_node(t_truncate, curr_ref);
+                        curr = co_await read_node(t, curr_ref);
                     }
 
                     if (depth != h.depth) {
                         auto children_view = children(curr, h);
                         NodeRef right_most_child_ref = children_view[children_view.length-1];
-                        co_await delete_node(t_truncate, curr_ref);
+                        co_await delete_node(t, curr_ref);
 
                         curr_ref = right_most_child_ref;
                     } else {
-                        co_await delete_node(t_truncate, curr_ref);
+                        co_await delete_node(t, curr_ref);
                     }
                 } else {
                     assert_true(curr->next == 0, "first node in level must be left-most or right-most");
 
                     while (curr->prev != 0) {
                         NodeRef prev_ref = curr->prev;
-                        co_await delete_node(t_truncate, curr_ref);
+                        co_await delete_node(t, curr_ref);
 
                         curr_ref = prev_ref;
-                        curr = co_await read_node(t_truncate, curr_ref);
+                        curr = co_await read_node(t, curr_ref);
                     }
 
                     if (depth != h.depth) {
                         auto children_view = children(curr, h);
                         NodeRef left_most_child_ref = children_view[0];
-                        co_await delete_node(t_truncate, curr_ref);
+                        co_await delete_node(t, curr_ref);
 
                         curr_ref = left_most_child_ref;
                     } else {
-                        co_await delete_node(t_truncate, curr_ref);
+                        co_await delete_node(t, curr_ref);
                     }
                 }
             }
         }
 
         NodeRef old_root_ref = h.root;
-        NodeRef new_root_ref = co_await create_leaf(t_truncate);
-        Node* new_root = co_await update_node(t_truncate, new_root_ref);
+        NodeRef new_root_ref = co_await create_leaf(t);
+        Node* new_root = co_await update_node(t, new_root_ref);
         init_node(new_root);
-        auto& h_write = *(co_await update_header(t_truncate));
+        auto& h_write = *(co_await update_header(t));
         h_write.root   = new_root_ref;
         h_write.leaves = new_root_ref;
         h_write.size   = 0;
         h_write.depth  = 0;
-        co_await delete_node(t_truncate, old_root_ref);
+        co_await delete_node(t, old_root_ref);
     }
 
     // ========================================================================
@@ -385,8 +375,7 @@ export namespace plexdb::btree {
 
     template<Transaction Tx>
     coroutine::Task<IteratorImpl> begin_iterator_impl(Tx& t) {
-        auto t_header = scope(t);
-        const auto& h = *(co_await read_header(t_header));
+        const auto& h = *(co_await read_header(t));
 
         if (h.size == 0) {
             co_return IteratorImpl{};
@@ -394,8 +383,7 @@ export namespace plexdb::btree {
 
         NodeRef n_ref = h.root;
         for (CountType depth = 0; depth < h.depth; depth++) {
-            auto t_node = scope(t);
-            const Node* n = co_await read_node(t_node, n_ref);
+            const Node* n = co_await read_node(t, n_ref);
 
             assert_true(keys(n).length > 0, "internal node must have at least one key");
             n_ref = children(n, h)[0];
@@ -446,12 +434,10 @@ export namespace plexdb::btree {
 
     template<SearchStrategy Strategy, Transaction Tx>
     coroutine::Task<IteratorImpl> search_iterator_impl(Tx& t, KeyType key) {
-        auto t_header = scope(t);
-        const auto& h = *(co_await read_header(t_header));
+        const auto& h = *(co_await read_header(t));
         NodeRef n_ref = h.root;
         for (CountType depth = 0; depth < h.depth; depth++) {
-            auto t_node = scope(t);
-            const Node* n = co_await read_node(t_node, n_ref);
+            const Node* n = co_await read_node(t, n_ref);
             CountType idx = binary_search_first_gt(keys(n), key);
             n_ref = children(n, h)[idx];
         }

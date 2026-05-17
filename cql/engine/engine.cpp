@@ -186,8 +186,42 @@ namespace cql::engine {
         };
     }
 
-    coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement) { ZoneScopedN("engine::execute");
-        co_return co_await visit(statement.value, [&engine](const auto& stmt) -> coroutine::Task<ExecutionResult> {
+    // ========================================================================
+    // engine transaction
+    // ========================================================================
+    Transaction::~Transaction() {
+        if (started && engine && engine->pager && engine->pager->transaction_active)
+            pager::rollback_transaction(*engine->pager);
+    }
+
+    coroutine::Task<> Transaction::begin() {
+        pager::begin_transaction(*engine->pager);
+        started = true;
+        co_return;
+    }
+
+    coroutine::Task<> Transaction::commit() {
+        co_await pager::commit_transaction(*engine->pager);
+        started = false;
+    }
+
+    coroutine::Task<> Transaction::rollback() {
+        pager::rollback_transaction(*engine->pager);
+        started = false;
+        co_return;
+    }
+
+    btree::BTreePaged::Transaction Transaction::borrow(btree::BTreePaged& btree) {
+        return btree::BTreePaged::Transaction{&btree};
+    }
+
+    // Single canonical implementation — all statement logic lives here.
+    // DML statements use tx.borrow() so btree ops share the caller's pager
+    // transaction without calling begin/commit per operation.
+    // DDL and SELECT write through blobs/pager which transparently participate
+    // in whatever pager transaction is currently active.
+    coroutine::Task<ExecutionResult> execute(Transaction& tx, Engine& engine, const Statement& statement) {
+        co_return co_await visit(statement.value, [&tx, &engine](const auto& stmt) -> coroutine::Task<ExecutionResult> {
             using T = RemoveCVRef<decltype(stmt)>;
 
             if constexpr (SameAs<T, CreateKeyspace>) {
@@ -280,7 +314,8 @@ namespace cql::engine {
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
                 if (tbl == nullptr) co_return create_table_not_found(ks_name, stmt.table.table_name);
 
-                co_await btree::truncate(tbl->btree);
+                auto t = tx.borrow(tbl->btree);
+                co_await btree::truncate(t);
 
                 co_return create_void_success();
             } else if constexpr (SameAs<T, Select>) { ZoneScopedN("engine::select");
@@ -458,7 +493,7 @@ namespace cql::engine {
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
                 if (tbl == nullptr) co_return create_table_not_found(ks_name, stmt.table.table_name);
 
-                co_return co_await visit(stmt.insert_clause, [&engine, ks, tbl, &stmt](const auto& v) -> coroutine::Task<ExecutionResult> {
+                co_return co_await visit(stmt.insert_clause, [&tx, &engine, ks, tbl, &stmt](const auto& v) -> coroutine::Task<ExecutionResult> {
                     using T = Decay<decltype(v)>;
 
                     if constexpr (SameAs<T, Insert::NamesValues>) {
@@ -514,7 +549,8 @@ namespace cql::engine {
                         // insert PK → row_page into btree
                         const auto& pk_eval = evaluate(v.values[*pk_idx_opt]);
                         U64 pk_key = hash(pk_eval);
-                        co_await btree::tinsert(tbl->btree, pk_key, row_page);
+                        auto t = tx.borrow(tbl->btree);
+                        co_await btree::tinsert(t, pk_key, row_page);
 
                         co_return create_void_success();
                     } else if constexpr (SameAs<T, Insert::JsonClause>) {
@@ -550,7 +586,8 @@ namespace cql::engine {
                 assert_true(static_cast<bool>(pk_val), "UPDATE requires partition key equality in WHERE clause");
 
                 U64 pk_key = hash(*pk_val);
-                auto existing_page_opt = co_await btree::tfind<U64>(tbl->btree, pk_key);
+                auto t = tx.borrow(tbl->btree);
+                auto existing_page_opt = co_await btree::tfind<U64>(t, pk_key);
 
                 auto col_idx_for = [&](String8 name) -> Optional<U64> {
                     for (U64 i = 0; i < tbl->cols.length; i++) {
@@ -628,12 +665,12 @@ namespace cql::engine {
                         }
                     }
 
-                    co_await btree::remove(tbl->btree, pk_key);
+                    co_await btree::remove(t, pk_key);
                     U64 new_row_page = co_await blob::create_paged_dynamic(*engine.pager);
                     blob::BlobDynamicPaged row_blob;
                     co_await blob::load(row_blob, engine.pager, new_row_page);
                     co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
-                    co_await btree::tinsert(tbl->btree, pk_key, new_row_page);
+                    co_await btree::tinsert(t, pk_key, new_row_page);
                 } else {
                     // insert new row with only assigned columns + PK
                     DynamicArray<bool> col_present;
@@ -682,7 +719,7 @@ namespace cql::engine {
                     blob::BlobDynamicPaged row_blob;
                     co_await blob::load(row_blob, engine.pager, row_page);
                     co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
-                    co_await btree::tinsert(tbl->btree, pk_key, row_page);
+                    co_await btree::tinsert(t, pk_key, row_page);
                 }
 
                 co_return create_void_success();
@@ -712,12 +749,12 @@ namespace cql::engine {
                 assert_true_not_implemented(static_cast<bool>(pk_val), "DELETE for non-partition key equality in WHERE clause is not implemented");
 
                 U64 pk_key = hash(*pk_val);
-
-                if (auto opt_row_page = co_await btree::tfind<U64>(tbl->btree, pk_key); static_cast<bool>(opt_row_page)) {
+                auto t = tx.borrow(tbl->btree);
+                if (auto opt_row_page = co_await btree::tfind<U64>(t, pk_key); static_cast<bool>(opt_row_page)) {
                     blob::BlobDynamicPaged row_blob;
                     co_await blob::load(row_blob, engine.pager, *opt_row_page);
                     co_await blob::remove(row_blob);
-                    co_await btree::remove(tbl->btree, pk_key);
+                    co_await btree::remove(t, pk_key);
                 }
 
                 co_return create_void_success();
@@ -780,6 +817,17 @@ namespace cql::engine {
                 static_assert(false, "Unhandled statement type in engine::execute");
             }
         });
+    }
+
+    // Thin wrapper: wraps every single-statement execute in its own transaction.
+    // DDL and SELECT work unchanged; DML gets the same per-statement atomicity
+    // as before because begin/commit bracket the borrowed btree transaction.
+    coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement) { ZoneScopedN("engine::execute");
+        Transaction tx{engine};
+        co_await tx.begin();
+        auto result = co_await execute(tx, engine, statement);
+        co_await tx.commit();
+        co_return result;
     }
 
     // ========================================================================
@@ -846,6 +894,11 @@ namespace cql::engine {
         co_return co_await execute(engine, statement);
     }
 
+    coroutine::Task<ExecutionResult> execute(Transaction& tx, Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values) {
+        bind_values_to_statement(statement, bound_values);
+        co_return co_await execute(tx, engine, statement);
+    }
+
     // ========================================================================
     // prepared statements
     // ========================================================================
@@ -905,5 +958,19 @@ namespace cql::engine {
         }
 
         co_return co_await execute(engine, *cql_opt, move(bound_values));
+    }
+
+    coroutine::Task<ExecutionResult> execute(Transaction& tx, Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values) { ZoneScopedN("engine::execute_prepared");
+        auto* entry = find(engine.prepared_cache, prepared_id);
+        if (entry == nullptr) {
+            co_return ExecutionResult{ .status = ExecutionStatus::Invalid, .message = "Prepared statement not found" };
+        }
+
+        auto cql_opt = parsers::parse(String8(entry->query_string));
+        if (!cql_opt) {
+            co_return ExecutionResult{ .status = ExecutionStatus::ServerError, .message = "Failed to re-parse prepared query" };
+        }
+
+        co_return co_await execute(tx, engine, *cql_opt, move(bound_values));
     }
 }

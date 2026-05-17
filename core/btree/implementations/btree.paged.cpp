@@ -32,15 +32,33 @@ namespace plexdb::btree {
         co_return header_page;
     }
 
-    // @todo
     BTreePaged::Transaction::Transaction(): t(nullptr) {}
     BTreePaged::Transaction::Transaction(BTreePaged* t): t(t) {
         assert_true(t->pager != nullptr, "cannot create a transaction for an uninitialized btree");
     }
-    BTreePaged::Transaction::Transaction(Transaction&& other): t(other.t) {}
-    BTreePaged::Transaction& BTreePaged::Transaction::operator=(Transaction&& other) { t = other.t; return *this; }
-    BTreePaged::Transaction::~Transaction() {}
-    BTreePaged::Transaction scope(const BTreePaged::Transaction& t) {
-        return BTreePaged::Transaction(t.t);
+    BTreePaged::Transaction::Transaction(Transaction&& other): started_transaction(other.started_transaction), t(other.t) {
+        other.started_transaction = false;
+        other.t = nullptr;
+    }
+    BTreePaged::Transaction& BTreePaged::Transaction::operator=(Transaction&& other) {
+        started_transaction = other.started_transaction;
+        t = other.t;
+        other.started_transaction = false;
+        other.t = nullptr;
+        return *this;
+    }
+    BTreePaged::Transaction::~Transaction() {
+        if (started_transaction && t && t->pager && t->pager->transaction_active)
+            pager::rollback_transaction(*t->pager);
+    }
+
+    coroutine::Task<> BTreePaged::Transaction::begin() {
+        pager::begin_transaction(*t->pager);
+        started_transaction = true;
+        co_return;
+    }
+
+    coroutine::Task<> BTreePaged::Transaction::commit() {
+        co_await pager::commit_transaction(*t->pager);
     }
 }

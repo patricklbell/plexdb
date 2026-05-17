@@ -41,11 +41,12 @@ int main(int argc, char* argv[]) {
 
     auto arg_parser = argparse::create_parser("cql", "Object store database server");
 
-    U64 db_path_arg  = argparse::add_positional(arg_parser, "db_path", "Path to the database file");
-    U64 port_arg     = argparse::add_option(arg_parser, "--port", "-p", "TCP port to listen on", "9042");
-    U64 repl_arg     = argparse::add_flag(arg_parser, "--repl", "-r", "Run interactive REPL instead of server");
-    U64 no_uring_arg = argparse::add_flag(arg_parser, "--no-uring", "-U", "Disable io_uring and use synchronous socket I/O");
-    U64 no_wal_arg   = argparse::add_flag(arg_parser, "--no-wal", "-W", "Disable write-ahead-log (WAL)");
+    U64 db_path_arg              = argparse::add_positional(arg_parser, "db_path", "Path to the database file");
+    U64 port_arg                 = argparse::add_option(arg_parser, "--port", "-p", "TCP port to listen on", "9042");
+    U64 checkpoint_interval_arg  = argparse::add_option(arg_parser, "--checkpoint-interval", "-c", "Maximum number of transactions held in-memory before writing to database", "1000");
+    U64 repl_arg                 = argparse::add_flag(arg_parser, "--repl", "-r", "Run interactive REPL instead of server");
+    U64 no_uring_arg             = argparse::add_flag(arg_parser, "--no-uring", "-U", "Disable io_uring and use synchronous socket I/O");
+    U64 no_wal_arg               = argparse::add_flag(arg_parser, "--no-wal", "-W", "Disable write-ahead-log (WAL)");
 
     auto args = argparse::parse(arg_parser, argc, argv);
     if (args.help_requested) {
@@ -60,6 +61,7 @@ int main(int argc, char* argv[]) {
 
     String8 db_path = argparse::get_positional(args, db_path_arg);
     U16 port = u16_from_str(argparse::get_option(args, port_arg));
+    U64 checkpoint_interval = u64_from_str(argparse::get_option(args, checkpoint_interval_arg));
     bool run_repl = argparse::has_flag(args, repl_arg);
     bool no_uring = argparse::has_flag(args, no_uring_arg);
     bool no_wal   = argparse::has_flag(args, no_wal_arg);
@@ -91,7 +93,7 @@ int main(int argc, char* argv[]) {
         if (db_create) {
             pager::Header header = aio::drive(pager::create(file_io_ctx, db_file, page_size), file_io_consumer, io_poll);
             if (no_wal) {
-                pager = Pager{&file_io_ctx, static_cast<os::Handle>(db_file), header};
+                pager = Pager{&file_io_ctx, static_cast<os::Handle>(db_file), header, checkpoint_interval};
             } else {
                 opt_wal_file = os::File{os::file_open(db_path + ".wal"_as)};
                 aio::drive(pager::init(pager, &file_io_ctx, db_file, static_cast<os::Handle>(*opt_wal_file), header), file_io_consumer, io_poll);

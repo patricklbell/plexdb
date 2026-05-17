@@ -33,6 +33,7 @@ export namespace plexdb::wal {
     struct Wal {
         os::Handle file = os::zero_handle();
         Header header   = {};
+        DynamicMap<U64,U64> wal_index; // page_idx → latest frame_idx; MAX_U64 = header frame
 
         Wal() = default;
         explicit Wal(os::Handle file);
@@ -49,8 +50,7 @@ export namespace plexdb::wal {
 
     coroutine::Task<Header> create(aio::FileIOContext& ctx, os::Handle file, U64 page_size);
     coroutine::Task<bool>   try_load(Wal& wal, aio::FileIOContext& ctx, U64 expected_page_size);
-    coroutine::Task<bool>   has_committed(const Wal& wal, aio::FileIOContext& ctx);
-    coroutine::Task<>       append_frame(Wal& wal, aio::FileIOContext& ctx, U64 page_idx, const U8* data);
+    coroutine::Task<U64>    append_frame(Wal& wal, aio::FileIOContext& ctx, U64 page_idx, const U8* data);
     coroutine::Task<>       commit(Wal& wal, aio::FileIOContext& ctx);
     coroutine::Task<>       read_frame(Wal& wal, aio::FileIOContext& ctx, U64 frame_idx, Frame& frame_out, U8* data_out);
     coroutine::Task<>       reset(Wal& wal, aio::FileIOContext& ctx);

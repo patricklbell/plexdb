@@ -1,6 +1,7 @@
 export module plexdb.btree.in_memory;
 
 import plexdb.base;
+import plexdb.coroutine;
 import plexdb.btree.types;
 
 export namespace plexdb::btree {
@@ -18,9 +19,10 @@ export namespace plexdb::btree {
             Transaction(const Transaction& other) = delete;
             Transaction& operator=(const Transaction& other) = delete;
 
+            coroutine::Task<> begin();
+            coroutine::Task<> commit();
+
             BTreeInMemory* t;
         };
     };
-
-    BTreeInMemory::Transaction scope(const BTreeInMemory::Transaction& t);
 }

@@ -112,6 +112,33 @@ export namespace cql::engine {
     coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values);
 
     // ========================================================================
+    // engine transaction — wraps a pager-level transaction so multiple
+    // execute calls are atomic
+    // ========================================================================
+    struct Transaction {
+        Engine* engine = nullptr;
+        bool started = false;
+
+        Transaction() = default;
+        explicit Transaction(Engine& engine) : engine(&engine) {}
+        Transaction(Transaction&&) = default;
+        Transaction& operator=(Transaction&&) = default;
+        Transaction(const Transaction&) = delete;
+        Transaction& operator=(const Transaction&) = delete;
+        ~Transaction();
+
+        coroutine::Task<> begin();
+        coroutine::Task<> commit();
+        coroutine::Task<> rollback();
+
+        btree::BTreePaged::Transaction borrow(btree::BTreePaged& btree);
+    };
+
+    coroutine::Task<ExecutionResult> execute(Transaction& tx, Engine& engine, const Statement& statement);
+    coroutine::Task<ExecutionResult> execute(Transaction& tx, Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values);
+    coroutine::Task<ExecutionResult> execute(Transaction& tx, Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values);
+
+    // ========================================================================
     // bind variables
     // ========================================================================
     DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement);

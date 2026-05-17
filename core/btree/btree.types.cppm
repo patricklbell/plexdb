@@ -45,6 +45,9 @@ export namespace plexdb::btree {
         { read_node(t, ref) } -> SameAs<coroutine::Task<const Node*>>;
         { update_node(t, ref) } -> SameAs<coroutine::Task<Node*>>;
         { delete_node(t, ref) } -> SameAs<coroutine::Task<>>;
+
+        { t.begin()  } -> SameAs<coroutine::Task<>>;
+        { t.commit() } -> SameAs<coroutine::Task<>>;
     };
 
     template<typename B>

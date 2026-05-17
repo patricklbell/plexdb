@@ -160,15 +160,17 @@ TEST_CASE("pager randomized stress and reuse freed pages", "[plexdb.pager]") {
 TEST_CASE("pager flush and file size consistency", "[plexdb.pager]") {
     os::File f{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(f));
+    os::File walf{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(walf));
 
     U64 page_size = 128;
-    auto pager = create_test_pager(f, page_size);
+    auto pager = create_test_pager(f, walf, page_size);
 
+    pager::begin_transaction(pager);
     U64 pidx = drive_test_pager(new_page(pager));
     std::vector<U8> buffer(page_size, 0x55);
     os::memory_copy(drive_test_pager(rwpage(pager, pidx)), buffer.data(), buffer.size());
-
-    drive_test_pager(fflush(pager));
+    drive_test_pager(pager::commit_transaction(pager));
     REQUIRE(os::file_get_stats(f).byte_count >= page_size);
     destroy_test_pager(pager);
 }
@@ -259,8 +261,10 @@ TEST_CASE("write and read back via WAL-enabled pager", "[plexdb.pager.wal]") {
         os::Handle wal = os::file_open(wal_path);
         {
             auto p = create_test_pager(db, wal, page_size);
+            pager::begin_transaction(p);
             pidx = drive_test_pager(new_page(p));
             os::memory_copy(drive_test_pager(rwpage(p, pidx)), data, sizeof(data));
+            drive_test_pager(pager::commit_transaction(p));
             destroy_test_pager(p);
         }
         os::file_close(db);
@@ -374,8 +378,10 @@ TEST_CASE("uncommitted frames do not modify the database", "[plexdb.pager.wal]")
         os::File db{os::file_open(db_path)}, wal{os::file_open(wal_path)};
         {
             auto p = create_test_pager(db, wal, page_size);
+            pager::begin_transaction(p);
             pidx = drive_test_pager(new_page(p));
             os::memory_copy(drive_test_pager(rwpage(p, pidx)), original, sizeof(original));
+            drive_test_pager(pager::commit_transaction(p));
             destroy_test_pager(p);
         }
     }
@@ -440,8 +446,10 @@ TEST_CASE("SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]") {
         os::File db{os::file_open(db_path)}, wal{os::file_open(wal_path)};
         {
             auto p = create_test_pager(db, wal, page_size);
+            pager::begin_transaction(p);
             pidx = drive_test_pager(new_page(p));
             os::memory_copy(drive_test_pager(rwpage(p, pidx)), original, sizeof(original));
+            drive_test_pager(pager::commit_transaction(p));
             destroy_test_pager(p);
         }
     }
@@ -488,6 +496,229 @@ TEST_CASE("SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]") {
             const U8* rb = drive_test_pager(rpage(p, pidx));
             for (U64 i = 0; i < sizeof(modified); i++)
                 REQUIRE(rb[i] == modified[i]);
+            destroy_test_pager(p);
+        }
+        os::file_close(db);
+        os::file_close(wal);
+    }
+
+    os::file_delete(db_path);
+    os::file_delete(wal_path);
+}
+
+// ============================================================================
+// Transactions
+// ============================================================================
+
+TEST_CASE("begin and commit without WAL writes data to disk", "[plexdb.pager.transaction]") {
+    os::File f{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(f));
+
+    U64 page_size = 128;
+    U64 pidx;
+    U8 data[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+
+    {
+        auto pager = create_test_pager(f, page_size);
+        pager::begin_transaction(pager);
+        pidx = drive_test_pager(new_page(pager));
+        os::memory_copy(drive_test_pager(rwpage(pager, pidx)), data, sizeof(data));
+        drive_test_pager(pager::commit_transaction(pager));
+        destroy_test_pager(pager);
+    }
+
+    {
+        auto pager = test_pager(f);
+        const U8* rb = drive_test_pager(rpage(pager, pidx));
+        for (U64 i = 0; i < sizeof(data); i++)
+            REQUIRE(rb[i] == data[i]);
+        destroy_test_pager(pager);
+    }
+}
+
+TEST_CASE("rollback without WAL discards writes and restores page_count", "[plexdb.pager.transaction]") {
+    os::File f{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(f));
+
+    U64 page_size = 128;
+    U64 pidx;
+    U8 original[8] = {0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x11,0x22};
+
+    {
+        auto pager = create_test_pager(f, page_size);
+        pager::begin_transaction(pager);
+        pidx = drive_test_pager(new_page(pager));
+        os::memory_copy(drive_test_pager(rwpage(pager, pidx)), original, sizeof(original));
+        drive_test_pager(pager::commit_transaction(pager));
+        destroy_test_pager(pager);
+    }
+
+    {
+        auto pager = test_pager(f);
+        U64 count_before = pager.header.page_count;
+
+        pager::begin_transaction(pager);
+        drive_test_pager(new_page(pager));
+        U8 modified[8] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08};
+        os::memory_copy(drive_test_pager(rwpage(pager, pidx)), modified, sizeof(modified));
+        pager::rollback_transaction(pager);
+
+        REQUIRE(pager.header.page_count == count_before);
+        destroy_test_pager(pager);
+    }
+
+    {
+        auto pager = test_pager(f);
+        const U8* rb = drive_test_pager(rpage(pager, pidx));
+        for (U64 i = 0; i < sizeof(original); i++)
+            REQUIRE(rb[i] == original[i]);
+        destroy_test_pager(pager);
+    }
+}
+
+TEST_CASE("multiple sequential transactions without WAL all persist", "[plexdb.pager.transaction]") {
+    os::File f{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(f));
+
+    U64 page_size = 128;
+    U64 p1, p2;
+    U8 data1[8] = {1,2,3,4,5,6,7,8};
+    U8 data2[8] = {9,10,11,12,13,14,15,16};
+
+    {
+        auto pager = create_test_pager(f, page_size);
+
+        pager::begin_transaction(pager);
+        p1 = drive_test_pager(new_page(pager));
+        os::memory_copy(drive_test_pager(rwpage(pager, p1)), data1, sizeof(data1));
+        drive_test_pager(pager::commit_transaction(pager));
+
+        pager::begin_transaction(pager);
+        p2 = drive_test_pager(new_page(pager));
+        os::memory_copy(drive_test_pager(rwpage(pager, p2)), data2, sizeof(data2));
+        drive_test_pager(pager::commit_transaction(pager));
+
+        destroy_test_pager(pager);
+    }
+
+    {
+        auto pager = test_pager(f);
+        const U8* rb1 = drive_test_pager(rpage(pager, p1));
+        for (U64 i = 0; i < sizeof(data1); i++)
+            REQUIRE(rb1[i] == data1[i]);
+        const U8* rb2 = drive_test_pager(rpage(pager, p2));
+        for (U64 i = 0; i < sizeof(data2); i++)
+            REQUIRE(rb2[i] == data2[i]);
+        destroy_test_pager(pager);
+    }
+}
+
+TEST_CASE("rollback with WAL discards in-memory writes", "[plexdb.pager.transaction]") {
+    os::Handle pid = os::process_get_handle();
+    auto db_path  = fmt("/tmp/plexdb_txn::wrollback_%" PRIu64 "_db",  pid.u64[0]);
+    auto wal_path = fmt("/tmp/plexdb_txn::wrollback_%" PRIu64 "_wal",  pid.u64[0]);
+
+    if (os::file_exists(db_path))  os::file_delete(db_path);
+    if (os::file_exists(wal_path)) os::file_delete(wal_path);
+
+    U64 page_size = 128;
+    U64 pidx;
+    U8 original[8] = {0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x11,0x22};
+
+    {
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
+        {
+            auto p = create_test_pager(db, wal, page_size);
+            pager::begin_transaction(p);
+            pidx = drive_test_pager(new_page(p));
+            os::memory_copy(drive_test_pager(rwpage(p, pidx)), original, sizeof(original));
+            drive_test_pager(pager::commit_transaction(p));
+            destroy_test_pager(p);
+        }
+        os::file_close(db);
+        os::file_close(wal);
+    }
+
+    {
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
+        {
+            auto p = test_pager(db, wal);
+            U8 modified[8] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08};
+            pager::begin_transaction(p);
+            os::memory_copy(drive_test_pager(rwpage(p, pidx)), modified, sizeof(modified));
+            pager::rollback_transaction(p);
+            destroy_test_pager(p);
+        }
+        os::file_close(db);
+        os::file_close(wal);
+    }
+
+    {
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
+        {
+            auto p = test_pager(db, wal);
+            const U8* rb = drive_test_pager(rpage(p, pidx));
+            for (U64 i = 0; i < sizeof(original); i++)
+                REQUIRE(rb[i] == original[i]);
+            destroy_test_pager(p);
+        }
+        os::file_close(db);
+        os::file_close(wal);
+    }
+
+    os::file_delete(db_path);
+    os::file_delete(wal_path);
+}
+
+TEST_CASE("multiple sequential WAL transactions all persist", "[plexdb.pager.transaction]") {
+    os::Handle pid = os::process_get_handle();
+    auto db_path  = fmt("/tmp/plexdb_txn::wmulti_%" PRIu64 "_db",  pid.u64[0]);
+    auto wal_path = fmt("/tmp/plexdb_txn::wmulti_%" PRIu64 "_wal",  pid.u64[0]);
+
+    if (os::file_exists(db_path))  os::file_delete(db_path);
+    if (os::file_exists(wal_path)) os::file_delete(wal_path);
+
+    U64 page_size = 128;
+    U64 p1, p2;
+    U8 data1[8] = {1,2,3,4,5,6,7,8};
+    U8 data2[8] = {9,10,11,12,13,14,15,16};
+
+    {
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
+        {
+            auto p = create_test_pager(db, wal, page_size);
+
+            pager::begin_transaction(p);
+            p1 = drive_test_pager(new_page(p));
+            os::memory_copy(drive_test_pager(rwpage(p, p1)), data1, sizeof(data1));
+            drive_test_pager(pager::commit_transaction(p));
+
+            pager::begin_transaction(p);
+            p2 = drive_test_pager(new_page(p));
+            os::memory_copy(drive_test_pager(rwpage(p, p2)), data2, sizeof(data2));
+            drive_test_pager(pager::commit_transaction(p));
+
+            destroy_test_pager(p);
+        }
+        os::file_close(db);
+        os::file_close(wal);
+    }
+
+    {
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
+        {
+            auto p = test_pager(db, wal);
+            const U8* rb1 = drive_test_pager(rpage(p, p1));
+            for (U64 i = 0; i < sizeof(data1); i++)
+                REQUIRE(rb1[i] == data1[i]);
+            const U8* rb2 = drive_test_pager(rpage(p, p2));
+            for (U64 i = 0; i < sizeof(data2); i++)
+                REQUIRE(rb2[i] == data2[i]);
             destroy_test_pager(p);
         }
         os::file_close(db);

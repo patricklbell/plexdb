@@ -1,6 +1,10 @@
+module;
+#include <coroutine>
+
 module plexdb.btree.in_memory;
 
 import plexdb.os;
+import plexdb.coroutine;
 import plexdb.btree.node;
 import plexdb.btree.in_memory.detail;
 
@@ -8,7 +12,7 @@ namespace plexdb::btree {
     BTreeInMemory::BTreeInMemory(CountType max_keys_per_internal, CountType max_keys_per_leaf, U64 value_stride) {
         assert_true(max_keys_per_internal >= 3, "positive min keys.");
         assert_true(max_keys_per_leaf >= 3, "positive min keys.");
-        
+
         this->header = Header{
             .value_stride = value_stride,
             .depth = 0,
@@ -38,8 +42,8 @@ namespace plexdb::btree {
 
     BTreeInMemory::Transaction::Transaction(): t(nullptr) {}
     BTreeInMemory::Transaction::Transaction(BTreeInMemory* t): t(t) {}
-    BTreeInMemory::Transaction::Transaction(Transaction&& other): t(other.t)  {}
-    BTreeInMemory::Transaction scope(const BTreeInMemory::Transaction& t) {
-        return BTreeInMemory::Transaction(t.t);
-    }
+    BTreeInMemory::Transaction::Transaction(Transaction&& other): t(other.t) {}
+
+    coroutine::Task<> BTreeInMemory::Transaction::begin()  { co_return; }
+    coroutine::Task<> BTreeInMemory::Transaction::commit() { co_return; }
 }

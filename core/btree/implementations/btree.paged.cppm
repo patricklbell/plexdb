@@ -14,8 +14,6 @@ export namespace plexdb::btree {
         explicit BTreePaged();
         explicit BTreePaged(Pager* pager, U64 header_page);
 
-        // @todo proper transactions because this just relies on no collision occurring
-        // while transaction is holding a page (which may overwrite page buffer)
         struct Transaction {
             Transaction();
             Transaction(BTreePaged* btree);
@@ -26,10 +24,12 @@ export namespace plexdb::btree {
             Transaction(const Transaction& other) = delete;
             Transaction& operator=(const Transaction& other) = delete;
 
+            coroutine::Task<> begin();
+            coroutine::Task<> commit();
+
+            bool started_transaction = false;
             BTreePaged* t;
         };
     };
     coroutine::Task<U64> create_paged(Pager& pager, U64 value_stride);
-
-    BTreePaged::Transaction scope(const BTreePaged::Transaction& t);
 }

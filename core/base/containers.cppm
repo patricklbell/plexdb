@@ -484,6 +484,16 @@ export namespace plexdb {
     }
 
     template<typename T>
+    void remove(Deque<T>& deque, typename Deque<T>::Node* node) {
+        assert_true(node != nullptr, "valid node");
+        if (node->prev) node->prev->next = node->next;
+        else            deque.head = node->next;
+        if (node->next) node->next->prev = node->prev;
+        else            deque.tail = node->prev;
+        deque.length--;
+    }
+
+    template<typename T>
     void clear(Deque<T>& deque) {
         deque.head = nullptr;
         deque.tail = nullptr;

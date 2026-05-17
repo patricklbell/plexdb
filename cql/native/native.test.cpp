@@ -1,9 +1,15 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string.h>
+#include <string>
 #include <vector>
 #include <stdint.h>
 #include <atomic>
+#include <cinttypes>
+
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_adapters.hpp>
+#include <catch2/generators/catch_generators_random.hpp>
 
 import plexdb.base;
 import plexdb.os;
@@ -800,4 +806,324 @@ TEST_CASE("Native protocol QUERY with bind values", "[cql.native][!mayfail]") {
         native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
     });
     destroy_test_pager(pager);
+}
+
+TEST_CASE("Native protocol UPDATE modifies existing row", "[cql.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    auto pager = create_test_pager(db_file, 4_kb);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+
+    run_server_test("test-client", [&](os::Notifier& interrupt) {
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
+        send_frame(client, create_startup());
+        CHECK(recv_frame(client).opcode == 0x02);
+
+        send_frame(client, create_query("CREATE KEYSPACE ks;"));
+        CHECK(recv_frame(client).opcode == 0x08);
+        send_frame(client, create_query("CREATE TABLE ks.t (id int PRIMARY KEY, name text);"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        send_frame(client, create_query("INSERT INTO ks.t (id, name) VALUES (1, 'Alice');"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        send_frame(client, create_query("UPDATE ks.t SET name = 'Bob' WHERE id = 1;"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        send_frame(client, create_query("SELECT * FROM ks.t;"));
+        auto resp = recv_frame(client);
+        CHECK(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK( body_contains(resp, "Bob"));
+        CHECK(!body_contains(resp, "Alice"));
+
+        os::signal_notify_safe(interrupt);
+    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+    });
+    destroy_test_pager(pager);
+}
+
+TEST_CASE("Native protocol DELETE removes a row by primary key", "[cql.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    auto pager = create_test_pager(db_file, 4_kb);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+
+    run_server_test("test-client", [&](os::Notifier& interrupt) {
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
+        send_frame(client, create_startup());
+        CHECK(recv_frame(client).opcode == 0x02);
+
+        send_frame(client, create_query("CREATE KEYSPACE ks;"));
+        CHECK(recv_frame(client).opcode == 0x08);
+        send_frame(client, create_query("CREATE TABLE ks.t (id int PRIMARY KEY, name text);"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        send_frame(client, create_query("INSERT INTO ks.t (id, name) VALUES (1, 'Alice');"));
+        CHECK(recv_frame(client).opcode == 0x08);
+        send_frame(client, create_query("INSERT INTO ks.t (id, name) VALUES (2, 'Bob');"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        send_frame(client, create_query("DELETE FROM ks.t WHERE id = 1;"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        send_frame(client, create_query("SELECT * FROM ks.t;"));
+        auto resp = recv_frame(client);
+        CHECK(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK( body_contains(resp, "Bob"));
+        CHECK(!body_contains(resp, "Alice"));
+
+        os::signal_notify_safe(interrupt);
+    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+    });
+    destroy_test_pager(pager);
+}
+
+TEST_CASE("Native protocol TRUNCATE clears all rows", "[cql.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    auto pager = create_test_pager(db_file, 4_kb);
+    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    engine::Engine engine;
+    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+
+    run_server_test("test-client", [&](os::Notifier& interrupt) {
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
+        send_frame(client, create_startup());
+        CHECK(recv_frame(client).opcode == 0x02);
+
+        send_frame(client, create_query("CREATE KEYSPACE ks;"));
+        CHECK(recv_frame(client).opcode == 0x08);
+        send_frame(client, create_query("CREATE TABLE ks.t (id int PRIMARY KEY, name text);"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        send_frame(client, create_query("INSERT INTO ks.t (id, name) VALUES (1, 'Alice');"));
+        CHECK(recv_frame(client).opcode == 0x08);
+        send_frame(client, create_query("INSERT INTO ks.t (id, name) VALUES (2, 'Bob');"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        send_frame(client, create_query("TRUNCATE TABLE ks.t;"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        send_frame(client, create_query("SELECT * FROM ks.t;"));
+        auto resp = recv_frame(client);
+        CHECK(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK(!body_contains(resp, "Alice"));
+        CHECK(!body_contains(resp, "Bob"));
+
+        os::signal_notify_safe(interrupt);
+    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+    });
+    destroy_test_pager(pager);
+}
+
+TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cql.native]") {
+    int port1 = get_unique_port();
+    int port2 = get_unique_port();
+    os::Handle pid = os::process_get_handle();
+    auto db_path  = fmt("/tmp/plexdb_cql::wal_%" PRIu64 "_db",  pid.u64[0]);
+    auto wal_path = fmt("/tmp/plexdb_cql::wal_%" PRIu64 "_wal",  pid.u64[0]);
+
+    if (os::file_exists(db_path))  os::file_delete(db_path);
+    if (os::file_exists(wal_path)) os::file_delete(wal_path);
+
+    {
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
+        auto pager = create_test_pager(db, wal, 4_kb);
+        aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+        engine::Engine eng;
+        aio::drive(engine::init(eng, &pager), g_test_sync_consumer, g_test_poll);
+
+        run_server_test("test-client", [&](os::Notifier& interrupt) {
+            Socket client{socket_open()};
+            socket_set_timeout(client, 2000);
+            CHECK(socket_connect(client, "127.0.0.1", (U16)port1));
+            send_frame(client, create_startup());
+            CHECK(recv_frame(client).opcode == 0x02);
+
+            send_frame(client, create_query("CREATE KEYSPACE wks;"));
+            CHECK(recv_frame(client).opcode == 0x08);
+            send_frame(client, create_query("CREATE TABLE wks.entries (id int PRIMARY KEY, msg text);"));
+            CHECK(recv_frame(client).opcode == 0x08);
+            send_frame(client, create_query("INSERT INTO wks.entries (id, msg) VALUES (1, 'durable');"));
+            CHECK(recv_frame(client).opcode == 0x08);
+
+            os::signal_notify_safe(interrupt);
+        }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+            native::run(port1, eng, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        });
+        destroy_test_pager(pager);
+        os::file_close(db);
+        os::file_close(wal);
+    }
+
+    {
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
+        auto pager = test_pager(db, wal);
+        engine::Engine eng;
+        aio::drive(engine::init(eng, &pager), g_test_sync_consumer, g_test_poll);
+
+        run_server_test("test-client", [&](os::Notifier& interrupt) {
+            Socket client{socket_open()};
+            socket_set_timeout(client, 2000);
+            CHECK(socket_connect(client, "127.0.0.1", (U16)port2));
+            send_frame(client, create_startup());
+            CHECK(recv_frame(client).opcode == 0x02);
+
+            send_frame(client, create_query("SELECT * FROM wks.entries;"));
+            auto resp = recv_frame(client);
+            CHECK(resp.opcode == 0x08);
+            CHECK(result_kind(resp) == 0x0002);
+            CHECK(body_contains(resp, "durable"));
+
+            os::signal_notify_safe(interrupt);
+        }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+            native::run(port2, eng, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        });
+        destroy_test_pager(pager);
+        os::file_close(db);
+        os::file_close(wal);
+    }
+
+    os::file_delete(db_path);
+    os::file_delete(wal_path);
+}
+
+TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]") {
+    os::Handle pid = os::process_get_handle();
+    auto db_path  = fmt("/tmp/plexdb_cql::crash_%" PRIu64 "_db",  pid.u64[0]);
+    auto wal_path = fmt("/tmp/plexdb_cql::crash_%" PRIu64 "_wal",  pid.u64[0]);
+
+    if (os::file_exists(db_path))  os::file_delete(db_path);
+    if (os::file_exists(wal_path)) os::file_delete(wal_path);
+
+    int port1 = get_unique_port();
+    int port2 = get_unique_port();
+
+    // Number of inserts to confirm (receive ACK) before killing the server.
+    // The kill arrives while one additional in-flight insert is being processed.
+    int confirmed_count = GENERATE(take(1, random(5, 20)));
+
+    os::Notifier ready{};
+    auto child_opt = os::process_fork();
+    REQUIRE(static_cast<bool>(child_opt));
+    os::Handle child = *child_opt;
+
+    if (os::is_zero_handle(child)) {
+        // Child: create WAL-enabled pager, initialise engine, run native server.
+        os::Handle db  = os::file_open(db_path);
+        os::Handle wal = os::file_open(wal_path);
+        auto pager = create_test_pager(db, wal, 4_kb);
+        aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+        engine::Engine eng;
+        aio::drive(engine::init(eng, &pager), g_test_sync_consumer, g_test_poll);
+
+        os::Poll poll{};
+        os::Notifier interrupt{};
+        auto signal_consumer = aio::create_notifier_consumer(interrupt, poll);
+        native::run(static_cast<U16>(port1), eng,
+                    [&ready]{ os::signal_notify_safe(ready); },
+                    false, g_test_sync_consumer, signal_consumer, poll);
+        os::process_exit(0);
+    }
+
+    // Parent: wait for server ready signal.
+    { U8 b; os::stream_read(ready.read, &b, 1); }
+
+    {
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port1));
+
+        send_frame(client, create_startup());
+        REQUIRE(recv_frame(client).opcode == 0x02);
+
+        // DDL: wait for full ACK so schema is durable before the kill phase.
+        send_frame(client, create_query("CREATE KEYSPACE ks;"));
+        REQUIRE(recv_frame(client).opcode == 0x08);
+        send_frame(client, create_query("CREATE TABLE ks.t (id int PRIMARY KEY, val text);"));
+        REQUIRE(recv_frame(client).opcode == 0x08);
+
+        // Send confirmed_count inserts and collect each ACK — these are durably committed.
+        for (int i = 0; i < confirmed_count; i++) {
+            std::string q = "INSERT INTO ks.t (id, val) VALUES ("
+                          + std::to_string(i) + ", 'row_" + std::to_string(i) + "');";
+            send_frame(client, create_query(q.c_str()));
+            REQUIRE(recv_frame(client).opcode == 0x08);
+        }
+
+        // Send one more insert without waiting — the kill lands while the server
+        // is in the middle of committing (or just after), so this row may or may
+        // not survive. We don't assert on it either way.
+        {
+            std::string q = "INSERT INTO ks.t (id, val) VALUES ("
+                          + std::to_string(confirmed_count) + ", 'row_"
+                          + std::to_string(confirmed_count) + "');";
+            send_frame(client, create_query(q.c_str()));
+        }
+    }  // socket closes here
+
+    os::signal_send_kill(child);
+    os::process_wait(child);
+
+    // Reopen: WAL recovery replays any committed frames that didn't reach the DB file.
+    os::Handle db  = os::file_open(db_path);
+    os::Handle wal = os::file_open(wal_path);
+    auto pager = test_pager(db, wal);
+    engine::Engine eng2;
+    aio::drive(engine::init(eng2, &pager), g_test_sync_consumer, g_test_poll);
+
+    run_server_test("verifier", [&](os::Notifier& interrupt) {
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        CHECK(socket_connect(client, "127.0.0.1", (U16)port2));
+
+        send_frame(client, create_startup());
+        CHECK(recv_frame(client).opcode == 0x02);
+
+        // DB must be queryable (schema intact, no structural corruption).
+        send_frame(client, create_query("SELECT * FROM ks.t;"));
+        auto resp = recv_frame(client);
+        CHECK(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+
+        // Every ACKed insert must be present — WAL guarantees their durability.
+        for (int i = 0; i < confirmed_count; i++) {
+            std::string val = "row_" + std::to_string(i);
+            CHECK(body_contains(resp, val.c_str()));
+        }
+
+        os::signal_notify_safe(interrupt);
+    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+        native::run(port2, eng2, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+    });
+
+    destroy_test_pager(pager);
+    os::file_close(db);
+    os::file_close(wal);
+    os::file_delete(db_path);
+    os::file_delete(wal_path);
 }

@@ -30,15 +30,16 @@ namespace plexdb::wal {
 
     Wal::Wal(os::Handle file, const Header& header) : file(file), header(header) {}
 
-    Wal::Wal(Wal&& other) noexcept : file(other.file), header(other.header) {
+    Wal::Wal(Wal&& other) noexcept : file(other.file), header(other.header), wal_index(move(other.wal_index)) {
         other.file = os::zero_handle();
     }
 
     Wal& Wal::operator=(Wal&& other) noexcept {
         if (this != &other) {
-            this->file   = other.file;
-            this->header = other.header;
-            other.file   = os::zero_handle();
+            this->file      = other.file;
+            this->header    = other.header;
+            this->wal_index = move(other.wal_index);
+            other.file      = os::zero_handle();
         }
         return *this;
     }
@@ -80,14 +81,11 @@ namespace plexdb::wal {
         co_return true;
     }
 
-    coroutine::Task<bool> has_committed(const Wal& wal, [[maybe_unused]] aio::FileIOContext& ctx) {
-        co_return wal.header.frame_count > 0;
-    }
-
-    coroutine::Task<> append_frame(Wal& wal, aio::FileIOContext& ctx, U64 page_idx, const U8* data) {
+    coroutine::Task<U64> append_frame(Wal& wal, aio::FileIOContext& ctx, U64 page_idx, const U8* data) {
         assert_true(!os::is_zero_handle(wal.file), "wal::append_frame requires valid file handle");
 
-        U64 offset = frame_offset(wal, wal.header.frame_count);
+        U64 frame_idx = wal.header.frame_count;
+        U64 offset = frame_offset(wal, frame_idx);
         Frame frame{
             .page_idx = page_idx,
             .checksum = frame_checksum(wal.header.salt, page_idx, data),
@@ -110,6 +108,7 @@ namespace plexdb::wal {
         );
 
         wal.header.frame_count++;
+        co_return frame_idx;
     }
 
     coroutine::Task<> commit(Wal& wal, aio::FileIOContext& ctx) {
