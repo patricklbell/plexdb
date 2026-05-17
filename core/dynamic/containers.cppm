@@ -267,6 +267,8 @@ export namespace plexdb {
 
         DynamicArray<DynamicArray<Pair<K, V>>> slots;
 
+        DynamicMap() = default;
+
         struct Iterator {
             DynamicMap<K,V>* map = nullptr;
             U64 slot_idx = 0;
@@ -445,14 +447,24 @@ export namespace plexdb {
     V* find(DynamicMap<K,V>& map, const K& key) {
         U64 slot_idx, pair_idx;
         if (!find_slot_and_pair(map, key, slot_idx, pair_idx)) return nullptr;
-        return &map.slots[slot_idx][pair_idx];
+        return &map.slots[slot_idx][pair_idx].second;
     }
 
     template<typename K, typename V>
     const V* find(const DynamicMap<K,V>& map, const K& key) {
         U64 slot_idx, pair_idx;
         if (!find_slot_and_pair(map, key, slot_idx, pair_idx)) return nullptr;
-        return &map.slots[slot_idx][pair_idx];
+        return &map.slots[slot_idx][pair_idx].second;
+    }
+
+    template<typename K, typename V>
+    bool remove(DynamicMap<K,V>& map, const K& key) {
+        U64 slot_idx, pair_idx;
+        if (!find_slot_and_pair(map, key, slot_idx, pair_idx)) return false;
+        DynamicArray<Pair<K,V>>& bucket = map.slots[slot_idx];
+        bucket[pair_idx] = move(bucket[bucket.length - 1]);
+        pop_back(bucket);
+        return true;
     }
 
     template<typename K, typename V, typename KArgs, typename VArgs>

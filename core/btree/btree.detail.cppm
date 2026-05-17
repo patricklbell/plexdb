@@ -247,10 +247,11 @@ export namespace plexdb::btree {
                 if (node->key_count != 0 || h.depth == 0)
                     break;
 
+                NodeRef new_root = children(node, h)[0];
                 co_await delete_node(t_remove, node_ref);
 
                 Header& h_write = *(co_await update_header(t_remove));
-                h_write.root = children(node, h)[0];
+                h_write.root = new_root;
                 h_write.depth--;
                 h_write.size--;
                 co_return true; // @note, avoids reacquiring header, may not be necessary

@@ -14,7 +14,6 @@ export namespace plexdb::blob {
         b.size_bytes;
         { rblock(b, offset) }        -> SameAs<coroutine::Task<TArrayView<const U8>>>;
         { rwblock(b, offset) }       -> SameAs<coroutine::Task<TArrayView<U8>>>;
-        { resize_impl(b, new_size) } -> SameAs<coroutine::Task<void>>;
         { remove_impl(b) }           -> SameAs<coroutine::Task<void>>;
     };
 }

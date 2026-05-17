@@ -423,7 +423,7 @@ namespace plexdb::os {
         return linux_pid_to_handle(::getpid());
     }
     void process_exit(int code) {
-        ::exit(code);
+        ::_exit(code);
     }
     void process_pause() {
         ::pause();

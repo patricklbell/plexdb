@@ -77,7 +77,6 @@ target_sources(plexdb_core
             dynamic/containers.cppm
             dynamic/function.cppm
             dynamic/tagged_union.cppm
-            plugin/plugin.cppm
             os/aio.cppm
             os/core.cppm
             os/os.cppm
@@ -87,16 +86,17 @@ target_sources(plexdb_core
             os/thread.cppm
             os/time.cppm
             os/uring.cppm
+            pager/pager.cppm
+            pager/pager.types.cppm
+            pager/pager.wal.cppm
+            plugin/plugin.cppm
+            shard/shard.cppm
+            shard/spsc.cppm
+            shard/token.cppm
             tagged_union/tagged_union.cppm
             tcp/tcp.types.cppm
             tcp/tcp.detail.cppm
             tcp/tcp.cppm
-            pager/pager.cppm
-            pager/pager.types.cppm
-            pager/pager.wal.cppm
-            shard/shard.cppm
-            shard/spsc.cppm
-            shard/token.cppm
             third_party/xxhash/xxhash.cppm
             threads/threads.cppm
     PRIVATE
@@ -114,7 +114,6 @@ target_sources(plexdb_core
         btree/implementations/btree.paged.detail.cpp
         btree/btree.detail.cpp
         btree/btree.node.cpp
-        plugin/plugin.cpp
         os/aio.cpp
         os/core.cpp
         os/signal.cpp
@@ -125,9 +124,10 @@ target_sources(plexdb_core
         os/uring.cpp
         pager/pager.cpp
         pager/pager.wal.cpp
-        threads/threads.cpp
+        plugin/plugin.cpp
         tcp/tcp.types.cpp
         tcp/tcp.detail.cpp
+        threads/threads.cpp
 )
 
 target_link_libraries(plexdb_core

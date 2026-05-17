@@ -242,7 +242,7 @@ TEST_CASE("pager repeated reopen and free consistency", "[plexdb.pager]") {
 
 // Write a page to the database via a WAL-enabled pager and verify it survives
 // a reopen with WAL recovery.
-TEST_CASE("WAL: write and read back via WAL-enabled pager", "[plexdb.pager.wal]") {
+TEST_CASE("write and read back via WAL-enabled pager", "[plexdb.pager.wal]") {
     os::Handle pid = os::process_get_handle();
     auto db_path = fmt("/tmp/plexdb_wal::basic_%" PRIu64 "_db",  pid.u64[0]);
     auto wal_path = fmt("/tmp/plexdb_wal::basic_%" PRIu64 "_wal",  pid.u64[0]);
@@ -288,7 +288,7 @@ TEST_CASE("WAL: write and read back via WAL-enabled pager", "[plexdb.pager.wal]"
 // Fork a child that commits the WAL but exits immediately (simulating a crash
 // before the checkpoint completes). The parent then reopens the pager with the
 // WAL and verifies that recovery replays the committed frames.
-TEST_CASE("WAL: committed WAL replays after abrupt process exit", "[plexdb.pager.wal]") {
+TEST_CASE("committed WAL replays after abrupt process exit", "[plexdb.pager.wal]") {
     os::Handle pid = os::process_get_handle();
     auto db_path = fmt("/tmp/plexdb_wal::crash_%" PRIu64 "_db",  pid.u64[0]);
     auto wal_path = fmt("/tmp/plexdb_wal::crash_%" PRIu64 "_wal",  pid.u64[0]);
@@ -357,7 +357,7 @@ TEST_CASE("WAL: committed WAL replays after abrupt process exit", "[plexdb.pager
 // Fork a child that appends frames to the WAL but does NOT commit (no
 // frame_count update), then exits. The parent verifies that the database is
 // unchanged (no partial writes applied).
-TEST_CASE("WAL: uncommitted frames do not modify the database", "[plexdb.pager.wal]") {
+TEST_CASE("uncommitted frames do not modify the database", "[plexdb.pager.wal]") {
     os::Handle pid = os::process_get_handle();
     auto db_path = fmt("/tmp/plexdb_wal::nocommit_%" PRIu64 "_db",  pid.u64[0]);
     auto wal_path = fmt("/tmp/plexdb_wal::nocommit_%" PRIu64 "_wal",  pid.u64[0]);
@@ -423,7 +423,7 @@ TEST_CASE("WAL: uncommitted frames do not modify the database", "[plexdb.pager.w
 // Fork a child that commits the WAL, signals readiness via a notifier, then
 // waits. The parent sends SIGKILL to interrupt the child after the commit.
 // Recovery on reopen must replay the committed WAL frames.
-TEST_CASE("WAL: SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]") {
+TEST_CASE("SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal]") {
     os::Handle pid = os::process_get_handle();
     auto db_path = fmt("/tmp/plexdb_wal::sigkill_%" PRIu64 "_db",  pid.u64[0]);
     auto wal_path = fmt("/tmp/plexdb_wal::sigkill_%" PRIu64 "_wal",  pid.u64[0]);

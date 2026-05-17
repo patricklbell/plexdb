@@ -35,7 +35,7 @@ export namespace plexdb::tcp {
         WriteFromBufferFunctor write_fn;
 
         UringListenerState(uring::Ring r)
-            : ring(plexdb::move(r))
+            : ring(move(r))
             , buffer_infos(ring.buffer_count)
             , buffer_pool(ring.buffer_count)
         {}
@@ -96,16 +96,16 @@ export namespace plexdb::tcp {
         {}
 
         SocketListenerState(SocketListenerState&& o) noexcept
-            : socket(o.socket), stats(plexdb::move(o.stats)), poll(o.poll)
-            , client_to_connection(plexdb::move(o.client_to_connection))
-            , waiting_op(plexdb::move(o.waiting_op))
-            , buffer_infos(plexdb::move(o.buffer_infos))
-            , buffer_pool(plexdb::move(o.buffer_pool))
+            : socket(o.socket), stats(move(o.stats)), poll(o.poll)
+            , client_to_connection(move(o.client_to_connection))
+            , waiting_op(move(o.waiting_op))
+            , buffer_infos(move(o.buffer_infos))
+            , buffer_pool(move(o.buffer_pool))
             , socket_buffers(o.socket_buffers)
-            , acquire_fn(plexdb::move(o.acquire_fn))
-            , release_fn(plexdb::move(o.release_fn))
-            , read_fn(plexdb::move(o.read_fn))
-            , write_fn(plexdb::move(o.write_fn))
+            , acquire_fn(move(o.acquire_fn))
+            , release_fn(move(o.release_fn))
+            , read_fn(move(o.read_fn))
+            , write_fn(move(o.write_fn))
         {
             o.socket_buffers = nullptr;
         }
