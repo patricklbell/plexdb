@@ -21,8 +21,7 @@ using namespace plexdb;
 // internal: blob layout [key_len:U64][key bytes][value_len:U64][value bytes]
 // ============================================================================
 namespace keyvalue::engine {
-    template<typename BlobT>
-    coroutine::Task<void> write_blob(BlobT& b, String8 key, String8 value) {
+    coroutine::Task<void> write_blob(blob::Blob auto& b, String8 key, String8 value) {
         U64 total = sizeof(U64) * 2 + key.length + value.length;
         co_await plexdb::blob::resize(b, total);
         U64 off = 0;
@@ -32,8 +31,7 @@ namespace keyvalue::engine {
         co_await plexdb::blob::update(b, reinterpret_cast<const U8*>(value.data),    value.length, off);
     }
 
-    template<typename BlobT>
-    coroutine::Task<AutoString8> blob_read_key(BlobT& b) {
+    coroutine::Task<AutoString8> blob_read_key(blob::Blob auto& b) {
         U64 key_len = 0;
         co_await plexdb::blob::get(b, reinterpret_cast<U8*>(&key_len), sizeof(U64), 0);
         DynamicArray<U8> buf;
@@ -42,8 +40,7 @@ namespace keyvalue::engine {
         co_return AutoString8{String8{reinterpret_cast<const char*>(buf.ptr), key_len}};
     }
 
-    template<typename BlobT>
-    coroutine::Task<AutoString8> blob_read_value(BlobT& b) {
+    coroutine::Task<AutoString8> blob_read_value(blob::Blob auto& b) {
         U64 key_len = 0, value_len = 0;
         U64 off = 0;
         co_await plexdb::blob::get(b, reinterpret_cast<U8*>(&key_len),   sizeof(U64), off); off += sizeof(U64) + key_len;
@@ -92,23 +89,17 @@ export namespace keyvalue::engine {
         requires btree::BTree<RemoveCVRef<decltype(e.index)>>;
     };
 
-    template<Engine E>
-    coroutine::Task<AutoString8> read_key(E& engine, U64 id);
+    coroutine::Task<AutoString8> read_key(Engine auto& engine, U64 id);
 
-    template<Engine E>
-    coroutine::Task<AutoString8> read_value(E& engine, U64 id);
+    coroutine::Task<AutoString8> read_value(Engine auto& engine, U64 id);
 
-    template<Engine E>
-    coroutine::Task<void> write_entry(E& engine, U64 id, String8 key, String8 value);
+    coroutine::Task<void> write_entry(Engine auto& engine, U64 id, String8 key, String8 value);
 
-    template<Engine E>
-    coroutine::Task<U64> alloc_blob(E& engine);
+    coroutine::Task<U64> alloc_blob(Engine auto& engine);
 
-    template<Engine E>
-    coroutine::Task<void> free_blob(E& engine, U64 id);
+    coroutine::Task<void> free_blob(Engine auto& engine, U64 id);
 
-    template<Engine E>
-    coroutine::Task<ExecutionResult> execute(E& engine, const Statement& statement);
+    coroutine::Task<ExecutionResult> execute(Engine auto& engine, const Statement& statement);
 }
 
 namespace keyvalue::engine {
@@ -145,9 +136,8 @@ namespace keyvalue::engine {
 // engine blob access helpers
 // ============================================================================
 export namespace keyvalue::engine {
-    template<Engine E>
-    coroutine::Task<AutoString8> read_key(E& engine, U64 id) {
-        if constexpr (SameAs<E, InMemoryEngine>) {
+    coroutine::Task<AutoString8> read_key(Engine auto& engine, U64 id) {
+        if constexpr (SameAs<Decay<decltype(engine)>, InMemoryEngine>) {
             co_return co_await blob_read_key(*find(engine.blobs, id));
         } else {
             blob::BlobDynamicPaged b;
@@ -156,9 +146,8 @@ export namespace keyvalue::engine {
         }
     }
 
-    template<Engine E>
-    coroutine::Task<AutoString8> read_value(E& engine, U64 id) {
-        if constexpr (SameAs<E, InMemoryEngine>) {
+    coroutine::Task<AutoString8> read_value(Engine auto& engine, U64 id) {
+        if constexpr (SameAs<Decay<decltype(engine)>, InMemoryEngine>) {
             co_return co_await blob_read_value(*find(engine.blobs, id));
         } else {
             blob::BlobDynamicPaged b;
@@ -167,9 +156,8 @@ export namespace keyvalue::engine {
         }
     }
 
-    template<Engine E>
-    coroutine::Task<void> write_entry(E& engine, U64 id, String8 key, String8 value) {
-        if constexpr (SameAs<E, InMemoryEngine>) {
+    coroutine::Task<void> write_entry(Engine auto& engine, U64 id, String8 key, String8 value) {
+        if constexpr (SameAs<Decay<decltype(engine)>, InMemoryEngine>) {
             co_await write_blob(*find(engine.blobs, id), key, value);
         } else {
             blob::BlobDynamicPaged b;
@@ -178,9 +166,8 @@ export namespace keyvalue::engine {
         }
     }
 
-    template<Engine E>
-    coroutine::Task<U64> alloc_blob(E& engine) {
-        if constexpr (SameAs<E, InMemoryEngine>) {
+    coroutine::Task<U64> alloc_blob(Engine auto& engine) {
+        if constexpr (SameAs<Decay<decltype(engine)>, InMemoryEngine>) {
             U64 id = engine.next_blob_id++;
             insert(engine.blobs, id, blob::BlobInMemory{});
             co_return id;
@@ -189,9 +176,8 @@ export namespace keyvalue::engine {
         }
     }
 
-    template<Engine E>
-    coroutine::Task<void> free_blob(E& engine, U64 id) {
-        if constexpr (SameAs<E, InMemoryEngine>) {
+    coroutine::Task<void> free_blob(Engine auto& engine, U64 id) {
+        if constexpr (SameAs<Decay<decltype(engine)>, InMemoryEngine>) {
             remove(engine.blobs, id);
             co_return;
         } else {
@@ -206,8 +192,7 @@ export namespace keyvalue::engine {
 // execute
 // ============================================================================
 export namespace keyvalue::engine {
-    template<Engine E>
-    coroutine::Task<ExecutionResult> execute(E& engine, const Statement& statement) {
+    coroutine::Task<ExecutionResult> execute(Engine auto& engine, const Statement& statement) {
         co_return co_await visit(statement.value, [&](const auto& v) -> coroutine::Task<ExecutionResult> {
             using T = Decay<decltype(v)>;
 
@@ -316,7 +301,7 @@ export namespace keyvalue::engine {
                 }
                 co_return create_scan(to_str(next_cursor), move(result));
             } else if constexpr (SameAs<T, FlushDb> || SameAs<T, FlushAll>) {
-                if constexpr (SameAs<E, InMemoryEngine>) {
+                if constexpr (SameAs<Decay<decltype(engine)>, InMemoryEngine>) {
                     clear(engine.blobs);
                 } else {
                     auto it = co_await btree::tbegin<U64>(engine.index);
