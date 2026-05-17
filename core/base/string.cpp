@@ -141,15 +141,20 @@ namespace plexdb {
     }
 
     void resize(AutoString8& str, U64 length) {
-        if (str.length >= length) {
+        if (length < str.length) {
+            str.length = length;
+            str.c_str[length] = '\0';
             return;
         }
+        if (length == str.length)
+            return;
 
+        char* new_c_str = reinterpret_cast<char*>(os::allocate(length + 1));
+        os::memory_copy(new_c_str, str.c_str, str.length);
         os::deallocate(str.c_str);
-
+        str.c_str = new_c_str;
         str.length = length;
-        str.c_str = reinterpret_cast<char*>(os::allocate(str.length+1));
-        str.c_str[str.length] = '\0';
+        str.c_str[length] = '\0';
     }
 
     void push_back(AutoString8& str, const char& c) {
