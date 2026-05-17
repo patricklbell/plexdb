@@ -88,12 +88,9 @@ export namespace keyvalue::resp {
 
                 clear(write_buf);
 
-                engine::ExecutionResult result;
-                {
-                    S64 t0 = os::monotonic_us();
-                    auto result = co_await engine::execute(eng, stmt);
-                    log::db_operation_duration(os::monotonic_us() - t0);
-                }
+                S64 t0 = os::monotonic_us();
+                engine::ExecutionResult result = co_await engine::execute(eng, stmt);
+                log::db_operation_duration(os::monotonic_us() - t0);
 
                 bool keep_alive = protocol::encode_result(result, write_buf);
 

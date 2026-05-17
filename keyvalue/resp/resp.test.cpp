@@ -87,7 +87,7 @@ namespace {
         AutoString8 line = recv_line(sock);
         if (line.length == 0) return r;
         r.type = line[0];
-        String8 body{line.c_str, 1};
+        String8 body{line.c_str + 1, line.length - 1};
 
         switch (r.type) {
             case '+': r.str = body; break;
