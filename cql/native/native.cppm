@@ -570,7 +570,7 @@ export namespace cql::native {
 
     Optional<String8> run(
         U16 port, engine::Engine& engine,
-        OnReady auto&& on_ready_callback, bool use_uring,
+        const OnReady auto& on_ready_callback, bool use_uring,
         aio::EventConsumer& file_io_consumer, aio::EventConsumer& signal_consumer, os::Poll& io_poll
     ) {
         const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> { TracyFiberEnter("request");
