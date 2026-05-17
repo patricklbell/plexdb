@@ -21,9 +21,10 @@ export namespace keyvalue::resp {
     template<typename F>
     concept OnReady = requires(F f) { f(); };
 
+    template<typename EngineType>
     Optional<String8> run(
         U16 port,
-        engine::Engine& engine,
+        EngineType& eng,
         OnReady auto&& on_ready_callback,
         bool use_uring,
         aio::EventConsumer& signal_consumer,
@@ -58,7 +59,7 @@ export namespace keyvalue::resp {
 
         S64 active_connections = 0;
 
-        const auto connection_handler = [&engine, &try_append, &send_block, &active_connections](const tcp::Request& req)
+        const auto connection_handler = [&eng, &try_append, &send_block, &active_connections](const tcp::Request& req)
             -> coroutine::Task<void, coroutine::Start::Eager>
         {
             log::db_connection_count(++active_connections);
@@ -86,10 +87,15 @@ export namespace keyvalue::resp {
                 }
 
                 clear(write_buf);
-                S64 t0 = os::monotonic_us();
-                auto result = engine::execute(engine, stmt);
+
+                engine::ExecutionResult result;
+                {
+                    S64 t0 = os::monotonic_us();
+                    auto result = co_await engine::execute(eng, stmt);
+                    log::db_operation_duration(os::monotonic_us() - t0);
+                }
+
                 bool keep_alive = protocol::encode_result(result, write_buf);
-                log::db_operation_duration(os::monotonic_us() - t0);
 
                 if (write_buf.length > 0)
                     co_await send_block(req, write_buf.ptr, write_buf.length);

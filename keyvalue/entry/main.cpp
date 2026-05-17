@@ -7,6 +7,7 @@ import plexdb.base;
 import plexdb.os;
 import plexdb.aio;
 import plexdb.argparse;
+import plexdb.tagged_union;
 import plexdb.threads;
 import plexdb.arena;
 import keyvalue.engine;
@@ -33,8 +34,10 @@ int main(int argc, char* argv[]) {
 
     auto arg_parser = argparse::create_parser("resp", "Redis serialization protocol (RESP) compatible key-value server");
 
-    U64 port_arg     = argparse::add_option(arg_parser, "--port", "-p", "TCP port to listen on", "6379");
-    U64 no_uring_arg = argparse::add_flag(arg_parser, "--no-uring", "-U", "Disable io_uring and use synchronous socket I/O");
+    U64 port_arg      = argparse::add_option(arg_parser, "--port",      "-p", "TCP port to listen on", "6379");
+    U64 no_uring_arg  = argparse::add_flag(arg_parser,   "--no-uring",  "-U", "Disable io_uring and use synchronous socket I/O");
+    U64 in_memory_arg = argparse::add_flag(arg_parser,   "--in-memory", "",   "Run without persistence (no database file)");
+    U64 path_arg      = argparse::add_positional(arg_parser, "path", "Database file path (required without --in-memory)");
 
     auto args = argparse::parse(arg_parser, argc, argv);
     if (args.help_requested) {
@@ -47,6 +50,15 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    bool in_memory = argparse::has_flag(args, in_memory_arg);
+    String8 db_path = argparse::get_positional(args, path_arg);
+
+    if (!in_memory && db_path.length == 0) {
+        println("error: database path required (or use --in-memory)");
+        argparse::print_help(arg_parser);
+        return 1;
+    }
+
     U16 port = u16_from_str(argparse::get_option(args, port_arg));
     bool no_uring = argparse::has_flag(args, no_uring_arg);
     if (port == 0) {
@@ -55,16 +67,17 @@ int main(int argc, char* argv[]) {
     }
 
     os::Poll io_poll{};
-    {
-        engine::Engine engine{};
+    auto on_ready = [&port]() {
+        println("listening on port ", to_str(port), " (RESP)");
+    };
+    auto signal_consumer = aio::create_notifier_consumer(g_signal_notifier, io_poll);
 
-        auto on_ready = [&port]() {
-            println("listening on port ", to_str(port), " (RESP)");
-        };
-
-        auto signal_consumer = aio::create_notifier_consumer(g_signal_notifier, io_poll);
-        Optional<String8> err = resp::run(port, engine, on_ready, !no_uring, signal_consumer, io_poll);
+    if (in_memory) {
+        engine::InMemoryEngine eng{};
+        Optional<String8> err = resp::run(port, eng, on_ready, !no_uring, signal_consumer, io_poll);
         if (err) println(*err);
+    } else {
+        assert_not_implemented("persistent engine");
     }
 
     println("shutting down");

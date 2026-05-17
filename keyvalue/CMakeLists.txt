@@ -31,12 +31,14 @@ target_sources(plexdb_keyvalue
         FILES
             engine/engine.cppm
             engine/statements.cppm
+            glob/glob.cppm
             log/log.cppm
             parsers/parsers.cppm
             resp/resp.cppm
             resp/resp.protocol.cppm
     PRIVATE
         engine/engine.cpp
+        glob/glob.cpp
         log/log.cpp
         parsers/parsers.cpp
         resp/resp.cpp
