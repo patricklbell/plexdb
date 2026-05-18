@@ -563,7 +563,7 @@ namespace cql::native {
     }
 
     template<U8 Version, bool Compressed>
-    coroutine::Task<> send_execution_result(engine::ExecutionResult& result, engine::Engine& engine, const tcp::Request* req, S16 stream) {
+    coroutine::Task<> send_execution_result(engine::ExecutionResult& result, Engine& engine, const tcp::Request* req, S16 stream) {
         switch (result.kind) {
             case engine::ResultKind::Void:{
                 Frame frame{.body = {}, .req = req, .op = op_codes::RESULT, .stream = stream};
@@ -718,7 +718,7 @@ namespace cql::native {
     // ========================================================================
     template<U8 Version, bool Compressed>
     coroutine::Task<void> frame_handler(
-        engine::Engine& engine,
+        Engine& engine,
         const tcp::Request& req,
         const U8* header,
         const U8* body,
@@ -873,7 +873,7 @@ namespace cql::native {
         co_return;
     }
 
-    template coroutine::Task<void> frame_handler<5u, true> (engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
-    template coroutine::Task<void> frame_handler<5u, false>(engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
-    template coroutine::Task<void> frame_handler<4u, false>(engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    template coroutine::Task<void> frame_handler<5u, true> (Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    template coroutine::Task<void> frame_handler<5u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    template coroutine::Task<void> frame_handler<4u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32);
 }

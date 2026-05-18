@@ -420,14 +420,14 @@ namespace type_codes {
 
     // Defined in native.cpp; explicitly instantiated for (5,true), (5,false), (4,false).
     template<U8 Version, bool Compressed>
-    coroutine::Task<void> frame_handler(engine::Engine& engine, const tcp::Request& req, const U8* header, const U8* body, S32 body_length);
+    coroutine::Task<void> frame_handler(Engine& engine, const tcp::Request& req, const U8* header, const U8* body, S32 body_length);
 
-    extern template coroutine::Task<void> frame_handler<5u, true> (engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
-    extern template coroutine::Task<void> frame_handler<5u, false>(engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
-    extern template coroutine::Task<void> frame_handler<4u, false>(engine::Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    extern template coroutine::Task<void> frame_handler<5u, true> (Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    extern template coroutine::Task<void> frame_handler<5u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    extern template coroutine::Task<void> frame_handler<4u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32);
 
     template<U8 Version, bool Compressed>
-    coroutine::Task<void> post_startup_loop(engine::Engine& engine, const tcp::Request& req) {
+    coroutine::Task<void> post_startup_loop(Engine& engine, const tcp::Request& req) {
         if constexpr (Version >= 5) {
             DynamicArray<U8> read_buf{};
             DynamicArray<U8> envelope_buf{};
@@ -569,7 +569,7 @@ export namespace cql::native {
     concept OnReady = requires(F f) { f(); };
 
     Optional<String8> run(
-        U16 port, engine::Engine& engine,
+        U16 port, Engine& engine,
         const OnReady auto& on_ready_callback, bool use_uring,
         aio::EventConsumer& file_io_consumer, aio::EventConsumer& signal_consumer, os::Poll& io_poll
     ) {

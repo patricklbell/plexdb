@@ -14,7 +14,10 @@ import cql.engine.it;
 namespace cql::engine {
     coroutine::Task<> init(Engine& engine, Pager* in_pager) {
         engine.pager = in_pager;
-        co_await schema::load(engine.schema, in_pager, in_pager->header.root_page);
+
+        U64 schema_page = in_pager->header.root_page;
+        assert_true(schema_page != MAX_U64, "root page is empty, database is corrupted");
+        co_await schema::load(engine.schema, in_pager, schema_page);
     }
 
     coroutine::Task<void> create_database(Pager& pager) {

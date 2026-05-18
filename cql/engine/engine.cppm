@@ -156,3 +156,7 @@ export namespace cql::engine {
     PrepareResult prepare(Engine& engine, String8 query);
     PreparedEntry* try_get_prepared(Engine& engine, U64 prepared_id);
 }
+
+export namespace cql {
+    using Engine = engine::Engine;
+}

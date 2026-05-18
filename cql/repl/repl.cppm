@@ -12,6 +12,6 @@ import cql.parsers;
 using namespace plexdb;
 
 export namespace cql::repl {
-    void run(os::Handle in_handle, os::Handle out_handle, engine::Engine& eng);
-    void run(engine::Engine& eng);
+    void run(os::Handle in_handle, os::Handle out_handle, Engine& eng);
+    void run(Engine& eng);
 }

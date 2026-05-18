@@ -26,7 +26,7 @@ namespace {
     static Handle fd_to_handle(int fd) { return Handle{.u32={static_cast<U32>(fd)}}; }
 
     // @note uses fork() to avoid fd issues with Catch2
-    std::string run_repl_batch(engine::Engine& eng, const char* input) {
+    std::string run_repl_batch(Engine& eng, const char* input) {
         int in_fds[2], out_fds[2];
         assert(pipe(in_fds) == 0);
         assert(pipe(out_fds) == 0);
@@ -80,7 +80,7 @@ TEST_CASE("REPL create keyspace and table", "[cql.repl][!mayfail]") {
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
     drive_test_pager(engine::create_database(pager));
-    engine::Engine eng;
+    Engine eng;
     drive_test_pager(engine::init(eng, &pager));
 
     const char* input =
@@ -99,7 +99,7 @@ TEST_CASE("REPL insert and select", "[cql.repl]") {
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
     drive_test_pager(engine::create_database(pager));
-    engine::Engine eng;
+    Engine eng;
     drive_test_pager(engine::init(eng, &pager));
 
     const char* input =
@@ -121,7 +121,7 @@ TEST_CASE("REPL reports parse error gracefully", "[cql.repl]") {
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
     drive_test_pager(engine::create_database(pager));
-    engine::Engine eng;
+    Engine eng;
     drive_test_pager(engine::init(eng, &pager));
 
     std::string out = run_repl_batch(eng, "NOT VALID CQL;\n");
@@ -136,7 +136,7 @@ TEST_CASE("REPL displays column headers on SELECT", "[cql.repl]") {
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
     drive_test_pager(engine::create_database(pager));
-    engine::Engine eng;
+    Engine eng;
     drive_test_pager(engine::init(eng, &pager));
 
     const char* input =
