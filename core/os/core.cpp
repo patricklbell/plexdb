@@ -71,6 +71,9 @@ namespace plexdb::os {
     void* memory_set(void* dst, U8 value, U64 bytes) noexcept {
         return __builtin_memset(dst, value, bytes);
     }
+    S32 memory_compare(const void* a, const void* b, U64 bytes) noexcept {
+        return __builtin_memcmp(a, b, bytes);
+    }
 
     // ========================================================================
     // file

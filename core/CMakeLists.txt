@@ -68,7 +68,9 @@ target_sources(plexdb_core
             btree/btree.detail.cppm
             btree/btree.cppm
             btree/btree.node.cppm
+            btree/btree.policy.cppm
             btree/btree.print.cppm
+            btree/btree.slots.cppm
             btree/btree.types.cppm
             coroutine/base.cppm
             coroutine/coroutine.cppm
