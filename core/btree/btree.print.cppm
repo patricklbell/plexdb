@@ -13,13 +13,13 @@ using namespace plexdb::btree;
 
 namespace plexdb {
     template<typename T>
-    AutoString8 node_to_str(const Node* node, const Header& h, bool is_leaf) {
+    AutoString8 node_to_str(const Node* node, U32 ns, U16 vs, bool is_leaf) {
         AutoString8 res = "["_as;
         for (int i = 0; i < node->key_count; i++) {
             res += to_str(keys(node)[i]);
 
             if (is_leaf) {
-                T value = os::memory_cast<T>(values(node, h)[i]);
+                T value = os::memory_cast<T>(values(node, ns, vs)[i]);
                 res += ": " + to_str(value);
             }
 
@@ -29,24 +29,28 @@ namespace plexdb {
     }
 
     template<typename T, typename Transaction>
-    AutoString8 btree_to_str_recursive(Transaction& t, const Node* node, U64 depth, const String8& prepend, bool end) {
+    AutoString8 btree_to_str_recursive(Transaction& t, const Node* node, U64 depth,
+                                        const String8& prepend, bool end) {
         auto sync_get = [](auto task) { task.resume(); return move(task.value()); };
         const Header& h = *sync_get(read_header(t));
+        U32 ns = node_size(t);
+        U16 vs = static_cast<U16>(h.value_stride);
 
         AutoString8 res = prepend + String8(end ? " └" : " ├");
-        res += node_to_str<T>(node, h, depth == h.depth) + "\n";
+        res += node_to_str<T>(node, ns, vs, depth == h.depth) + "\n";
         if (depth < h.depth) {
-            auto cs = children(node, h);
+            auto cs = children(node, ns);
             for (auto& child_ref : cs) {
                 const Node* child = sync_get(read_node(t, child_ref));
-                res += btree_to_str_recursive<T>(t, child, depth+1, prepend + (end ? "   " : " | "), &child_ref == cs.end()-1);
+                res += btree_to_str_recursive<T>(t, child, depth+1,
+                       prepend + (end ? "   " : " | "), &child_ref == cs.end()-1);
             }
         }
         return res;
     }
 
     export template<typename T, typename BTree>
-        requires Either<BTree, BTreeInMemory, BTreePaged>
+        requires Either<BTree, BTreeInMemory<>, BTreePaged<>>
     AutoString8 to_str(const Tag<T, BTree>& tag) {
         auto sync_get = [](auto task) { task.resume(); return move(task.value()); };
         using Transaction = typename BTree::Transaction;
