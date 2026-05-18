@@ -72,7 +72,7 @@ export namespace keyvalue::engine {
     };
 
     struct InMemoryEngine {
-        btree::BTreeInMemory index;
+        btree::BTreeInMemory<> index;
         DynamicMap<U64, blob::BlobInMemory> blobs;
         U64 next_blob_id = 0;
 
@@ -80,7 +80,7 @@ export namespace keyvalue::engine {
     };
 
     struct PagedEngine {
-        btree::BTreePaged index;
+        btree::BTreePaged<> index;
         Pager* pager = nullptr;
     };
 

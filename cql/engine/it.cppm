@@ -51,7 +51,7 @@ export namespace cql {
     struct RowIterator {
         Pager* pager = nullptr;
         schema::Table* table = nullptr;
-        btree::Iterator<btree::BTreePaged, U64> pk_hash_it;
+        btree::Iterator<btree::BTreePaged<>, U64> pk_hash_it;
 
         coroutine::Task<ColumnRange> deref();
         coroutine::Task<void>        advance();

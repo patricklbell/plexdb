@@ -131,7 +131,7 @@ export namespace cql::engine {
         coroutine::Task<> commit();
         coroutine::Task<> rollback();
 
-        btree::BTreePaged::Transaction borrow(btree::BTreePaged& btree);
+        btree::BTreePaged<>::Transaction borrow(btree::BTreePaged<>& btree);
     };
 
     coroutine::Task<ExecutionResult> execute(Transaction& tx, Engine& engine, const Statement& statement);

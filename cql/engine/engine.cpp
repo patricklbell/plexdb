@@ -211,8 +211,8 @@ namespace cql::engine {
         co_return;
     }
 
-    btree::BTreePaged::Transaction Transaction::borrow(btree::BTreePaged& btree) {
-        return btree::BTreePaged::Transaction{&btree};
+    btree::BTreePaged<>::Transaction Transaction::borrow(btree::BTreePaged<>& btree) {
+        return btree::BTreePaged<>::Transaction{&btree};
     }
 
     // Single canonical implementation — all statement logic lives here.
