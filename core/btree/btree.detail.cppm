@@ -164,15 +164,16 @@ export namespace plexdb::btree {
     // ========================================================================
     // search
     // ========================================================================
+    template<bool Mutable>
     struct Search {
-        Node*     leaf  = nullptr;
+        Conditional<Mutable, Node*, const Node*> leaf = nullptr;
         CountType idx   = 0;
-        U8*       value = nullptr;
+        Conditional<Mutable, U8*, const U8*> value = nullptr;
         [[nodiscard]] constexpr explicit operator bool() const noexcept { return leaf != nullptr; }
     };
 
-    template<BTree BT>
-    coroutine::Task<Search> search_impl(BT& t, U64 key) { ZoneScopedN("btree::search");
+    template<bool Mutable, BTree BT>
+    coroutine::Task<Search<Mutable>> search_impl(BT& t, U64 key) { ZoneScopedN("btree::search");
         const auto& h = *(co_await read_header(t));
         U32 ns = node_size(t);
         U16 vs = static_cast<U16>(h.value_stride);
@@ -184,11 +185,19 @@ export namespace plexdb::btree {
             n_ref = children(n, ns)[idx];
         }
 
-        Node* n = co_await update_node(t, n_ref);
-        CountType idx = binary_search_first_geq(keys(n), key);
-        if (idx < n->key_count && keys(n)[idx] == key)
-            co_return Search{n, idx, values(n, ns, vs)[idx]};
-        co_return Search{};
+        if constexpr (Mutable) {
+            Node* n = co_await update_node(t, n_ref);
+            CountType idx = binary_search_first_geq(keys(n), key);
+            if (idx < n->key_count && keys(n)[idx] == key)
+                co_return Search<true>{n, idx, values(n, ns, vs)[idx]};
+            co_return Search<true>{};
+        } else {
+            const Node* n = co_await read_node(t, n_ref);
+            CountType idx = binary_search_first_geq(keys(n), key);
+            if (idx < n->key_count && keys(n)[idx] == key)
+                co_return Search<false>{n, idx, values(n, ns, vs)[idx]};
+            co_return Search<false>{};
+        }
     }
 
     // ========================================================================

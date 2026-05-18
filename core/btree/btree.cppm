@@ -27,24 +27,23 @@ export namespace plexdb::btree {
 
     template<BTree BT>
     coroutine::Task<bool> update(BT& t, U64 key, const U8* in_value, U64 size, U64 offset=0) {
-        bool found = false;
-        if (Search s = co_await search_impl(t, key)) {
+        if (Search<true> s = co_await search_impl<true>(t, key)) {
             os::memory_copy(s.value + offset, in_value, size);
-            found = true;
+            co_return true;
         }
-        co_return found;
+        co_return false;
     }
 
     template<BTree BT>
-    coroutine::Task<U8*> view(BT& t, U64 key) {
-        if (Search s = co_await search_impl(t, key))
+    coroutine::Task<U8*> update_it(BT& t, U64 key) {
+        if (Search<true> s = co_await search_impl<true>(t, key))
             co_return s.value;
         co_return nullptr;
     }
 
     template<BTree BT>
     coroutine::Task<bool> find(BT& t, U64 key, U8* out_value, U64 size, U64 offset=0) {
-        if (Search s = co_await search_impl(t, key)) {
+        if (Search<false> s = co_await search_impl<false>(t, key)) {
             os::memory_copy(out_value, s.value + offset, size);
             co_return true;
         }
@@ -111,6 +110,12 @@ export namespace plexdb::btree {
         requires TriviallyCopyable<T>
     coroutine::Task<bool> tupdate(BT& t, U64 key, const T& value) {
         co_return co_await update(t, key, reinterpret_cast<const U8*>(&value), sizeof(T));
+    }
+
+    template<typename T, BTree BT>
+        requires TriviallyCopyable<T>
+    coroutine::Task<T*> tupdate_it(BT& t, U64 key) {
+        co_return reinterpret_cast<T*>(co_await update_it(t, key));
     }
 
     template<typename T, BTree BT>
