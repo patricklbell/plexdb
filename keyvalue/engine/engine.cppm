@@ -1,5 +1,6 @@
 module;
 #include <coroutine>
+#include <plexdb/support/tracy/tracy.hpp>
 
 export module keyvalue.engine;
 
@@ -11,6 +12,7 @@ import plexdb.btree;
 import plexdb.btree.types;
 import plexdb.blob;
 import plexdb.pager;
+import plexdb.pager.transaction;
 import plexdb.coroutine;
 import plexdb.tagged_union;
 
@@ -22,7 +24,8 @@ using namespace plexdb;
 // internal: blob layout [key_len:U64][key bytes][value_len:U64][value bytes]
 // ============================================================================
 namespace keyvalue::engine {
-    coroutine::Task<void> write_blob(blob::Blob auto& b, String8 key, String8 value) {
+    template<typename Blob>
+    coroutine::Task<void> write_blob(Blob& b, String8 key, String8 value) {
         U64 total = sizeof(U64) * 2 + key.length + value.length;
         co_await plexdb::blob::resize(b, total);
         U64 off = 0;
@@ -32,7 +35,8 @@ namespace keyvalue::engine {
         co_await plexdb::blob::update(b, reinterpret_cast<const U8*>(value.data),    value.length, off);
     }
 
-    coroutine::Task<AutoString8> blob_read_key(blob::Blob auto& b) {
+    template<typename Blob>
+    coroutine::Task<AutoString8> blob_read_key(Blob& b) {
         U64 key_len = 0;
         co_await plexdb::blob::get(b, reinterpret_cast<U8*>(&key_len), sizeof(U64), 0);
         DynamicArray<U8> buf;
@@ -86,10 +90,7 @@ export namespace keyvalue::engine {
     };
 
     template<typename E>
-    concept Engine = requires(E& e) {
-        e.index;
-        requires btree::BTree<RemoveCVRef<decltype(e.index)>>;
-    };
+    concept Engine = Either<E, InMemoryEngine, PagedEngine>;
 
     coroutine::Task<AutoString8> read_key(Engine auto& engine, U64 id);
 
@@ -193,8 +194,8 @@ export namespace keyvalue::engine {
 // ============================================================================
 // execute
 // ============================================================================
-export namespace keyvalue::engine {
-    coroutine::Task<ExecutionResult> execute(Engine auto& engine, const Statement& statement) {
+namespace keyvalue::engine {
+    coroutine::Task<ExecutionResult> execute_inside_transaction(Engine auto& engine, const Statement& statement) {
         co_return co_await visit(statement.value, [&](const auto& v) -> coroutine::Task<ExecutionResult> {
             using T = Decay<decltype(v)>;
 
@@ -346,4 +347,25 @@ export namespace keyvalue::engine {
             }
         });
     }
+
+    export template<Engine E>
+    coroutine::Task<ExecutionResult> execute(E& engine, const Statement& statement) { ZoneScopedN("engine::execute");
+        if constexpr (SameAs<E, PagedEngine>) {
+            pager::Transaction tx{&engine.pager};
+
+            co_await tx.begin();
+            auto result = co_await execute_inside_transaction(engine, statement);
+            co_await tx.commit();
+
+            co_return result;
+        } else {
+            auto result = co_await execute_inside_transaction(engine, statement);
+            co_return result;
+        }
+    }
+}
+
+export namespace keyvalue {
+    template<typename E>
+    concept Engine = engine::Engine<E>;
 }

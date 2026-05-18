@@ -9,7 +9,7 @@ import plexdb.os;
 import plexdb.os.uring;
 import plexdb.tagged_union;
 import plexdb.pager;
-import plexdb.pager.types;
+import plexdb.pager.transaction;
 import plexdb.argparse;
 import plexdb.threads;
 import plexdb.arena;
@@ -80,37 +80,50 @@ int main(int argc, char* argv[]) {
     os::Poll io_poll{};
     {
         threads::Scope scratch = threads::scratch();
-
         TaggedUnion<uring::Ring, os::AIOContext> file_io_resource;
         auto [file_io_ctx, file_io_consumer] = create_file_io_context(run_repl, file_io_resource, *scratch.arena, io_poll);
 
-        U64 page_size = 4_kb;
+        Optional<os::File> opt_wal_file;
         os::File db_file{os::file_open(db_path)};
+
+        U64 page_size = 4_kb;
         bool db_create = os::file_get_stats(db_file).byte_count == 0;
 
-        Optional<os::File> opt_wal_file;
+        Engine engine;
         Pager pager;
-        if (db_create) {
-            pager::Header header = aio::drive(pager::create(file_io_ctx, db_file, page_size), file_io_consumer, io_poll);
-            if (no_wal) {
-                pager = Pager{&file_io_ctx, static_cast<os::Handle>(db_file), header, checkpoint_interval};
-            } else {
-                opt_wal_file = os::File{os::file_open(db_path + ".wal"_as)};
-                aio::drive(pager::init(pager, &file_io_ctx, db_file, static_cast<os::Handle>(*opt_wal_file), header), file_io_consumer, io_poll);
-            }
-            aio::drive(engine::create_database(pager), file_io_consumer, io_poll);
-            println("created new database \"", db_path, "\"");
-        } else {
-            if (no_wal) {
-                aio::drive(pager::init(pager, &file_io_ctx, db_file), file_io_consumer, io_poll);
-            } else {
-                opt_wal_file = os::File{os::file_open(db_path + ".wal"_as)};
-                aio::drive(pager::init(pager, &file_io_ctx, db_file, static_cast<os::Handle>(*opt_wal_file)), file_io_consumer, io_poll);
-            }
-        }
 
-        engine::Engine engine;
-        aio::drive(engine::init(engine, &pager), file_io_consumer, io_poll);
+        auto initialize_database = [&]() -> coroutine::Task<> {
+            if (db_create) {
+                // @todo make pager creation safe?
+                auto header = co_await pager::create(file_io_ctx, db_file, page_size);
+                if (no_wal) {
+                    pager = Pager{&file_io_ctx, static_cast<os::Handle>(db_file), header, checkpoint_interval};
+                } else {
+                    opt_wal_file = os::File{os::file_open(db_path + ".wal"_as)};
+                    co_await pager::init(pager, &file_io_ctx, db_file, static_cast<os::Handle>(*opt_wal_file), header);
+                }
+
+                {
+                    pager::Transaction tx{&pager};
+                    co_await tx.begin();
+                    co_await engine::create_database(pager);
+                    co_await tx.commit();
+                }
+
+                println("created new database \"", db_path, "\"");
+            } else {
+                if (no_wal) {
+                    co_await pager::init(pager, &file_io_ctx, db_file);
+                } else {
+                    opt_wal_file = os::File{os::file_open(db_path + ".wal"_as)};
+                    co_await pager::init(pager, &file_io_ctx, db_file, static_cast<os::Handle>(*opt_wal_file));
+                }
+            }
+
+            co_await engine::init(engine, &pager);
+        };
+
+        aio::drive(initialize_database(), file_io_consumer, io_poll);
 
         if (run_repl) {
             repl::run(engine);

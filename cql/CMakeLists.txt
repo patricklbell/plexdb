@@ -116,49 +116,43 @@ if(PLEXDB_ENABLE_TESTS)
   if(NOT TARGET Catch2::Catch2WithMain)
     include(FetchContent)
     FetchContent_Declare(
-            Catch2
-            GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-            GIT_TAG        v3.13.0
-        )
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG        v3.13.0
+    )
     FetchContent_MakeAvailable(Catch2)
   endif()
 
   add_executable(cql_tests)
 
   file(GLOB_RECURSE CQL_TEST_SOURCES CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../core/test/*.test.cpp"
-    )
+      "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../core/test/*.test.cpp"
+  )
   file(GLOB_RECURSE CQL_TEST_MODULE_SOURCES CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cppm"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../core/test/*.test.cppm"
-    )
+      "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../core/test/*.test.cppm"
+  )
   target_sources(cql_tests
-        PRIVATE
-            ${CQL_TEST_SOURCES}
-        PUBLIC
-            FILE_SET CXX_MODULES TYPE CXX_MODULES
-            BASE_DIRS
-                ${CMAKE_CURRENT_SOURCE_DIR}
-                ${CMAKE_CURRENT_SOURCE_DIR}/../core
-            FILES
-                ${CQL_TEST_MODULE_SOURCES}
-    )
-
-  target_include_directories(cql_tests
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/../macros
-            ${CMAKE_CURRENT_SOURCE_DIR}/../core/plugin
-            ${CMAKE_CURRENT_SOURCE_DIR}/../core/test
-    )
+      PRIVATE
+          ${CQL_TEST_SOURCES}
+      PUBLIC
+          FILE_SET CXX_MODULES TYPE CXX_MODULES
+          BASE_DIRS
+              ${CMAKE_CURRENT_SOURCE_DIR}
+              ${CMAKE_CURRENT_SOURCE_DIR}/../core
+          FILES
+              ${CQL_TEST_MODULE_SOURCES}
+  )
 
   target_link_libraries(cql_tests
-        PRIVATE
-            plexdb::compiler_config
-            plexdb::core::macros
-            plexdb::core::plugin_abi
-            stdc++exp # std::stacktrace may require linking experimental c++ library
-            plexdb::cql
-            Catch2::Catch2WithMain
-    )
+      PRIVATE
+          plexdb::compiler_config
+          plexdb::core::macros
+          plexdb::core::plugin_abi
+          plexdb::core::test_macros
+          stdc++exp # std::stacktrace may require linking experimental c++ library
+          plexdb::cql
+          Catch2::Catch2WithMain
+  )
 endif()

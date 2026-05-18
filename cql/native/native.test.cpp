@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <plexdb/test_macros/test_macros.h>
 
 #include <string.h>
 #include <string>
@@ -167,16 +168,18 @@ namespace {
     }
 }
 
-TEST_CASE("Native protocol STARTUP handshake", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol STARTUP handshake", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -196,16 +199,18 @@ TEST_CASE("Native protocol STARTUP handshake", "[cql.native]") {
     destroy_test_pager(pager);
 }
 
-TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -228,16 +233,18 @@ TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[cql.native]") {
     destroy_test_pager(pager);
 }
 
-TEST_CASE("Native protocol CQL DDL and DML operations", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol CQL DDL and DML operations", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -299,16 +306,18 @@ TEST_CASE("Native protocol CQL DDL and DML operations", "[cql.native]") {
     destroy_test_pager(pager);
 }
 
-TEST_CASE("Native protocol error responses", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol error responses", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -334,7 +343,7 @@ TEST_CASE("Native protocol error responses", "[cql.native]") {
     destroy_test_pager(pager);
 }
 
-TEST_CASE("Native protocol data persists across restarts", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol data persists across restarts", "[cql.native]") {
     int port1 = get_unique_port();
     int port2 = get_unique_port();
     os::File db_file{os::file_tmp()};
@@ -343,9 +352,11 @@ TEST_CASE("Native protocol data persists across restarts", "[cql.native]") {
     {
         U64 page_size = 4_kb;
         auto pager = create_test_pager(db_file, page_size);
-        aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+        pager::begin_transaction(pager);
+        co_await engine::create_database(pager);
+        co_await pager::commit_transaction(pager);
         Engine engine;
-        aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+        co_await engine::init(engine, &pager);
 
         run_server_test("test-client", [&](os::Notifier& interrupt) {
             Socket client{socket_open()};
@@ -374,7 +385,7 @@ TEST_CASE("Native protocol data persists across restarts", "[cql.native]") {
     {
         auto pager = test_pager(db_file);
         Engine engine;
-        aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+        co_await engine::init(engine, &pager);
 
         run_server_test("test-client", [&](os::Notifier& interrupt) {
             Socket client{socket_open()};
@@ -398,16 +409,18 @@ TEST_CASE("Native protocol data persists across restarts", "[cql.native]") {
     }
 }
 
-TEST_CASE("Native protocol system.local virtual view", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol system.local virtual view", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -453,16 +466,18 @@ TEST_CASE("Native protocol system.local virtual view", "[cql.native]") {
     destroy_test_pager(pager);
 }
 
-TEST_CASE("Native protocol system_schema virtual views", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol system_schema virtual views", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -540,16 +555,18 @@ namespace {
     }
 }
 
-TEST_CASE("Native protocol collection serialization", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol collection serialization", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -580,16 +597,18 @@ TEST_CASE("Native protocol collection serialization", "[cql.native]") {
     destroy_test_pager(pager);
 }
 
-TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native][!mayfail]") {
+PAGER_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native][!mayfail]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -720,16 +739,18 @@ TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native][!mayfail]") {
     destroy_test_pager(pager);
 }
 
-TEST_CASE("Native protocol QUERY with bind values", "[cql.native][!mayfail]") {
+PAGER_TEST_CASE("Native protocol QUERY with bind values", "[cql.native][!mayfail]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -808,15 +829,17 @@ TEST_CASE("Native protocol QUERY with bind values", "[cql.native][!mayfail]") {
     destroy_test_pager(pager);
 }
 
-TEST_CASE("Native protocol UPDATE modifies existing row", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol UPDATE modifies existing row", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     auto pager = create_test_pager(db_file, 4_kb);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -850,15 +873,17 @@ TEST_CASE("Native protocol UPDATE modifies existing row", "[cql.native]") {
     destroy_test_pager(pager);
 }
 
-TEST_CASE("Native protocol DELETE removes a row by primary key", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol DELETE removes a row by primary key", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     auto pager = create_test_pager(db_file, 4_kb);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -894,15 +919,17 @@ TEST_CASE("Native protocol DELETE removes a row by primary key", "[cql.native]")
     destroy_test_pager(pager);
 }
 
-TEST_CASE("Native protocol TRUNCATE clears all rows", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol TRUNCATE clears all rows", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     auto pager = create_test_pager(db_file, 4_kb);
-    aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine engine;
-    aio::drive(engine::init(engine, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(engine, &pager);
 
     run_server_test("test-client", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};
@@ -938,7 +965,7 @@ TEST_CASE("Native protocol TRUNCATE clears all rows", "[cql.native]") {
     destroy_test_pager(pager);
 }
 
-TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cql.native]") {
+PAGER_TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cql.native]") {
     int port1 = get_unique_port();
     int port2 = get_unique_port();
     os::Handle pid = os::process_get_handle();
@@ -952,9 +979,11 @@ TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cql.nati
         os::Handle db  = os::file_open(db_path);
         os::Handle wal = os::file_open(wal_path);
         auto pager = create_test_pager(db, wal, 4_kb);
-        aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+        pager::begin_transaction(pager);
+        co_await engine::create_database(pager);
+        co_await pager::commit_transaction(pager);
         Engine eng;
-        aio::drive(engine::init(eng, &pager), g_test_sync_consumer, g_test_poll);
+        co_await engine::init(eng, &pager);
 
         run_server_test("test-client", [&](os::Notifier& interrupt) {
             Socket client{socket_open()};
@@ -984,7 +1013,7 @@ TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cql.nati
         os::Handle wal = os::file_open(wal_path);
         auto pager = test_pager(db, wal);
         Engine eng;
-        aio::drive(engine::init(eng, &pager), g_test_sync_consumer, g_test_poll);
+        co_await engine::init(eng, &pager);
 
         run_server_test("test-client", [&](os::Notifier& interrupt) {
             Socket client{socket_open()};
@@ -1012,7 +1041,7 @@ TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cql.nati
     os::file_delete(wal_path);
 }
 
-TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]") {
+PAGER_TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]") {
     os::Handle pid = os::process_get_handle();
     auto db_path  = fmt("/tmp/plexdb_cql::crash_%" PRIu64 "_db",  pid.u64[0]);
     auto wal_path = fmt("/tmp/plexdb_cql::crash_%" PRIu64 "_wal",  pid.u64[0]);
@@ -1037,9 +1066,11 @@ TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]") {
         os::Handle db  = os::file_open(db_path);
         os::Handle wal = os::file_open(wal_path);
         auto pager = create_test_pager(db, wal, 4_kb);
-        aio::drive(engine::create_database(pager), g_test_sync_consumer, g_test_poll);
+        pager::begin_transaction(pager);
+        co_await engine::create_database(pager);
+        co_await pager::commit_transaction(pager);
         Engine eng;
-        aio::drive(engine::init(eng, &pager), g_test_sync_consumer, g_test_poll);
+        co_await engine::init(eng, &pager);
 
         os::Poll poll{};
         os::Notifier interrupt{};
@@ -1094,7 +1125,7 @@ TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]") {
     os::Handle wal = os::file_open(wal_path);
     auto pager = test_pager(db, wal);
     Engine eng2;
-    aio::drive(engine::init(eng2, &pager), g_test_sync_consumer, g_test_poll);
+    co_await engine::init(eng2, &pager);
 
     run_server_test("verifier", [&](os::Notifier& interrupt) {
         Socket client{socket_open()};

@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
+
 #include <plexdb/macros/macros.h>
+#include <plexdb/test_macros/test_macros.h>
 
 #if !PLEXDB_OS_LINUX
     #error "Process piping in REPL test not implemented for OS"
@@ -73,15 +75,17 @@ namespace {
     }
 }
 
-TEST_CASE("REPL create keyspace and table", "[cql.repl][!mayfail]") {
+PAGER_TEST_CASE("REPL create keyspace and table", "[cql.repl][!mayfail]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    drive_test_pager(engine::create_database(pager));
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine eng;
-    drive_test_pager(engine::init(eng, &pager));
+    co_await engine::init(eng, &pager);
 
     const char* input =
         "CREATE KEYSPACE test WITH replication = 'SimpleStrategy';\n"
@@ -92,15 +96,17 @@ TEST_CASE("REPL create keyspace and table", "[cql.repl][!mayfail]") {
     REQUIRE(contains(out, "SUCCESS"));
 }
 
-TEST_CASE("REPL insert and select", "[cql.repl]") {
+PAGER_TEST_CASE("REPL insert and select", "[cql.repl]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    drive_test_pager(engine::create_database(pager));
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine eng;
-    drive_test_pager(engine::init(eng, &pager));
+    co_await engine::init(eng, &pager);
 
     const char* input =
         "CREATE KEYSPACE ks;\n"
@@ -114,30 +120,34 @@ TEST_CASE("REPL insert and select", "[cql.repl]") {
     REQUIRE(contains(out, "1 rows"));
 }
 
-TEST_CASE("REPL reports parse error gracefully", "[cql.repl]") {
+PAGER_TEST_CASE("REPL reports parse error gracefully", "[cql.repl]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    drive_test_pager(engine::create_database(pager));
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine eng;
-    drive_test_pager(engine::init(eng, &pager));
+    co_await engine::init(eng, &pager);
 
     std::string out = run_repl_batch(eng, "NOT VALID CQL;\n");
     destroy_test_pager(pager);
     REQUIRE(contains(out, "ERROR"));
 }
 
-TEST_CASE("REPL displays column headers on SELECT", "[cql.repl]") {
+PAGER_TEST_CASE("REPL displays column headers on SELECT", "[cql.repl]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    drive_test_pager(engine::create_database(pager));
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
     Engine eng;
-    drive_test_pager(engine::init(eng, &pager));
+    co_await engine::init(eng, &pager);
 
     const char* input =
         "CREATE KEYSPACE ks;\n"

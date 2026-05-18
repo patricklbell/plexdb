@@ -74,8 +74,8 @@ int main(int argc, char* argv[]) {
     auto signal_consumer = aio::create_notifier_consumer(g_signal_notifier, io_poll);
 
     if (in_memory) {
-        engine::InMemoryEngine eng{};
-        Optional<String8> err = resp::run(port, eng, on_ready, !no_uring, signal_consumer, io_poll);
+        engine::InMemoryEngine engine{};
+        Optional<String8> err = resp::run(port, engine, on_ready, !no_uring, signal_consumer, io_poll);
         if (err) println(*err);
     } else {
         assert_not_implemented("persistent engine");

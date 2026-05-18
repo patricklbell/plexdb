@@ -23,7 +23,7 @@ export namespace keyvalue::resp {
 
     Optional<String8> run(
         U16 port,
-        engine::Engine auto& engine,
+        Engine auto& engine,
         const OnReady auto& on_ready_callback,
         bool use_uring,
         aio::EventConsumer& signal_consumer,

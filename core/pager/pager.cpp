@@ -372,6 +372,7 @@ namespace plexdb::pager {
     }
 
     coroutine::Task<> set_root(Pager& pager, U64 page) {
+        assert_true(pager.transaction_active, "no transaction active");
         pager.header.root_page = page;
         pager.header_in_write_set = true;
         co_return;
@@ -414,6 +415,7 @@ namespace plexdb::pager {
     }
 
     coroutine::Task<U8*> rwpage(Pager& pager, U64 idx) {
+        assert_true(pager.transaction_active, "no transaction active");
         assert_true(idx < pager.header.page_count && idx > 0, "page out of range");
         assert_true(pager.file_io_ctx != nullptr, "rwpage requires file_io_ctx");
 

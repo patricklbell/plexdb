@@ -147,6 +147,8 @@ target_link_libraries(plexdb_core
 # Tests
 # =============================================================================
 if(PLEXDB_ENABLE_TESTS)
+  add_subdirectory(test_macros)
+
   find_package(Catch2 3.13.0 QUIET)
   if(NOT TARGET Catch2::Catch2WithMain)
     include(FetchContent)
@@ -183,6 +185,7 @@ if(PLEXDB_ENABLE_TESTS)
             plexdb::compiler_config
             plexdb::core
             plexdb::core::plugin_abi
+            plexdb::core::test_macros
             plexdb::support::tracy
             Catch2::Catch2WithMain
             stdc++exp # std::stacktrace may require linking experimental c++ library

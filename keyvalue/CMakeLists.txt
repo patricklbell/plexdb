@@ -111,17 +111,11 @@ if(PLEXDB_ENABLE_TESTS)
               ${KEYVALUE_TEST_MODULE_SOURCES}
   )
 
-  target_include_directories(keyvalue_tests
-      PRIVATE
-          ${CMAKE_CURRENT_SOURCE_DIR}/../macros
-          ${CMAKE_CURRENT_SOURCE_DIR}/../core/plugin
-          ${CMAKE_CURRENT_SOURCE_DIR}/../core/test
-  )
-
   target_link_libraries(keyvalue_tests
       PRIVATE
           plexdb::compiler_config
           plexdb::core::plugin_abi
+          plexdb::core::test_macros
           plexdb::keyvalue
           Catch2::Catch2WithMain
           stdc++exp
