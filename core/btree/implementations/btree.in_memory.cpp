@@ -50,7 +50,7 @@ namespace plexdb::btree {
     // Backward-compat constructor
     template<KeyPolicy KP, ValuePolicy VP>
     BTreeInMemory<KP,VP>::BTreeInMemory(CountType max_keys_per_internal, CountType max_keys_per_leaf, U64 value_stride)
-        requires (SameAs<KP, U64KeyPolicy> && SameAs<VP, FixedStrideValuePolicy>)
+        requires (SameAs<KP, U64KeyPolicy> && SameAs<VP, FixedValuePolicy>)
     {
         assert_true(max_keys_per_internal >= 3, "positive min keys.");
         assert_true(max_keys_per_leaf >= 3, "positive min keys.");
@@ -62,7 +62,7 @@ namespace plexdb::btree {
             + max_keys_per_leaf * (sizeof(U64) + value_stride));
         node_bytes = internal_bytes > leaf_bytes ? internal_bytes : leaf_bytes;
         kp = U64KeyPolicy{};
-        vp = FixedStrideValuePolicy{.stride = static_cast<U16>(value_stride)};
+        vp = FixedValuePolicy{.stride = static_cast<U16>(value_stride)};
         init_tree(*this);
     }
 
@@ -84,5 +84,5 @@ namespace plexdb::btree {
     coroutine::Task<> BTreeInMemory<KP,VP>::Transaction::commit() { co_return; }
 
     // Explicit instantiations
-    template struct BTreeInMemory<U64KeyPolicy, FixedStrideValuePolicy>;
+    template struct BTreeInMemory<U64KeyPolicy, FixedValuePolicy>;
 }

@@ -357,7 +357,7 @@ export namespace plexdb::btree {
         it.ref       = n_ref;
         it.idx       = 0_u16;
         it.node_size = node_size(t);
-        it.vp        = FixedStrideValuePolicy{.stride = static_cast<U16>(h.value_stride)};
+        it.vp        = FixedValuePolicy{.stride = static_cast<U16>(h.value_stride)};
         co_return it;
     }
 
@@ -403,7 +403,7 @@ export namespace plexdb::btree {
             CountType idx = binary_search_first_geq(keys(n), key);
             if (idx < n->key_count && keys(n)[idx] == key) {
                 IteratorImpl it{}; it.leaf=n; it.ref=n_ref; it.idx=idx;
-                it.node_size=ns; it.vp=FixedStrideValuePolicy{.stride=static_cast<U16>(h.value_stride)};
+                it.node_size=ns; it.vp=FixedValuePolicy{.stride=static_cast<U16>(h.value_stride)};
                 co_return it;
             }
             co_return IteratorImpl{};
@@ -411,14 +411,14 @@ export namespace plexdb::btree {
             CountType idx = binary_search_first_geq(keys(n), key);
             if (idx < n->key_count) {
                 IteratorImpl it{}; it.leaf=n; it.ref=n_ref; it.idx=idx;
-                it.node_size=ns; it.vp=FixedStrideValuePolicy{.stride=static_cast<U16>(h.value_stride)};
+                it.node_size=ns; it.vp=FixedValuePolicy{.stride=static_cast<U16>(h.value_stride)};
                 co_return it;
             }
             if (n->next != 0) {
                 NodeRef next_ref = n->next;
                 const Node* next = co_await read_node(t, next_ref);
                 IteratorImpl it{}; it.leaf=next; it.ref=next_ref; it.idx=0_u16;
-                it.node_size=ns; it.vp=FixedStrideValuePolicy{.stride=static_cast<U16>(h.value_stride)};
+                it.node_size=ns; it.vp=FixedValuePolicy{.stride=static_cast<U16>(h.value_stride)};
                 co_return it;
             }
             co_return IteratorImpl{};
@@ -426,14 +426,14 @@ export namespace plexdb::btree {
             CountType idx = binary_search_first_gt(keys(n), key);
             if (idx < n->key_count) {
                 IteratorImpl it{}; it.leaf=n; it.ref=n_ref; it.idx=idx;
-                it.node_size=ns; it.vp=FixedStrideValuePolicy{.stride=static_cast<U16>(h.value_stride)};
+                it.node_size=ns; it.vp=FixedValuePolicy{.stride=static_cast<U16>(h.value_stride)};
                 co_return it;
             }
             if (n->next != 0) {
                 NodeRef next_ref = n->next;
                 const Node* next = co_await read_node(t, next_ref);
                 IteratorImpl it{}; it.leaf=next; it.ref=next_ref; it.idx=0_u16;
-                it.node_size=ns; it.vp=FixedStrideValuePolicy{.stride=static_cast<U16>(h.value_stride)};
+                it.node_size=ns; it.vp=FixedValuePolicy{.stride=static_cast<U16>(h.value_stride)};
                 co_return it;
             }
             co_return IteratorImpl{};
@@ -441,7 +441,7 @@ export namespace plexdb::btree {
             CountType idx = binary_search_last_leq(keys(n), key);
             if (idx < n->key_count) {
                 IteratorImpl it{}; it.leaf=n; it.ref=n_ref; it.idx=idx;
-                it.node_size=ns; it.vp=FixedStrideValuePolicy{.stride=static_cast<U16>(h.value_stride)};
+                it.node_size=ns; it.vp=FixedValuePolicy{.stride=static_cast<U16>(h.value_stride)};
                 co_return it;
             }
             if (n->prev != 0) {
@@ -450,7 +450,7 @@ export namespace plexdb::btree {
                 if (prev->key_count > 0) {
                     IteratorImpl it{}; it.leaf=prev; it.ref=prev_ref;
                     it.idx=static_cast<CountType>(prev->key_count - CountType{1});
-                    it.node_size=ns; it.vp=FixedStrideValuePolicy{.stride=static_cast<U16>(h.value_stride)};
+                    it.node_size=ns; it.vp=FixedValuePolicy{.stride=static_cast<U16>(h.value_stride)};
                     co_return it;
                 }
             }
@@ -459,7 +459,7 @@ export namespace plexdb::btree {
             CountType idx = binary_search_last_lt(keys(n), key);
             if (idx < n->key_count) {
                 IteratorImpl it{}; it.leaf=n; it.ref=n_ref; it.idx=idx;
-                it.node_size=ns; it.vp=FixedStrideValuePolicy{.stride=static_cast<U16>(h.value_stride)};
+                it.node_size=ns; it.vp=FixedValuePolicy{.stride=static_cast<U16>(h.value_stride)};
                 co_return it;
             }
             if (n->prev != 0) {
@@ -468,7 +468,7 @@ export namespace plexdb::btree {
                 if (prev->key_count > 0) {
                     IteratorImpl it{}; it.leaf=prev; it.ref=prev_ref;
                     it.idx=static_cast<CountType>(prev->key_count - CountType{1});
-                    it.node_size=ns; it.vp=FixedStrideValuePolicy{.stride=static_cast<U16>(h.value_stride)};
+                    it.node_size=ns; it.vp=FixedValuePolicy{.stride=static_cast<U16>(h.value_stride)};
                     co_return it;
                 }
             }

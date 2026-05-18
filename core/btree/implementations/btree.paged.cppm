@@ -11,7 +11,7 @@ import plexdb.btree.policy;
 import plexdb.pager;
 
 export namespace plexdb::btree {
-    template<KeyPolicy KP = U64KeyPolicy, ValuePolicy VP = FixedStrideValuePolicy>
+    template<KeyPolicy KP = U64KeyPolicy, ValuePolicy VP = FixedValuePolicy>
     struct BTreePaged {
         Pager* pager = nullptr;
         U64    header_page = 0;
@@ -73,7 +73,7 @@ export namespace plexdb::btree {
     };
 
     // Create a new paged tree; returns the header page id
-    template<KeyPolicy KP = U64KeyPolicy, ValuePolicy VP = FixedStrideValuePolicy>
+    template<KeyPolicy KP = U64KeyPolicy, ValuePolicy VP = FixedValuePolicy>
     coroutine::Task<U64> create_paged(Pager& pager, KP kp = {}, VP vp = {});
 
     // Backward-compat overload: create_paged(pager, value_stride)

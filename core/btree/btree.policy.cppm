@@ -7,7 +7,7 @@ export namespace plexdb::btree {
     // ========================================================================
     // default varlen comparator
     // ========================================================================
-    struct LexicographicCmp {
+    struct LexicographicComparator {
         Ordering operator()(TArrayView<const U8, U16> a, TArrayView<const U8, U16> b) const noexcept {
             U16 min_len = a.length < b.length ? a.length : b.length;
             S32 res = os::memory_compare(a.ptr, b.ptr, min_len);
@@ -43,9 +43,6 @@ export namespace plexdb::btree {
         { write_value(p, dst, v) };
     };
 
-    // ========================================================================
-    // U64KeyPolicy — backward-compatible fixed key
-    // ========================================================================
     struct U64KeyPolicy {
         using key_type = U64;
         static constexpr bool is_fixed_size = true;
@@ -63,14 +60,11 @@ export namespace plexdb::btree {
         }
     };
 
-    // ========================================================================
-    // VarlenKeyPolicy<Cmp> — variable-length byte-span key
-    // ========================================================================
-    template<typename Cmp = LexicographicCmp>
+    template<typename Comparator = LexicographicComparator>
     struct VarlenKeyPolicy {
         using key_type = TArrayView<const U8, U16>;
         static constexpr bool is_fixed_size = false;
-        [[no_unique_address]] Cmp cmp{};
+        [[no_unique_address]] Comparator comparator{};
 
         friend U16 stored_key_size(const VarlenKeyPolicy&, TArrayView<const U8, U16> k) noexcept {
             return k.length;
@@ -84,29 +78,23 @@ export namespace plexdb::btree {
         friend Ordering compare_key(const VarlenKeyPolicy& p,
                                     TArrayView<const U8, U16> a,
                                     TArrayView<const U8, U16> b) noexcept {
-            return p.cmp(a, b);
+            return p.comparator(a, b);
         }
     };
 
-    // ========================================================================
-    // FixedStrideValuePolicy — backward-compatible fixed-stride value
-    // ========================================================================
-    struct FixedStrideValuePolicy {
+    struct FixedValuePolicy {
         using value_type = TArrayView<const U8, U16>;
         static constexpr bool is_fixed_size = true;
         U16 stride;
 
-        friend U16 stored_value_size(FixedStrideValuePolicy p, TArrayView<const U8, U16>) noexcept {
+        friend U16 stored_value_size(FixedValuePolicy p, TArrayView<const U8, U16>) noexcept {
             return p.stride;
         }
-        friend void write_value(FixedStrideValuePolicy p, U8* dst, TArrayView<const U8, U16> v) noexcept {
+        friend void write_value(FixedValuePolicy p, U8* dst, TArrayView<const U8, U16> v) noexcept {
             os::memory_copy(dst, v.ptr, p.stride);
         }
     };
 
-    // ========================================================================
-    // VarlenValuePolicy — variable-length byte-span value
-    // ========================================================================
     struct VarlenValuePolicy {
         using value_type = TArrayView<const U8, U16>;
         static constexpr bool is_fixed_size = false;

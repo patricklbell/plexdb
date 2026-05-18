@@ -29,7 +29,7 @@ namespace plexdb::btree {
     coroutine::Task<U64> create_paged(Pager& pager, U64 value_stride) {
         co_return co_await create_paged(pager,
             U64KeyPolicy{},
-            FixedStrideValuePolicy{.stride = static_cast<U16>(value_stride)});
+            FixedValuePolicy{.stride = static_cast<U16>(value_stride)});
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
@@ -70,6 +70,6 @@ namespace plexdb::btree {
     }
 
     // Explicit instantiations
-    template struct BTreePaged<U64KeyPolicy, FixedStrideValuePolicy>;
-    template coroutine::Task<U64> create_paged(Pager&, U64KeyPolicy, FixedStrideValuePolicy);
+    template struct BTreePaged<U64KeyPolicy, FixedValuePolicy>;
+    template coroutine::Task<U64> create_paged(Pager&, U64KeyPolicy, FixedValuePolicy);
 }

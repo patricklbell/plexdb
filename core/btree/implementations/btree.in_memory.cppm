@@ -11,7 +11,7 @@ import plexdb.btree.policy;
 import plexdb.btree.node;
 
 export namespace plexdb::btree {
-    template<KeyPolicy KP = U64KeyPolicy, ValuePolicy VP = FixedStrideValuePolicy>
+    template<KeyPolicy KP = U64KeyPolicy, ValuePolicy VP = FixedValuePolicy>
     struct BTreeInMemory {
         Header header{};
         U32    node_bytes = 0;
@@ -23,7 +23,7 @@ export namespace plexdb::btree {
 
         // Backward-compat constructor — only available for the default policy pair
         BTreeInMemory(CountType max_keys_per_internal, CountType max_keys_per_leaf, U64 value_stride)
-            requires (SameAs<KP, U64KeyPolicy> && SameAs<VP, FixedStrideValuePolicy>);
+            requires (SameAs<KP, U64KeyPolicy> && SameAs<VP, FixedValuePolicy>);
 
         ~BTreeInMemory();
 

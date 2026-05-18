@@ -57,7 +57,7 @@ export namespace plexdb::btree {
         LastLessEqual,
     };
 
-    // IteratorImpl — templated on policies so operator* can reconstruct the right accessor
+    // @note templated on policies so operator* can reconstruct the right accessor
     template<KeyPolicy KP, ValuePolicy VP>
     struct BasicIteratorImpl {
         const Node* leaf      = nullptr;
@@ -74,5 +74,5 @@ export namespace plexdb::btree {
     };
 
     // Backward-compat alias used in existing Iterator<BT,T> for U64+fixed-stride
-    using IteratorImpl = BasicIteratorImpl<U64KeyPolicy, FixedStrideValuePolicy>;
+    using IteratorImpl = BasicIteratorImpl<U64KeyPolicy, FixedValuePolicy>;
 }
