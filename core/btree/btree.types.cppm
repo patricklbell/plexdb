@@ -2,27 +2,24 @@ export module plexdb.btree.types;
 
 import plexdb.base;
 import plexdb.coroutine;
+import plexdb.btree.policy;
 
 export namespace plexdb::btree {
-    using KeyType = U64;
     using CountType = U16;
-    using NodeRef = U64;
+    using NodeRef   = U64;
 
     // @padding
     struct Node {
         CountType key_count;
-        NodeRef prev, next;
+        NodeRef   prev, next;
     };
 
-    // @padding
     struct Header {
-        U64 value_stride;
-        U64 depth;
-        U64 size;
+        U64     depth;
+        U64     size;
         NodeRef root;
         NodeRef leaves;
-        CountType max_keys_per_internal;
-        CountType max_keys_per_leaf;
+        U16     value_stride; // persisted so paged trees survive reopen without re-supplying the policy
     };
 
     template<typename T>
@@ -30,28 +27,27 @@ export namespace plexdb::btree {
         typename T::Transaction;
     };
 
-    template <typename B>
+    template<typename B>
     concept TransactionConstructible = requires(B* b_ptr) {
         typename B::Transaction(b_ptr);
     };
 
     template<typename T>
-    concept Transaction = requires(T& t, NodeRef ref) {
-        { read_header(t) } -> SameAs<coroutine::Task<const Header*>>;
-        { update_header(t) } -> SameAs<coroutine::Task<Header*>>;
-
-        { create_internal(t) } -> SameAs<coroutine::Task<NodeRef>>;
-        { create_leaf(t) } -> SameAs<coroutine::Task<NodeRef>>;
-        { read_node(t, ref) } -> SameAs<coroutine::Task<const Node*>>;
-        { update_node(t, ref) } -> SameAs<coroutine::Task<Node*>>;
-        { delete_node(t, ref) } -> SameAs<coroutine::Task<>>;
-
-        { t.begin()  } -> SameAs<coroutine::Task<>>;
-        { t.commit() } -> SameAs<coroutine::Task<>>;
+    concept Transaction = requires(T& t) {
+        { node_size(t) } -> SameAs<U32>;
+        { t.begin()  }   -> SameAs<coroutine::Task<>>;
+        { t.commit() }   -> SameAs<coroutine::Task<>>;
     };
 
     template<typename B>
-    concept BTree = HasTransaction<B> && TransactionConstructible<B> && Transaction<typename B::Transaction>;
+    concept BTree =
+        HasTransaction<B> &&
+        TransactionConstructible<B> &&
+        Transaction<typename B::Transaction> &&
+        requires(const B& b) {
+            { key_policy(b) }   -> KeyPolicy;
+            { value_policy(b) } -> ValuePolicy;
+        };
 
     enum class SearchStrategy {
         RequireEquality,
@@ -60,4 +56,23 @@ export namespace plexdb::btree {
         LastLess,
         LastLessEqual,
     };
+
+    // IteratorImpl — templated on policies so operator* can reconstruct the right accessor
+    template<KeyPolicy KP, ValuePolicy VP>
+    struct BasicIteratorImpl {
+        const Node* leaf      = nullptr;
+        NodeRef     ref       = 0;
+        CountType   idx       = 0;
+        U32         node_size = 0;
+        [[no_unique_address]] KP kp{};
+        [[no_unique_address]] VP vp{};
+
+        bool operator==(const BasicIteratorImpl& o) const noexcept {
+            return ref == o.ref && idx == o.idx;
+        }
+        bool operator!=(const BasicIteratorImpl& o) const noexcept { return !(*this == o); }
+    };
+
+    // Backward-compat alias used in existing Iterator<BT,T> for U64+fixed-stride
+    using IteratorImpl = BasicIteratorImpl<U64KeyPolicy, FixedStrideValuePolicy>;
 }
