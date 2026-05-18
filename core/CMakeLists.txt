@@ -55,18 +55,19 @@ target_sources(plexdb_core
             base/math.cppm
             base/string.cppm
             base/types.cppm
-            blob/implementations/blob.paged.cppm
-            blob/implementations/blob.paged.detail.cppm
             blob/implementations/blob.in_memory.cppm
             blob/implementations/blob.in_memory.detail.cppm
-            blob/blob.types.cppm
+            blob/implementations/blob.paged.cppm
+            blob/implementations/blob.paged.detail.cppm
             blob/blob.cppm
-            btree/implementations/btree.paged.cppm
-            btree/implementations/btree.paged.detail.cppm
+            blob/blob.constraint.cppm
             btree/implementations/btree.in_memory.cppm
             btree/implementations/btree.in_memory.detail.cppm
-            btree/btree.detail.cppm
+            btree/implementations/btree.paged.cppm
+            btree/implementations/btree.paged.detail.cppm
             btree/btree.cppm
+            btree/btree.constraint.cppm
+            btree/btree.detail.cppm
             btree/btree.node.cppm
             btree/btree.policy.cppm
             btree/btree.print.cppm
@@ -90,6 +91,7 @@ target_sources(plexdb_core
             os/uring.cppm
             pager/pager.cppm
             pager/pager.types.cppm
+            pager/pager.transaction.cppm
             pager/pager.wal.cppm
             plugin/plugin.cppm
             shard/shard.cppm
@@ -111,9 +113,7 @@ target_sources(plexdb_core
         blob/implementations/blob.paged.cpp
         blob/implementations/blob.paged.detail.cpp
         btree/implementations/btree.paged.cpp
-        btree/implementations/btree.in_memory.detail.cpp
         btree/implementations/btree.in_memory.cpp
-        btree/implementations/btree.paged.detail.cpp
         btree/btree.detail.cpp
         btree/btree.node.cpp
         os/aio.cpp
@@ -125,6 +125,7 @@ target_sources(plexdb_core
         os/time.cpp
         os/uring.cpp
         pager/pager.cpp
+        pager/pager.transaction.cpp
         pager/pager.wal.cpp
         plugin/plugin.cpp
         tcp/tcp.types.cpp

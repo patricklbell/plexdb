@@ -3,12 +3,12 @@ module;
 
 export module plexdb.blob;
 
-export import plexdb.blob.types;
 export import plexdb.blob.paged;
 export import plexdb.blob.in_memory;
-export import plexdb.blob.paged.detail;
-export import plexdb.blob.in_memory.detail;
 
+import plexdb.blob.constraint;
+import plexdb.blob.paged.detail;
+import plexdb.blob.in_memory.detail;
 import plexdb.base;
 import plexdb.os;
 import plexdb.coroutine;

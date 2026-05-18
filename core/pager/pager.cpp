@@ -189,13 +189,12 @@ namespace plexdb::pager {
     }
 
     coroutine::Task<> destroy(Pager& p) {
-        if (p.file_io_ctx) {
-            if (p.transaction_active)
-                rollback_transaction(p);
-            else if (!p.wal)
-                co_await flush_direct(p);
-            p.file_io_ctx = nullptr;
-        }
+        assert_true(p.file_io_ctx != nullptr, "destroy requires file_io_ctx");
+        if (p.transaction_active)
+            rollback_transaction(p);
+        else if (!p.wal)
+            co_await flush_direct(p);
+        p.file_io_ctx = nullptr;
     }
 
     Pager::Pager(Pager&& other):
@@ -326,6 +325,8 @@ namespace plexdb::pager {
 
     coroutine::Task<> checkpoint(Pager& pager) { ZoneScopedN("pager::checkpoint");
         assert_true(pager.wal, "checkpoint requires WAL");
+        assert_true(pager.file_io_ctx != nullptr, "checkpoint requires file_io_ctx");
+
         aio::FileIOContext& ctx = *pager.file_io_ctx;
         U64 page_size = pager.wal.header.page_size;
 

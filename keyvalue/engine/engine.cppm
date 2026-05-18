@@ -41,7 +41,8 @@ namespace keyvalue::engine {
         co_return AutoString8{String8{reinterpret_cast<const char*>(buf.ptr), key_len}};
     }
 
-    coroutine::Task<AutoString8> blob_read_value(blob::Blob auto& b) {
+    template<typename Blob>
+    coroutine::Task<AutoString8> blob_read_value(Blob& b) {
         U64 key_len = 0, value_len = 0;
         U64 off = 0;
         co_await plexdb::blob::get(b, reinterpret_cast<U8*>(&key_len),   sizeof(U64), off); off += sizeof(U64) + key_len;

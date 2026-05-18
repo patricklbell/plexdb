@@ -4,18 +4,22 @@ module;
 
 export module plexdb.btree.detail;
 
-export import plexdb.btree.types;
-export import plexdb.btree.node;
+export import plexdb.btree.in_memory.detail;
+export import plexdb.btree.paged.detail;
 
 import plexdb.base;
-import plexdb.btree.policy;
 import plexdb.os;
 import plexdb.arena;
 import plexdb.coroutine;
 
+import plexdb.btree.constraint;
+import plexdb.btree.policy;
+import plexdb.btree.types;
+import plexdb.btree.node;
+
 export namespace plexdb::btree {
     // ========================================================================
-    // helpers — capacity/threshold, using node_size(t) from transaction
+    // helpers — capacity/threshold, using node_size(t)
     // ========================================================================
     CountType max_keys(U32 node_size, U16 val_stride, bool is_leaf);
     CountType min_keys(U32 node_size, U16 val_stride, bool is_leaf);
@@ -31,8 +35,8 @@ export namespace plexdb::btree {
     // ========================================================================
     // insert
     // ========================================================================
-    template<Transaction Tx>
-    coroutine::Task<void> insert_child_to_right(Tx& t, U32 ns, Node* parent, CountType idx,
+    template<BTree BT>
+    coroutine::Task<void> insert_child_to_right(BT& t, U32 ns, Node* parent, CountType idx,
                                                  U64 key, NodeRef child_ref, Node* child) {
         if (idx < parent->key_count) {
             os::memory_shift_up(view_shift_up(keys(parent), idx));
@@ -49,8 +53,8 @@ export namespace plexdb::btree {
         prev->next = child_ref;
     }
 
-    template<Transaction Tx>
-    coroutine::Task<void> split_child(Tx& t, U32 ns, U16 val_stride,
+    template<BTree BT>
+    coroutine::Task<void> split_child(BT& t, U32 ns, U16 val_stride,
                                        Node* parent, CountType child_idx, bool is_child_leaf) {
         ZoneScopedN("btree::split");
         assert_true(parent->key_count < max_keys(ns, val_stride, false), "parent is not full");
@@ -101,8 +105,8 @@ export namespace plexdb::btree {
         return values(leaf, ns, val_stride)[idx];
     }
 
-    template<Transaction Tx>
-    coroutine::Task<U8*> insert_recursive(Tx& t, const Header& h, U32 ns, U16 val_stride,
+    template<BTree BT>
+    coroutine::Task<U8*> insert_recursive(BT& t, const Header& h, U32 ns, U16 val_stride,
                                            NodeRef n_ref, CountType depth, U64 key) {
         if (depth == h.depth) {
             Node* n = co_await update_node(t, n_ref);
@@ -134,8 +138,8 @@ export namespace plexdb::btree {
         co_return co_await insert_recursive(t, h, ns, val_stride, child_ref, static_cast<CountType>(depth+1), key);
     }
 
-    template<Transaction Tx>
-    coroutine::Task<U8*> insert_impl(Tx& t, U64 key) { ZoneScopedN("btree::insert");
+    template<BTree BT>
+    coroutine::Task<U8*> insert_impl(BT& t, U64 key) { ZoneScopedN("btree::insert");
         const auto& h = *(co_await read_header(t));
         U32 ns = node_size(t);
         U16 vs = static_cast<U16>(h.value_stride);
@@ -167,8 +171,8 @@ export namespace plexdb::btree {
         [[nodiscard]] constexpr explicit operator bool() const noexcept { return leaf != nullptr; }
     };
 
-    template<Transaction Tx>
-    coroutine::Task<Search> search_impl(Tx& t, U64 key) { ZoneScopedN("btree::search");
+    template<BTree BT>
+    coroutine::Task<Search> search_impl(BT& t, U64 key) { ZoneScopedN("btree::search");
         const auto& h = *(co_await read_header(t));
         U32 ns = node_size(t);
         U16 vs = static_cast<U16>(h.value_stride);
@@ -192,8 +196,8 @@ export namespace plexdb::btree {
     // ========================================================================
     struct RemoveStackItem { NodeRef node; CountType idx; };
 
-    template<Transaction Tx>
-    coroutine::Task<bool> remove_impl(Tx& t, U64 key) { ZoneScopedN("btree::remove");
+    template<BTree BT>
+    coroutine::Task<bool> remove_impl(BT& t, U64 key) { ZoneScopedN("btree::remove");
         const auto& h = *(co_await read_header(t));
         U32 ns = node_size(t);
         U16 vs = static_cast<U16>(h.value_stride);
@@ -274,8 +278,8 @@ export namespace plexdb::btree {
         co_return true;
     }
 
-    template<Transaction Tx>
-    coroutine::Task<void> truncate_impl(Tx& t) {
+    template<BTree BT>
+    coroutine::Task<void> truncate_impl(BT& t) {
         auto& h = *(co_await update_header(t));
         U32 ns = node_size(t);
 
@@ -334,8 +338,8 @@ export namespace plexdb::btree {
     // ========================================================================
     // iterators
     // ========================================================================
-    template<Transaction Tx>
-    coroutine::Task<IteratorImpl> begin_iterator_impl(Tx& t) {
+    template<BTree BT>
+    coroutine::Task<IteratorImpl> begin_iterator_impl(BT& t) {
         const auto& h = *(co_await read_header(t));
 
         if (h.size == 0) {
@@ -363,8 +367,8 @@ export namespace plexdb::btree {
 
     inline IteratorImpl end_iterator_impl() { return IteratorImpl{}; }
 
-    template<Transaction Tx>
-    coroutine::Task<IteratorImpl> next_iterator_impl(Tx& t, const IteratorImpl& it) {
+    template<BTree BT>
+    coroutine::Task<IteratorImpl> next_iterator_impl(BT& t, const IteratorImpl& it) {
         assert_true(it.leaf != nullptr, "cannot get next iterator after end");
 
         if (it.idx == it.leaf->key_count - 1) {
@@ -386,8 +390,8 @@ export namespace plexdb::btree {
         co_return nit;
     }
 
-    template<SearchStrategy Strategy, Transaction Tx>
-    coroutine::Task<IteratorImpl> search_iterator_impl(Tx& t, U64 key) {
+    template<SearchStrategy Strategy, BTree BT>
+    coroutine::Task<IteratorImpl> search_iterator_impl(BT& t, U64 key) {
         const auto& h = *(co_await read_header(t));
         U32 ns = node_size(t);
         NodeRef n_ref = h.root;

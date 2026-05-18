@@ -1,7 +1,4 @@
-module;
-#include <coroutine>
-
-export module plexdb.blob.types;
+export module plexdb.blob.constraint;
 
 import plexdb.base;
 import plexdb.coroutine;

@@ -89,7 +89,7 @@ TEST_CASE("insert", "[plexdb.btree.in-memory]" ) {
             aio::drive(tinsert(t, key, value), s_sync_consumer, s_sync_poll);
         }
 
-        // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+        // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
 
         for (int key = 0; key < 32; key++) {
             REQUIRE(*aio::drive(tfind<int>(t, key), s_sync_consumer, s_sync_poll) == 10*key);
@@ -153,12 +153,12 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
         for (int key = 0; key < 32; key++) {
             int value = 10*key;
             aio::drive(tinsert(t, key, value), s_sync_consumer, s_sync_poll);
-            // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+            // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
         }
 
         for (int key = 0; key < 32; key++) {
             aio::drive(remove(t, key), s_sync_consumer, s_sync_poll);
-            // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+            // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
             for (int i = key+1; i < 32; i++) {
                 REQUIRE(*aio::drive(tfind<int>(t, i), s_sync_consumer, s_sync_poll) == 10*i);
             }
@@ -171,12 +171,12 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
         for (int key = 0; key < 16; key++) {
             int value = 10*key;
             aio::drive(tinsert(t, key, value), s_sync_consumer, s_sync_poll);
-            // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+            // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
         }
 
         for (int key = 15; key >= 0; key--) {
             aio::drive(remove(t, key), s_sync_consumer, s_sync_poll);
-            // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+            // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
             for (int i = 0; i < key; i++) {
                 REQUIRE(*aio::drive(tfind<int>(t, i), s_sync_consumer, s_sync_poll) == 10*i);
             }
@@ -191,12 +191,12 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
                 for (int key = 0; key < max_leaf*max_internal*max_internal; key++) {
                     int value = 10*key;
                     aio::drive(tinsert(t, key, value), s_sync_consumer, s_sync_poll);
-                    // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+                    // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
                 }
 
                 for (int key = 0; key < max_leaf*max_internal*max_internal; key++) {
                     aio::drive(remove(t, key), s_sync_consumer, s_sync_poll);
-                    // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+                    // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
                     for (int i = key+1; i < max_leaf*max_internal*max_internal; i++) {
                         REQUIRE(*aio::drive(tfind<int>(t, i), s_sync_consumer, s_sync_poll) == 10*i);
                     }
@@ -212,7 +212,7 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
         for (int key = 0; key < kept; key++) {
             int value = 10*key;
             aio::drive(tinsert(t, key, value), s_sync_consumer, s_sync_poll);
-            // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+            // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
         }
 
         for (int max_key = kept; max_key <= 9; max_key++) {
@@ -224,13 +224,13 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
                 for (int key = kept; key <= max_key; key++) {
                     int value = 10*key;
                     aio::drive(tinsert(t, key, value), s_sync_consumer, s_sync_poll);
-                    // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+                    // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
                 }
 
                 // remove in permutation order
                 for (size_t i = 0; i < elements.size(); i++) {
                     aio::drive(remove(t, elements[i]), s_sync_consumer, s_sync_poll);
-                    // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+                    // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
                     for (size_t j = i+1; j < elements.size(); j++) {
                         REQUIRE(*aio::drive(tfind<int>(t, elements[j]), s_sync_consumer, s_sync_poll) == 10*elements[j]);
                     }
@@ -248,18 +248,18 @@ TEST_CASE("remove", "[plexdb.btree.in-memory]" ) {
         for (int key = 0; key < 8; key++) {
             int value = 10*key;
             aio::drive(tinsert(t, key, value), s_sync_consumer, s_sync_poll);
-            INFO(to_str(create_tag<int>(&t)));
+            INFO(aio::drive(to_str(create_tag<int>(&t)), s_sync_consumer, s_sync_poll));
         }
 
         for (int key = 0; key < 8; key++) {
             aio::drive(remove(t, key), s_sync_consumer, s_sync_poll);
-            // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+            // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
         }
 
         for (int key = 0; key < 8; key++) {
             int value = 100 * key;
             aio::drive(tinsert(t, key, value), s_sync_consumer, s_sync_poll);
-            // INFO(to_str(TBTree<BTreeInMemory,int>(t)));
+            // INFO(aio::drive(to_str(TBTree<BTreeInMemory,int>(t)), s_sync_consumer, s_sync_poll));
         }
 
         for (int key = 0; key < 8; key++) {

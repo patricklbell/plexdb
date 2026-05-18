@@ -32,43 +32,6 @@ namespace plexdb::btree {
             FixedValuePolicy{.stride = static_cast<U16>(value_stride)});
     }
 
-    template<KeyPolicy KP, ValuePolicy VP>
-    BTreePaged<KP,VP>::Transaction::Transaction(): t(nullptr) {}
-    template<KeyPolicy KP, ValuePolicy VP>
-    BTreePaged<KP,VP>::Transaction::Transaction(BTreePaged* t_): t(t_) {
-        assert_true(t_->pager != nullptr, "cannot create a transaction for an uninitialized btree");
-    }
-    template<KeyPolicy KP, ValuePolicy VP>
-    BTreePaged<KP,VP>::Transaction::Transaction(Transaction&& other)
-        : started_transaction(other.started_transaction), t(other.t) {
-        other.started_transaction = false;
-        other.t = nullptr;
-    }
-    template<KeyPolicy KP, ValuePolicy VP>
-    typename BTreePaged<KP,VP>::Transaction&
-    BTreePaged<KP,VP>::Transaction::operator=(Transaction&& other) {
-        started_transaction = other.started_transaction;
-        t = other.t;
-        other.started_transaction = false;
-        other.t = nullptr;
-        return *this;
-    }
-    template<KeyPolicy KP, ValuePolicy VP>
-    BTreePaged<KP,VP>::Transaction::~Transaction() {
-        if (started_transaction && t && t->pager && t->pager->transaction_active)
-            pager::rollback_transaction(*t->pager);
-    }
-    template<KeyPolicy KP, ValuePolicy VP>
-    coroutine::Task<> BTreePaged<KP,VP>::Transaction::begin() {
-        pager::begin_transaction(*t->pager);
-        started_transaction = true;
-        co_return;
-    }
-    template<KeyPolicy KP, ValuePolicy VP>
-    coroutine::Task<> BTreePaged<KP,VP>::Transaction::commit() {
-        co_await pager::commit_transaction(*t->pager);
-    }
-
     // Explicit instantiations
     template struct BTreePaged<U64KeyPolicy, FixedValuePolicy>;
     template coroutine::Task<U64> create_paged(Pager&, U64KeyPolicy, FixedValuePolicy);

@@ -22,33 +22,6 @@ export namespace plexdb::btree {
         U16     value_stride; // persisted so paged trees survive reopen without re-supplying the policy
     };
 
-    template<typename T>
-    concept HasTransaction = requires {
-        typename T::Transaction;
-    };
-
-    template<typename B>
-    concept TransactionConstructible = requires(B* b_ptr) {
-        typename B::Transaction(b_ptr);
-    };
-
-    template<typename T>
-    concept Transaction = requires(T& t) {
-        { node_size(t) } -> SameAs<U32>;
-        { t.begin()  }   -> SameAs<coroutine::Task<>>;
-        { t.commit() }   -> SameAs<coroutine::Task<>>;
-    };
-
-    template<typename B>
-    concept BTree =
-        HasTransaction<B> &&
-        TransactionConstructible<B> &&
-        Transaction<typename B::Transaction> &&
-        requires(const B& b) {
-            { key_policy(b) }   -> KeyPolicy;
-            { value_policy(b) } -> ValuePolicy;
-        };
-
     enum class SearchStrategy {
         RequireEquality,
         FirstGreater,

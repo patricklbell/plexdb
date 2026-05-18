@@ -6,8 +6,11 @@ export module plexdb.btree.print;
 import plexdb.base;
 import plexdb.os;
 import plexdb.coroutine;
+
 import plexdb.btree;
 import plexdb.btree.detail;
+import plexdb.btree.node;
+import plexdb.btree.types;
 
 using namespace plexdb::btree;
 
@@ -28,11 +31,10 @@ namespace plexdb {
         return res + "]";
     }
 
-    template<typename T, typename Transaction>
-    AutoString8 btree_to_str_recursive(Transaction& t, const Node* node, U64 depth,
+    template<typename T, typename BTree>
+    coroutine::Task<AutoString8> btree_to_str_recursive(BTree& t, const Node* node, U64 depth,
                                         const String8& prepend, bool end) {
-        auto sync_get = [](auto task) { task.resume(); return move(task.value()); };
-        const Header& h = *sync_get(read_header(t));
+        const Header& h = *(co_await read_header(t));
         U32 ns = node_size(t);
         U16 vs = static_cast<U16>(h.value_stride);
 
@@ -41,25 +43,26 @@ namespace plexdb {
         if (depth < h.depth) {
             auto cs = children(node, ns);
             for (auto& child_ref : cs) {
-                const Node* child = sync_get(read_node(t, child_ref));
-                res += btree_to_str_recursive<T>(t, child, depth+1,
-                       prepend + (end ? "   " : " | "), &child_ref == cs.end()-1);
+                const Node* child = co_await read_node(t, child_ref);
+                res += co_await btree_to_str_recursive<T>(
+                    t, child, depth+1,
+                    prepend + (end ? "   " : " | "),
+                    &child_ref == cs.end()-1
+                );
             }
         }
-        return res;
+        co_return res;
     }
 
     export template<typename T, typename BTree>
         requires Either<BTree, BTreeInMemory<>, BTreePaged<>>
-    AutoString8 to_str(const Tag<T, BTree>& tag) {
-        auto sync_get = [](auto task) { task.resume(); return move(task.value()); };
-        using Transaction = typename BTree::Transaction;
-        Transaction t{tag.value};
+    coroutine::Task<AutoString8> to_str(const Tag<T, BTree>& tag) {
+        auto& t = *tag.value;
 
-        const Header& h = *sync_get(read_header(t));
+        const Header& h = *(co_await read_header(t));
         AutoString8 res = ""_as;
         res += "[tree, depth=" + to_str(h.depth) + "]\n";
-        res += btree_to_str_recursive<T>(t, sync_get(read_node(t, h.root)), 0, "", true);
-        return res;
+        res += co_await btree_to_str_recursive<T>(t, co_await read_node(t, h.root), 0, "", true);
+        co_return res;
     }
 }

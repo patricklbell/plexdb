@@ -71,18 +71,6 @@ namespace plexdb::btree {
         deallocate_tree(*this, reinterpret_cast<Node*>(this->header.root), 0);
     }
 
-    template<KeyPolicy KP, ValuePolicy VP>
-    BTreeInMemory<KP,VP>::Transaction::Transaction(): t(nullptr) {}
-    template<KeyPolicy KP, ValuePolicy VP>
-    BTreeInMemory<KP,VP>::Transaction::Transaction(BTreeInMemory* t_): t(t_) {}
-    template<KeyPolicy KP, ValuePolicy VP>
-    BTreeInMemory<KP,VP>::Transaction::Transaction(Transaction&& other): t(other.t) {}
-
-    template<KeyPolicy KP, ValuePolicy VP>
-    coroutine::Task<> BTreeInMemory<KP,VP>::Transaction::begin()  { co_return; }
-    template<KeyPolicy KP, ValuePolicy VP>
-    coroutine::Task<> BTreeInMemory<KP,VP>::Transaction::commit() { co_return; }
-
     // Explicit instantiations
     template struct BTreeInMemory<U64KeyPolicy, FixedValuePolicy>;
 }
