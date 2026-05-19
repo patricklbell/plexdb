@@ -1,3 +1,9 @@
+- fix memory leak/accumulation in cql_py_example
+- Pager cache: consider page handle design as alternative to transaction-scoped arena cache
+    - rpage/rwpage return a RAII handle that pins the cache entry; handle destruction releases the pin
+    - On slot collision with a pinned entry, spill to arena overflow instead of evicting
+    - Pro: rpage valid without transaction; pointers released early reclaim cache slots; memory bounded in common case
+    - Con: two-tier cache lookup (slot array + arena overflow), handle lifetime management at all call sites
 - Parse cache with string hash as key
 - Query planning
 - Do file io with io_uring

@@ -43,19 +43,21 @@ export namespace plexdb::btree {
         { write_value(p, dst, v) };
     };
 
-    struct U64KeyPolicy {
-        using key_type = U64;
+    template<TriviallyCopyable T>
+    struct FixedKeyPolicy {
+        using key_type = T;
         static constexpr bool is_fixed_size = true;
-        static constexpr U16 key_stride = sizeof(U64);
+        static constexpr U16 key_stride = sizeof(T);
 
-        friend U16 stored_key_size(U64KeyPolicy, U64) noexcept { return sizeof(U64); }
-        friend void write_key(U64KeyPolicy, U8* dst, U64 k) noexcept {
-            os::memory_copy(dst, &k, sizeof(U64));
+        friend U16 stored_key_size(FixedKeyPolicy, T) noexcept { return sizeof(T); }
+        friend void write_key(FixedKeyPolicy, U8* dst, T k) noexcept {
+            os::memory_copy(dst, &k, sizeof(T));
         }
-        friend U64 read_key(U64KeyPolicy, const U8* src, U16) noexcept {
-            U64 k; os::memory_copy(&k, src, sizeof(U64)); return k;
+        friend T read_key(FixedKeyPolicy, const U8* src, U16 len) noexcept {
+            assert_true(len == sizeof(T), "key length mismatch for fixed key policy");
+            T k; os::memory_copy(&k, src, sizeof(T)); return k;
         }
-        friend Ordering compare_key(U64KeyPolicy, U64 a, U64 b) noexcept {
+        friend Ordering compare_key(FixedKeyPolicy, T a, T b) noexcept {
             return a < b ? Ordering::Less : a > b ? Ordering::Greater : Ordering::Equal;
         }
     };
@@ -82,16 +84,19 @@ export namespace plexdb::btree {
         }
     };
 
+    template<U64 stride_byte_count>
     struct FixedValuePolicy {
         using value_type = TArrayView<const U8, U16>;
         static constexpr bool is_fixed_size = true;
-        U16 stride;
+        static constexpr U16 value_stride = stride_byte_count;
 
-        friend U16 stored_value_size(FixedValuePolicy p, TArrayView<const U8, U16>) noexcept {
-            return p.stride;
+        friend U16 stored_value_size(FixedValuePolicy, TArrayView<const U8, U16>) noexcept {
+            return stride_byte_count;
         }
-        friend void write_value(FixedValuePolicy p, U8* dst, TArrayView<const U8, U16> v) noexcept {
-            os::memory_copy(dst, v.ptr, p.stride);
+        friend void write_value(FixedValuePolicy, U8* dst, TArrayView<const U8, U16> v) noexcept {
+            assert_true(v.length <= static_cast<U16>(stride_byte_count), "value too large for fixed stride");
+            os::memory_copy(dst, v.ptr, v.length);
+            os::memory_zero(dst + v.length, stride_byte_count - v.length);
         }
     };
 

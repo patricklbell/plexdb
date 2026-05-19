@@ -77,15 +77,15 @@ export namespace keyvalue::engine {
     };
 
     struct InMemoryEngine {
-        btree::BTreeInMemory<> index;
+        btree::BTreeInMemory<btree::FixedKeyPolicy<U64>, btree::FixedValuePolicy<sizeof(U64)>> index;
         DynamicMap<U64, blob::BlobInMemory> blobs;
         U64 next_blob_id = 0;
 
-        InMemoryEngine() : index{32, 32, sizeof(U64)} {}
+        InMemoryEngine() : index{btree::FixedKeyPolicy<U64>{}, btree::FixedValuePolicy<sizeof(U64)>{}, 544u} {}
     };
 
     struct PagedEngine {
-        btree::BTreePaged<> index;
+        btree::BTreePaged<btree::FixedKeyPolicy<U64>, btree::FixedValuePolicy<sizeof(U64)>> index;
         Pager* pager = nullptr;
     };
 
@@ -205,31 +205,29 @@ namespace keyvalue::engine {
             } else if constexpr (SameAs<T, Quit>) {
                 co_return create_close();
             } else if constexpr (SameAs<T, Get>) {
-                U64 id = 0;
-                if (!co_await btree::find(engine.index, hash(String8{v.key}), reinterpret_cast<U8*>(&id), sizeof(U64)))
-                    co_return create_not_found();
-                co_return create_bulk(co_await read_value(engine, id));
+                auto id_opt = co_await btree::tfind<U64>(engine.index, hash(String8{v.key}));
+                if (!id_opt) co_return create_not_found();
+                co_return create_bulk(co_await read_value(engine, *id_opt));
             } else if constexpr (SameAs<T, Set>) {
                 U64 key_hash = hash(String8{v.key});
-                U64 id = 0;
-                bool exists = co_await btree::find(engine.index, key_hash, reinterpret_cast<U8*>(&id), sizeof(U64));
-                if (v.nx && exists)  co_return create_not_found();
-                if (v.xx && !exists) co_return create_not_found();
-                if (exists) {
-                    co_await write_entry(engine, id, String8{v.key}, String8{v.value});
+                auto id_opt = co_await btree::tfind<U64>(engine.index, key_hash);
+                if (v.nx && id_opt)  co_return create_not_found();
+                if (v.xx && !id_opt) co_return create_not_found();
+                if (id_opt) {
+                    co_await write_entry(engine, *id_opt, String8{v.key}, String8{v.value});
                 } else {
-                    id = co_await alloc_blob(engine);
+                    U64 id = co_await alloc_blob(engine);
                     co_await write_entry(engine, id, String8{v.key}, String8{v.value});
-                    co_await btree::insert(engine.index, key_hash, reinterpret_cast<const U8*>(&id), sizeof(U64));
+                    co_await btree::tinsert(engine.index, key_hash, id);
                 }
                 co_return create_simple("OK");
             } else if constexpr (SameAs<T, Del>) {
                 U64 count = 0;
                 for (U64 i = 0; i < v.keys.length; i++) {
                     U64 key_hash = hash(String8{v.keys[i]});
-                    U64 id = 0;
-                    if (!co_await btree::find(engine.index, key_hash, reinterpret_cast<U8*>(&id), sizeof(U64))) continue;
-                    co_await free_blob(engine, id);
+                    auto id_opt = co_await btree::tfind<U64>(engine.index, key_hash);
+                    if (!id_opt) continue;
+                    co_await free_blob(engine, *id_opt);
                     co_await btree::remove(engine.index, key_hash);
                     count++;
                 }
@@ -237,17 +235,16 @@ namespace keyvalue::engine {
             } else if constexpr (SameAs<T, Exists>) {
                 U64 count = 0;
                 for (U64 i = 0; i < v.keys.length; i++) {
-                    U64 id = 0;
-                    if (co_await btree::find(engine.index, hash(String8{v.keys[i]}), reinterpret_cast<U8*>(&id), sizeof(U64)))
+                    if (co_await btree::tfind<U64>(engine.index, hash(String8{v.keys[i]})))
                         count++;
                 }
                 co_return create_int(S64(count));
             } else if constexpr (SameAs<T, Mget>) {
                 DynamicArray<Optional<AutoString8>> vals;
                 for (U64 i = 0; i < v.keys.length; i++) {
-                    U64 id = 0;
-                    if (co_await btree::find(engine.index, hash(String8{v.keys[i]}), reinterpret_cast<U8*>(&id), sizeof(U64)))
-                        push_back(vals, Optional<AutoString8>{co_await read_value(engine, id)});
+                    auto id_opt = co_await btree::tfind<U64>(engine.index, hash(String8{v.keys[i]}));
+                    if (id_opt)
+                        push_back(vals, Optional<AutoString8>{co_await read_value(engine, *id_opt)});
                     else
                         push_back(vals, Optional<AutoString8>{});
                 }
@@ -255,22 +252,21 @@ namespace keyvalue::engine {
             } else if constexpr (SameAs<T, Mset>) {
                 for (U64 i = 0; i < v.pairs.length; i++) {
                     U64 key_hash = hash(String8{v.pairs[i].first});
-                    U64 id = 0;
-                    bool exists = co_await btree::find(engine.index, key_hash, reinterpret_cast<U8*>(&id), sizeof(U64));
-                    if (exists) {
-                        co_await write_entry(engine, id, String8{v.pairs[i].first}, String8{v.pairs[i].second});
+                    auto id_opt = co_await btree::tfind<U64>(engine.index, key_hash);
+                    if (id_opt) {
+                        co_await write_entry(engine, *id_opt, String8{v.pairs[i].first}, String8{v.pairs[i].second});
                     } else {
-                        id = co_await alloc_blob(engine);
+                        U64 id = co_await alloc_blob(engine);
                         co_await write_entry(engine, id, String8{v.pairs[i].first}, String8{v.pairs[i].second});
-                        co_await btree::insert(engine.index, key_hash, reinterpret_cast<const U8*>(&id), sizeof(U64));
+                        co_await btree::tinsert(engine.index, key_hash, id);
                     }
                 }
                 co_return create_simple("OK");
             } else if constexpr (SameAs<T, Keys>) {
                 String8 pattern = v.pattern;
                 DynamicArray<AutoString8> keys;
-                auto it = co_await btree::tbegin<U64>(engine.index);
-                auto end_it = btree::tend<U64>(engine.index);
+                auto it = co_await btree::begin<U64>(engine.index);
+                auto end_it = btree::end<U64>(engine.index);
                 while (it != end_it) {
                     AutoString8 key = co_await read_key(engine, *it);
                     if (glob::match(String8{key}, pattern))
@@ -284,9 +280,9 @@ namespace keyvalue::engine {
                 DynamicArray<AutoString8> result;
 
                 auto it = v.cursor == 0
-                    ? co_await btree::tbegin<U64>(engine.index)
-                    : co_await btree::tfind_it<U64, btree::SearchStrategy::FirstGreaterEqual>(engine.index, v.cursor);
-                auto end_it = btree::tend<U64>(engine.index);
+                    ? co_await btree::begin<U64>(engine.index)
+                    : co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(engine.index, v.cursor);
+                auto end_it = btree::end<U64>(engine.index);
 
                 U64 scanned = 0;
                 while (it != end_it && scanned < count) {
@@ -307,8 +303,8 @@ namespace keyvalue::engine {
                 if constexpr (SameAs<Decay<decltype(engine)>, InMemoryEngine>) {
                     clear(engine.blobs);
                 } else {
-                    auto it = co_await btree::tbegin<U64>(engine.index);
-                    auto end_it = btree::tend<U64>(engine.index);
+                    auto it = co_await btree::begin<U64>(engine.index);
+                    auto end_it = btree::end<U64>(engine.index);
                     while (it != end_it) {
                         U64 id = *it;
                         co_await it.advance();
@@ -320,8 +316,7 @@ namespace keyvalue::engine {
             } else if constexpr (SameAs<T, DbSize>) {
                 co_return create_int(S64(co_await btree::size(engine.index)));
             } else if constexpr (SameAs<T, TypeOf>) {
-                U64 id = 0;
-                bool found = co_await btree::find(engine.index, hash(String8{v.key}), reinterpret_cast<U8*>(&id), sizeof(U64));
+                bool found = static_cast<bool>(co_await btree::tfind<U64>(engine.index, hash(String8{v.key})));
                 co_return create_simple(found ? "string" : "none");
             } else if constexpr (SameAs<T, Cmd>) {
                 co_return create_arr({});

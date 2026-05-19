@@ -123,12 +123,12 @@ namespace cql {
         return RowIterator{
             .pager      = pager,
             .table      = table,
-            .pk_hash_it = btree::tend<U64>(table->btree),
+            .pk_hash_it = btree::end<U64>(table->btree),
         };
     }
 
     coroutine::Task<RowIterator> create_table_begin_it(Pager* pager, schema::Table* table) {
-        auto pk_hash_it = co_await btree::tbegin<U64>(table->btree);
+        auto pk_hash_it = co_await btree::begin<U64>(table->btree);
         co_return RowIterator{
             .pager      = pager,
             .table      = table,
@@ -137,7 +137,7 @@ namespace cql {
     }
 
     coroutine::Task<RowIterator> create_table_eq_it(Pager* pager, schema::Table* table, U64 pk_hash) {
-        auto pk_hash_it = co_await btree::tfind_it<U64, btree::SearchStrategy::RequireEquality>(table->btree, pk_hash);
+        auto pk_hash_it = co_await btree::find_it<U64, btree::SearchStrategy::RequireEquality>(table->btree, pk_hash);
         co_return RowIterator{
             .pager      = pager,
             .table      = table,
@@ -147,7 +147,7 @@ namespace cql {
 
     // stop iterator: exclusive end for "< pk_hash" → position at first key >= pk_hash
     coroutine::Task<RowIterator> create_table_lt_it(Pager* pager, schema::Table* table, U64 pk_hash) {
-        auto pk_hash_it = co_await btree::tfind_it<U64, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_hash);
+        auto pk_hash_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_hash);
         co_return RowIterator{
             .pager      = pager,
             .table      = table,
@@ -157,7 +157,7 @@ namespace cql {
 
     // stop iterator: exclusive end for "<= pk_hash" → position at first key > pk_hash
     coroutine::Task<RowIterator> create_table_le_it(Pager* pager, schema::Table* table, U64 pk_hash) {
-        auto pk_hash_it = co_await btree::tfind_it<U64, btree::SearchStrategy::FirstGreater>(table->btree, pk_hash);
+        auto pk_hash_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(table->btree, pk_hash);
         co_return RowIterator{
             .pager      = pager,
             .table      = table,
@@ -167,7 +167,7 @@ namespace cql {
 
     // start iterator: first key > pk_hash
     coroutine::Task<RowIterator> create_table_gt_it(Pager* pager, schema::Table* table, U64 pk_hash) {
-        auto pk_hash_it = co_await btree::tfind_it<U64, btree::SearchStrategy::FirstGreater>(table->btree, pk_hash);
+        auto pk_hash_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(table->btree, pk_hash);
         co_return RowIterator{
             .pager      = pager,
             .table      = table,
@@ -177,7 +177,7 @@ namespace cql {
 
     // start iterator: first key >= pk_hash
     coroutine::Task<RowIterator> create_table_ge_it(Pager* pager, schema::Table* table, U64 pk_hash) {
-        auto pk_hash_it = co_await btree::tfind_it<U64, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_hash);
+        auto pk_hash_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_hash);
         co_return RowIterator{
             .pager      = pager,
             .table      = table,

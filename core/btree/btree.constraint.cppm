@@ -13,6 +13,14 @@ export namespace plexdb::btree {
         { key_policy(b)   } -> KeyPolicy;
         { value_policy(b) } -> ValuePolicy;
         { node_size(b)    } -> SameAs<U32>;
-        // @todo fill in rest
     };
+
+    template<BTree BT>
+    using BTreeKeyType = typename decltype(key_policy(declval<const BT&>()))::key_type;
+
+    template<BTree BT>
+    using BTreeKP = typename BT::kp_type;
+
+    template<BTree BT>
+    using BTreeVP = typename BT::vp_type;
 }

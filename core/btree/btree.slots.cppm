@@ -2,12 +2,11 @@ export module plexdb.btree.slots;
 
 import plexdb.base;
 import plexdb.os;
+
 import plexdb.btree.policy;
+import plexdb.btree.types;
 
 export namespace plexdb::btree {
-    using NodeRef = U64;
-    using CountType = U16;
-
     // ========================================================================
     // SlotEntry — conditional fields based on varlen-ness
     // ========================================================================
@@ -101,6 +100,10 @@ export namespace plexdb::btree {
     NodeRef child_at(const FixedInternalSlots& s, CountType i) noexcept {
         return s.children_base()[i];
     }
+    // overwrite key bytes at index i without touching children
+    void replace_key(FixedInternalSlots& s, CountType i, TArrayView<const U8, U16> k) noexcept {
+        os::memory_copy(s.keys_base() + i * s.key_stride, k.ptr, s.key_stride);
+    }
     // insert key at index i (shifts keys i..count-1 right; children shifted separately)
     bool insert_key(FixedInternalSlots& s, CountType i, TArrayView<const U8, U16> k) noexcept {
         if (s.count >= s.capacity) return false;
@@ -145,6 +148,7 @@ export namespace plexdb::btree {
     // ========================================================================
     template<bool VK, bool VV>
     struct SlottedLeafPage {
+        static_assert(VK, "SlottedLeafPage requires varlen keys; use FixedLeafSlots for fixed keys");
         U8*       base;
         CountType count;
         U16       slot_end;   // first free byte after slot directory
@@ -167,30 +171,8 @@ export namespace plexdb::btree {
 
     template<bool VK, bool VV>
     TArrayView<const U8, U16> key_at(const SlottedLeafPage<VK, VV>& p, CountType i) noexcept {
-        if constexpr (VK) {
-            const auto& e = p.slots()[i];
-            return {p.base + e.key_off, e.key_len};
-        } else {
-            return {p.base + p.slots()[i].val_off - (CountType)(i+1) * p.key_stride, p.key_stride};
-            // For fixed key, key_off is implicit from slot position
-            // Actually store it differently: we need to track key position too
-            // Use a simpler layout: keys packed from data_low, then values
-            // When VK==false: key data is at a fixed stride from the slot index
-            // Reconsider: for VK==false, key position is slot_start - (count-i)*key_stride
-            // This is complex — for the mixed case, store key_off anyway via the slot
-            // But SlotEntry<false,VV> doesn't have key_off/key_len.
-            // Solution: for fixed key, keys are stored as a fixed array at the end of page
-            // base + page_size - (capacity * key_stride) + i * key_stride
-            // capacity = (page_size - sizeof(Node_header)) / (key_stride + val_overhead + slot_entry_size)
-            // This requires capacity, which we don't have stored.
-            // Simplest fix: always store key_off even for fixed key in the mixed case.
-            // But that wastes 4 bytes per slot. Instead, let's say:
-            // For VK==false leaves, keys are at end of page in fixed array.
-            // We need to know how many slots max to find where keys start.
-            // Store max_count in SlottedLeafPage.
-            static_assert(VK, "fixed-key SlottedLeafPage not implemented; use FixedLeafSlots");
-            return TArrayView<const U8, U16>{};
-        }
+        const auto& e = p.slots()[i];
+        return {p.base + e.key_off, e.key_len};
     }
 
     template<bool VK, bool VV>
@@ -222,6 +204,11 @@ export namespace plexdb::btree {
     template<bool VK, bool VV>
     U16 used_bytes(const SlottedLeafPage<VK, VV>& p) noexcept {
         return static_cast<U16>(p.page_size - p.free_space());
+    }
+
+    template<bool VK, bool VV>
+    U16 capacity_bytes(const SlottedLeafPage<VK, VV>& p) noexcept {
+        return p.page_size;
     }
 
     // compact: close all holes in data region, update offsets
@@ -348,6 +335,7 @@ export namespace plexdb::btree {
     // ========================================================================
     template<bool VK>
     struct SlottedInternalPage {
+        static_assert(VK, "SlottedInternalPage requires varlen keys; use FixedInternalSlots for fixed keys");
         U8*       base;
         CountType count;
         U16       slot_end;
@@ -374,13 +362,8 @@ export namespace plexdb::btree {
 
     template<bool VK>
     TArrayView<const U8, U16> key_at(const SlottedInternalPage<VK>& p, CountType i) noexcept {
-        if constexpr (VK) {
-            const auto& e = p.slots()[i];
-            return {p.base + e.key_off, e.key_len};
-        } else {
-            static_assert(VK, "fixed-key SlottedInternalPage not implemented; use FixedInternalSlots");
-            return TArrayView<const U8, U16>{};
-        }
+        const auto& e = p.slots()[i];
+        return {p.base + e.key_off, e.key_len};
     }
 
     template<bool VK>
@@ -415,6 +398,30 @@ export namespace plexdb::btree {
             e.key_off = write_pos;
         }
         p.data_low = write_pos;
+    }
+
+    // replace key at index i without touching children
+    template<bool VK>
+    bool replace_key(SlottedInternalPage<VK>& p, CountType i,
+                     TArrayView<const U8, U16> k) noexcept {
+        static_assert(VK, "replace_key on SlottedInternalPage requires varlen key");
+        auto& e = p.slots()[i];
+        // reclaim old key bytes
+        U16 old_off = e.key_off, old_len = e.key_len;
+        os::memory_move(p.base + p.data_low + old_len, p.base + p.data_low, old_off - p.data_low);
+        p.data_low += old_len;
+        for (CountType j = 0; j < p.count; j++)
+            if (p.slots()[j].key_off < old_off) p.slots()[j].key_off += old_len;
+        // allocate new key bytes
+        if (p.free_space() < k.length) {
+            compact(p);
+            if (p.free_space() < k.length) return false;
+        }
+        p.data_low -= k.length;
+        os::memory_copy(p.base + p.data_low, k.ptr, k.length);
+        e.key_off = p.data_low;
+        e.key_len = k.length;
+        return true;
     }
 
     template<bool VK>
@@ -466,6 +473,30 @@ export namespace plexdb::btree {
         NodeRef* cp = p.children() + i + 2;
         os::memory_move(cp - 1, cp, (p.count - i - 1) * sizeof(NodeRef));
         p.count--;
+    }
+
+    // remove first key and leftmost child (children[0]) — used in move_from_right for internal
+    template<bool VK>
+    void remove_front(SlottedInternalPage<VK>& p) noexcept {
+        static_assert(VK, "remove_front requires varlen key");
+        auto* slots = p.slots();
+        auto& e = slots[0];
+        U16 off = e.key_off, len = e.key_len;
+        os::memory_move(p.base + p.data_low + len, p.base + p.data_low, off - p.data_low);
+        p.data_low += len;
+        for (CountType j = 1; j < p.count; j++)
+            if (slots[j].key_off < off) slots[j].key_off += len;
+        os::memory_move(slots, slots + 1, (p.count - 1) * sizeof(SlotEntry<VK,false>));
+        p.slot_end -= sizeof(SlotEntry<VK,false>);
+        p.count--;
+        // shift children left to remove children[0]
+        NodeRef* cp = p.children();
+        os::memory_move(cp, cp + 1, p.count * sizeof(NodeRef));
+    }
+
+    template<bool VK>
+    U16 capacity_bytes(const SlottedInternalPage<VK>& p) noexcept {
+        return p.usable_capacity();
     }
 
     template<bool VK>

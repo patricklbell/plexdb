@@ -7,8 +7,25 @@ import plexdb.pager.transaction;
 
 import plexdb.btree.types;
 import plexdb.btree.policy;
-import plexdb.btree.node;
 import plexdb.btree.in_memory;
+
+namespace plexdb::btree {
+    Node* alloc_internal(SizeType node_size) {
+        Node* node = reinterpret_cast<Node*>(os::allocate(node_size));
+        node->key_count = 0;
+        node->prev = 0;
+        node->next = 0;
+        return node;
+    }
+
+    Node* alloc_leaf(SizeType node_size) {
+        Node* node = reinterpret_cast<Node*>(os::allocate(node_size));
+        node->key_count = 0;
+        node->prev = 0;
+        node->next = 0;
+        return node;
+    }
+}
 
 export namespace plexdb::btree {
     template<KeyPolicy KP, ValuePolicy VP>

@@ -15,24 +15,54 @@ import plexdb.aio;
 namespace plexdb::pager {
     static plugin::Producer pager_producer{"plexdb::pager"};
 
-    static U64 get_cache_size(Pager& pager) {
-        return pager.header.page_size + sizeof(Pager::ReadCacheEntry);
+    static U64 page_cache_hash(U64 key) {
+        key ^= key >> 33;
+        key *= 0xff51afd7ed558ccdULL;
+        key ^= key >> 33;
+        return key;
     }
-    static Pager::ReadCacheEntry* get_cache_entry(Pager& pager, U64 idx) {
-        static_assert(sizeof(*pager.read_cache) == 1, "ptr arithmetic");
-        U64 cache_idx = idx % pager.read_cache_count;
-        return reinterpret_cast<Pager::ReadCacheEntry*>(
-            pager.read_cache + cache_idx*get_cache_size(pager)
-        );
+
+    static PageCache::Slot* page_cache_find(PageCache& cache, U64 key) {
+        if (!cache.slots) return nullptr;
+        U64 h = page_cache_hash(key) & (cache.slot_count - 1);
+        for (U64 i = 0; i < cache.slot_count; i++) {
+            U64 idx = (h + i) & (cache.slot_count - 1);
+            if (cache.slots[idx].key == PageCache::EMPTY) return nullptr;
+            if (cache.slots[idx].key == key) return &cache.slots[idx];
+        }
+        return nullptr;
     }
-    static U8* get_cache_data(Pager& pager, U64 idx) {
-        static_assert(sizeof(*pager.read_cache) == 1, "ptr arithmetic");
-        U64 cache_idx = idx % pager.read_cache_count;
-        return pager.read_cache + cache_idx*get_cache_size(pager) + sizeof(Pager::ReadCacheEntry);
+
+    static void page_cache_grow(PageCache& cache, Arena& arena) {
+        U64 new_count = cache.slot_count == 0 ? 16 : cache.slot_count * 2;
+        auto* new_slots = arena::push_array<PageCache::Slot>(arena, new_count); // zero-init = EMPTY
+        for (U64 i = 0; i < cache.slot_count; i++) {
+            if (cache.slots[i].key != PageCache::EMPTY) {
+                U64 h = page_cache_hash(cache.slots[i].key) & (new_count - 1);
+                while (new_slots[h].key != PageCache::EMPTY)
+                    h = (h + 1) & (new_count - 1);
+                new_slots[h] = cache.slots[i];
+            }
+        }
+        cache.slots = new_slots;
+        cache.slot_count = new_count;
     }
-    static void init_read_cache(Pager& pager) {
-        pager.read_cache = os::allocate_zero(get_cache_size(pager)*pager.read_cache_count);
+
+    static PageCache::Slot& page_cache_insert(PageCache& cache, Arena& arena, U64 key, U8* data, bool dirty) {
+        if (!cache.slots || cache.count * 2 >= cache.slot_count)
+            page_cache_grow(cache, arena);
+        U64 h = page_cache_hash(key) & (cache.slot_count - 1);
+        while (cache.slots[h].key != PageCache::EMPTY)
+            h = (h + 1) & (cache.slot_count - 1);
+        cache.slots[h] = {key, data, dirty};
+        cache.count++;
+        return cache.slots[h];
     }
+
+    static void page_cache_reset(PageCache& cache) {
+        cache = {};
+    }
+
 
     static coroutine::Task<> read_header(Pager& pager) {
         co_await aio::file_read(
@@ -64,33 +94,21 @@ namespace plexdb::pager {
         co_return header;
     }
 
-    // Spill one dirty cache slot to the WAL without committing.
-    // Removes the slot from write_set and marks it clean so the slot can be reused.
-    static coroutine::Task<> spill_to_wal(Pager& pager, Pager::ReadCacheEntry* entry) {
-        assert_true(pager.wal, "spill requires WAL");
-        U64 page_idx = entry->idx;
-        U64 frame_idx = co_await wal::append_frame(pager.wal, *pager.file_io_ctx, page_idx, get_cache_data(pager, page_idx));
-        insert(pager.wal.wal_index, page_idx, frame_idx);
-        remove(pager.write_set, entry->write_set_node);
-        entry->in_write_set = false;
-        entry->write_set_node = nullptr;
-    }
-
     // Flush dirty pages directly to the main file (no-WAL fallback used in destroy).
     static coroutine::Task<> flush_direct(Pager& pager) {
         aio::FileIOContext& ctx = *pager.file_io_ctx;
-        for (auto& idx : pager.write_set) {
-            auto entry = get_cache_entry(pager, idx);
+        for (U64 i = 0; i < pager.page_cache.slot_count; i++) {
+            auto& slot = pager.page_cache.slots[i];
+            if (slot.key == PageCache::EMPTY || !slot.dirty) continue;
+            U64 idx = slot.key;
             if (idx < pager.header.page_count) {
                 U64 offset = pager.base_offset + pager.header.page_size * idx;
                 co_await aio::file_write(
                     ctx, pager.file,
                     Rng1U64{.start=offset, .end=offset + pager.header.page_size},
-                    get_cache_data(pager, idx)
+                    slot.data
                 );
             }
-            entry->in_write_set = false;
-            entry->write_set_node = nullptr;
         }
         if (pager.header_in_write_set) {
             co_await aio::file_write(
@@ -102,8 +120,8 @@ namespace plexdb::pager {
         }
         os::file_resize_zero(pager.file, pager.base_offset + pager.header.page_count * pager.header.page_size);
         co_await aio::file_sync(ctx, pager.file);
-        clear(pager.write_set);
-        arena::clear(pager.write_arena);
+        page_cache_reset(pager.page_cache);
+        arena::clear(pager.page_cache_arena);
     }
 
     static coroutine::Task<> maybe_recover_wal(Pager& pager) {
@@ -152,39 +170,32 @@ namespace plexdb::pager {
         os::file_resize_zero(pager.file, pager.base_offset + pager.header.page_count * pager.header.page_size);
     }
 
-    Pager::Pager(aio::FileIOContext* file_io_ctx, os::Handle file, const Header& header, U64 checkpoint_interval, U64 base_offset, U64 read_cache)
-       : file_io_ctx(file_io_ctx), file(file), base_offset(base_offset), header(header), checkpoint_interval(checkpoint_interval), read_cache_count(read_cache) {
-        init_read_cache(*this);
+    Pager::Pager(aio::FileIOContext* file_io_ctx, os::Handle file, const Header& header, U64 checkpoint_interval, U64 base_offset)
+       : file_io_ctx(file_io_ctx), file(file), base_offset(base_offset), header(header), checkpoint_interval(checkpoint_interval) {
     }
 
-    coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, U64 base_offset, U64 read_cache) {
+    coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, U64 base_offset) {
         p.file_io_ctx = file_io_ctx;
         p.file = file;
         p.base_offset = base_offset;
-        p.read_cache_count = read_cache;
         co_await read_header(p);
-        init_read_cache(p);
     }
 
-    coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, os::Handle wal_file, U64 base_offset, U64 read_cache) {
+    coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, os::Handle wal_file, U64 base_offset) {
         p.file_io_ctx = file_io_ctx;
         p.file = file;
         p.base_offset = base_offset;
-        p.read_cache_count = read_cache;
         p.wal = Wal{wal_file};
         co_await read_header(p);
         co_await maybe_recover_wal(p);
-        init_read_cache(p);
     }
 
-    coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, os::Handle wal_file, const Header& header, U64 base_offset, U64 read_cache) {
+    coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, os::Handle wal_file, const Header& header, U64 base_offset) {
         wal::Header wal_hdr = co_await wal::create(*file_io_ctx, wal_file, header.page_size);
         p.file_io_ctx = file_io_ctx;
         p.file = file;
         p.base_offset = base_offset;
         p.header = header;
-        p.read_cache_count = read_cache;
-        init_read_cache(p);
         p.wal = Wal{wal_file, wal_hdr};
     }
 
@@ -207,22 +218,18 @@ namespace plexdb::pager {
         transaction_active(other.transaction_active),
         checkpoint_interval(other.checkpoint_interval),
         wal_transaction_count(other.wal_transaction_count),
-        read_cache_count(other.read_cache_count),
-        read_cache(other.read_cache),
-        write_arena(move(other.write_arena)),
-        write_set(other.write_set),
+        page_cache_arena(move(other.page_cache_arena)),
+        page_cache(other.page_cache),
         wal(move(other.wal))
     {
         other.file = os::zero_handle();
         other.file_io_ctx = nullptr;
-        other.read_cache = nullptr;
-        other.write_set = {};
+        other.page_cache = {};
         other.transaction_active = false;
     }
 
     Pager::~Pager() {
         assert_true(file_io_ctx == nullptr, "pager destroyed without destroy()");
-        os::deallocate(this->read_cache);
     }
 
     Pager& Pager::operator=(Pager&& other) {
@@ -231,7 +238,6 @@ namespace plexdb::pager {
         }
 
         assert_true(file_io_ctx == nullptr, "pager overwritten without destroy()");
-        os::deallocate(this->read_cache);
 
         file = other.file;
         base_offset = other.base_offset;
@@ -242,16 +248,13 @@ namespace plexdb::pager {
         transaction_active = other.transaction_active;
         checkpoint_interval = other.checkpoint_interval;
         wal_transaction_count = other.wal_transaction_count;
-        read_cache_count = other.read_cache_count;
-        read_cache = other.read_cache;
-        write_arena = move(other.write_arena);
-        write_set = other.write_set;
+        page_cache_arena = move(other.page_cache_arena);
+        page_cache = other.page_cache;
         wal = move(other.wal);
 
         other.file = os::zero_handle();
         other.file_io_ctx = nullptr;
-        other.read_cache = nullptr;
-        other.write_set = {};
+        other.page_cache = {};
         other.transaction_active = false;
 
         return *this;
@@ -274,14 +277,14 @@ namespace plexdb::pager {
 
         aio::FileIOContext& ctx = *pager.file_io_ctx;
 
-        for (auto& idx : pager.write_set) {
-            auto entry = get_cache_entry(pager, idx);
+        for (U64 i = 0; i < pager.page_cache.slot_count; i++) {
+            auto& slot = pager.page_cache.slots[i];
+            if (slot.key == PageCache::EMPTY || !slot.dirty) continue;
+            U64 idx = slot.key;
             if (idx < pager.header.page_count) {
-                U64 frame_idx = co_await wal::append_frame(pager.wal, ctx, idx, get_cache_data(pager, idx));
+                U64 frame_idx = co_await wal::append_frame(pager.wal, ctx, idx, slot.data);
                 insert(pager.wal.wal_index, idx, frame_idx);
             }
-            entry->in_write_set = false;
-            entry->write_set_node = nullptr;
         }
         if (pager.header_in_write_set) {
             U64 frame_idx = co_await wal::append_frame(pager.wal, ctx, MAX_U64, reinterpret_cast<U8*>(&pager.header));
@@ -297,26 +300,18 @@ namespace plexdb::pager {
             }
         }
 
-        clear(pager.write_set);
-        arena::clear(pager.write_arena);
+        page_cache_reset(pager.page_cache);
+        arena::clear(pager.page_cache_arena);
         pager.transaction_active = false;
     }
 
     void rollback_transaction(Pager& pager) {
         plugin::message(pager_producer, plugin::Level::Error, "pager: transaction rolled back");
-
-        for (auto& idx : pager.write_set) {
-            auto entry = get_cache_entry(pager, idx);
-            entry->idx = 0;
-            entry->in_write_set = false;
-            entry->write_set_node = nullptr;
-        }
         pager.header = pager.saved_header;
         pager.header_in_write_set = false;
-        clear(pager.write_set);
-        arena::clear(pager.write_arena);
+        page_cache_reset(pager.page_cache);
+        arena::clear(pager.page_cache_arena);
         if (pager.wal) {
-            // orphan any mid-transaction WAL spills (disk frame_count is still 0)
             pager.wal.header.frame_count = 0;
             clear(pager.wal.wal_index);
         }
@@ -343,13 +338,13 @@ namespace plexdb::pager {
                     &pager.header
                 );
             } else {
-                auto entry = get_cache_entry(pager, page_idx);
-                if (entry->idx == page_idx) {
+                auto* slot = page_cache_find(pager.page_cache, page_idx);
+                if (slot) {
                     U64 db_start = pager.base_offset + page_size * page_idx;
                     co_await aio::file_write(
                         ctx, pager.file,
                         Rng1U64{.start=db_start, .end=db_start + page_size},
-                        get_cache_data(pager, page_idx)
+                        slot->data
                     );
                 } else {
                     wal::Frame frame{};
@@ -379,38 +374,31 @@ namespace plexdb::pager {
     }
 
     coroutine::Task<const U8*> rpage(Pager& pager, U64 idx) {
+        assert_true(pager.transaction_active, "rpage requires an active transaction");
         assert_true(idx < pager.header.page_count && idx > 0, "page out of range");
         assert_true(pager.file_io_ctx != nullptr, "rpage requires file_io_ctx");
 
-        auto entry = get_cache_entry(pager, idx);
-        if (entry->idx == idx)
-            co_return get_cache_data(pager, idx);
+        if (auto* slot = page_cache_find(pager.page_cache, idx))
+            co_return slot->data;
 
-        if (entry->in_write_set) {
-            if (pager.wal) co_await spill_to_wal(pager, entry);
-            else           co_await flush_direct(pager);
-        }
-
-        auto data = get_cache_data(pager, idx);
-
+        U8* data = arena::push_array_no_zero<U8>(pager.page_cache_arena, pager.header.page_size);
+        bool loaded = false;
         if (pager.wal) {
             if (U64* frame_idx_ptr = find(pager.wal.wal_index, idx)) {
                 wal::Frame frame{};
                 co_await wal::read_frame(pager.wal, *pager.file_io_ctx, *frame_idx_ptr, frame, data);
-                entry->idx = idx;
-                entry->in_write_set = false;
-                entry->write_set_node = nullptr;
-                co_return data;
+                loaded = true;
             }
         }
-
-        auto offset = pager.base_offset + pager.header.page_size * idx;
-        co_await aio::file_read(
-            *pager.file_io_ctx, pager.file,
-            Rng1U64{.start=offset, .end=offset + pager.header.page_size},
-            data
-        );
-        entry->idx = idx;
+        if (!loaded) {
+            auto offset = pager.base_offset + pager.header.page_size * idx;
+            co_await aio::file_read(
+                *pager.file_io_ctx, pager.file,
+                Rng1U64{.start=offset, .end=offset + pager.header.page_size},
+                data
+            );
+        }
+        page_cache_insert(pager.page_cache, pager.page_cache_arena, idx, data, false);
         co_return data;
     }
 
@@ -419,44 +407,30 @@ namespace plexdb::pager {
         assert_true(idx < pager.header.page_count && idx > 0, "page out of range");
         assert_true(pager.file_io_ctx != nullptr, "rwpage requires file_io_ctx");
 
-        auto entry = get_cache_entry(pager, idx);
-
-        // fast path: already cached and dirty
-        if (entry->idx == idx && entry->in_write_set)
-            co_return get_cache_data(pager, idx);
-
-        // collision with a dirty slot — spill it before evicting
-        if (entry->in_write_set) {
-            if (pager.wal) co_await spill_to_wal(pager, entry);
-            else           co_await flush_direct(pager);
+        if (auto* slot = page_cache_find(pager.page_cache, idx)) {
+            slot->dirty = true;
+            co_return slot->data;
         }
 
-        // load page if not already in cache
-        if (entry->idx != idx) {
-            auto data = get_cache_data(pager, idx);
-            bool loaded = false;
-            if (pager.wal) {
-                if (U64* frame_idx_ptr = find(pager.wal.wal_index, idx)) {
-                    wal::Frame frame{};
-                    co_await wal::read_frame(pager.wal, *pager.file_io_ctx, *frame_idx_ptr, frame, data);
-                    loaded = true;
-                }
-            }
-            if (!loaded) {
-                auto offset = pager.base_offset + pager.header.page_size * idx;
-                co_await aio::file_read(
-                    *pager.file_io_ctx, pager.file,
-                    Rng1U64{.start=offset, .end=offset + pager.header.page_size},
-                    data
-                );
+        U8* data = arena::push_array_no_zero<U8>(pager.page_cache_arena, pager.header.page_size);
+        bool loaded = false;
+        if (pager.wal) {
+            if (U64* frame_idx_ptr = find(pager.wal.wal_index, idx)) {
+                wal::Frame frame{};
+                co_await wal::read_frame(pager.wal, *pager.file_io_ctx, *frame_idx_ptr, frame, data);
+                loaded = true;
             }
         }
-
-        push_front(pager.write_arena, pager.write_set, idx);
-        entry->write_set_node = pager.write_set.head;
-        entry->idx = idx;
-        entry->in_write_set = true;
-        co_return get_cache_data(pager, idx);
+        if (!loaded) {
+            auto offset = pager.base_offset + pager.header.page_size * idx;
+            co_await aio::file_read(
+                *pager.file_io_ctx, pager.file,
+                Rng1U64{.start=offset, .end=offset + pager.header.page_size},
+                data
+            );
+        }
+        page_cache_insert(pager.page_cache, pager.page_cache_arena, idx, data, true);
+        co_return data;
     }
 
     // bitset is stored as a page of U64s at the beginning of a block eg.

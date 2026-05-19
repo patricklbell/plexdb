@@ -44,7 +44,9 @@ PAGER_TEST_CASE("write and check read back", "[plexdb.pager]") {
     {
         auto pager = test_pager(f);
         REQUIRE(pager.header.page_size == page_size);
+        pager::begin_transaction(pager);
         REQUIRE(ArrayView(data) == co_await rpage(pager, pidx));
+        co_await pager::commit_transaction(pager);
         destroy_test_pager(pager);
     }
 }
@@ -236,8 +238,10 @@ PAGER_TEST_CASE("pager partial writes do not corrupt", "[plexdb.pager]") {
     }
 
     auto pager = test_pager(f);
+    pager::begin_transaction(pager);
     auto readback = co_await rpage(pager, pidx);
     for(U64 i = 0; i < page_size / 2; ++i) REQUIRE(readback[i] == 0xAA);
+    co_await pager::commit_transaction(pager);
     destroy_test_pager(pager);
 }
 
@@ -300,9 +304,11 @@ PAGER_TEST_CASE("write and read back via WAL-enabled pager", "[plexdb.pager.wal]
         os::Handle wal = os::file_open(wal_path);
         {
             auto p = test_pager(db, wal);
+            pager::begin_transaction(p);
             const U8* rb = co_await rpage(p, pidx);
             for (U64 i = 0; i < sizeof(data); i++)
                 REQUIRE(rb[i] == data[i]);
+            co_await pager::commit_transaction(p);
             destroy_test_pager(p);
         }
         os::file_close(db);
@@ -363,9 +369,11 @@ PAGER_TEST_CASE("committed WAL replays after abrupt process exit", "[plexdb.page
         os::Handle wal = os::file_open(wal_path);
         {
             auto p = test_pager(db, wal);
+            pager::begin_transaction(p);
             const U8* rb = co_await rpage(p, pidx);
             for (U64 i = 0; i < sizeof(modified); i++)
                 REQUIRE(rb[i] == modified[i]);
+            co_await pager::commit_transaction(p);
             destroy_test_pager(p);
         }
         os::file_close(db);
@@ -426,9 +434,11 @@ PAGER_TEST_CASE("uncommitted frames do not modify the database", "[plexdb.pager.
         os::Handle wal = os::file_open(wal_path);
         {
             auto p = test_pager(db, wal);
+            pager::begin_transaction(p);
             const U8* rb = co_await rpage(p, pidx);
             for (U64 i = 0; i < sizeof(original); i++)
                 REQUIRE(rb[i] == original[i]);
+            co_await pager::commit_transaction(p);
             destroy_test_pager(p);
         }
         os::file_close(db);
@@ -497,9 +507,11 @@ PAGER_TEST_CASE("SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal
         os::Handle wal = os::file_open(wal_path);
         {
             auto p = test_pager(db, wal);
+            pager::begin_transaction(p);
             const U8* rb = co_await rpage(p, pidx);
             for (U64 i = 0; i < sizeof(modified); i++)
                 REQUIRE(rb[i] == modified[i]);
+            co_await pager::commit_transaction(p);
             destroy_test_pager(p);
         }
         os::file_close(db);
@@ -533,9 +545,11 @@ PAGER_TEST_CASE("begin and commit without WAL writes data to disk", "[plexdb.pag
 
     {
         auto pager = test_pager(f);
+        pager::begin_transaction(pager);
         const U8* rb = co_await rpage(pager, pidx);
         for (U64 i = 0; i < sizeof(data); i++)
             REQUIRE(rb[i] == data[i]);
+        co_await pager::commit_transaction(pager);
         destroy_test_pager(pager);
     }
 }
@@ -573,9 +587,11 @@ PAGER_TEST_CASE("rollback without WAL discards writes and restores page_count", 
 
     {
         auto pager = test_pager(f);
+        pager::begin_transaction(pager);
         const U8* rb = co_await rpage(pager, pidx);
         for (U64 i = 0; i < sizeof(original); i++)
             REQUIRE(rb[i] == original[i]);
+        co_await pager::commit_transaction(pager);
         destroy_test_pager(pager);
     }
 }
@@ -607,12 +623,14 @@ PAGER_TEST_CASE("multiple sequential transactions without WAL all persist", "[pl
 
     {
         auto pager = test_pager(f);
+        pager::begin_transaction(pager);
         const U8* rb1 = co_await rpage(pager, p1);
         for (U64 i = 0; i < sizeof(data1); i++)
             REQUIRE(rb1[i] == data1[i]);
         const U8* rb2 = co_await rpage(pager, p2);
         for (U64 i = 0; i < sizeof(data2); i++)
             REQUIRE(rb2[i] == data2[i]);
+        co_await pager::commit_transaction(pager);
         destroy_test_pager(pager);
     }
 }
@@ -664,9 +682,11 @@ PAGER_TEST_CASE("rollback with WAL discards in-memory writes", "[plexdb.pager.tr
         os::Handle wal = os::file_open(wal_path);
         {
             auto p = test_pager(db, wal);
+            pager::begin_transaction(p);
             const U8* rb = co_await rpage(p, pidx);
             for (U64 i = 0; i < sizeof(original); i++)
                 REQUIRE(rb[i] == original[i]);
+            co_await pager::commit_transaction(p);
             destroy_test_pager(p);
         }
         os::file_close(db);
@@ -717,12 +737,14 @@ PAGER_TEST_CASE("multiple sequential WAL transactions all persist", "[plexdb.pag
         os::Handle wal = os::file_open(wal_path);
         {
             auto p = test_pager(db, wal);
+            pager::begin_transaction(p);
             const U8* rb1 = co_await rpage(p, p1);
             for (U64 i = 0; i < sizeof(data1); i++)
                 REQUIRE(rb1[i] == data1[i]);
             const U8* rb2 = co_await rpage(p, p2);
             for (U64 i = 0; i < sizeof(data2); i++)
                 REQUIRE(rb2[i] == data2[i]);
+            co_await pager::commit_transaction(p);
             destroy_test_pager(p);
         }
         os::file_close(db);

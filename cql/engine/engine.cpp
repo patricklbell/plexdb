@@ -6,6 +6,7 @@ module cql.engine;
 
 import plexdb.os;
 import plexdb.dynamic.tagged_union;
+import plexdb.pager.transaction;
 
 import cql.parsers;
 import cql.engine.evaluator;
@@ -17,11 +18,12 @@ namespace cql::engine {
 
         U64 schema_page = in_pager->header.root_page;
         assert_true(schema_page != MAX_U64, "root page is empty, database is corrupted");
+        pager::begin_transaction(*in_pager);
         co_await schema::load(engine.schema, in_pager, schema_page);
+        co_await pager::commit_transaction(*in_pager);
     }
 
     coroutine::Task<void> create_database(Pager& pager) {
-
         U64 schema_page = co_await schema::create_schema(pager);
         co_await pager::set_root(pager, schema_page);
     }
@@ -190,7 +192,7 @@ namespace cql::engine {
         };
     }
 
-    coroutine::Task<ExecutionResult> execute_inside_transaction(Engine& engine, const Statement& statement) {
+    coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement) {
         co_return co_await visit(statement.value, [&engine](const auto& stmt) -> coroutine::Task<ExecutionResult> {
             using T = RemoveCVRef<decltype(stmt)>;
 
@@ -783,16 +785,6 @@ namespace cql::engine {
                 static_assert(false, "Unhandled statement type in engine::execute");
             }
         });
-    }
-
-    coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement) { ZoneScopedN("engine::execute");
-        pager::Transaction tx{engine.pager};
-
-        co_await tx.begin();
-        auto result = co_await execute_inside_transaction(engine, statement);
-        co_await tx.commit();
-
-        co_return result;
     }
 
     // ========================================================================

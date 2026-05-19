@@ -11,18 +11,28 @@ import plexdb.btree;
 import plexdb.btree.detail;
 import plexdb.btree.node;
 import plexdb.btree.types;
+import plexdb.btree.constraint;
 
 using namespace plexdb::btree;
 
 namespace plexdb {
-    template<typename T>
-    AutoString8 node_to_str(const Node* node, U32 ns, U16 vs, bool is_leaf) {
+    template<KeyPolicy KP, ValuePolicy VP, typename T>
+    AutoString8 node_to_str(const Node* node, U32 ns, KP kp, VP vp, bool is_leaf) {
         AutoString8 res = "["_as;
-        for (int i = 0; i < node->key_count; i++) {
-            res += to_str(keys(node)[i]);
+        for (CountType i = 0; i < node->key_count; i++) {
+            if constexpr (KP::is_fixed_size) {
+                res += to_str(keys<typename KP::key_type>(node)[i]);
+            } else {
+                auto kb = is_leaf
+                    ? leaf_get_key_bytes(node, ns, kp, vp, i)
+                    : internal_get_key_bytes(node, ns, kp, i);
+                res += to_str(String8{const_cast<U8*>(kb.ptr), kb.length});
+            }
 
             if (is_leaf) {
-                T value = os::memory_cast<T>(values(node, ns, vs)[i]);
+                auto vb = leaf_value_const(node, ns, kp, vp, i);
+                T value;
+                os::memory_copy(&value, vb.ptr, sizeof(T));
                 res += ": " + to_str(value);
             }
 
@@ -31,32 +41,33 @@ namespace plexdb {
         return res + "]";
     }
 
-    template<typename T, typename BTree>
-    coroutine::Task<AutoString8> btree_to_str_recursive(BTree& t, const Node* node, U64 depth,
+    template<typename T, BTree BT>
+    coroutine::Task<AutoString8> btree_to_str_recursive(BT& t, const Node* node, U64 depth,
                                         const String8& prepend, bool end) {
         const Header& h = *(co_await read_header(t));
         U32 ns = node_size(t);
-        U16 vs = static_cast<U16>(h.value_stride);
+        auto kp = key_policy(t);
+        auto vp = value_policy(t);
 
         AutoString8 res = prepend + String8(end ? " └" : " ├");
-        res += node_to_str<T>(node, ns, vs, depth == h.depth) + "\n";
+        res += node_to_str<decltype(kp), decltype(vp), T>(node, ns, kp, vp, depth == h.depth) + "\n";
         if (depth < h.depth) {
-            auto cs = children(node, ns);
-            for (auto& child_ref : cs) {
-                const Node* child = co_await read_node(t, child_ref);
+            const NodeRef* cs = internal_children(node, ns, kp);
+            CountType child_count = static_cast<CountType>(node->key_count + 1);
+            for (CountType i = 0; i < child_count; i++) {
+                const Node* child = co_await read_node(t, cs[i]);
                 res += co_await btree_to_str_recursive<T>(
                     t, child, depth+1,
                     prepend + (end ? "   " : " | "),
-                    &child_ref == cs.end()-1
+                    i == child_count - 1
                 );
             }
         }
         co_return res;
     }
 
-    export template<typename T, typename BTree>
-        requires Either<BTree, BTreeInMemory<>, BTreePaged<>>
-    coroutine::Task<AutoString8> to_str(const Tag<T, BTree>& tag) {
+    export template<typename T, BTree BT>
+    coroutine::Task<AutoString8> to_str(const Tag<T, BT>& tag) {
         auto& t = *tag.value;
 
         const Header& h = *(co_await read_header(t));

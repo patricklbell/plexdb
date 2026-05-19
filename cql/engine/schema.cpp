@@ -115,7 +115,10 @@ namespace cql::schema {
                     .name = tbl_storage.name,
                     .cols = {},
                     .primary_col_idx = 0,
-                    .btree = btree::BTreePaged(in_pager, tbl_storage.header.btree_page),
+                    .btree = btree::BTreePaged{
+                        in_pager, tbl_storage.header.btree_page,
+                        btree::FixedKeyPolicy<U64>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+                    },
                 };
 
                 reserve(tbl.cols, tbl_storage.columns.length);
@@ -399,7 +402,8 @@ namespace cql::schema {
             co_return Result<Table*>{nullptr, Error::MissingPrimaryKey, "table needs a primary key"};
         U64 primary_key_col_idx = *primary_key_col_idx_opt;
 
-        U64 btree_page = co_await btree::create_paged(*schema.tables_blob.pager, sizeof(U64));
+        U64 btree_page = co_await btree::create_paged(
+            *schema.tables_blob.pager, btree::FixedKeyPolicy<U64>{}, btree::FixedValuePolicy<sizeof(U64)>{});
 
         U64 offset_bytes = schema.tables_blob.size_bytes;
 
@@ -431,7 +435,10 @@ namespace cql::schema {
             .name = tbl_storage_ref.name,
             .cols = {},
             .primary_col_idx = primary_key_col_idx,
-            .btree = btree::BTreePaged(schema.tables_blob.pager, tbl_storage_ref.header.btree_page),
+            .btree = btree::BTreePaged{
+                schema.tables_blob.pager, tbl_storage_ref.header.btree_page,
+                btree::FixedKeyPolicy<U64>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+            },
         };
 
         Table& tbl_ref = push_back(ks.tbls, move(tbl));

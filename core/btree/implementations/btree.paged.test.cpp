@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/benchmark/catch_benchmark.hpp>
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 #include <plexdb/test_macros/test_macros.h>
@@ -24,8 +25,8 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.paged]") {
         {
             auto pager = create_test_pager(pfile, 128_u64);
             pager::begin_transaction(pager);
-            header_page = co_await btree::create_paged(pager, sizeof(int));
-            BTreePaged t(&pager, header_page);
+            header_page = co_await btree::create_paged(pager, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             for (int key = 0; key < 32; key++) {
                 co_await tinsert(t, key, 10*key);
@@ -39,10 +40,12 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.paged]") {
 
         {
             auto pager = test_pager(pfile);
-            BTreePaged t(&pager, header_page);
+            pager::begin_transaction(pager);
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             for (int key = 0; key < 32; key++)
                 REQUIRE(*co_await tfind<int>(t, key) == 10*key);
+            co_await pager::commit_transaction(pager);
             destroy_test_pager(pager);
         }
     }
@@ -54,8 +57,8 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.paged]") {
         {
             auto pager = create_test_pager(pfile, 128_u64);
             pager::begin_transaction(pager);
-            header_page = co_await btree::create_paged(pager, sizeof(int));
-            BTreePaged t(&pager, header_page);
+            header_page = co_await btree::create_paged(pager, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             for (int key = 0; key < 5; key++) co_await tinsert(t, key, 10*key);
             for (int key = 0; key < 5; key++) co_await tinsert(t, key, 100*key);
@@ -65,10 +68,12 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.paged]") {
 
         {
             auto pager = test_pager(pfile);
-            BTreePaged t(&pager, header_page);
+            pager::begin_transaction(pager);
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             for (int key = 0; key < 5; key++)
                 REQUIRE(*co_await tfind<int>(t, key) == 100*key);
+            co_await pager::commit_transaction(pager);
             destroy_test_pager(pager);
         }
     }
@@ -80,8 +85,8 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.paged]") {
         {
             auto pager = create_test_pager(pfile, 128_u64);
             pager::begin_transaction(pager);
-            header_page = co_await btree::create_paged(pager, sizeof(int));
-            BTreePaged t(&pager, header_page);
+            header_page = co_await btree::create_paged(pager, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             for (int key = 31; key >= 0; key--) co_await tinsert(t, key, 10*key);
             co_await pager::commit_transaction(pager);
@@ -90,10 +95,12 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.paged]") {
 
         {
             auto pager = test_pager(pfile);
-            BTreePaged t(&pager, header_page);
+            pager::begin_transaction(pager);
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             for (int key = 0; key < 32; key++)
                 REQUIRE(*co_await tfind<int>(t, key) == 10*key);
+            co_await pager::commit_transaction(pager);
             destroy_test_pager(pager);
         }
     }
@@ -118,11 +125,11 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.paged]") {
         {
             auto pager = create_test_pager(pfile, 256_u64);
             pager::begin_transaction(pager);
-            header_page = co_await btree::create_paged(pager, 9);
-            BTreePaged t(&pager, header_page);
+            header_page = co_await btree::create_paged(pager, FixedKeyPolicy<U64>{}, FixedValuePolicy<9>{});
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<9>{});
 
             for (auto& e : entries) {
-                co_await insert(t, e.key, e.value.data(), e.value.size());
+                co_await insert(t, e.key, {e.value.data(), (U16)e.value.size()});
             }
             co_await pager::commit_transaction(pager);
             destroy_test_pager(pager);
@@ -130,15 +137,60 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.paged]") {
 
         {
             auto pager = test_pager(pfile);
-            BTreePaged t(&pager, header_page);
+            pager::begin_transaction(pager);
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<9>{});
 
-            std::vector<U8> tmp;
-            tmp.resize(5);
+            std::vector<U8> tmp(9);
             for (auto& e : entries) {
-                tmp.resize(e.value.size());
-                REQUIRE(co_await find(t, e.key, tmp.data(), tmp.size()));
-                REQUIRE(tmp == e.value);
+                // partial insert zero-fills the remaining stride bytes
+                std::vector<U8> expected(9, 0);
+                std::copy(e.value.begin(), e.value.end(), expected.begin());
+                REQUIRE(co_await find(t, e.key, tmp.data(), (U16)tmp.size()));
+                REQUIRE(tmp == expected);
             }
+            co_await pager::commit_transaction(pager);
+            destroy_test_pager(pager);
+        }
+    }
+
+    SECTION("varlen key and value insert, persist, and reload") {
+        os::File pfile(os::file_tmp());
+        U64 header_page;
+
+        {
+            auto pager = create_test_pager(pfile, 256_u64);
+            pager::begin_transaction(pager);
+            header_page = co_await btree::create_paged(pager, VarlenKeyPolicy<>{}, VarlenValuePolicy{});
+            BTreePaged<VarlenKeyPolicy<>, VarlenValuePolicy> t(&pager, header_page, VarlenKeyPolicy<>{}, VarlenValuePolicy{});
+
+            auto k = [](const char* s) {
+                return TArrayView<const U8, U16>{reinterpret_cast<const U8*>(s), static_cast<U16>(strlen(s))};
+            };
+
+            co_await insert(t, k("foo"),   k("bar"));
+            co_await insert(t, k("hello"), k("world"));
+            co_await pager::commit_transaction(pager);
+            destroy_test_pager(pager);
+        }
+
+        {
+            auto pager = test_pager(pfile);
+            pager::begin_transaction(pager);
+            BTreePaged<VarlenKeyPolicy<>, VarlenValuePolicy> t(&pager, header_page, VarlenKeyPolicy<>{}, VarlenValuePolicy{});
+
+            auto k = [](const char* s) {
+                return TArrayView<const U8, U16>{reinterpret_cast<const U8*>(s), static_cast<U16>(strlen(s))};
+            };
+
+            U8 buf[64]; U16 sz;
+            REQUIRE( co_await find(t, k("foo"),     buf, sizeof(buf), &sz));
+            REQUIRE(std::equal(buf, buf + sz, reinterpret_cast<const U8*>("bar")));
+
+            REQUIRE( co_await find(t, k("hello"),   buf, sizeof(buf), &sz));
+            REQUIRE(std::equal(buf, buf + sz, reinterpret_cast<const U8*>("world")));
+
+            REQUIRE(!co_await find(t, k("missing"), buf, sizeof(buf)));
+            co_await pager::commit_transaction(pager);
             destroy_test_pager(pager);
         }
     }
@@ -152,8 +204,8 @@ PAGER_TEST_CASE("remove", "[plexdb.btree.paged]") {
         {
             auto pager = create_test_pager(pfile, 128_u64);
             pager::begin_transaction(pager);
-            header_page = co_await btree::create_paged(pager, sizeof(int));
-            BTreePaged t(&pager, header_page);
+            header_page = co_await btree::create_paged(pager, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             for (int key = 0; key < 32; key++) co_await tinsert(t, key, 10*key);
             for (int key = 0; key < 32; key++) co_await remove(t, key);
@@ -163,9 +215,11 @@ PAGER_TEST_CASE("remove", "[plexdb.btree.paged]") {
 
         {
             auto pager = test_pager(pfile);
-            BTreePaged t(&pager, header_page);
+            pager::begin_transaction(pager);
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
             for (int key = 0; key < 32; key++)
                 REQUIRE(co_await find(t, key, nullptr, 0) == false);
+            co_await pager::commit_transaction(pager);
             destroy_test_pager(pager);
         }
     }
@@ -177,8 +231,8 @@ PAGER_TEST_CASE("remove", "[plexdb.btree.paged]") {
         {
             auto pager = create_test_pager(pfile, 128_u64);
             pager::begin_transaction(pager);
-            header_page = co_await btree::create_paged(pager, sizeof(int));
-            BTreePaged t(&pager, header_page);
+            header_page = co_await btree::create_paged(pager, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             for (int key = 0; key < 16; key++) co_await tinsert(t, key, 10*key);
             for (int key = 15; key >= 0; key--) co_await remove(t, key);
@@ -188,9 +242,11 @@ PAGER_TEST_CASE("remove", "[plexdb.btree.paged]") {
 
         {
             auto pager = test_pager(pfile);
-            BTreePaged t(&pager, header_page);
+            pager::begin_transaction(pager);
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
             for (int key = 0; key < 16; key++)
                 REQUIRE(co_await find(t, key, nullptr, 0) == false);
+            co_await pager::commit_transaction(pager);
             destroy_test_pager(pager);
         }
     }
@@ -202,8 +258,8 @@ PAGER_TEST_CASE("remove", "[plexdb.btree.paged]") {
         {
             auto pager = create_test_pager(pfile, 128_u64);
             pager::begin_transaction(pager);
-            header_page = co_await btree::create_paged(pager, sizeof(int));
-            BTreePaged t(&pager, header_page);
+            header_page = co_await btree::create_paged(pager, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             for (int key = 0; key < 8; key++) co_await tinsert(t, key, 10*key);
             for (int key = 0; key < 8; key++) co_await remove(t, key);
@@ -214,10 +270,12 @@ PAGER_TEST_CASE("remove", "[plexdb.btree.paged]") {
 
         {
             auto pager = test_pager(pfile);
-            BTreePaged t(&pager, header_page);
+            pager::begin_transaction(pager);
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             for (int key = 0; key < 8; key++)
                 REQUIRE(*co_await tfind<int>(t, key) == 100*key);
+            co_await pager::commit_transaction(pager);
             destroy_test_pager(pager);
         }
     }
@@ -232,8 +290,8 @@ PAGER_TEST_CASE("truncate", "[plexdb.btree.paged]") {
         {
             auto pager = create_test_pager(pfile, 128_u64);
             pager::begin_transaction(pager);
-            header_page = co_await btree::create_paged(pager, sizeof(int));
-            BTreePaged t(&pager, header_page);
+            header_page = co_await btree::create_paged(pager, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             for (int key = 0; key < 1000; key++) co_await tinsert(t, key, 10*key);
             REQUIRE(co_await size(t) == 1000);
@@ -246,9 +304,11 @@ PAGER_TEST_CASE("truncate", "[plexdb.btree.paged]") {
 
         {
             auto pager = test_pager(pfile);
-            BTreePaged t(&pager, header_page);
+            pager::begin_transaction(pager);
+            BTreePaged t(&pager, header_page, FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{});
 
             REQUIRE(co_await size(t) == 0);
+            co_await pager::commit_transaction(pager);
             destroy_test_pager(pager);
         }
     }

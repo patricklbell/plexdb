@@ -25,7 +25,7 @@ export namespace cql::schema {
         String8 name;
         DynamicArray<Column> cols;
         U64 primary_col_idx;
-        btree::BTreePaged<> btree;
+        btree::BTreePaged<btree::FixedKeyPolicy<U64>, btree::FixedValuePolicy<sizeof(U64)>> btree;
     };
 
     struct Keyspace {

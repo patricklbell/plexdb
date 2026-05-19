@@ -68,6 +68,7 @@ target_sources(plexdb_core
             btree/btree.cppm
             btree/btree.constraint.cppm
             btree/btree.detail.cppm
+            btree/btree.iterator.cppm
             btree/btree.node.cppm
             btree/btree.policy.cppm
             btree/btree.print.cppm
@@ -112,10 +113,6 @@ target_sources(plexdb_core
         base/types.cpp
         blob/implementations/blob.paged.cpp
         blob/implementations/blob.paged.detail.cpp
-        btree/implementations/btree.paged.cpp
-        btree/implementations/btree.in_memory.cpp
-        btree/btree.detail.cpp
-        btree/btree.node.cpp
         os/aio.cpp
         os/core.cpp
         os/signal.cpp

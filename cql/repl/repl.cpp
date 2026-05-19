@@ -8,6 +8,8 @@ import plexdb.base;
 import plexdb.aio;
 import plexdb.os;
 import plexdb.tagged_union;
+import plexdb.coroutine;
+import plexdb.pager.transaction;
 
 import cql.engine;
 import cql.engine.io; // @note require for to_str on database value
@@ -65,7 +67,7 @@ namespace cql::repl {
         }
     }
 
-    void run(os::Handle istream, os::Handle ostream, Engine& eng) {
+    void run(os::Handle istream, os::Handle ostream, Engine& engine) {
         aio::EventConsumer repl_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
         os::Poll repl_poll{};
         constexpr U64 INPUT_BUFFER_SIZE = 4096;
@@ -97,91 +99,99 @@ namespace cql::repl {
                     break;
                 }
 
-                engine::ExecutionResult result = aio::drive(engine::execute(eng, *stmt_opt), repl_consumer, repl_poll);
+                const auto execute_cql_and_write = [&]() -> coroutine::Task<> {
+                    pager::Transaction tx{engine.pager};
+                    co_await tx.begin();
 
-                U64 row_count = 0;
-                if (result.rows && result.resolved_table) {
-                    const schema::Table* tbl = result.resolved_table;
-                    bool has_select = result.select_col_indices.length > 0;
+                    engine::ExecutionResult result = co_await engine::execute(engine, *stmt_opt);
 
-                    auto is_selected = [&](U64 ci) -> bool {
-                        if (!has_select) return true;
-                        for (U64 k = 0; k < result.select_col_indices.length; k++)
-                            if (result.select_col_indices[k] == ci) return true;
-                        return false;
-                    };
+                    U64 row_count = 0;
+                    if (result.rows && result.resolved_table) {
+                        const schema::Table* tbl = result.resolved_table;
+                        bool has_select = result.select_col_indices.length > 0;
 
-                    // print header in schema order, filtered by selection
-                    {
-                        bool first = true;
-                        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                            if (!is_selected(ci)) continue;
-                            if (!first) os::stream_write(ostream, " | ");
-                            os::stream_write(ostream, tbl->cols[ci].name);
-                            first = false;
+                        auto is_selected = [&](U64 ci) -> bool {
+                            if (!has_select) return true;
+                            for (U64 k = 0; k < result.select_col_indices.length; k++)
+                                if (result.select_col_indices[k] == ci) return true;
+                            return false;
+                        };
+
+                        // print header in schema order, filtered by selection
+                        {
+                            bool first = true;
+                            for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                                if (!is_selected(ci)) continue;
+                                if (!first) os::stream_write(ostream, " | ");
+                                os::stream_write(ostream, tbl->cols[ci].name);
+                                first = false;
+                            }
+                            os::stream_write(ostream, "\n");
+                            first = true;
+                            for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                                if (!is_selected(ci)) continue;
+                                if (!first) os::stream_write(ostream, "-+-");
+                                for (U64 j = 0; j < tbl->cols[ci].name.length; j++)
+                                    os::stream_write(ostream, "-", 1);
+                                first = false;
+                            }
+                            os::stream_write(ostream, "\n");
                         }
-                        os::stream_write(ostream, "\n");
-                        first = true;
-                        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                            if (!is_selected(ci)) continue;
-                            if (!first) os::stream_write(ostream, "-+-");
-                            for (U64 j = 0; j < tbl->cols[ci].name.length; j++)
-                                os::stream_write(ostream, "-", 1);
-                            first = false;
+
+                        U64 row_limit = result.row_limit_count;
+                        RowIterator& row_it  = result.rows->start;
+                        RowIterator& row_end = result.rows->stop;
+                        while (row_it != row_end && row_count < row_limit) {
+                            ColumnRange col_range = co_await row_it.deref();
+                            bool first = true;
+                            for (U64 ci = 0; ci < tbl->cols.length && col_range.start != col_range.stop; ci++, ++col_range.start) {
+                                if (!is_selected(ci)) continue;
+                                os::stream_write(ostream, first ? " " : " | ");
+                                AutoString8 val_str = to_str(*col_range.start, tbl->cols[ci].type);
+                                os::stream_write(ostream, val_str.c_str, val_str.length);
+                                first = false;
+                            }
+                            os::stream_write(ostream, "\n");
+                            co_await row_it.advance();
+                            ++row_count;
                         }
-                        os::stream_write(ostream, "\n");
+                    } else if (result.virtual_rows) {
+                        auto& vr = *result.virtual_rows;
+                        if (vr.columns.length > 0) {
+                            for (U64 ci = 0; ci < vr.columns.length; ci++) {
+                                if (ci > 0) os::stream_write(ostream, " | ");
+                                os::stream_write(ostream, vr.columns[ci].name);
+                            }
+                            os::stream_write(ostream, "\n");
+                            for (U64 ci = 0; ci < vr.columns.length; ci++) {
+                                if (ci > 0) os::stream_write(ostream, "-+-");
+                                for (U64 j = 0; j < vr.columns[ci].name.length; j++)
+                                    os::stream_write(ostream, "-", 1);
+                            }
+                            os::stream_write(ostream, "\n");
+                        }
+                        for (U64 ri = 0; ri < vr.rows.length; ri++) {
+                            for (U64 ci = 0; ci < vr.columns.length; ci++) {
+                                os::stream_write(ostream, ci == 0 ? " " : " | ");
+                                AutoString8 val_str = to_str(vr.rows[ri].values[ci], vr.columns[ci].type);
+                                os::stream_write(ostream, val_str.c_str, val_str.length);
+                            }
+                            os::stream_write(ostream, "\n");
+                            ++row_count;
+                        }
                     }
 
-                    U64 row_limit = result.row_limit_count;
-                    RowIterator& row_it  = result.rows->start;
-                    RowIterator& row_end = result.rows->stop;
-                    while (row_it != row_end && row_count < row_limit) {
-                        ColumnRange col_range = aio::drive(row_it.deref(), repl_consumer, repl_poll);
-                        bool first = true;
-                        for (U64 ci = 0; ci < tbl->cols.length && col_range.start != col_range.stop; ci++, ++col_range.start) {
-                            if (!is_selected(ci)) continue;
-                            os::stream_write(ostream, first ? " " : " | ");
-                            AutoString8 val_str = to_str(*col_range.start, tbl->cols[ci].type);
-                            os::stream_write(ostream, val_str.c_str, val_str.length);
-                            first = false;
-                        }
-                        os::stream_write(ostream, "\n");
-                        aio::drive(row_it.advance(), repl_consumer, repl_poll);
-                        ++row_count;
-                    }
-                } else if (result.virtual_rows) {
-                    auto& vr = *result.virtual_rows;
-                    if (vr.columns.length > 0) {
-                        for (U64 ci = 0; ci < vr.columns.length; ci++) {
-                            if (ci > 0) os::stream_write(ostream, " | ");
-                            os::stream_write(ostream, vr.columns[ci].name);
-                        }
-                        os::stream_write(ostream, "\n");
-                        for (U64 ci = 0; ci < vr.columns.length; ci++) {
-                            if (ci > 0) os::stream_write(ostream, "-+-");
-                            for (U64 j = 0; j < vr.columns[ci].name.length; j++)
-                                os::stream_write(ostream, "-", 1);
-                        }
-                        os::stream_write(ostream, "\n");
-                    }
-                    for (U64 ri = 0; ri < vr.rows.length; ri++) {
-                        for (U64 ci = 0; ci < vr.columns.length; ci++) {
-                            os::stream_write(ostream, ci == 0 ? " " : " | ");
-                            AutoString8 val_str = to_str(vr.rows[ri].values[ci], vr.columns[ci].type);
-                            os::stream_write(ostream, val_str.c_str, val_str.length);
-                        }
-                        os::stream_write(ostream, "\n");
-                        ++row_count;
-                    }
-                }
+                    co_await tx.commit();
 
-                write_result(ostream, result, row_count);
+                    write_result(ostream, result, row_count);
+                };
+
+                aio::drive(execute_cql_and_write(), repl_consumer, repl_poll);
 
                 // @note guaranteed to be valid index since there is a trailing \0
                 pending_input = String8(&pending_input.data[stmt_input.length], pending_input.length - stmt_input.length);
+                os::stream_write(ostream, PROMPT);
             }
-
-            os::stream_write(ostream, PROMPT);
         }
     }
 

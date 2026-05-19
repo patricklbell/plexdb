@@ -1,7 +1,7 @@
 # PlexDB
-**PlexDB** is an experimental high-performance persistent and in-memroy database written in C++. It provides:
- - A NoSQL server, implementing Cassandra's native protocol.
- - A key-value store, implementing the Redis serialization protocol.
+**PlexDB** is an experimental high-performance persistent and in-memory database. It provides:
+ - A NoSQL database, supports Cassandra's native protocol.
+ - A key-value database, supports the Redis serialization protocol.
 
 ## Download
 

@@ -4,6 +4,9 @@ module;
 
 module cql.native;
 
+import plexdb.pager;
+import plexdb.pager.transaction;
+
 namespace cql::native {
     // ========================================================================
     // input
@@ -736,6 +739,28 @@ namespace cql::native {
             header[5],header[6],header[7],header[8]
         ));
 
+        // @todo we shouldn't be holding one transaction for iterating, currently the schema is blocking this,
+        // once schemas are properly cached this can be resolved by moving transaction into execute/rows read
+        const auto execute_and_send = [&](DynamicArray<Constant>&& bound_values, TaggedUnion<Statement*, U64*> cql_or_pepared_id_ptr) -> coroutine::Task<> {
+            pager::Transaction tx{engine.pager};
+            co_await tx.begin();
+
+            engine::ExecutionResult result = co_await visit(cql_or_pepared_id_ptr, [&](const auto& v) -> coroutine::Task<engine::ExecutionResult> {
+                co_return co_await engine::execute(engine, *v, move(bound_values));
+            });
+
+            if (result.kind != engine::ResultKind::Rows)
+                co_await tx.commit();
+
+            if (co_await send_error_if_failed<Version, Compressed>(result, &req, stream))
+                co_return;
+            co_await send_execution_result<Version, Compressed>(result, engine, &req, stream);
+
+            if (result.kind == engine::ResultKind::Rows)
+                co_await tx.commit();
+            co_return;
+        };
+
         switch (op) {
             case op_codes::STARTUP:{
                 // STARTUP is handled in negotiate_connection before post_startup_loop.
@@ -774,14 +799,9 @@ namespace cql::native {
 
                 auto bind_specs   = engine::collect_bind_variables(engine, *cql_opt);
                 auto bound_values = read_query_parameter_values<Version>(p, body_end, bind_specs);
-                engine::ExecutionResult result = co_await engine::execute(engine, *cql_opt, move(bound_values));
 
-                if (co_await send_error_if_failed<Version, Compressed>(result, &req, stream)) {
-                    cql::log::db_operation_duration(os::monotonic_us() - t0);
-                    break;
-                }
+                co_await execute_and_send(move(bound_values), &(*cql_opt));
 
-                co_await send_execution_result<Version, Compressed>(result, engine, &req, stream);
                 cql::log::db_operation_duration(os::monotonic_us() - t0);
             }break;
 
@@ -848,14 +868,9 @@ namespace cql::native {
                 }
 
                 auto bound_values = read_query_parameter_values<Version>(p, body_end, entry->bind_variables);
-                engine::ExecutionResult result = co_await engine::execute(engine, prepared_id, move(bound_values));
 
-                if (co_await send_error_if_failed<Version, Compressed>(result, &req, stream)) {
-                    cql::log::db_operation_duration(os::monotonic_us() - t0);
-                    break;
-                }
+                co_await execute_and_send(move(bound_values), &prepared_id);
 
-                co_await send_execution_result<Version, Compressed>(result, engine, &req, stream);
                 cql::log::db_operation_duration(os::monotonic_us() - t0);
             }break;
 
