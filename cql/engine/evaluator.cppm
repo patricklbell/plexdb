@@ -1,7 +1,6 @@
 export module cql.engine.evaluator;
 
 import plexdb.base;
-import plexdb.os;
 import plexdb.tagged_union;
 import plexdb.dynamic.containers;
 import plexdb.dynamic.tagged_union;
@@ -48,42 +47,6 @@ export namespace cql {
         // @todo implement function calls, arithmetic, type hints
         assert_true_not_implemented(false, "non-constant/non-literal term evaluation is not implemented");
         return {Constant{.value = Null{}}};
-    }
-}
-
-export namespace cql {
-    U64 hash(const Constant& constant) {
-        return visit(constant.value, [](const auto& cv) -> U64 {
-            using T = Decay<decltype(cv)>;
-            if constexpr (SameAs<T, S64>) return plexdb::hash(static_cast<U64>(cv));
-            else if constexpr (SameAs<T, AutoString8>) return plexdb::hash(cv);
-            else if constexpr (SameAs<T, bool>) return plexdb::hash(static_cast<U64>(cv));
-            else if constexpr (SameAs<T, F64>) {
-                U64 bits;
-                os::memory_copy(&bits, &cv, sizeof(bits));
-                return plexdb::hash(bits);
-            }
-            else if constexpr (SameAs<T, UUID>) {
-                return plexdb::hash(plexdb::String8(&cv.value[0], cv.length));
-            }
-            else if constexpr (SameAs<T, Null>) return 0_u64;
-            else if constexpr (SameAs<T, Hex>) {
-                return plexdb::hash(plexdb::String8(cv.value.ptr, cv.value.length));
-            }
-            else if constexpr (SameAs<T, Blob>) {
-                return plexdb::hash(plexdb::String8(cv.value.ptr, cv.value.length));
-            }
-            else { static_assert(!SameAs<T,T>, "missing hash for constant value type"); }
-            return 0_u64;
-        });
-    }
-    U64 hash(const Evaluated& evaluated) {
-        return visit(evaluated.value, [](const auto& cv) -> U64 {
-            using T = Decay<decltype(cv)>;
-            if constexpr (SameAs<T,Constant>) return hash(cv);
-            assert_not_implemented("hash for evaluated value type is not implemented");
-            return 0_u64;
-        });
     }
 }
 

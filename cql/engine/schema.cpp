@@ -114,10 +114,11 @@ namespace cql::schema {
                     .tombstone = tbl_storage.header.tombstone,
                     .name = tbl_storage.name,
                     .cols = {},
-                    .primary_col_idx = 0,
-                    .btree = btree::BTreePaged{
+                    .partition_key_col_indices = {},
+                    .clustering_key_col_indices = {},
+                    .btree = PartitionBTree{
                         in_pager, tbl_storage.header.btree_page,
-                        btree::FixedKeyPolicy<U64>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+                        btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
                     },
                 };
 
@@ -129,10 +130,38 @@ namespace cql::schema {
                         .tombstone = col_storage.header.tombstone,
                         .name = col_storage.name,
                         .type = col_storage.header.type,
+                        .key_kind = col_storage.header.key_kind,
+                        .key_position = col_storage.header.key_position,
                     };
 
                     push_back(tbl.cols, move(col));
                 }
+
+                // Build partition/clustering key index arrays from column key_kind/key_position.
+                // Use insertion sort on the small arrays to maintain position order.
+                for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                    const Column& col = tbl.cols[ci];
+                    if (col.key_kind == KeyKind::PartitionKey) {
+                        U64 insert_pos = tbl.partition_key_col_indices.length;
+                        push_back(tbl.partition_key_col_indices, ci);
+                        while (insert_pos > 0 &&
+                               tbl.cols[tbl.partition_key_col_indices[insert_pos-1]].key_position > col.key_position) {
+                            tbl.partition_key_col_indices[insert_pos] = tbl.partition_key_col_indices[insert_pos-1];
+                            tbl.partition_key_col_indices[insert_pos-1] = ci;
+                            insert_pos--;
+                        }
+                    } else if (col.key_kind == KeyKind::ClusteringKey) {
+                        U64 insert_pos = tbl.clustering_key_col_indices.length;
+                        push_back(tbl.clustering_key_col_indices, ci);
+                        while (insert_pos > 0 &&
+                               tbl.cols[tbl.clustering_key_col_indices[insert_pos-1]].key_position > col.key_position) {
+                            tbl.clustering_key_col_indices[insert_pos] = tbl.clustering_key_col_indices[insert_pos-1];
+                            tbl.clustering_key_col_indices[insert_pos-1] = ci;
+                            insert_pos--;
+                        }
+                    }
+                }
+
                 push_back(ks.tbls, move(tbl));
             }
             push_back(schema.keyspaces, move(ks));
@@ -353,57 +382,66 @@ namespace cql::schema {
         co_return Result<void>{ks_res.error, ks_res.message};
     }
 
-    static Optional<U64> get_primary_key_col_idx(const CreateTable& create) {
-        bool has_primary_key = false;
-        U64 primary_col_idx = 0;
+    struct PrimaryKeyInfo {
+        DynamicArray<U64> partition_col_def_indices;   // column_definitions indices, in key position order
+        DynamicArray<U64> clustering_col_def_indices;  // column_definitions indices, in key position order
+    };
+
+    static Optional<PrimaryKeyInfo> get_primary_key_info(const CreateTable& create) {
+        PrimaryKeyInfo info;
+
+        // Inline PRIMARY KEY annotation: `col type PRIMARY KEY` — single partition key, no clustering
         for (U64 col_idx = 0; col_idx < create.column_definitions.length; col_idx++) {
-            const auto& col_def = create.column_definitions[col_idx];
-
-            if (has_primary_key && col_def.primary_key) {
-                return {};
-            }
-
-            if (col_def.primary_key) {
-                primary_col_idx = col_idx;
-                has_primary_key = true;
+            if (create.column_definitions[col_idx].primary_key) {
+                push_back(info.partition_col_def_indices, col_idx);
+                return info;
             }
         }
-        if (has_primary_key) {
-            return primary_col_idx;
-        }
 
+        // Standalone PRIMARY KEY clause: PRIMARY KEY ((pk1[, pk2...]), ck1[, ck2...])
         if (create.primary_key) {
-            auto& pk = *create.primary_key;
-            String8 pk_col_name;
-            if (type_matches_tag<ColumnName>(pk.partition_key.column_or_columns)) {
-                pk_col_name = get<ColumnName>(pk.partition_key.column_or_columns).identifier;
-            } else {
-                auto& cols = get<DynamicArray<ColumnName>>(pk.partition_key.column_or_columns);
-                assert_true_not_implemented(cols.length == 1, "composite partition key in standalone PRIMARY KEY");
-                if (cols.length > 0) pk_col_name = cols[0].identifier;
-            }
+            const auto& pk = *create.primary_key;
 
-            for (U64 col_idx = 0; col_idx < create.column_definitions.length; col_idx++) {
-                if (create.column_definitions[col_idx].name.identifier == pk_col_name) {
-                    return col_idx;
+            auto find_col_def_idx = [&](String8 col_name) -> Optional<U64> {
+                for (U64 i = 0; i < create.column_definitions.length; i++) {
+                    if (create.column_definitions[i].name.identifier == col_name) return i;
+                }
+                return {};
+            };
+
+            // Partition key columns
+            if (type_matches_tag<ColumnName>(pk.partition_key.column_or_columns)) {
+                String8 pk_name = get<ColumnName>(pk.partition_key.column_or_columns).identifier;
+                if (auto idx = find_col_def_idx(pk_name)) push_back(info.partition_col_def_indices, *idx);
+            } else {
+                for (const auto& pk_col : get<DynamicArray<ColumnName>>(pk.partition_key.column_or_columns)) {
+                    if (auto idx = find_col_def_idx(pk_col.identifier)) push_back(info.partition_col_def_indices, *idx);
                 }
             }
+
+            // Clustering key columns
+            for (const auto& ck_col : pk.clustering_columns) {
+                if (auto idx = find_col_def_idx(ck_col.identifier)) push_back(info.clustering_col_def_indices, *idx);
+            }
         }
 
-        return {};
+        if (info.partition_col_def_indices.length == 0) return {};
+        return info;
     }
 
     coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
         assert_true_not_implemented(create.options.value.length == 0, "CREATE TABLE WITH options are not implemented");
         assert_true(read_table_impl(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
 
-        auto primary_key_col_idx_opt = get_primary_key_col_idx(create);
-        if (!primary_key_col_idx_opt)
+        auto pk_info_opt = get_primary_key_info(create);
+        if (!pk_info_opt)
             co_return Result<Table*>{nullptr, Error::MissingPrimaryKey, "table needs a primary key"};
-        U64 primary_key_col_idx = *primary_key_col_idx_opt;
+        PrimaryKeyInfo& pk_info = *pk_info_opt;
 
         U64 btree_page = co_await btree::create_paged(
-            *schema.tables_blob.pager, btree::FixedKeyPolicy<U64>{}, btree::FixedValuePolicy<sizeof(U64)>{});
+            *schema.tables_blob.pager,
+            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+        );
 
         U64 offset_bytes = schema.tables_blob.size_bytes;
 
@@ -434,25 +472,51 @@ namespace cql::schema {
             .tombstone = tbl_storage_ref.header.tombstone,
             .name = tbl_storage_ref.name,
             .cols = {},
-            .primary_col_idx = primary_key_col_idx,
-            .btree = btree::BTreePaged{
+            .partition_key_col_indices = {},
+            .clustering_key_col_indices = {},
+            .btree = PartitionBTree{
                 schema.tables_blob.pager, tbl_storage_ref.header.btree_page,
-                btree::FixedKeyPolicy<U64>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
             },
         };
+        // @todo avoid this copy
+        for (U64 i = 0; i < pk_info.partition_col_def_indices.length; i++)
+            push_back(tbl.partition_key_col_indices, pk_info.partition_col_def_indices[i]);
+        for (U64 i = 0; i < pk_info.clustering_col_def_indices.length; i++)
+            push_back(tbl.clustering_key_col_indices, pk_info.clustering_col_def_indices[i]);
 
         Table& tbl_ref = push_back(ks.tbls, move(tbl));
 
         for (U64 col_def_idx = 0; col_def_idx < create.column_definitions.length; col_def_idx++) {
             auto& col_def = create.column_definitions[col_def_idx];
 
-            if (read_column_impl(schema, tbl, col_def.name.identifier).error != Error::MissingColumn) {
+            if (read_column_impl(schema, tbl_ref, col_def.name.identifier).error != Error::MissingColumn) {
                 // @todo hard delete
                 co_await delete_table(schema, ks, create.name.table_name);
                 co_return Result<Table*>{nullptr, Error::ColumnNameCollision};
             }
 
-            if (auto res = co_await create_column(schema, tbl_ref, col_def); res.error != Error::None) {
+            // Determine key_kind and key_position for this column
+            KeyKind kk = KeyKind::None;
+            U16 kp = 0;
+            for (U64 i = 0; i < pk_info.partition_col_def_indices.length; i++) {
+                if (pk_info.partition_col_def_indices[i] == col_def_idx) {
+                    kk = KeyKind::PartitionKey;
+                    kp = static_cast<U16>(i);
+                    break;
+                }
+            }
+            if (kk == KeyKind::None) {
+                for (U64 i = 0; i < pk_info.clustering_col_def_indices.length; i++) {
+                    if (pk_info.clustering_col_def_indices[i] == col_def_idx) {
+                        kk = KeyKind::ClusteringKey;
+                        kp = static_cast<U16>(i);
+                        break;
+                    }
+                }
+            }
+
+            if (auto res = co_await create_column(schema, tbl_ref, col_def, kk, kp); res.error != Error::None) {
                 // @todo hard delete
                 co_await delete_table(schema, ks, create.name.table_name);
                 co_return Result<Table*>{nullptr, res.error, res.message};
@@ -478,7 +542,8 @@ namespace cql::schema {
         co_return Result<void>{tbl_res.error, tbl_res.message};
     }
 
-    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create) {
+    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create,
+                                                    KeyKind key_kind, U16 key_position) {
         // @todo implement proper static column semantics (shared across clustering rows within a partition)
         assert_true_not_implemented(!create._static, "static column storage is not implemented");
         assert_true_not_implemented(!create.mask, "column MASKED WITH is not implemented");
@@ -493,6 +558,8 @@ namespace cql::schema {
                 .name_length = create.name.identifier.length,
                 .type = create.type,
                 .table_idx = tbl.idx,
+                .key_kind = key_kind,
+                .key_position = key_position,
             },
             .name = AutoString8(create.name.identifier),
         };
@@ -511,6 +578,8 @@ namespace cql::schema {
             .tombstone = col_storage_ref.header.tombstone,
             .name = col_storage_ref.name,
             .type = col_storage_ref.header.type,
+            .key_kind = key_kind,
+            .key_position = key_position,
         };
         co_return Result<Column*>{&push_back(tbl.cols, move(col))};
     }

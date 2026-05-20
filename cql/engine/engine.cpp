@@ -11,6 +11,7 @@ import plexdb.pager.transaction;
 import cql.parsers;
 import cql.engine.evaluator;
 import cql.engine.it;
+import cql.engine.key;
 
 namespace cql::engine {
     coroutine::Task<> init(Engine& engine, Pager* in_pager) {
@@ -166,10 +167,18 @@ namespace cql::engine {
             .table = table_name,
         };
     }
-    static ExecutionResult create_insert_missing_pks(const String8& keyspace_name, const String8& table_name) {
+    static ExecutionResult create_insert_missing_pk(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::Invalid,
-            .message = "Insert is missing a value for the primary keys",
+            .message = "Insert is missing a value for a primary key",
+            .keyspace = keyspace_name,
+            .table = table_name,
+        };
+    }
+    static ExecutionResult create_insert_missing_ck(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status = ExecutionStatus::Invalid,
+            .message = "Insert is missing a value for a clustering key",
             .keyspace = keyspace_name,
             .table = table_name,
         };
@@ -325,7 +334,8 @@ namespace cql::engine {
                             using T = Decay<decltype(value)>;
                             if constexpr (SameAs<T, WhereClause::ColumnExpressionRelation>) {
                                 const auto& cer = value;
-                                if (cer.column.identifier == tbl->cols[tbl->primary_col_idx].name) {
+                                if (tbl->partition_key_col_indices.length > 0 &&
+                                    cer.column.identifier == tbl->cols[tbl->partition_key_col_indices[0]].name) {
                                     switch (cer.operator_) {
                                         case Operator::eq:{
                                             pk_begin = evaluate(cer.value);
@@ -388,7 +398,8 @@ namespace cql::engine {
                 }
 
                 if (is_equality) {
-                    auto start_it = co_await create_table_eq_it(engine.pager, tbl, hash(*pk_begin));
+                    DynamicArray<U8> pk_bytes = key::serialize_partition_single(*tbl, *pk_begin);
+                    auto start_it = co_await create_table_eq_it(engine.pager, tbl, pk_bytes);
                     auto stop_it  = create_table_end_it(engine.pager, tbl);
                     co_return ExecutionResult{
                         .status = ExecutionStatus::Success,
@@ -405,39 +416,30 @@ namespace cql::engine {
                     };
                 }
 
-                const auto& pk_col = tbl->cols[tbl->primary_col_idx];
-                if (static_cast<bool>(pk_begin) && !io::can_cast_write_evaluated_as_column_value(*pk_begin, pk_col.type)) {
-                    co_return create_where_invalid_type(ks->name, tbl->name);
-                }
-                if (static_cast<bool>(pk_end) && !io::can_cast_write_evaluated_as_column_value(*pk_end, pk_col.type)) {
-                    co_return create_where_invalid_type(ks->name, tbl->name);
-                }
-
-                U64 hash_begin = 0, hash_end = MAX_U64;
-                if (static_cast<bool>(pk_begin)) hash_begin = hash(*pk_begin);
-                if (static_cast<bool>(pk_end))   hash_end   = hash(*pk_end);
-
-                if (hash_begin > hash_end) {
-                    co_return ExecutionResult{
-                        .status = ExecutionStatus::Success,
-                        .kind = ResultKind::Rows,
-                        .keyspace = ks_name,
-                        .table = stmt.from.table_name,
-                    };
+                if (tbl->partition_key_col_indices.length > 0) {
+                    const auto& pk_col = tbl->cols[tbl->partition_key_col_indices[0]];
+                    if (static_cast<bool>(pk_begin) && !io::can_cast_write_evaluated_as_column_value(*pk_begin, pk_col.type)) {
+                        co_return create_where_invalid_type(ks->name, tbl->name);
+                    }
+                    if (static_cast<bool>(pk_end) && !io::can_cast_write_evaluated_as_column_value(*pk_end, pk_col.type)) {
+                        co_return create_where_invalid_type(ks->name, tbl->name);
+                    }
                 }
 
                 RowIterator start_it;
                 if (static_cast<bool>(pk_begin)) {
-                    if (is_begin_inclusive) start_it = co_await create_table_ge_it(engine.pager, tbl, hash_begin);
-                    else                    start_it = co_await create_table_gt_it(engine.pager, tbl, hash_begin);
+                    DynamicArray<U8> begin_bytes = key::serialize_partition_single(*tbl, *pk_begin);
+                    if (is_begin_inclusive) start_it = co_await create_table_ge_it(engine.pager, tbl, begin_bytes);
+                    else                    start_it = co_await create_table_gt_it(engine.pager, tbl, begin_bytes);
                 } else {
                     start_it = co_await create_table_begin_it(engine.pager, tbl);
                 }
 
                 RowIterator stop_it;
                 if (static_cast<bool>(pk_end)) {
-                    if (is_end_inclusive) stop_it = co_await create_table_le_it(engine.pager, tbl, hash_end);
-                    else                  stop_it = co_await create_table_lt_it(engine.pager, tbl, hash_end);
+                    DynamicArray<U8> end_bytes = key::serialize_partition_single(*tbl, *pk_end);
+                    if (is_end_inclusive) stop_it = co_await create_table_le_it(engine.pager, tbl, end_bytes);
+                    else                  stop_it = co_await create_table_lt_it(engine.pager, tbl, end_bytes);
                 } else {
                     stop_it = create_table_end_it(engine.pager, tbl);
                 }
@@ -488,9 +490,14 @@ namespace cql::engine {
                             }
                         }
 
-                        const auto& pk_col = tbl->cols[tbl->primary_col_idx];
-                        auto pk_idx_opt = try_get_names_idx(pk_col.name);
-                        if (!pk_idx_opt) co_return create_insert_missing_pks(ks->name, tbl->name);
+                        for (U64 pk_ci : tbl->partition_key_col_indices) {
+                            if (!try_get_names_idx(tbl->cols[pk_ci].name))
+                                co_return create_insert_missing_pk(ks->name, tbl->name);
+                        }
+                        for (U64 ck_ci : tbl->clustering_key_col_indices) {
+                            if (!try_get_names_idx(tbl->cols[ck_ci].name))
+                                co_return create_insert_missing_ck(ks->name, tbl->name);
+                        }
 
                         assert_true_not_implemented(!stmt.if_not_exists, "INSERT IF NOT EXISTS is not implemented");
 
@@ -517,10 +524,33 @@ namespace cql::engine {
                         co_await blob::load(row_blob, engine.pager, row_page);
                         co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
 
-                        // insert PK → row_page into btree
-                        const auto& pk_eval = evaluate(v.values[*pk_idx_opt]);
-                        U64 pk_key = hash(pk_eval);
-                        co_await btree::tinsert(tbl->btree, pk_key, row_page);
+                        // build partition key and insert into btree(s)
+                        DynamicArray<Evaluated> partition_evals;
+                        for (U64 pk_ci : tbl->partition_key_col_indices) {
+                            push_back(partition_evals, evaluate(v.values[*try_get_names_idx(tbl->cols[pk_ci].name)]));
+                        }
+                        DynamicArray<U8> pk_bytes = key::serialize_partition(*tbl, partition_evals);
+
+                        if (tbl->clustering_key_col_indices.length > 0) {
+                            auto clustering_page_opt = co_await btree::tfind<U64>(tbl->btree, pk_bytes);
+                            U64 clustering_page;
+                            if (clustering_page_opt) {
+                                clustering_page = *clustering_page_opt;
+                            } else {
+                                clustering_page = co_await btree::create_paged(*engine.pager, btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{});
+                                co_await btree::tinsert(tbl->btree, pk_bytes, clustering_page);
+                            }
+                            schema::PartitionBTree clustering_btree{engine.pager, clustering_page,
+                                                                     btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
+                            DynamicArray<Evaluated> clustering_evals;
+                            for (U64 ck_ci : tbl->clustering_key_col_indices) {
+                                push_back(clustering_evals, evaluate(v.values[*try_get_names_idx(tbl->cols[ck_ci].name)]));
+                            }
+                            DynamicArray<U8> ck_bytes = key::serialize_clustering(*tbl, clustering_evals);
+                            co_await btree::tinsert(clustering_btree, ck_bytes, row_page);
+                        } else {
+                            co_await btree::tinsert(tbl->btree, pk_bytes, row_page);
+                        }
 
                         co_return create_void_success();
                     } else if constexpr (SameAs<T, Insert::JsonClause>) {
@@ -543,20 +573,24 @@ namespace cql::engine {
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
                 if (tbl == nullptr) co_return create_table_not_found(ks_name, stmt.table.table_name);
 
+                assert_true_not_implemented(tbl->clustering_key_col_indices.length == 0, "UPDATE on table with clustering key is not implemented");
+
                 // find partition key from WHERE clause
                 Optional<Evaluated> pk_val;
                 for (const auto& rel : stmt.where.relations) {
                     if (type_matches_tag<WhereClause::ColumnExpressionRelation>(rel.value)) {
                         auto& cer = get<WhereClause::ColumnExpressionRelation>(rel.value);
-                        if (cer.column.identifier == tbl->cols[tbl->primary_col_idx].name && cer.operator_ == Operator::eq) {
+                        if (tbl->partition_key_col_indices.length > 0 &&
+                            cer.column.identifier == tbl->cols[tbl->partition_key_col_indices[0]].name &&
+                            cer.operator_ == Operator::eq) {
                             pk_val = evaluate(cer.value);
                         }
                     }
                 }
                 assert_true(static_cast<bool>(pk_val), "UPDATE requires partition key equality in WHERE clause");
 
-                U64 pk_key = hash(*pk_val);
-                auto existing_page_opt = co_await btree::tfind<U64>(tbl->btree, pk_key);
+                DynamicArray<U8> pk_bytes = key::serialize_partition_single(*tbl, *pk_val);
+                auto existing_page_opt = co_await btree::tfind<U64>(tbl->btree, pk_bytes);
 
                 auto col_idx_for = [&](String8 name) -> Optional<U64> {
                     for (U64 i = 0; i < tbl->cols.length; i++) {
@@ -634,22 +668,23 @@ namespace cql::engine {
                         }
                     }
 
-                    co_await btree::remove(tbl->btree, pk_key);
+                    co_await btree::remove(tbl->btree, pk_bytes);
                     U64 new_row_page = co_await blob::create_paged_dynamic(*engine.pager);
                     blob::BlobDynamicPaged row_blob;
                     co_await blob::load(row_blob, engine.pager, new_row_page);
                     co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
-                    co_await btree::tinsert(tbl->btree, pk_key, new_row_page);
+                    co_await btree::tinsert(tbl->btree, pk_bytes, new_row_page);
                 } else {
                     // insert new row with only assigned columns + PK
                     DynamicArray<bool> col_present;
                     resize(col_present, tbl->cols.length);
 
-                    col_present[tbl->primary_col_idx] = true;
+                    for (U64 pk_ci : tbl->partition_key_col_indices) col_present[pk_ci] = true;
 
                     DynamicArray<Evaluated> assign_evals;
                     resize(assign_evals, tbl->cols.length);
-                    assign_evals[tbl->primary_col_idx] = Evaluated{get<Constant>(pk_val->value)};
+                    for (U64 pk_ci : tbl->partition_key_col_indices)
+                        assign_evals[pk_ci] = Evaluated{get<Constant>(pk_val->value)};
 
                     for (const auto& assign : stmt.assignments) {
                         auto idx_opt = col_idx_for(assign.target.column.identifier);
@@ -688,7 +723,7 @@ namespace cql::engine {
                     blob::BlobDynamicPaged row_blob;
                     co_await blob::load(row_blob, engine.pager, row_page);
                     co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
-                    co_await btree::tinsert(tbl->btree, pk_key, row_page);
+                    co_await btree::tinsert(tbl->btree, pk_bytes, row_page);
                 }
 
                 co_return create_void_success();
@@ -706,23 +741,27 @@ namespace cql::engine {
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
                 if (tbl == nullptr) co_return create_table_not_found(ks_name, stmt.table.table_name);
 
+                assert_true_not_implemented(tbl->clustering_key_col_indices.length == 0, "DELETE on table with clustering key is not implemented");
+
                 Optional<Evaluated> pk_val;
                 for (const auto& rel : stmt.where.relations) {
                     if (type_matches_tag<WhereClause::ColumnExpressionRelation>(rel.value)) {
                         auto& cer = get<WhereClause::ColumnExpressionRelation>(rel.value);
-                        if (cer.column.identifier == tbl->cols[tbl->primary_col_idx].name && cer.operator_ == Operator::eq) {
+                        if (tbl->partition_key_col_indices.length > 0 &&
+                            cer.column.identifier == tbl->cols[tbl->partition_key_col_indices[0]].name &&
+                            cer.operator_ == Operator::eq) {
                             pk_val = evaluate(cer.value);
                         }
                     }
                 }
                 assert_true_not_implemented(static_cast<bool>(pk_val), "DELETE for non-partition key equality in WHERE clause is not implemented");
 
-                U64 pk_key = hash(*pk_val);
-                if (auto opt_row_page = co_await btree::tfind<U64>(tbl->btree, pk_key); static_cast<bool>(opt_row_page)) {
+                DynamicArray<U8> pk_bytes = key::serialize_partition_single(*tbl, *pk_val);
+                if (auto opt_row_page = co_await btree::tfind<U64>(tbl->btree, pk_bytes); static_cast<bool>(opt_row_page)) {
                     blob::BlobDynamicPaged row_blob;
                     co_await blob::load(row_blob, engine.pager, *opt_row_page);
                     co_await blob::remove(row_blob);
-                    co_await btree::remove(tbl->btree, pk_key);
+                    co_await btree::remove(tbl->btree, pk_bytes);
                 }
 
                 co_return create_void_success();
@@ -891,7 +930,8 @@ namespace cql::engine {
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
                 if (tbl == nullptr) return;
                 for (U64 i = 0; i < entry.bind_variables.length; i++) {
-                    if (tbl->primary_col_idx < tbl->cols.length && tbl->cols[tbl->primary_col_idx].name == entry.bind_variables[i].name) {
+                    if (tbl->partition_key_col_indices.length > 0 &&
+                        tbl->cols[tbl->partition_key_col_indices[0]].name == entry.bind_variables[i].name) {
                         entry.pk_index = S32(i);
                         break;
                     }

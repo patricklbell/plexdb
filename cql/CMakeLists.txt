@@ -52,6 +52,7 @@ target_sources(plexbd_cql
             engine/evaluator.cppm
             engine/io.cppm
             engine/it.cppm
+            engine/key.cppm
             engine/schema.cppm
             engine/system_schema.cppm
             engine/statements.cppm

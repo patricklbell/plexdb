@@ -8,11 +8,10 @@ import plexdb.base;
 import plexdb.coroutine;
 import plexdb.os;
 import plexdb.pager;
+import plexdb.pager.transaction;
 import plexdb.btree;
 import plexdb.btree.types;
 import plexdb.blob;
-
-import plexdb.pager.transaction;
 
 import cql.engine.io;
 import cql.engine.schema;
@@ -23,6 +22,7 @@ namespace cql {
     // column iterator
     //   @todo move mask logic into io
     // ========================================================================
+
     coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx) {
         it.table = table;
         assert_true(it.table->cols.length != 0, "column cannot be empty, it must at least have a PK");
@@ -108,8 +108,11 @@ namespace cql {
     // ========================================================================
     // row iterator
     // ========================================================================
+
     coroutine::Task<ColumnRange> RowIterator::deref() {
-        U64 row_page = *this->pk_hash_it;
+        U64 row_page = (table->clustering_key_col_indices.length > 0)
+            ? *clustering_it
+            : *partition_it;
         pager::Transaction tx{this->pager};
         co_await tx.begin();
         ColumnIterator col_it;
@@ -124,73 +127,134 @@ namespace cql {
     coroutine::Task<void> RowIterator::advance() {
         pager::Transaction tx{this->pager};
         co_await tx.begin();
-        co_await this->pk_hash_it.advance();
+        if (table->clustering_key_col_indices.length == 0) {
+            co_await this->partition_it.advance();
+        } else {
+            co_await this->clustering_it.advance();
+            if (clustering_it == clustering_end_it) {
+                // Exhausted this partition; move to the next
+                co_await this->partition_it.advance();
+                auto end_it = btree::end<U64>(table->btree);
+                if (partition_it != end_it) {
+                    // Open clustering btree for next partition
+                    U64 clustering_page = *partition_it;
+                    clustering_btree = PartitionBTree{
+                        pager, clustering_page,
+                        btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+                    };
+                    clustering_it     = co_await btree::begin<U64>(clustering_btree);
+                    clustering_end_it = btree::end<U64>(clustering_btree);
+                }
+            }
+        }
         co_await tx.commit();
     }
 
     RowIterator create_table_end_it(Pager* pager, schema::Table* table) {
-        return RowIterator{
-            .pager      = pager,
-            .table      = table,
-            .pk_hash_it = btree::end<U64>(table->btree),
-        };
+        RowIterator it;
+        it.pager        = pager;
+        it.table        = table;
+        it.partition_it = btree::end<U64>(table->btree);
+        return it;
     }
 
     coroutine::Task<RowIterator> create_table_begin_it(Pager* pager, schema::Table* table) {
-        auto pk_hash_it = co_await btree::begin<U64>(table->btree);
-        co_return RowIterator{
-            .pager      = pager,
-            .table      = table,
-            .pk_hash_it = move(pk_hash_it),
-        };
+        RowIterator it;
+        it.pager        = pager;
+        it.table        = table;
+        it.partition_it = co_await btree::begin<U64>(table->btree);
+
+        if (table->clustering_key_col_indices.length > 0 &&
+            it.partition_it != btree::end<U64>(table->btree)) {
+            U64 clustering_page = *it.partition_it;
+            it.clustering_btree = PartitionBTree{
+                pager, clustering_page,
+                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+            };
+            it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
+            it.clustering_end_it = btree::end<U64>(it.clustering_btree);
+        }
+
+        co_return it;
     }
 
-    coroutine::Task<RowIterator> create_table_eq_it(Pager* pager, schema::Table* table, U64 pk_hash) {
-        auto pk_hash_it = co_await btree::find_it<U64, btree::SearchStrategy::RequireEquality>(table->btree, pk_hash);
-        co_return RowIterator{
-            .pager      = pager,
-            .table      = table,
-            .pk_hash_it = move(pk_hash_it),
-        };
+    coroutine::Task<RowIterator> create_table_eq_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
+        RowIterator it;
+        it.pager        = pager;
+        it.table        = table;
+        it.partition_it = co_await btree::find_it<U64, btree::SearchStrategy::RequireEquality>(table->btree, pk_key);
+
+        if (table->clustering_key_col_indices.length > 0 &&
+            it.partition_it != btree::end<U64>(table->btree)) {
+            U64 clustering_page = *it.partition_it;
+            it.clustering_btree = PartitionBTree{
+                pager, clustering_page,
+                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+            };
+            it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
+            it.clustering_end_it = btree::end<U64>(it.clustering_btree);
+        }
+
+        co_return it;
     }
 
-    // stop iterator: exclusive end for "< pk_hash" → position at first key >= pk_hash
-    coroutine::Task<RowIterator> create_table_lt_it(Pager* pager, schema::Table* table, U64 pk_hash) {
-        auto pk_hash_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_hash);
-        co_return RowIterator{
-            .pager      = pager,
-            .table      = table,
-            .pk_hash_it = move(pk_hash_it),
-        };
+    // stop iterator: exclusive end for "< pk" — position at first key >= pk
+    coroutine::Task<RowIterator> create_table_lt_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
+        RowIterator it;
+        it.pager        = pager;
+        it.table        = table;
+        it.partition_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_key);
+        co_return it;
     }
 
-    // stop iterator: exclusive end for "<= pk_hash" → position at first key > pk_hash
-    coroutine::Task<RowIterator> create_table_le_it(Pager* pager, schema::Table* table, U64 pk_hash) {
-        auto pk_hash_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(table->btree, pk_hash);
-        co_return RowIterator{
-            .pager      = pager,
-            .table      = table,
-            .pk_hash_it = move(pk_hash_it),
-        };
+    // stop iterator: exclusive end for "<= pk" — position at first key > pk
+    coroutine::Task<RowIterator> create_table_le_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
+        RowIterator it;
+        it.pager        = pager;
+        it.table        = table;
+        it.partition_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(table->btree, pk_key);
+        co_return it;
     }
 
-    // start iterator: first key > pk_hash
-    coroutine::Task<RowIterator> create_table_gt_it(Pager* pager, schema::Table* table, U64 pk_hash) {
-        auto pk_hash_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(table->btree, pk_hash);
-        co_return RowIterator{
-            .pager      = pager,
-            .table      = table,
-            .pk_hash_it = move(pk_hash_it),
-        };
+    // start iterator: first key > pk
+    coroutine::Task<RowIterator> create_table_gt_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
+        RowIterator it;
+        it.pager        = pager;
+        it.table        = table;
+        it.partition_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(table->btree, pk_key);
+
+        if (table->clustering_key_col_indices.length > 0 &&
+            it.partition_it != btree::end<U64>(table->btree)) {
+            U64 clustering_page = *it.partition_it;
+            it.clustering_btree = PartitionBTree{
+                pager, clustering_page,
+                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+            };
+            it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
+            it.clustering_end_it = btree::end<U64>(it.clustering_btree);
+        }
+
+        co_return it;
     }
 
-    // start iterator: first key >= pk_hash
-    coroutine::Task<RowIterator> create_table_ge_it(Pager* pager, schema::Table* table, U64 pk_hash) {
-        auto pk_hash_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_hash);
-        co_return RowIterator{
-            .pager      = pager,
-            .table      = table,
-            .pk_hash_it = move(pk_hash_it),
-        };
+    // start iterator: first key >= pk
+    coroutine::Task<RowIterator> create_table_ge_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
+        RowIterator it;
+        it.pager        = pager;
+        it.table        = table;
+        it.partition_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_key);
+
+        if (table->clustering_key_col_indices.length > 0 &&
+            it.partition_it != btree::end<U64>(table->btree)) {
+            U64 clustering_page = *it.partition_it;
+            it.clustering_btree = PartitionBTree{
+                pager, clustering_page,
+                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+            };
+            it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
+            it.clustering_end_it = btree::end<U64>(it.clustering_btree);
+        }
+
+        co_return it;
     }
 }

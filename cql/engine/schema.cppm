@@ -13,19 +13,26 @@ import cql.engine.types;
 using namespace plexdb;
 
 export namespace cql::schema {
+    enum class KeyKind : U8 { None = 0, PartitionKey = 1, ClusteringKey = 2 };
+
     struct Column {
         bool tombstone;
         String8 name;
         const Type type;
+        KeyKind key_kind = KeyKind::None;
+        U16 key_position = 0;
     };
+
+    using PartitionBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<sizeof(U64)>>;
 
     struct Table {
         U64 idx;
         bool tombstone;
         String8 name;
         DynamicArray<Column> cols;
-        U64 primary_col_idx;
-        btree::BTreePaged<btree::FixedKeyPolicy<U64>, btree::FixedValuePolicy<sizeof(U64)>> btree;
+        DynamicArray<U64> partition_key_col_indices;   // sorted by key_position; replaces primary_col_idx
+        DynamicArray<U64> clustering_key_col_indices;  // sorted by key_position
+        PartitionBTree btree;
     };
 
     struct Keyspace {
@@ -56,6 +63,8 @@ export namespace cql::schema {
         U64 name_length;
         Type type;
         U64 table_idx;
+        KeyKind key_kind;
+        U16 key_position;
     };
     #pragma pack(pop)
 
@@ -138,6 +147,6 @@ export namespace cql::schema {
     coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create);
     coroutine::Task<Result<void>>   delete_table(Schema& schema, Keyspace& ks, String8 name);
 
-    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create);
+    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create, KeyKind key_kind = KeyKind::None, U16 key_position = 0);
     coroutine::Task<Result<void>>    delete_column(Schema& schema, Table& tbl, String8 name);
 }

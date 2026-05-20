@@ -375,14 +375,18 @@ namespace cql::engine {
                 for (U64 ci = 0; ci < tbl.cols.length; ci++) {
                     auto& col = tbl.cols[ci];
                     if (col.tombstone) continue;
-                    bool is_pk = (ci == tbl.primary_col_idx);
+                    bool is_k = (
+                        col.key_kind == schema::KeyKind::PartitionKey ||
+                        col.key_kind == schema::KeyKind::ClusteringKey
+                    );
                     VirtualRow row;
                     emplace_back(row.values, AutoString8(ks.name));
                     emplace_back(row.values, AutoString8(tbl.name));
                     emplace_back(row.values, AutoString8(col.name));
                     emplace_back(row.values, "none"_as);
-                    emplace_back(row.values, is_pk ? "partition_key"_as : "regular"_as);
-                    emplace_back(row.values, S32(is_pk ? 0 : pos++));
+                    // @todo check this
+                    emplace_back(row.values, is_k ? "partition_key"_as : "regular"_as);
+                    emplace_back(row.values, S32(is_k ? 0 : pos++));
                     emplace_back(row.values, AutoString8(to_str(col.type)));
                     emplace_back(vr.rows, move(row));
                 }
