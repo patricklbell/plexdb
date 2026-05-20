@@ -1,4 +1,4 @@
-- fix memory leak/accumulation in cql_py_example
+- avoid allocation in iterator
 - Pager cache: consider page handle design as alternative to transaction-scoped arena cache
     - rpage/rwpage return a RAII handle that pins the cache entry; handle destruction releases the pin
     - On slot collision with a pinned entry, spill to arena overflow instead of evicting

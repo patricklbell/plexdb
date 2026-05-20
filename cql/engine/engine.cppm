@@ -100,7 +100,6 @@ export namespace cql::engine {
         String8 table = "";
 
         U64 row_limit_count = MAX_U64;
-        // @warn reading from the iterator requires an active transaction
         Optional<RowRange> rows = {};
         Optional<VirtualRows> virtual_rows = {};
 

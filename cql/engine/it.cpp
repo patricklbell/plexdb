@@ -12,6 +12,8 @@ import plexdb.btree;
 import plexdb.btree.types;
 import plexdb.blob;
 
+import plexdb.pager.transaction;
+
 import cql.engine.io;
 import cql.engine.schema;
 import cql.engine.statements;
@@ -107,8 +109,12 @@ namespace cql {
     // row iterator
     // ========================================================================
     coroutine::Task<ColumnRange> RowIterator::deref() {
+        U64 row_page = *this->pk_hash_it;
+        pager::Transaction tx{this->pager};
+        co_await tx.begin();
         ColumnIterator col_it;
-        co_await load(col_it, this->pager, this->table, *this->pk_hash_it);
+        co_await load(col_it, this->pager, this->table, row_page);
+        co_await tx.commit();
         co_return ColumnRange{
             .start = move(col_it),
             .stop  = ColumnIterator{},
@@ -116,7 +122,10 @@ namespace cql {
     }
 
     coroutine::Task<void> RowIterator::advance() {
+        pager::Transaction tx{this->pager};
+        co_await tx.begin();
         co_await this->pk_hash_it.advance();
+        co_await tx.commit();
     }
 
     RowIterator create_table_end_it(Pager* pager, schema::Table* table) {

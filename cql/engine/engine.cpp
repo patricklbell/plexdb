@@ -192,7 +192,7 @@ namespace cql::engine {
         };
     }
 
-    coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement) {
+    static coroutine::Task<ExecutionResult> execute_inside_transaction(Engine& engine, const Statement& statement) {
         co_return co_await visit(statement.value, [&engine](const auto& stmt) -> coroutine::Task<ExecutionResult> {
             using T = RemoveCVRef<decltype(stmt)>;
 
@@ -782,9 +782,17 @@ namespace cql::engine {
                 assert_not_implemented("BATCH is not implemented");
                 co_return ExecutionResult{};
             } else {
-                static_assert(false, "Unhandled statement type in engine::execute");
+                static_assert(false, "Unhandled statement type in engine::execute_inside_transaction");
             }
         });
+    }
+
+    coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement) {
+        pager::Transaction tx{engine.pager};
+        co_await tx.begin();
+        auto result = co_await execute_inside_transaction(engine, statement);
+        co_await tx.commit();
+        co_return result;
     }
 
     // ========================================================================

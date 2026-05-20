@@ -2,25 +2,51 @@ export module plexdb.btree.iterator;
 
 import plexdb.base;
 import plexdb.coroutine;
+import plexdb.os;
 
 import plexdb.btree.types;
 import plexdb.btree.policy;
 
 export namespace plexdb::btree {
-    // @note templated on policies so operator* can reconstruct the right accessor
     template<KeyPolicy KP, ValuePolicy VP>
     struct IteratorImpl {
-        const Node* leaf      = nullptr;
+        U8*         leaf_buf  = nullptr;  // owned copy of current leaf page; null = end
+        const Node* leaf      = nullptr;  // points into leaf_buf
         NodeRef     ref       = 0;
         CountType   idx       = 0;
         SizeType    node_size = 0;
         [[no_unique_address]] KP kp{};
         [[no_unique_address]] VP vp{};
 
+        IteratorImpl() = default;
+
+        IteratorImpl(IteratorImpl&& o) noexcept
+            : leaf_buf(o.leaf_buf), leaf(o.leaf), ref(o.ref), idx(o.idx),
+              node_size(o.node_size), kp(o.kp), vp(o.vp) {
+            o.leaf_buf = nullptr;
+            o.leaf     = nullptr;
+        }
+
+        IteratorImpl& operator=(IteratorImpl&& o) noexcept {
+            if (this != &o) {
+                os::deallocate(leaf_buf);
+                leaf_buf  = o.leaf_buf;  leaf = o.leaf;
+                ref       = o.ref;       idx  = o.idx;
+                node_size = o.node_size; kp   = o.kp; vp = o.vp;
+                o.leaf_buf = nullptr;
+                o.leaf     = nullptr;
+            }
+            return *this;
+        }
+
+        ~IteratorImpl() { os::deallocate(leaf_buf); }
+
+        IteratorImpl(const IteratorImpl&) = delete;
+        IteratorImpl& operator=(const IteratorImpl&) = delete;
+
         bool operator==(const IteratorImpl& o) const noexcept {
             return ref == o.ref && idx == o.idx;
         }
         bool operator!=(const IteratorImpl& o) const noexcept { return !(*this == o); }
     };
-
 }

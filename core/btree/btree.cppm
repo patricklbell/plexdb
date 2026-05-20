@@ -30,7 +30,7 @@ export namespace plexdb::btree {
         explicit Iterator(BT* in_btree) : btree(in_btree) {}
 
         coroutine::Task<void> advance() {
-            this->impl = co_await next_iterator_impl(*this->btree, impl);
+            co_await next_iterator_inplace(*this->btree, this->impl);
         }
 
         T operator*() const {

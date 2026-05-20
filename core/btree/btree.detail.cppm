@@ -498,39 +498,43 @@ export namespace plexdb::btree {
         assert_true(n->key_count > 0, "leaf node must have at least one value");
 
         Impl it{};
-        it.leaf      = n;
-        it.ref       = n_ref;
-        it.idx       = 0_u16;
         it.node_size = ns;
-        it.kp        = kp;
-        it.vp        = vp;
-        co_return it;
+        it.leaf_buf  = reinterpret_cast<U8*>(os::allocate(ns));
+        os::memory_copy(it.leaf_buf, n, ns);
+        it.leaf = reinterpret_cast<const Node*>(it.leaf_buf);
+        it.ref  = n_ref;
+        it.idx  = 0_u16;
+        it.kp   = kp;
+        it.vp   = vp;
+        co_return move(it);
     }
 
+    // Advances the iterator in place; opens no transaction — caller must ensure one is
+    // active if the iterator is backed by a paged btree.
     template<BTree BT>
-    coroutine::Task<IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>> next_iterator_impl(
-        BT& t, const IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>& it) {
-        using Impl = IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>;
-        assert_true(it.leaf != nullptr, "cannot get next iterator after end");
+    coroutine::Task<void> next_iterator_inplace(
+        BT& t, IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>& it) {
+        assert_true(it.leaf != nullptr, "cannot advance past end");
 
         if (it.idx == it.leaf->key_count - 1) {
             if (it.leaf->next != 0) {
                 NodeRef next_ref = it.leaf->next;
-                Impl nit{};
-                nit.leaf      = co_await read_node(t, next_ref);
-                nit.ref       = next_ref;
-                nit.idx       = 0_u16;
-                nit.node_size = it.node_size;
-                nit.kp        = it.kp;
-                nit.vp        = it.vp;
-                co_return nit;
+                const Node* next_node = co_await read_node(t, next_ref);
+                os::memory_copy(it.leaf_buf, next_node, it.node_size);
+                it.leaf = reinterpret_cast<const Node*>(it.leaf_buf);
+                it.ref  = next_ref;
+                it.idx  = 0_u16;
+            } else {
+                os::deallocate(it.leaf_buf);
+                it.leaf_buf = nullptr;
+                it.leaf     = nullptr;
+                it.ref      = 0;
+                it.idx      = 0;
             }
-            co_return {};
+            co_return;
         }
 
-        Impl nit = it;
-        nit.idx = static_cast<CountType>(it.idx + 1_u16);
-        co_return nit;
+        it.idx = static_cast<CountType>(it.idx + 1_u16);
     }
 
     template<SearchStrategy Strategy, BTree BT>
@@ -549,8 +553,13 @@ export namespace plexdb::btree {
         }
 
         const Node* n = co_await read_node(t, n_ref);
-        auto mk_it = [&](const Node* leaf, NodeRef ref, CountType i) {
-            Impl it{}; it.leaf=leaf; it.ref=ref; it.idx=i; it.node_size=ns; it.kp=kp; it.vp=vp;
+        auto mk_it = [&](const Node* src, NodeRef ref, CountType i) {
+            Impl it{};
+            it.node_size = ns;
+            it.leaf_buf  = reinterpret_cast<U8*>(os::allocate(ns));
+            os::memory_copy(it.leaf_buf, src, ns);
+            it.leaf = reinterpret_cast<const Node*>(it.leaf_buf);
+            it.ref = ref; it.idx = i; it.kp = kp; it.vp = vp;
             return it;
         };
 

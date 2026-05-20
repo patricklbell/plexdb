@@ -9,8 +9,6 @@ import plexdb.aio;
 import plexdb.os;
 import plexdb.tagged_union;
 import plexdb.coroutine;
-import plexdb.pager.transaction;
-
 import cql.engine;
 import cql.engine.io; // @note require for to_str on database value
 import cql.parsers;
@@ -100,9 +98,6 @@ namespace cql::repl {
                 }
 
                 const auto execute_cql_and_write = [&]() -> coroutine::Task<> {
-                    pager::Transaction tx{engine.pager};
-                    co_await tx.begin();
-
                     engine::ExecutionResult result = co_await engine::execute(engine, *stmt_opt);
 
                     U64 row_count = 0;
@@ -180,8 +175,6 @@ namespace cql::repl {
                             ++row_count;
                         }
                     }
-
-                    co_await tx.commit();
 
                     write_result(ostream, result, row_count);
                 };
