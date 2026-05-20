@@ -131,21 +131,18 @@ export namespace plexdb::btree {
     // Varlen leaf page
     template<KeyPolicy KP, ValuePolicy VP>
         requires (!KP::is_fixed_size)
-    SlottedLeafPage<true, !VP::is_fixed_size> leaf_page(Node* node, U32 node_size, KP, VP) noexcept {
-        constexpr bool VV = !VP::is_fixed_size;
-        using Page = SlottedLeafPage<true, VV>;
+    SlottedLeafPage<true> leaf_page(Node* node, U32 node_size, KP, VP) noexcept {
+        using Page = SlottedLeafPage<true>;
         U8* base = reinterpret_cast<U8*>(node) + sizeof(Node);
         U16 page_cap = static_cast<U16>(node_size - sizeof(Node));
         CountType n = node->key_count;
         U16 slot_end = static_cast<U16>(n * sizeof(typename Page::Entry));
         Page p{};
-        p.base      = base;
-        p.count     = n;
-        p.page_size = page_cap;
+        p.base       = base;
+        p.count      = n;
+        p.page_size  = page_cap;
         p.key_stride = 0;
-        if constexpr (VP::is_fixed_size) p.val_stride = VP::value_stride;
-        else                             p.val_stride = 0;
-        p.slot_end  = slot_end;
+        p.slot_end   = slot_end;
         if (n == 0) {
             p.data_low = page_cap;
         } else {
@@ -153,8 +150,8 @@ export namespace plexdb::btree {
             const auto* slots = p.slots();
             for (CountType i = 0; i < n; i++) {
                 const auto& e = slots[i];
-                if constexpr (true)  if (e.key_off < p.data_low) p.data_low = e.key_off;
-                if constexpr (VV)    if (e.val_off < p.data_low) p.data_low = e.val_off;
+                if (e.key_off < p.data_low) p.data_low = e.key_off;
+                if (e.val_off < p.data_low) p.data_low = e.val_off;
             }
         }
         return p;
@@ -162,7 +159,7 @@ export namespace plexdb::btree {
 
     template<KeyPolicy KP, ValuePolicy VP>
         requires (!KP::is_fixed_size)
-    SlottedLeafPage<true, !VP::is_fixed_size> leaf_page(const Node* node, U32 node_size, KP kp, VP vp) noexcept {
+    SlottedLeafPage<true> leaf_page(const Node* node, U32 node_size, KP kp, VP vp) noexcept {
         return leaf_page(const_cast<Node*>(node), node_size, kp, vp);
     }
 
@@ -514,7 +511,8 @@ export namespace plexdb::btree {
         if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
             return page.count >= page.capacity;
         } else {
-            U16 needed = static_cast<U16>(sizeof(SlotEntry<!KP::is_fixed_size, !VP::is_fixed_size>)
+            // leaf_page for varlen KP always returns SlottedLeafPage<true,true>
+            U16 needed = static_cast<U16>(sizeof(SlotEntry<true, true>)
                                           + next_key_bytes + next_val_bytes);
             return free_bytes(page) < needed;
         }
@@ -543,8 +541,9 @@ export namespace plexdb::btree {
             U16 half = static_cast<U16>(used_bytes(page) / 2);
             U16 acc = 0;
             for (CountType i = 0; i < page.count; i++) {
+                // leaf_page for varlen KP always returns SlottedLeafPage<true,true>
                 acc += static_cast<U16>(key_at(page, i).length + value_at(page, i).length
-                                        + sizeof(SlotEntry<!KP::is_fixed_size, !VP::is_fixed_size>));
+                                        + sizeof(SlotEntry<true, true>));
                 if (acc >= half) return static_cast<CountType>(i + 1);
             }
             return static_cast<CountType>(page.count / 2);

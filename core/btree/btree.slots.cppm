@@ -144,9 +144,9 @@ export namespace plexdb::btree {
     }
 
     // ========================================================================
-    // SlottedLeafPage<VK, VV>
+    // SlottedLeafPage<VK> — slot directory + varlen key+value data region
     // ========================================================================
-    template<bool VK, bool VV>
+    template<bool VK>
     struct SlottedLeafPage {
         static_assert(VK, "SlottedLeafPage requires varlen keys; use FixedLeafSlots for fixed keys");
         U8*       base;
@@ -155,9 +155,8 @@ export namespace plexdb::btree {
         U16       data_low;   // lowest used byte in data region (grows backward from page_end)
         U16       page_size;  // total page size (base[0..page_size))
         U16       key_stride; // only used when VK==false
-        U16       val_stride; // only used when VV==false
 
-        using Entry = SlotEntry<VK, VV>;
+        using Entry = SlotEntry<VK, true>;
         Entry* slots() const noexcept { return reinterpret_cast<Entry*>(base); }
 
         U16 header_bytes() const noexcept { return slot_end; }
@@ -165,64 +164,51 @@ export namespace plexdb::btree {
             return static_cast<U16>(data_low - slot_end);
         }
 
-        // bytes needed to add one more slot entry
         static constexpr U16 slot_entry_size() noexcept { return static_cast<U16>(sizeof(Entry)); }
     };
 
-    template<bool VK, bool VV>
-    TArrayView<const U8, U16> key_at(const SlottedLeafPage<VK, VV>& p, CountType i) noexcept {
+    template<bool VK>
+    TArrayView<const U8, U16> key_at(const SlottedLeafPage<VK>& p, CountType i) noexcept {
         const auto& e = p.slots()[i];
         return {p.base + e.key_off, e.key_len};
     }
 
-    template<bool VK, bool VV>
-    TArrayView<U8, U16> value_at(SlottedLeafPage<VK, VV>& p, CountType i) noexcept {
-        if constexpr (VV) {
-            const auto& e = p.slots()[i];
-            return {p.base + e.val_off, e.val_len};
-        } else {
-            // Fixed value: stored at fixed stride from end of page, indexed by slot
-            return {p.base + p.page_size - (i + 1) * p.val_stride, p.val_stride};
-        }
+    template<bool VK>
+    TArrayView<U8, U16> value_at(SlottedLeafPage<VK>& p, CountType i) noexcept {
+        const auto& e = p.slots()[i];
+        return {p.base + e.val_off, e.val_len};
     }
 
-    template<bool VK, bool VV>
-    TArrayView<const U8, U16> value_at(const SlottedLeafPage<VK, VV>& p, CountType i) noexcept {
-        if constexpr (VV) {
-            const auto& e = p.slots()[i];
-            return {p.base + e.val_off, e.val_len};
-        } else {
-            return {p.base + p.page_size - (i + 1) * p.val_stride, p.val_stride};
-        }
+    template<bool VK>
+    TArrayView<const U8, U16> value_at(const SlottedLeafPage<VK>& p, CountType i) noexcept {
+        const auto& e = p.slots()[i];
+        return {p.base + e.val_off, e.val_len};
     }
 
-    template<bool VK, bool VV>
-    U16 free_bytes(const SlottedLeafPage<VK, VV>& p) noexcept {
+    template<bool VK>
+    U16 free_bytes(const SlottedLeafPage<VK>& p) noexcept {
         return p.free_space();
     }
 
-    template<bool VK, bool VV>
-    U16 used_bytes(const SlottedLeafPage<VK, VV>& p) noexcept {
+    template<bool VK>
+    U16 used_bytes(const SlottedLeafPage<VK>& p) noexcept {
         return static_cast<U16>(p.page_size - p.free_space());
     }
 
-    template<bool VK, bool VV>
-    U16 capacity_bytes(const SlottedLeafPage<VK, VV>& p) noexcept {
+    template<bool VK>
+    U16 capacity_bytes(const SlottedLeafPage<VK>& p) noexcept {
         return p.page_size;
     }
 
-    // compact: close all holes in data region, update offsets
-    template<bool VK, bool VV>
-    void compact(SlottedLeafPage<VK, VV>& p) noexcept {
+    template<bool VK>
+    void compact(SlottedLeafPage<VK>& p) noexcept {
         U16 write_pos = p.page_size;
         for (CountType i = 0; i < p.count; i++) {
             auto& e = p.slots()[i];
-            if constexpr (VV) {
-                write_pos -= e.val_len;
-                if (p.base + write_pos != p.base + e.val_off)
-                    os::memory_move(p.base + write_pos, p.base + e.val_off, e.val_len);
-                e.val_off = write_pos;
-            }
+            write_pos -= e.val_len;
+            if (p.base + write_pos != p.base + e.val_off)
+                os::memory_move(p.base + write_pos, p.base + e.val_off, e.val_len);
+            e.val_off = write_pos;
             if constexpr (VK) {
                 write_pos -= e.key_len;
                 if (p.base + write_pos != p.base + e.key_off)
@@ -233,83 +219,74 @@ export namespace plexdb::btree {
         p.data_low = write_pos;
     }
 
-    template<bool VK, bool VV>
-    bool insert(SlottedLeafPage<VK, VV>& p, CountType i,
+    template<bool VK>
+    bool insert(SlottedLeafPage<VK>& p, CountType i,
                 TArrayView<const U8, U16> k, TArrayView<const U8, U16> v) noexcept {
         static_assert(VK, "SlottedLeafPage insert requires varlen key");
-        U16 needed = static_cast<U16>(sizeof(SlotEntry<VK,VV>) + k.length + (VV ? v.length : 0));
+        U16 needed = static_cast<U16>(sizeof(SlotEntry<VK, true>) + k.length + v.length);
         if (p.free_space() < needed) {
             compact(p);
             if (p.free_space() < needed) return false;
         }
-        // shift slot dir entries [i..count) right
         auto* slots = p.slots();
-        os::memory_move(slots + i + 1, slots + i, (p.count - i) * sizeof(SlotEntry<VK,VV>));
-
-        // write data from data_low downward
+        os::memory_move(slots + i + 1, slots + i, (p.count - i) * sizeof(SlotEntry<VK, true>));
         auto& e = slots[i];
-        if constexpr (VV) {
-            p.data_low -= v.length;
-            os::memory_copy(p.base + p.data_low, v.ptr, v.length);
-            e.val_off = p.data_low;
-            e.val_len = v.length;
-        }
+        p.data_low -= v.length;
+        os::memory_copy(p.base + p.data_low, v.ptr, v.length);
+        e.val_off = p.data_low;
+        e.val_len = v.length;
         if constexpr (VK) {
             p.data_low -= k.length;
             os::memory_copy(p.base + p.data_low, k.ptr, k.length);
             e.key_off = p.data_low;
             e.key_len = k.length;
         }
-        p.slot_end += sizeof(SlotEntry<VK,VV>);
+        p.slot_end += sizeof(SlotEntry<VK, true>);
         p.count++;
         return true;
     }
 
-    template<bool VK, bool VV>
-    void remove(SlottedLeafPage<VK, VV>& p, CountType i) noexcept {
+    template<bool VK>
+    void remove(SlottedLeafPage<VK>& p, CountType i) noexcept {
         static_assert(VK, "SlottedLeafPage remove requires varlen key");
         auto* slots = p.slots();
         auto& e = slots[i];
 
-        // reclaim data bytes by shifting data above the removed bytes downward
-        if constexpr (VK) {
+        {
             U16 off = e.key_off;
             U16 len = e.key_len;
             os::memory_move(p.base + p.data_low + len, p.base + p.data_low, off - p.data_low);
             p.data_low += len;
-            // update offsets of other entries whose data was shifted
             for (CountType j = 0; j < p.count; j++) {
                 if (j == i) continue;
-                if constexpr (VK) if (slots[j].key_off < off) slots[j].key_off += len;
-                if constexpr (VV) if (slots[j].val_off < off) slots[j].val_off += len;
+                if (slots[j].key_off < off) slots[j].key_off += len;
+                if (slots[j].val_off < off) slots[j].val_off += len;
             }
         }
-        if constexpr (VV) {
+        {
             U16 off = e.val_off;
             U16 len = e.val_len;
             os::memory_move(p.base + p.data_low + len, p.base + p.data_low, off - p.data_low);
             p.data_low += len;
             for (CountType j = 0; j < p.count; j++) {
                 if (j == i) continue;
-                if constexpr (VK) if (slots[j].key_off < off) slots[j].key_off += len;
-                if constexpr (VV) if (slots[j].val_off < off) slots[j].val_off += len;
+                if (slots[j].key_off < off) slots[j].key_off += len;
+                if (slots[j].val_off < off) slots[j].val_off += len;
             }
         }
 
-        // shift slot dir entries [i+1..count) left
-        os::memory_move(slots + i, slots + i + 1, (p.count - i - 1) * sizeof(SlotEntry<VK,VV>));
-        p.slot_end -= sizeof(SlotEntry<VK,VV>);
+        os::memory_move(slots + i, slots + i + 1, (p.count - i - 1) * sizeof(SlotEntry<VK, true>));
+        p.slot_end -= sizeof(SlotEntry<VK, true>);
         p.count--;
     }
 
-    template<bool VK, bool VV>
-    void copy_suffix_to(const SlottedLeafPage<VK, VV>& src, CountType from,
-                        SlottedLeafPage<VK, VV>& dst) noexcept {
+    template<bool VK>
+    void copy_suffix_to(const SlottedLeafPage<VK>& src, CountType from,
+                        SlottedLeafPage<VK>& dst) noexcept {
         static_assert(VK, "copy_suffix_to requires varlen key");
         CountType n = static_cast<CountType>(src.count - from);
         const auto* src_slots = src.slots();
         auto* dst_slots = dst.slots();
-        // copy slot entries and data for each slot
         for (CountType i = 0; i < n; i++) {
             const auto& se = src_slots[from + i];
             auto& de = dst_slots[i];
@@ -319,14 +296,12 @@ export namespace plexdb::btree {
                 de.key_off = dst.data_low;
                 de.key_len = se.key_len;
             }
-            if constexpr (VV) {
-                dst.data_low -= se.val_len;
-                os::memory_copy(dst.base + dst.data_low, src.base + se.val_off, se.val_len);
-                de.val_off = dst.data_low;
-                de.val_len = se.val_len;
-            }
+            dst.data_low -= se.val_len;
+            os::memory_copy(dst.base + dst.data_low, src.base + se.val_off, se.val_len);
+            de.val_off = dst.data_low;
+            de.val_len = se.val_len;
         }
-        dst.slot_end += n * sizeof(SlotEntry<VK,VV>);
+        dst.slot_end += n * sizeof(SlotEntry<VK, true>);
         dst.count = n;
     }
 
