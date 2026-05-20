@@ -81,6 +81,26 @@ export namespace cql {
             Array<U8, 4>  v4;
             Array<U8, 16> v6;
         };
+        // Anonymous union members have non-trivial constructors so we must define all special members
+        Inet() : is_v6(false) { new (&v4) Array<U8, 4>{}; }
+        Inet(const Inet& o) : is_v6(o.is_v6) {
+            if (o.is_v6) { new (&v6) Array<U8, 16>(o.v6); }
+            else          { new (&v4) Array<U8,  4>(o.v4); }
+        }
+        Inet(Inet&& o) noexcept : is_v6(o.is_v6) {
+            if (o.is_v6) { new (&v6) Array<U8, 16>(move(o.v6)); }
+            else          { new (&v4) Array<U8,  4>(move(o.v4)); }
+        }
+        Inet& operator=(const Inet& o) {
+            is_v6 = o.is_v6;
+            if (o.is_v6) { v6 = o.v6; } else { v4 = o.v4; }
+            return *this;
+        }
+        Inet& operator=(Inet&& o) noexcept {
+            is_v6 = o.is_v6;
+            if (o.is_v6) { v6 = move(o.v6); } else { v4 = move(o.v4); }
+            return *this;
+        }
         bool operator==(const Inet& o) const {
             if (is_v6 != o.is_v6) return false;
             if (is_v6) {

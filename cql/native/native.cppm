@@ -203,6 +203,24 @@ namespace type_codes {
         } else if constexpr (SameAs<TT, Hex>) {
             assert_true(dtype == BasicType::hex, "Hex value does not match basic type");
             return value.value.length;
+        } else if constexpr (SameAs<TT, Inet>) {
+            assert_true(dtype == BasicType::inet, "Inet value does not match basic type");
+            return value.is_v6 ? 16 : 4;
+        } else if constexpr (SameAs<TT, VarInt>) {
+            assert_true(dtype == BasicType::varint, "VarInt value does not match basic type");
+            assert_not_implemented("CQL native protocol encoding for varint is not implemented");
+            return 0;
+        } else if constexpr (SameAs<TT, Decimal>) {
+            assert_true(dtype == BasicType::decimal, "Decimal value does not match basic type");
+            assert_not_implemented("CQL native protocol encoding for decimal is not implemented");
+            return 0;
+        } else if constexpr (SameAs<TT, Duration>) {
+            assert_true(dtype == BasicType::duration, "Duration value does not match basic type");
+            assert_not_implemented("CQL native protocol encoding for duration is not implemented");
+            return 0;
+        } else if constexpr (SameAs<TT, NestedColumnValue>) {
+            assert_not_implemented("CQL native protocol encoding for nested collection value is not implemented");
+            return 0;
         } else {
             static_assert(!SameAs<TT,TT>, "missing basic value type");
         }
@@ -336,6 +354,21 @@ namespace type_codes {
         } else if constexpr (SameAs<TT, Hex>) {
             assert_true(dtype == BasicType::hex, "Hex value does not match BasicType");
             append_cql_bytes_raw(f, v.value.ptr, S32(v.value.length));
+        } else if constexpr (SameAs<TT, Inet>) {
+            assert_true(dtype == BasicType::inet, "Inet value does not match BasicType");
+            if (v.is_v6) {
+                append_cql_bytes_raw(f, &v.v6[0], 16);
+            } else {
+                append_cql_bytes_raw(f, &v.v4[0], 4);
+            }
+        } else if constexpr (SameAs<TT, VarInt>) {
+            assert_not_implemented("CQL native protocol encoding for varint is not implemented");
+        } else if constexpr (SameAs<TT, Decimal>) {
+            assert_not_implemented("CQL native protocol encoding for decimal is not implemented");
+        } else if constexpr (SameAs<TT, Duration>) {
+            assert_not_implemented("CQL native protocol encoding for duration is not implemented");
+        } else if constexpr (SameAs<TT, NestedColumnValue>) {
+            assert_not_implemented("CQL native protocol encoding for nested collection value is not implemented");
         } else {
             static_assert(!SameAs<TT, TT>, "unsupported static type");
         }

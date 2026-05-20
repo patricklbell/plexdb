@@ -3,6 +3,8 @@ module;
 #include <coroutine>
 #include <plexdb/support/tracy/tracy.hpp>
 
+static_assert(PLEXDB_ARCH_LITTLE_ENDIAN, "storage format assumes little-endian byte order");
+
 module plexdb.pager;
 
 import plexdb.base;
