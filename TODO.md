@@ -32,6 +32,10 @@
     - Abstract SPSC intra process communication, inter process (UDS), network communication
     - Recovery
         - Schema recovery from leader's committed log
+- avoid allocation in iterator
+- immutability check for cql frozen type
+- CLUSTERING ORDER BY: implement on-disk sort direction for clustering columns (currently accepted and logged as warning)
+- TTL: implement per-row/column expiry via USING TTL and default_time_to_live table property (currently hard-asserts)
 
 # Dev notes
 - aio proper separation between ownership, caller passes ring/ctx and arena
