@@ -222,8 +222,6 @@ export namespace plexdb {
     using ExpandAutoTaggedUnion = ExpandAutoTaggedUnionHelper<Ts>::type;
 
     // ========================================================================
-    // HybridTaggedUnion<TypeList<StaticTypes...>, TypeList<DynamicTypes...>>
-    //
     // Static types (indices [0, static_count)) are stored inline in `storage`.
     // Dynamic types (indices [static_count, total)) are heap-allocated via `ptr`.
     // Dynamic types are placed on the heap to break size-circularity (e.g. a

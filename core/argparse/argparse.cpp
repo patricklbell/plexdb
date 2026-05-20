@@ -17,6 +17,16 @@ namespace plexdb::argparse {
         PositionalDef def{};
         snprintf(def.name,        MAX_NAME_LEN, "%s", name);
         snprintf(def.description, MAX_DESC_LEN, "%s", description);
+        def.optional = false;
+        push_back(parser.positionals, def);
+        return parser.positionals.cap - 1;
+    }
+
+    U64 add_optional_positional(Parser& parser, const char* name, const char* description) {
+        PositionalDef def{};
+        snprintf(def.name,        MAX_NAME_LEN, "%s", name);
+        snprintf(def.description, MAX_DESC_LEN, "%s", description);
+        def.optional = true;
         push_back(parser.positionals, def);
         return parser.positionals.cap - 1;
     }
@@ -100,10 +110,12 @@ namespace plexdb::argparse {
             }
         }
 
-        if (result.positional_count < parser.positionals.cap) {
-            const PositionalDef& missing = parser.positionals[result.positional_count];
-            snprintf(result.error, MAX_DESC_LEN, "missing required argument <%s>", missing.name);
-            result.ok = false;
+        for (U64 i = result.positional_count; i < parser.positionals.cap; i++) {
+            if (!parser.positionals[i].optional) {
+                snprintf(result.error, MAX_DESC_LEN, "missing required argument <%s>", parser.positionals[i].name);
+                result.ok = false;
+                break;
+            }
         }
 
         return result;
@@ -116,7 +128,10 @@ namespace plexdb::argparse {
         printf("usage: %s", parser.prog_name);
 #endif
         for (U64 i = 0; i < parser.positionals.cap; i++) {
-            printf(" <%s>", parser.positionals[i].name);
+            if (parser.positionals[i].optional)
+                printf(" [<%s>]", parser.positionals[i].name);
+            else
+                printf(" <%s>", parser.positionals[i].name);
         }
         for (U64 i = 0; i < parser.options.cap; i++) {
             printf(" [--%s <%s>]", parser.options[i].long_name + 2, parser.options[i].long_name + 2);
@@ -133,7 +148,12 @@ namespace plexdb::argparse {
         if (parser.positionals.cap > 0) {
             printf("\nArguments:\n");
             for (U64 i = 0; i < parser.positionals.cap; i++) {
-                printf("  %-20s  %s\n", parser.positionals[i].name, parser.positionals[i].description);
+                char display[MAX_NAME_LEN + 4];
+                if (parser.positionals[i].optional)
+                    snprintf(display, sizeof(display), "[<%s>]", parser.positionals[i].name);
+                else
+                    snprintf(display, sizeof(display), "<%s>", parser.positionals[i].name);
+                printf("  %-20s  %s\n", display, parser.positionals[i].description);
             }
         }
 
@@ -164,6 +184,11 @@ namespace plexdb::argparse {
 
     String8 get_positional(const ParseResult& result, U64 index) {
         assert_true(index < result.positional_count, "positional index out of range");
+        return String8(result.positional_values[index]);
+    }
+
+    String8 get_optional_positional(const ParseResult& result, U64 index) {
+        if (index >= result.positional_count) return String8{};
         return String8(result.positional_values[index]);
     }
 

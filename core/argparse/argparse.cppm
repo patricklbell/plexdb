@@ -12,6 +12,7 @@ export namespace plexdb::argparse {
     struct PositionalDef {
         char name[MAX_NAME_LEN];
         char description[MAX_DESC_LEN];
+        bool optional;
     };
 
     constexpr U64 MAX_OPTIONS     = 16;
@@ -49,6 +50,7 @@ export namespace plexdb::argparse {
 
     Parser create_parser(const char* prog_name, const char* description = "");
     U64    add_positional(Parser& parser, const char* name, const char* description = "");
+    U64    add_optional_positional(Parser& parser, const char* name, const char* description = "");
     U64    add_flag(Parser& parser, const char* long_name, const char* short_name = "", const char* description = "");
     U64    add_option(Parser& parser, const char* long_name, const char* short_name = "", const char* description = "", const char* default_value = "");
 
@@ -56,6 +58,7 @@ export namespace plexdb::argparse {
     void        print_help(const Parser& parser);
 
     String8 get_positional(const ParseResult& result, U64 index);
+    String8 get_optional_positional(const ParseResult& result, U64 index);
     bool    has_flag(const ParseResult& result, U64 flag_index);
     String8 get_option(const ParseResult& result, U64 option_index);
 }

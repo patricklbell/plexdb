@@ -38,7 +38,7 @@ int main(int argc, char* argv[]) {
     U64 port_arg      = argparse::add_option(arg_parser, "--port",      "-p", "TCP port to listen on", "6379");
     U64 no_uring_arg  = argparse::add_flag(arg_parser,   "--no-uring",  "-U", "Disable io_uring and use synchronous socket I/O");
     U64 in_memory_arg = argparse::add_flag(arg_parser,   "--in-memory", "",   "Run without persistence (no database file)");
-    U64 path_arg      = argparse::add_positional(arg_parser, "path", "Database file path (required without --in-memory)");
+    U64 path_arg      = argparse::add_optional_positional(arg_parser, "path", "Database file path (required without --in-memory)");
 
     auto args = argparse::parse(arg_parser, argc, argv);
     if (args.help_requested) {
@@ -52,7 +52,7 @@ int main(int argc, char* argv[]) {
     }
 
     bool in_memory = argparse::has_flag(args, in_memory_arg);
-    String8 db_path = argparse::get_positional(args, path_arg);
+    String8 db_path = argparse::get_optional_positional(args, path_arg);
 
     if (!in_memory && db_path.length == 0) {
         println("error: database path required (or use --in-memory)");
