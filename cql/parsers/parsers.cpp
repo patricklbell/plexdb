@@ -341,8 +341,17 @@ namespace cql::parsers {
         struct frozen_type {
             static constexpr auto rule = kw_frozen >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<basic_type> | dsl::else_ >> dsl::recurse<collection_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
             static constexpr auto value = lexy::callback<Type>(
-                // @todo
-                [](Type fwd) { assert_not_implemented("frozen types"); return move(fwd); }
+                [](Type fwd) {
+                    switch (fwd.ctype) {
+                        case CollectionType::basic:  return move(fwd);
+                        case CollectionType::list:   fwd.list.frozen = true; return move(fwd);
+                        case CollectionType::set:    fwd.set.frozen = true; return move(fwd);
+                        case CollectionType::map:    fwd.map.frozen = true; return move(fwd);
+                        case CollectionType::vector: fwd.vector.frozen = true; return move(fwd);
+                    }
+                    assert_true(false, "missing collection type case in switch, this should never happen!");
+                    return move(fwd);
+                }
             );
         };
 

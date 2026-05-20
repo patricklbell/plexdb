@@ -29,11 +29,11 @@
         - Log replication: leader → all followers via SPSC
         - Commit on majority ack, apply on commit notification
         - Persist committed log to dedicated pager page
-    - Abstract SPSC intra process communication, inter process (UDS), network communication 
+    - Abstract SPSC intra process communication, inter process (UDS), network communication
     - Recovery
         - Schema recovery from leader's committed log
 
-# Dev notes 
+# Dev notes
 - aio proper separation between ownership, caller passes ring/ctx and arena
 - Signal cannot interrupt in-progress `aio::drive` startup calls (pager init, engine init) — the signal notifier fd is not registered with `io_poll` until `create_notifier_consumer` is called, so a signal during e.g. a slow WAL recovery queues but does not abort the operation
 
@@ -179,6 +179,80 @@ To match cassandra
 - Compare and set using paxos ([see](https://docs.datastax.com/en/cassandra-oss/3.0/cassandra/dml/dmlLtwtTransactions.html))
 
 Additional features
-- Generic Cross partition transactions 
+- Generic Cross partition transactions
 - Global ordering
   - e.g. read-time skew caused by a scatter read not being synchronized with per-shard operations.
+
+
+## Conformance Test Analysis
+
+**Current state: 252 failed / 313 total**
+
+The remaining failures across ~20 error types map into five buckets:
+
+### 1. Missing storage features (engine/schema layer)
+
+| Failure | Count | Notes |
+|---|---|---|
+| Static columns | 24 | `schema::create_column` hits not-impl |
+| Collection literals in INSERT | 15 | list (9), set (5), map (1) |
+| Collection bind params (native protocol) | 14 | list/set/map via `?` placeholders |
+| Non-constant term eval | 5 | e.g. `uuid()` function calls |
+| NULL column writes | 1 | `INSERT ... (col) VALUES (null)` |
+
+### 2. Schema/DDL options
+
+| Failure | Count | Notes |
+|---|---|---|
+| `CREATE TABLE WITH` | 15 | compaction, `gc_grace_seconds`, etc. |
+| `ALTER TABLE WITH` | 2 | Same category |
+| `ALTER KEYSPACE WITH` | 3 | Replication options |
+
+These are no-ops for single-node: just need to accept and ignore the `WITH` clause.
+
+### 3. Query features not yet wired
+
+| Failure | Count | Notes |
+|---|---|---|
+| Multiple WHERE relations | 6 | `WHERE pk > x AND pk < y` |
+| DELETE on clustering key table | 7 | `assert_not_implemented` |
+| UPDATE on clustering key table | 1 | `assert_not_implemented` |
+| LIMIT | 3 | |
+| ORDER BY | 2 | |
+| SELECT DISTINCT/JSON | 3 | |
+| SELECT aggregate/function | 2 | `count(*)`, `writetime()` |
+
+### 4. Parser gaps
+
+| Failure | Count |
+|---|---|
+| Frozen types (`frozen<map<...>>`) | 16 |
+
+### 5. Protocol / USING clause
+
+| Failure | Count |
+|---|---|
+| `INSERT`/`UPDATE USING TIMESTAMP/TTL` | 6 |
+
+---
+
+### What's needed for a solid single-node MVP
+
+**Blocking (crashes, wrong results):**
+- DELETE and UPDATE on clustering-key tables (7+1 hits) — must implement the two-level btree path
+- Multiple WHERE relations on the same column (6 hits) — currently only one relation per column is processed
+
+**High-value features (each unblocks a whole test category):**
+- Static columns (24 hits) — requires a separate per-partition blob, not per-row
+- `WITH` options on `CREATE`/`ALTER TABLE` (17 hits combined) — single-node can accept and ignore
+- `frozen<T>` in parser (16 hits) — parser needs to unwrap the type
+- Collection literals in INSERT (15 hits) — list/set/map storage in blob format
+- Collection bind params (14 hits) — native protocol deserialization of collection types
+
+**Low-hanging fruit (each ≤3 hits):**
+- LIMIT / ORDER BY / SELECT DISTINCT — query planning layer
+- `INSERT USING TIMESTAMP/TTL` — can accept and discard at single-node
+
+### Core library gaps
+
+None. The pager, btree, blob, coroutine, and OS layers are complete and correct for single-node. All remaining gaps are at the CQL semantics layer (schema, engine, native protocol). The one notable absence from the plan — range-deleting all rows in a partition for `DELETE WHERE pk = x` on a clustering-key table — requires either iterating and deleting from the clustering btree, or a new `btree::remove_all` API, but the existing single-key `btree::remove` is sufficient for a first pass.

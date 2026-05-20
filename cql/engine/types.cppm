@@ -44,11 +44,11 @@ export namespace cql {
     struct Type {
         CollectionType ctype;
 
-        struct Basic  { BasicType value_dtype;                       };
-        struct List   { BasicType element_dtype;                     };
-        struct Set    { BasicType key_dtype;                         };
-        struct Map    { BasicType key_dtype; BasicType value_dtype; };
-        struct Vector { BasicType element_dtype; U64 count;          };
+        struct Basic  { BasicType value_dtype;                                    };
+        struct List   { BasicType element_dtype; bool frozen;                     };
+        struct Set    { BasicType key_dtype; bool frozen;                         };
+        struct Map    { BasicType key_dtype; BasicType value_dtype; bool frozen;  };
+        struct Vector { BasicType element_dtype; U64 count; bool frozen;          };
 
         union {
             struct Basic basic;
@@ -62,11 +62,11 @@ export namespace cql {
     constexpr bool operator==(Type a, Type b) {
         if (a.ctype != b.ctype) return false;
         switch (a.ctype) {
-            case CollectionType::basic: return a.basic.value_dtype == b.basic.value_dtype;
-            case CollectionType::list:   return a.list.element_dtype == b.list.element_dtype;
-            case CollectionType::set:    return a.set.key_dtype == b.set.key_dtype;
-            case CollectionType::map:    return a.map.key_dtype == b.map.key_dtype && a.map.value_dtype == b.map.value_dtype;
-            case CollectionType::vector: return a.vector.element_dtype == b.vector.element_dtype && a.vector.count == b.vector.count;
+            case CollectionType::basic:  return a.basic.value_dtype == b.basic.value_dtype;
+            case CollectionType::list:   return a.list.element_dtype == b.list.element_dtype  && a.list.frozen == b.list.frozen;
+            case CollectionType::set:    return a.set.key_dtype == b.set.key_dtype && a.set.frozen == b.set.frozen;
+            case CollectionType::map:    return a.map.key_dtype == b.map.key_dtype && a.map.value_dtype == b.map.value_dtype && a.map.frozen == b.map.frozen;
+            case CollectionType::vector: return a.vector.element_dtype == b.vector.element_dtype && a.vector.count == b.vector.count && a.vector.frozen == b.vector.frozen;
         }
         return false;
     }
@@ -77,19 +77,19 @@ export namespace cql {
     }
 
     constexpr Type create_list(BasicType el) {
-        return Type{.ctype = CollectionType::list, .list = {.element_dtype = el}};
+        return Type{.ctype = CollectionType::list, .list = {.element_dtype = el, .frozen = false}};
     }
 
     constexpr Type create_set(BasicType key) {
-        return Type{.ctype = CollectionType::set, .set = {.key_dtype = key}};
+        return Type{.ctype = CollectionType::set, .set = {.key_dtype = key, .frozen = false}};
     }
 
     constexpr Type create_map(BasicType key, BasicType val) {
-        return Type{.ctype = CollectionType::map, .map = {.key_dtype = key, .value_dtype = val}};
+        return Type{.ctype = CollectionType::map, .map = {.key_dtype = key, .value_dtype = val, .frozen = false}};
     }
 
     constexpr Type create_vector(BasicType el, U64 count) {
-        return Type{.ctype = CollectionType::vector, .vector = {.element_dtype = el, .count = count}};
+        return Type{.ctype = CollectionType::vector, .vector = {.element_dtype = el, .count = count, .frozen = false}};
     }
 }
 
