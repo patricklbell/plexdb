@@ -389,7 +389,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
         auto check_neg = [](const Term& t, S64 expected) {
             const auto& arith = get<ArithmeticOperation>(t.value);
             const auto& unary = get<UnaryMinusArithmeticOperation>(arith.value);
-            REQUIRE(get<S64>(get<Constant>(unary.operand.value).value) == expected);
+            REQUIRE(get<S64>(get<Constant>(unary.operand->value).value) == expected);
         };
         check_neg(nv.values[0], 100);
         check_neg(nv.values[1], 50);

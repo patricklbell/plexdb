@@ -140,9 +140,8 @@ namespace type_codes {
             case BasicType::varchar:   return type_codes::Varchar;
             case BasicType::varint:    return type_codes::Varint;
             case BasicType::timeuuid:  return type_codes::Timeuuid;
-            case BasicType::vector:
             case BasicType::hex:{
-                assert_not_implemented("native protocol type code for vector/hex type is not implemented");
+                assert_not_implemented("native protocol type code for hex type is not implemented");
                 return 0x0000;
             }break;
         }
@@ -197,7 +196,6 @@ namespace type_codes {
                 dtype == BasicType::varint  ||
                 dtype == BasicType::decimal ||
                 dtype == BasicType::duration||
-                dtype == BasicType::vector  ||
                 dtype == BasicType::hex,
                 "Blob value does not match basic type"
             );
@@ -331,7 +329,6 @@ namespace type_codes {
                 dtype == BasicType::varint  ||
                 dtype == BasicType::decimal ||
                 dtype == BasicType::duration||
-                dtype == BasicType::vector  ||
                 dtype == BasicType::hex,
                 "Blob value does not match BasicType"
             );

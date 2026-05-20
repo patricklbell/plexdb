@@ -16,7 +16,7 @@ export namespace cql {
     >;
     struct Evaluated {
         // @note @warn DO NOT modify without also checking TermWithIdentifier
-        ExpandAutoTaggedUnion<EvaluatedTypes> value;
+        ExpandTaggedUnion<EvaluatedTypes> value;
     };
 
     // @warn suggested to move term to avoid copy
@@ -88,7 +88,6 @@ export namespace plexdb {
             case cql::BasicType::tinyint:
             case cql::BasicType::varchar:
             case cql::BasicType::varint:
-            case cql::BasicType::vector:
             case cql::BasicType::hex:
                 return "@todo"_as;
         }

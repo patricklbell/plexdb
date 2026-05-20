@@ -3,6 +3,7 @@ export module cql.engine.types;
 import plexdb.base;
 import plexdb.os;
 import plexdb.tagged_union;
+import plexdb.dynamic.containers;
 
 using namespace plexdb;
 
@@ -29,7 +30,6 @@ export namespace cql {
         uuid,
         varchar,
         varint,
-        vector,
         hex,
     };
 
@@ -41,14 +41,35 @@ export namespace cql {
         vector,
     };
 
+    struct Type;  // forward declare for recursive ElementType
+
+    struct ElementType {
+        bool is_collection;
+        union {
+            BasicType basic;
+            Type* nested;  // heap-allocated; valid when is_collection == true
+        };
+
+        static constexpr ElementType from_basic(BasicType b) {
+            return ElementType{.is_collection = false, .basic = b};
+        }
+        static ElementType from_nested(Type* t) {
+            ElementType e;
+            e.is_collection = true;
+            e.nested = t;
+            return e;
+        }
+        static ElementType from(Type t);  // defined after Type is complete
+    };
+
     struct Type {
         CollectionType ctype;
 
-        struct Basic  { BasicType value_dtype;                                    };
-        struct List   { BasicType element_dtype; bool frozen;                     };
-        struct Set    { BasicType key_dtype; bool frozen;                         };
-        struct Map    { BasicType key_dtype; BasicType value_dtype; bool frozen;  };
-        struct Vector { BasicType element_dtype; U64 count; bool frozen;          };
+        struct Basic  { BasicType value_dtype;                                           };
+        struct List   { ElementType element;                    bool frozen;             };
+        struct Set    { ElementType key;                        bool frozen;             };
+        struct Map    { ElementType key; ElementType value;     bool frozen;             };
+        struct Vector { ElementType element; U64 count;         bool frozen;             };
 
         union {
             struct Basic basic;
@@ -59,37 +80,105 @@ export namespace cql {
         };
     };
 
+    constexpr bool operator==(Type a, Type b);  // forward-declare for element_type_eq
+
+    inline bool element_type_eq(ElementType a, ElementType b) {
+        if (a.is_collection != b.is_collection) return false;
+        if (!a.is_collection) return a.basic == b.basic;
+        // both are collection — compare recursively
+        if (a.nested == nullptr || b.nested == nullptr) return a.nested == b.nested;
+        return *a.nested == *b.nested;
+    }
+
     constexpr bool operator==(Type a, Type b) {
         if (a.ctype != b.ctype) return false;
         switch (a.ctype) {
             case CollectionType::basic:  return a.basic.value_dtype == b.basic.value_dtype;
-            case CollectionType::list:   return a.list.element_dtype == b.list.element_dtype  && a.list.frozen == b.list.frozen;
-            case CollectionType::set:    return a.set.key_dtype == b.set.key_dtype && a.set.frozen == b.set.frozen;
-            case CollectionType::map:    return a.map.key_dtype == b.map.key_dtype && a.map.value_dtype == b.map.value_dtype && a.map.frozen == b.map.frozen;
-            case CollectionType::vector: return a.vector.element_dtype == b.vector.element_dtype && a.vector.count == b.vector.count && a.vector.frozen == b.vector.frozen;
+            case CollectionType::list:   return element_type_eq(a.list.element, b.list.element) && a.list.frozen == b.list.frozen;
+            case CollectionType::set:    return element_type_eq(a.set.key, b.set.key) && a.set.frozen == b.set.frozen;
+            case CollectionType::map:    return element_type_eq(a.map.key, b.map.key) && element_type_eq(a.map.value, b.map.value) && a.map.frozen == b.map.frozen;
+            case CollectionType::vector: return element_type_eq(a.vector.element, b.vector.element) && a.vector.count == b.vector.count && a.vector.frozen == b.vector.frozen;
         }
         return false;
     }
 
+    inline ElementType ElementType::from(Type t) {
+        if (t.ctype == CollectionType::basic) return ElementType::from_basic(t.basic.value_dtype);
+        Type* p = reinterpret_cast<Type*>(os::allocate(sizeof(Type)));
+        new (p) Type(t);
+        return ElementType::from_nested(p);
+    }
 
     constexpr Type create_basic(BasicType d) {
         return Type{.ctype = CollectionType::basic, .basic = {.value_dtype = d}};
     }
 
     constexpr Type create_list(BasicType el) {
-        return Type{.ctype = CollectionType::list, .list = {.element_dtype = el, .frozen = false}};
+        Type t;
+        t.ctype = CollectionType::list;
+        t.list.element = ElementType::from_basic(el);
+        t.list.frozen = false;
+        return t;
+    }
+
+    inline Type create_list(ElementType el) {
+        Type t;
+        t.ctype = CollectionType::list;
+        t.list.element = el;
+        t.list.frozen = false;
+        return t;
     }
 
     constexpr Type create_set(BasicType key) {
-        return Type{.ctype = CollectionType::set, .set = {.key_dtype = key, .frozen = false}};
+        Type t;
+        t.ctype = CollectionType::set;
+        t.set.key = ElementType::from_basic(key);
+        t.set.frozen = false;
+        return t;
+    }
+
+    inline Type create_set(ElementType key) {
+        Type t;
+        t.ctype = CollectionType::set;
+        t.set.key = key;
+        t.set.frozen = false;
+        return t;
     }
 
     constexpr Type create_map(BasicType key, BasicType val) {
-        return Type{.ctype = CollectionType::map, .map = {.key_dtype = key, .value_dtype = val, .frozen = false}};
+        Type t;
+        t.ctype = CollectionType::map;
+        t.map.key = ElementType::from_basic(key);
+        t.map.value = ElementType::from_basic(val);
+        t.map.frozen = false;
+        return t;
+    }
+
+    inline Type create_map(ElementType key, ElementType val) {
+        Type t;
+        t.ctype = CollectionType::map;
+        t.map.key = key;
+        t.map.value = val;
+        t.map.frozen = false;
+        return t;
     }
 
     constexpr Type create_vector(BasicType el, U64 count) {
-        return Type{.ctype = CollectionType::vector, .vector = {.element_dtype = el, .count = count, .frozen = false}};
+        Type t;
+        t.ctype = CollectionType::vector;
+        t.vector.element = ElementType::from_basic(el);
+        t.vector.count = count;
+        t.vector.frozen = false;
+        return t;
+    }
+
+    inline Type create_vector(ElementType el, U64 count) {
+        Type t;
+        t.ctype = CollectionType::vector;
+        t.vector.element = el;
+        t.vector.count = count;
+        t.vector.frozen = false;
+        return t;
     }
 }
 
@@ -104,17 +193,22 @@ export namespace plexdb {
                 buf[len++] = static_cast<U8>(t.basic.value_dtype);
                 break;
             case cql::CollectionType::list:
-                buf[len++] = static_cast<U8>(t.list.element_dtype);
+                if (!t.list.element.is_collection)
+                    buf[len++] = static_cast<U8>(t.list.element.basic);
                 break;
             case cql::CollectionType::set:
-                buf[len++] = static_cast<U8>(t.set.key_dtype);
+                if (!t.set.key.is_collection)
+                    buf[len++] = static_cast<U8>(t.set.key.basic);
                 break;
             case cql::CollectionType::map:
-                buf[len++] = static_cast<U8>(t.map.key_dtype);
-                buf[len++] = static_cast<U8>(t.map.value_dtype);
+                if (!t.map.key.is_collection)
+                    buf[len++] = static_cast<U8>(t.map.key.basic);
+                if (!t.map.value.is_collection)
+                    buf[len++] = static_cast<U8>(t.map.value.basic);
                 break;
             case cql::CollectionType::vector:
-                buf[len++] = static_cast<U8>(t.vector.element_dtype);
+                if (!t.vector.element.is_collection)
+                    buf[len++] = static_cast<U8>(t.vector.element.basic);
                 os::memory_copy(buf + len, &t.vector.count, sizeof(U64));
                 len += sizeof(U64);
                 break;
@@ -145,19 +239,27 @@ export namespace plexdb {
             case cql::BasicType::tinyint:    return "tinyint";
             case cql::BasicType::varchar:    return "varchar";
             case cql::BasicType::varint:     return "varint";
-            case cql::BasicType::vector:     return "vector";
             case cql::BasicType::hex:        return "hex";
         }
         return "unknown";
     }
+
+    inline AutoString8 to_str_element_type(const cql::ElementType& e);
+
     constexpr inline AutoString8 to_str(cql::Type cdtype) {
         switch (cdtype.ctype) {
             case cql::CollectionType::basic:  return AutoString8(to_str(cdtype.basic.value_dtype));
-            case cql::CollectionType::list:   return "list["_as + to_str(cdtype.list.element_dtype) + "]";
-            case cql::CollectionType::set:    return "set["_as + to_str(cdtype.set.key_dtype) + "]";
-            case cql::CollectionType::map:    return "map["_as + to_str(cdtype.map.key_dtype) + ", " + to_str(cdtype.map.value_dtype) + "]";
-            case cql::CollectionType::vector: return "vector["_as + to_str(cdtype.vector.element_dtype) + "]";
+            case cql::CollectionType::list:   return "list["_as + to_str_element_type(cdtype.list.element) + "]";
+            case cql::CollectionType::set:    return "set["_as + to_str_element_type(cdtype.set.key) + "]";
+            case cql::CollectionType::map:    return "map["_as + to_str_element_type(cdtype.map.key) + ", " + to_str_element_type(cdtype.map.value) + "]";
+            case cql::CollectionType::vector: return "vector["_as + to_str_element_type(cdtype.vector.element) + "]";
         }
         return "unknown"_as;
+    }
+
+    inline AutoString8 to_str_element_type(const cql::ElementType& e) {
+        if (!e.is_collection) return AutoString8(to_str(e.basic));
+        if (e.nested == nullptr) return "null"_as;
+        return to_str(*e.nested);
     }
 }

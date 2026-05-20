@@ -359,20 +359,20 @@ namespace cql::parsers {
             struct list_type {
                 static constexpr auto rule = kw_list >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
                 static constexpr auto value = lexy::callback<Type>(
-                    [](Type el) { assert_true_not_implemented(el.ctype == CollectionType::basic, "nested collections are not implemented"); return create_list(el.basic.value_dtype); }
+                    [](Type el) { return create_list(ElementType::from(el)); }
                 );
             };
             struct set_type {
                 static constexpr auto rule = kw_set >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
                 static constexpr auto value = lexy::callback<Type>(
-                    [](Type key) { assert_true_not_implemented(key.ctype == CollectionType::basic, "nested collections are not implemented"); return create_set(key.basic.value_dtype); }
+                    [](Type key) { return create_set(ElementType::from(key)); }
                 );
             };
             struct map_type {
                 static constexpr auto rule = kw_map >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> +
                     dsl::lit_c<','> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
                 static constexpr auto value = lexy::callback<Type>(
-                    [](Type key, Type val) { assert_true_not_implemented(key.ctype == CollectionType::basic && val.ctype == CollectionType::basic, "nested collections are not implemented"); return create_map(key.basic.value_dtype, val.basic.value_dtype); }
+                    [](Type key, Type val) { return create_map(ElementType::from(key), ElementType::from(val)); }
                 );
             };
             static constexpr auto rule = dsl::p<list_type> | dsl::p<set_type> | dsl::p<map_type>;
@@ -514,7 +514,7 @@ namespace cql::parsers {
             }();
             static constexpr auto value = lexy::callback<Term>(
                 [](Type type, Term&& operand) -> Term {
-                    return Term{.value = TypeHint{.type = type, .operand = move(operand)}};
+                    return Term{.value = TypeHint{type, move(operand)}};
                 }
             );
         };
@@ -608,11 +608,13 @@ namespace cql::parsers {
             }();
             static constexpr auto value = lexy::callback<TermWithIdentifiers>(
                 [](Term&& t) -> TermWithIdentifiers {
-                    // @note @warn relies on TermOrIdentifier sharing the same common prefix indices with Term
                     TermWithIdentifiers result;
                     result.value.index = t.value.index;
-                    result.value.ptr = t.value.ptr;
-                    t.value.ptr = nullptr;
+                    visit(t.value, [&](auto& v) {
+                        using T = Decay<decltype(v)>;
+                        new (&result.value.storage) T(move(v));
+                        v.~T();
+                    });
                     t.value.index = decltype(t.value)::invalid_index;
                     return result;
                 },

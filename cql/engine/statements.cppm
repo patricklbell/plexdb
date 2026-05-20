@@ -12,33 +12,37 @@ using namespace plexdb;
 
 export namespace cql {
     // ========================================================================
-    // term
+    // Forward declarations (needed by literal/arithmetic types)
     // ========================================================================
-    struct Constant;
-    struct MapLiteral;
-    struct SetLiteral;
-    struct ListOrVectorLiteral;
-    struct UdtLiteral;
-    struct TupleLiteral;
-    struct FunctionCall;
-    struct ArithmeticOperation;
-    struct TypeHint;
-    struct BindMarker;
-    struct Term {
-        // @note @warn DO NOT modify without also checking TermWithIdentifier
-        ExpandAutoTaggedUnion<
-            TypeList<
-                Constant,
-                MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
-                FunctionCall,
-                ArithmeticOperation,
-                TypeHint,
-                BindMarker
-            >
-        > value;
+    struct Term;
+    struct TermWithIdentifiers;
+
+    // ========================================================================
+    // Box<T> — owns a heap-allocated T*
+    // Method bodies are defined after T is complete (as explicit specialisations).
+    // ========================================================================
+    template<typename T>
+    struct Box {
+        T* ptr = nullptr;
+
+        Box() = default;
+
+        explicit Box(T&& val);
+        Box(const Box& o);
+        Box(Box&& o) noexcept;
+        Box& operator=(const Box& o);
+        Box& operator=(Box&& o) noexcept;
+        ~Box();
+
+        T& operator*() { return *ptr; }
+        const T& operator*() const { return *ptr; }
+        T* operator->() { return ptr; }
+        const T* operator->() const { return ptr; }
     };
 
+    // ========================================================================
     // constants
+    // ========================================================================
     struct Null {};
     struct UUID {
         static constexpr U64 length = 16_u64;
@@ -70,12 +74,60 @@ export namespace cql {
             return true;
         }
     };
+
+    struct Inet {
+        bool is_v6;
+        union {
+            Array<U8, 4>  v4;
+            Array<U8, 16> v6;
+        };
+        bool operator==(const Inet& o) const {
+            if (is_v6 != o.is_v6) return false;
+            if (is_v6) {
+                for (int i = 0; i < 16; i++) if (v6[i] != o.v6[i]) return false;
+            } else {
+                for (int i = 0; i < 4;  i++) if (v4[i] != o.v4[i]) return false;
+            }
+            return true;
+        }
+    };
+
+    struct VarInt {
+        bool negative = false;
+        DynamicArray<U8> magnitude;  // big-endian bytes
+        bool operator==(const VarInt& o) const {
+            if (negative != o.negative || magnitude.length != o.magnitude.length) return false;
+            for (U64 i = 0; i < magnitude.length; i++) if (magnitude[i] != o.magnitude[i]) return false;
+            return true;
+        }
+    };
+
+    struct Decimal {
+        S32 scale = 0;
+        VarInt unscaled;
+        bool operator==(const Decimal& o) const {
+            return scale == o.scale && unscaled == o.unscaled;
+        }
+    };
+
+    struct Duration {
+        S32 months = 0;
+        S32 days   = 0;
+        S64 nanoseconds = 0;
+        bool operator==(const Duration& o) const {
+            return months == o.months && days == o.days && nanoseconds == o.nanoseconds;
+        }
+    };
+
     using ConstantTypes = TypeList<AutoString8, S64, bool, F64, Null, UUID, Hex, Blob>;
     struct Constant {
         ExpandTaggedUnion<ConstantTypes> value;
     };
 
-    // literals
+    // ========================================================================
+    // literals (use DynamicArray<Term> - ok with forward-declared Term since
+    // DynamicArray only stores T* internally)
+    // ========================================================================
     struct MapLiteral {
         DynamicArray<Pair<Term, Term>> key_values;
     };
@@ -92,41 +144,204 @@ export namespace cql {
         DynamicArray<Term> elements;
     };
 
+    // ========================================================================
     // functions
+    // ========================================================================
     struct FunctionCall {
         AutoString8 identifier;
         DynamicArray<Term> arguments;
     };
 
-    // arithmetics
+    // ========================================================================
+    // arithmetic
+    // ========================================================================
     enum ArithmeticOperator {
         plus,
         minus,
         times,
         divide,
     };
+
     struct UnaryMinusArithmeticOperation {
-        Term operand;
+        Box<Term> operand;
+        explicit UnaryMinusArithmeticOperation(Term&& t);
+        UnaryMinusArithmeticOperation() = default;
     };
     struct BinaryArithmeticOperation {
-        Term lhs;
+        Box<Term> lhs;
         ArithmeticOperator op;
-        Term rhs;
+        Box<Term> rhs;
+        BinaryArithmeticOperation(Term&& l, ArithmeticOperator o, Term&& r);
+        BinaryArithmeticOperation() = default;
     };
     struct ArithmeticOperation {
         TaggedUnion<UnaryMinusArithmeticOperation, BinaryArithmeticOperation> value;
     };
 
+    // ========================================================================
     // type hinting
+    // ========================================================================
     struct TypeHint {
         Type type;
-        Term operand;
+        Box<Term> operand;
+        TypeHint(Type t, Term&& o);
+        TypeHint() = default;
     };
 
+    // ========================================================================
     // bindings
+    // ========================================================================
     struct BindMarker {
         AutoString8 identifier;
     };
+
+    // ========================================================================
+    // Term — defined after all variant types are complete
+    // ========================================================================
+    struct Term {
+        ExpandTaggedUnion<
+            TypeList<
+                Constant,
+                MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
+                FunctionCall,
+                ArithmeticOperation,
+                TypeHint,
+                BindMarker
+            >
+        > value;
+    };
+
+    // ========================================================================
+    // Box<Term> method bodies (now that Term is complete)
+    // ========================================================================
+    template<> inline Box<Term>::Box(Term&& val) {
+        ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
+        new (ptr) Term(move(val));
+    }
+    template<> inline Box<Term>::Box(const Box<Term>& o) {
+        if (o.ptr) {
+            ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
+            new (ptr) Term(*o.ptr);
+        }
+    }
+    template<> inline Box<Term>::Box(Box<Term>&& o) noexcept {
+        ptr = o.ptr;
+        o.ptr = nullptr;
+    }
+    template<> inline Box<Term>& Box<Term>::operator=(const Box<Term>& o) {
+        if (this == &o) return *this;
+        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
+        if (o.ptr) {
+            ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
+            new (ptr) Term(*o.ptr);
+        }
+        return *this;
+    }
+    template<> inline Box<Term>& Box<Term>::operator=(Box<Term>&& o) noexcept {
+        if (this == &o) return *this;
+        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
+        ptr = o.ptr;
+        o.ptr = nullptr;
+        return *this;
+    }
+    template<> inline Box<Term>::~Box() {
+        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
+    }
+
+    // ========================================================================
+    // ArithmeticOperation / TypeHint constructors (now that Term is complete)
+    // ========================================================================
+    inline UnaryMinusArithmeticOperation::UnaryMinusArithmeticOperation(Term&& t)
+        : operand(move(t)) {}
+
+    inline BinaryArithmeticOperation::BinaryArithmeticOperation(Term&& l, ArithmeticOperator o, Term&& r)
+        : lhs(move(l)), op(o), rhs(move(r)) {}
+
+    inline TypeHint::TypeHint(Type t, Term&& o)
+        : type(t), operand(move(o)) {}
+
+    // ========================================================================
+    // TOI types (TermWithIdentifiers variant types)
+    // ========================================================================
+    struct TOIUnaryMinus {
+        Box<TermWithIdentifiers> operand;
+        explicit TOIUnaryMinus(TermWithIdentifiers&& t);
+        TOIUnaryMinus() = default;
+    };
+    struct TOIBinaryArithmetic {
+        Box<TermWithIdentifiers> lhs;
+        ArithmeticOperator op;
+        Box<TermWithIdentifiers> rhs;
+        TOIBinaryArithmetic(TermWithIdentifiers&& l, ArithmeticOperator o, TermWithIdentifiers&& r);
+        TOIBinaryArithmetic() = default;
+    };
+    struct TOIArithmeticOperation {
+        TaggedUnion<TOIUnaryMinus, TOIBinaryArithmetic> value;
+    };
+
+    // ========================================================================
+    // TermWithIdentifiers — defined after TOI types
+    // ========================================================================
+    struct TermWithIdentifiers {
+        ExpandTaggedUnion<
+            TypeList<
+                Constant,
+                MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
+                FunctionCall,
+                ArithmeticOperation,
+                TypeHint,
+                BindMarker,
+                TOIArithmeticOperation,
+                AutoString8
+            >
+        > value;
+    };
+
+    // ========================================================================
+    // Box<TermWithIdentifiers> method bodies
+    // ========================================================================
+    template<> inline Box<TermWithIdentifiers>::Box(TermWithIdentifiers&& val) {
+        ptr = reinterpret_cast<TermWithIdentifiers*>(os::allocate(sizeof(TermWithIdentifiers)));
+        new (ptr) TermWithIdentifiers(move(val));
+    }
+    template<> inline Box<TermWithIdentifiers>::Box(const Box<TermWithIdentifiers>& o) {
+        if (o.ptr) {
+            ptr = reinterpret_cast<TermWithIdentifiers*>(os::allocate(sizeof(TermWithIdentifiers)));
+            new (ptr) TermWithIdentifiers(*o.ptr);
+        }
+    }
+    template<> inline Box<TermWithIdentifiers>::Box(Box<TermWithIdentifiers>&& o) noexcept {
+        ptr = o.ptr;
+        o.ptr = nullptr;
+    }
+    template<> inline Box<TermWithIdentifiers>& Box<TermWithIdentifiers>::operator=(const Box<TermWithIdentifiers>& o) {
+        if (this == &o) return *this;
+        if (ptr) { ptr->~TermWithIdentifiers(); os::deallocate(ptr); ptr = nullptr; }
+        if (o.ptr) {
+            ptr = reinterpret_cast<TermWithIdentifiers*>(os::allocate(sizeof(TermWithIdentifiers)));
+            new (ptr) TermWithIdentifiers(*o.ptr);
+        }
+        return *this;
+    }
+    template<> inline Box<TermWithIdentifiers>& Box<TermWithIdentifiers>::operator=(Box<TermWithIdentifiers>&& o) noexcept {
+        if (this == &o) return *this;
+        if (ptr) { ptr->~TermWithIdentifiers(); os::deallocate(ptr); ptr = nullptr; }
+        ptr = o.ptr;
+        o.ptr = nullptr;
+        return *this;
+    }
+    template<> inline Box<TermWithIdentifiers>::~Box() {
+        if (ptr) { ptr->~TermWithIdentifiers(); os::deallocate(ptr); ptr = nullptr; }
+    }
+
+    // ========================================================================
+    // TOI constructors (now that TermWithIdentifiers is complete)
+    // ========================================================================
+    inline TOIUnaryMinus::TOIUnaryMinus(TermWithIdentifiers&& t)
+        : operand(move(t)) {}
+
+    inline TOIBinaryArithmetic::TOIBinaryArithmetic(TermWithIdentifiers&& l, ArithmeticOperator o, TermWithIdentifiers&& r)
+        : lhs(move(l)), op(o), rhs(move(r)) {}
 
     // ========================================================================
     // common
@@ -323,35 +538,6 @@ export namespace cql {
         DynamicArray<UpdateParameter> using_parameters;
     };
 
-    struct TOIArithmeticOperation;
-    struct TermWithIdentifiers {
-        ExpandAutoTaggedUnion<
-            // @note @warn order MUST match Term to allow direct pointer moving
-            TypeList<
-                Constant,
-                MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
-                FunctionCall,
-                ArithmeticOperation,
-                TypeHint,
-                BindMarker,
-                TOIArithmeticOperation,
-                AutoString8
-            >
-        > value;
-    };
-
-    struct TOIUnaryMinus {
-        TermWithIdentifiers operand;
-    };
-    struct TOIBinaryArithmetic {
-        TermWithIdentifiers lhs;
-        ArithmeticOperator op;
-        TermWithIdentifiers rhs;
-    };
-    struct TOIArithmeticOperation {
-        TaggedUnion<TOIUnaryMinus, TOIBinaryArithmetic> value;
-    };
-
     struct Update {
         struct Assignment {
             SimpleSelection target;
@@ -395,19 +581,20 @@ export namespace cql {
         };
 
         struct Cast;
-        struct Function;
+        struct Selector;  // forward-declare for Function (DynamicArray<Selector> needs only a pointer)
+        struct Function {
+            AutoString8 function_name;
+            DynamicArray<Selector> arguments;
+        };
         struct Count {};
-        // @note dynamic to allow recursive definition
+        // Static types (ColumnName, Term, Function, Count) are stored inline.
+        // Cast is dynamic: it directly embeds Selector, so its size depends on Selector's size.
         struct Selector {
-            AutoTaggedUnion<ColumnName, Term, Cast, Function, Count> value;
+            HybridTaggedUnion<TypeList<ColumnName, Term, Function, Count>, TypeList<Cast>> value;
         };
         struct Cast {
             Selector column;
             Type to;
-        };
-        struct Function {
-            AutoString8 function_name;
-            DynamicArray<Selector> arguments;
         };
         struct SelectColumn {
             Selector column;
@@ -480,5 +667,34 @@ export namespace cql {
 
     inline U64 hash(const Hex& hex) {
         return plexdb::hash(plexdb::String8(hex.value.ptr, hex.value.length));
+    }
+
+    inline U64 hash(const Inet& inet) {
+        if (inet.is_v6)
+            return plexdb::hash(plexdb::String8(reinterpret_cast<const char*>(&inet.v6[0]), 16));
+        else
+            return plexdb::hash(plexdb::String8(reinterpret_cast<const char*>(&inet.v4[0]), 4));
+    }
+
+    inline U64 hash(const VarInt& vi) {
+        U64 h = plexdb::hash(plexdb::String8(vi.magnitude.ptr, vi.magnitude.length));
+        h ^= vi.negative ? 0x1ULL : 0x0ULL;
+        return h;
+    }
+
+    inline U64 hash(const Decimal& d) {
+        U64 h = hash(d.unscaled);
+        U8 scale_bytes[4];
+        os::memory_copy(scale_bytes, &d.scale, 4);
+        h ^= plexdb::hash(plexdb::String8(scale_bytes, 4));
+        return h;
+    }
+
+    inline U64 hash(const Duration& dur) {
+        U8 buf[16];
+        os::memory_copy(buf,     &dur.months,      4);
+        os::memory_copy(buf + 4, &dur.days,        4);
+        os::memory_copy(buf + 8, &dur.nanoseconds, 8);
+        return plexdb::hash(plexdb::String8(buf, 16));
     }
 }

@@ -129,7 +129,7 @@ namespace cql::native {
             }
             case BasicType::blob: case BasicType::decimal:
             case BasicType::duration: case BasicType::inet:
-            case BasicType::varint: case BasicType::vector: case BasicType::hex:{
+            case BasicType::varint: case BasicType::hex:{
                 return Constant{.value = AutoString8(val, U64(len))};
             }
             default:
@@ -342,16 +342,16 @@ namespace cql::native {
             }break;
             case CollectionType::list:{
                 append_be_u16(f, type_codes::List);
-                append_be_u16(f, basic_type_to_type_code(cdtype.list.element_dtype));
+                append_be_u16(f, basic_type_to_type_code(cdtype.list.element.basic));
             }break;
             case CollectionType::set:{
                 append_be_u16(f, type_codes::Set);
-                append_be_u16(f, basic_type_to_type_code(cdtype.set.key_dtype));
+                append_be_u16(f, basic_type_to_type_code(cdtype.set.key.basic));
             }break;
             case CollectionType::map:{
                 append_be_u16(f, type_codes::Map);
-                append_be_u16(f, basic_type_to_type_code(cdtype.map.key_dtype));
-                append_be_u16(f, basic_type_to_type_code(cdtype.map.value_dtype));
+                append_be_u16(f, basic_type_to_type_code(cdtype.map.key.basic));
+                append_be_u16(f, basic_type_to_type_code(cdtype.map.value.basic));
             }break;
             case CollectionType::vector:{
                 assert_not_implemented("native protocol type code for vector collection type is not implemented");
@@ -373,23 +373,23 @@ namespace cql::native {
                 U64 pair_count = length(v);
                 S32 body = 4;
                 for (auto& it : v) {
-                    body += 4 + basic_element_byte_size(cdtype.map.key_dtype, it.first);
-                    body += 4 + basic_element_byte_size(cdtype.map.value_dtype, it.second);
+                    body += 4 + basic_element_byte_size(cdtype.map.key.basic, it.first);
+                    body += 4 + basic_element_byte_size(cdtype.map.value.basic, it.second);
                 }
                 append_be_s32(f, body);
                 append_be_s32(f, S32(pair_count));
                 for (auto& it : v) {
-                    append_cql_basic_element(f, cdtype.map.key_dtype, it.first);
-                    append_cql_basic_element(f, cdtype.map.value_dtype, it.second);
+                    append_cql_basic_element(f, cdtype.map.key.basic, it.first);
+                    append_cql_basic_element(f, cdtype.map.value.basic, it.second);
                 }
             } else if constexpr (IsCqlDS<T>) {
                 assert_true(cdtype.ctype == CollectionType::set, "static value type requires ctype set, this should never happen");
                 U64 elem_count = length(v);
                 S32 body = 4;
-                for (auto& e : v) body += 4 + basic_element_byte_size(cdtype.set.key_dtype, e);
+                for (auto& e : v) body += 4 + basic_element_byte_size(cdtype.set.key.basic, e);
                 append_be_s32(f, body);
                 append_be_s32(f, S32(elem_count));
-                for (auto& e : v) append_cql_basic_element(f, cdtype.set.key_dtype, e);
+                for (auto& e : v) append_cql_basic_element(f, cdtype.set.key.basic, e);
             } else if constexpr (IsCqlDA<T>) {
                 assert_true(
                     cdtype.ctype == CollectionType::list || cdtype.ctype == CollectionType::vector,
@@ -398,13 +398,13 @@ namespace cql::native {
                 U64 elem_count = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.count : v.length;
                 S32 body = 4;
                 for (U64 i = 0; i < elem_count; ++i) {
-                    auto dtype = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element_dtype : cdtype.list.element_dtype;
+                    auto dtype = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element.basic : cdtype.list.element.basic;
                     body += 4 + basic_element_byte_size(dtype, v[i]);
                 }
                 append_be_s32(f, body);
                 append_be_s32(f, S32(elem_count));
                 for (U64 i = 0; i < elem_count; ++i) {
-                    auto dtype = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element_dtype : cdtype.list.element_dtype;
+                    auto dtype = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element.basic : cdtype.list.element.basic;
                     append_cql_basic_element(f, dtype, v[i]);
                 }
             } else {

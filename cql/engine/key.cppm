@@ -209,8 +209,7 @@ export namespace cql::key {
     }
 
     // Serialize clustering key bytes from a parallel array of evaluated values.
-    DynamicArray<U8> serialize_clustering(const schema::Table& tbl,
-                                           TArrayView<const Evaluated, U64> clustering_vals) {
+    DynamicArray<U8> serialize_clustering(const schema::Table& tbl, TArrayView<const Evaluated, U64> clustering_vals) {
         assert_true(clustering_vals.length == tbl.clustering_key_col_indices.length,
                     "clustering val count must match clustering key column count");
         DynamicArray<U8> out;
