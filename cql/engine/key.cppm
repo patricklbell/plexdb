@@ -13,6 +13,19 @@ import cql.engine.statements;
 
 using namespace plexdb;
 
+// How keys are encoded for valid lexicographic ordering:
+//
+// Integers (append_s64_be, append_s32_be, etc.): XOR the sign bit, then write big-endian.
+// S64 -1   → bits = 0xFFFFFFFFFFFFFFFF ^ 0x8000000000000000 = 0x7FFFFFFFFFFFFFFF
+// S64  0   → bits = 0x0000000000000000 ^ 0x8000000000000000 = 0x8000000000000000
+// S64  1   → bits = 0x0000000000000001 ^ 0x8000000000000000 = 0x8000000000000001
+// The XOR maps [INT64_MIN, INT64_MAX] → [0, UINT64_MAX] monotonically. Then big-endian
+// ensures the most significant byte is compared first.
+//
+// Floats: For positive values, flip the sign bit (same trick). For negative values, flip
+// all bits.
+//
+// Text/blob: Null terminated. Length encoding would cause issues e.g. ["b"] < ["aa"]
 namespace cql::key {
     static void append_bytes(DynamicArray<U8>& out, const U8* src, U16 len) {
         U64 old_len = out.length;
@@ -57,7 +70,21 @@ namespace cql::key {
         append_bytes(out, bytes, 8);
     }
 
-    // Append one key component. If is_composite, prepend a 2-byte big-endian length.
+    // Escape 0x00 bytes as 0x00 0xFF, then write terminator 0x00 0x00.
+    // Used for variable-length composite key components to preserve lexicographic ordering.
+    static void append_escaped_terminated(DynamicArray<U8>& out, const U8* src, U16 len) {
+        for (U16 i = 0; i < len; i++) {
+            push_back(out, src[i]);
+            if (src[i] == 0x00)
+                push_back(out, U8(0xFF));
+        }
+        push_back(out, U8(0x00));
+        push_back(out, U8(0x00));
+    }
+
+    // Append one key component.
+    // Fixed-width types in composite keys: prepend a 2-byte big-endian length (constant, so ordering is unaffected).
+    // Variable-length types in composite keys: use escaped-terminated encoding to preserve ordering.
     static void append_component(DynamicArray<U8>& out, const Evaluated& eval,
                                   BasicType dtype, bool is_composite) {
         const Constant& c = get<Constant>(eval.value);
@@ -109,8 +136,10 @@ namespace cql::key {
             case BasicType::varchar:
             case BasicType::ascii: {
                 const AutoString8& s = get<AutoString8>(c.value);
-                if (is_composite) append_u16_be(out, static_cast<U16>(s.length));
-                append_bytes(out, reinterpret_cast<const U8*>(s.c_str), static_cast<U16>(s.length));
+                const U8* p = reinterpret_cast<const U8*>(s.c_str);
+                const U16 n = static_cast<U16>(s.length);
+                if (is_composite) append_escaped_terminated(out, p, n);
+                else              append_bytes(out, p, n);
                 break;
             }
             case BasicType::uuid:
@@ -122,14 +151,14 @@ namespace cql::key {
             }
             case BasicType::blob: {
                 const Blob& b = get<Blob>(c.value);
-                if (is_composite) append_u16_be(out, static_cast<U16>(b.value.length));
-                append_bytes(out, b.value.ptr, static_cast<U16>(b.value.length));
+                if (is_composite) append_escaped_terminated(out, b.value.ptr, static_cast<U16>(b.value.length));
+                else              append_bytes(out, b.value.ptr, static_cast<U16>(b.value.length));
                 break;
             }
             case BasicType::hex: {
                 const Hex& h = get<Hex>(c.value);
-                if (is_composite) append_u16_be(out, static_cast<U16>(h.value.length));
-                append_bytes(out, h.value.ptr, static_cast<U16>(h.value.length));
+                if (is_composite) append_escaped_terminated(out, h.value.ptr, static_cast<U16>(h.value.length));
+                else              append_bytes(out, h.value.ptr, static_cast<U16>(h.value.length));
                 break;
             }
             default:
