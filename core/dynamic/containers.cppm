@@ -99,6 +99,11 @@ export namespace plexdb {
             }
         }
 
+        template<typename L = Size>
+        operator TArrayView<const T, L>() const noexcept { return {ptr, static_cast<L>(length)}; }
+        template<typename L = Size>
+        operator TArrayView<T, L>() noexcept { return {ptr, static_cast<L>(length)}; }
+
         T* begin() noexcept { return ptr; }
         T* end()   noexcept { return ptr + length; }
 

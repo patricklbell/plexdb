@@ -131,6 +131,14 @@ export namespace plexdb {
         constexpr ConstIterator cend() const noexcept { return ConstIterator{values + N}; }
 
         // ====================================================================
+        // View conversion
+        // ====================================================================
+        template<typename L = U64>
+        constexpr operator TArrayView<const T, L>() const noexcept { return {values, static_cast<L>(N)}; }
+        template<typename L = U64>
+        constexpr operator TArrayView<T, L>() noexcept { return {values, static_cast<L>(N)}; }
+
+        // ====================================================================
         // Comparison
         // ====================================================================
         constexpr bool operator==(const Array& other) const {
@@ -209,6 +217,14 @@ export namespace plexdb {
             assert_true(i < cap, "out of range");
             return Base::operator[](i);
         }
+
+        // ====================================================================
+        // View conversion
+        // ====================================================================
+        template<typename L = U64>
+        constexpr operator TArrayView<const T, L>() const noexcept { return {this->values, static_cast<L>(this->cap)}; }
+        template<typename L = U64>
+        constexpr operator TArrayView<T, L>() noexcept { return {this->values, static_cast<L>(this->cap)}; }
 
         // ====================================================================
         // Comparison
