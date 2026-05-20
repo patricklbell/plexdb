@@ -41,7 +41,7 @@ TEST_CASE("descriptive name", "[tag]") {
 - For numeric metrics without string formatting overhead, create a `plexdb::plugin::Stat` with a `StatType` (`Counter` or `Gauge`) and use `plexdb::plugin::stat(s, value)`. The stat's name and type are registered automatically on first fire. Default type is `Gauge`.
 - When a consumer registers, all known producers and stat metadata are replayed (catch-up).
 - Custom log consumers can be registered via the plugin ABI (`plexdb_plugin_register_consumer` in `core/plugin_abi/plugin_abi.h`). Write a consumer to filter by producer ID, log level, or stat ID.
-- The OTLP plugin (`plugins/otel/otel_plugin.cpp`) exports metrics via OpenTelemetry (OTLP/HTTP JSON).
+- The OTLP plugin (`plugins/otel/otel_plugin.cpp`) exports metrics via OpenTelemetry (OTLP/gRPC).
 - Parse errors are reported via `UNSCOPED_INFO` through `cql/test/parsers_error_reporter.helper.cppm` and also through the log system (`cql::log::cql_parse_error` at `Level::Error`).
 
 ## Benchmarks
