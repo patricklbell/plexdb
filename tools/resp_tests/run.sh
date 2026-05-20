@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run.sh — fetch redis-py conformance tests and run them against resp_server.
+# run.sh — fetch redis-py conformance tests and run them against keyvalue_server.
 #
 # The upstream tests come from redis/redis-py's tests/test_commands.py.
 # A local conftest.py provides server lifecycle, the `r` fixture, and the
@@ -7,7 +7,9 @@
 #
 # Usage:
 #   ./extra/resp_tests/run.sh [options]
-#     -b <path>    resp server binary                   (default: ./build/resp/plexdb_resp_server)
+#     -b <path>    resp server binary                   (default: ./build/keyvalue/plexdb_keyvalue_server)
+#     -p <path>    plugin .so                           (default: empty)
+#     -d <path>    database file path (persistent mode) (default: in-memory)
 #     -P <port>    TCP port                             (default: 6399)
 #     -r <ref>     redis-py git ref/tag                 (default: v4.6.0)
 #     -t <expr>    pytest -k expression                 (default: run all)
@@ -25,7 +27,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-BINARY="${BINARY:-$ROOT_DIR/build/resp/resp_server}"
+BINARY="${BINARY:-$ROOT_DIR/build/keyvalue/plexdb_keyvalue_server}"
+PLUGINS=()
+DB_PATH=""
 PORT="${PORT:-6399}"
 REDIS_PY_REF="${REDIS_PY_REF:-v4.6.0}"
 PYTEST_K=""
@@ -33,9 +37,11 @@ PYTEST_EXTRA=""
 LIST_ONLY=false
 LOG_DIR=""
 
-while getopts "b:P:r:t:xlL:h" opt; do
+while getopts "b:p:d:P:r:t:xlL:h" opt; do
     case "$opt" in
         b) BINARY="$OPTARG" ;;
+        p) PLUGINS+=("$OPTARG") ;;
+        d) DB_PATH="$OPTARG" ;;
         P) PORT="$OPTARG" ;;
         r) REDIS_PY_REF="$OPTARG" ;;
         t) PYTEST_K="$OPTARG" ;;
@@ -43,7 +49,7 @@ while getopts "b:P:r:t:xlL:h" opt; do
         l) LIST_ONLY=true ;;
         L) LOG_DIR="$OPTARG" ;;
         h)
-            sed -n '2,22p' "$0" | sed 's/^# \?//'
+            sed -n '2,24p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         *) exit 1 ;;
@@ -130,8 +136,15 @@ fi
 echo "════════════════════════════════════════════════════════════"
 echo ""
 
+PLUGIN_ARGS=()
+for p in "${PLUGINS[@]}"; do
+    PLUGIN_ARGS+=(--plugin "$p")
+done
+
 python3 -m pytest "$TESTS_DIR/tests/" \
     --host "$HOST" --port "$PORT" --binary "$BINARY" \
+    "${PLUGIN_ARGS[@]}" \
+    ${DB_PATH:+--db-path "$DB_PATH"} \
     ${LOG_DIR:+--log-dir "$LOG_DIR"} \
     --override-ini="pythonpath=$TESTS_DIR" \
     --rootdir="$TESTS_DIR/tests" \
