@@ -430,7 +430,6 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
-        assert_true_not_implemented(create.options.value.length == 0, "CREATE TABLE WITH options are not implemented");
         assert_true(read_table_impl(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
 
         auto pk_info_opt = get_primary_key_info(create);

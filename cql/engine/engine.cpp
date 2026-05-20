@@ -9,6 +9,7 @@ import plexdb.dynamic.tagged_union;
 import plexdb.pager.transaction;
 
 import cql.parsers;
+import cql.log;
 import cql.engine.evaluator;
 import cql.engine.it;
 import cql.engine.key;
@@ -201,6 +202,56 @@ namespace cql::engine {
         };
     }
 
+    // Returns false if the option key is not a recognized Cassandra table property.
+    static bool handle_table_option_pair(const OptionPair& opt, Engine& engine) {
+        String8 key = opt.first;
+        if (key == "comment") {
+            // metadata only, no behavioral effect
+        } else if (key == "gc_grace_seconds" || key == "read_repair" || key == "speculative_retry" ||
+                   key == "additional_write_policy") {
+            // multi-node only: tombstone GC coordination, read-repair, speculative execution
+            assert_true(engine.single_node, "multi-node table option not supported");
+            log::native_info("ignoring multi-node table option (single-node no-op)");
+        } else if (key == "default_time_to_live") {
+            assert_not_implemented("default_time_to_live is not implemented");
+        } else if (key == "bloom_filter_fp_chance" || key == "caching"    || key == "compaction" ||
+                   key == "compression"             || key == "crc_check_chance"                 ||
+                   key == "memtable_flush_period_in_ms"                                          ||
+                   key == "min_index_interval"      || key == "max_index_interval"               ||
+                   key == "extensions") {
+            // known single-node-relevant tuning options — pending implementation
+            assert_true(engine.single_node, "table option not supported in non-single-node mode");
+            log::native_info("warning: table option not yet implemented, ignoring");
+        } else {
+            return false;
+        }
+        return true;
+    }
+
+    // Returns false if any option is unrecognized.
+    static bool handle_table_options(const CreateTable::TableOptions& opts, Engine& engine) {
+        bool valid = true;
+        for (const auto& opt : opts.value) {
+            visit(opt, [&engine, &valid](const auto& o) {
+                using O = RemoveCVRef<decltype(o)>;
+                if constexpr (SameAs<O, CreateTable::CompactStorage>) {
+                    // deprecated legacy wire format, no data model meaning
+                    assert_true(engine.single_node, "COMPACT STORAGE not supported in non-single-node mode");
+                    log::native_info("ignoring COMPACT STORAGE (single-node no-op)");
+                } else if constexpr (SameAs<O, CreateTable::ClusteringOrder>) {
+                    // affects on-disk clustering key sort direction — needs implementation
+                    log::native_info("warning: CLUSTERING ORDER BY not yet implemented, using default ASC");
+                } else if constexpr (SameAs<O, OptionPair>) {
+                    if (!handle_table_option_pair(o, engine)) valid = false;
+                } else {
+                    static_assert(!SameAs<O, O>, "unhandled table option variant");
+                }
+            });
+            if (!valid) break;
+        }
+        return valid;
+    }
+
     static coroutine::Task<ExecutionResult> execute_inside_transaction(Engine& engine, const Statement& statement) {
         co_return co_await visit(statement.value, [&engine](const auto& stmt) -> coroutine::Task<ExecutionResult> {
             using T = RemoveCVRef<decltype(stmt)>;
@@ -231,6 +282,9 @@ namespace cql::engine {
                     co_return (stmt.if_not_exists) ? create_void_success() : create_table_already_exists(ks_name, stmt.name.table_name);
                 }
 
+                if (!handle_table_options(stmt.options, engine))
+                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Unknown table option"};
+
                 auto tbl = (co_await schema::create_table(engine.schema, *ks, stmt)).value;
                 if (tbl == nullptr) {
                     co_return create_server_error("Failed to create table");
@@ -256,7 +310,16 @@ namespace cql::engine {
                     co_return (stmt.if_exists) ? create_void_success() : create_keyspace_not_found(stmt.keyspace);
                 }
 
-                assert_true_not_implemented(stmt.options.identifier_values.length == 0, "ALTER KEYSPACE WITH options are not implemented");
+                for (const auto& opt : stmt.options.identifier_values) {
+                    String8 key = opt.first;
+                    if (key == "replication" || key == "durable_writes") {
+                        // multi-node: replication strategy/factor and commit-log durability
+                        assert_true(engine.single_node, "ALTER KEYSPACE WITH option not supported in non-single-node mode");
+                        log::native_info("ignoring keyspace option (single-node no-op)");
+                    } else {
+                        co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Unknown keyspace option"};
+                    }
+                }
 
                 co_return create_schema_changed(stmt.keyspace);
             } else if constexpr (SameAs<T, DropKeyspace>) {
@@ -454,7 +517,14 @@ namespace cql::engine {
                     .select_col_indices = move(select_col_indices),
                 };
             } else if constexpr (SameAs<T, Insert>) { ZoneScopedN("engine::insert");
-                assert_true_not_implemented(stmt.using_parameters.length == 0, "INSERT USING TIMESTAMP/TTL is not implemented");
+                for (const auto& param : stmt.using_parameters) {
+                    if (param.kind == UpdateParameter::Kind::TIMESTAMP) {
+                        assert_true(engine.single_node, "INSERT USING TIMESTAMP not supported in non-single-node mode");
+                        log::native_info("ignoring INSERT USING TIMESTAMP (single-node no-op)");
+                    } else if (param.kind == UpdateParameter::Kind::TTL) {
+                        assert_not_implemented("INSERT USING TTL is not implemented");
+                    }
+                }
                 assert_true(static_cast<bool>(stmt.insert_clause), "missing insert clause, this should never happen");
 
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
@@ -561,7 +631,14 @@ namespace cql::engine {
                     }
                 });
             } else if constexpr (SameAs<T, Update>) { ZoneScopedN("engine::update");
-                assert_true_not_implemented(stmt.using_parameters.length == 0, "UPDATE USING TIMESTAMP/TTL is not implemented");
+                for (const auto& param : stmt.using_parameters) {
+                    if (param.kind == UpdateParameter::Kind::TIMESTAMP) {
+                        assert_true(engine.single_node, "UPDATE USING TIMESTAMP not supported in non-single-node mode");
+                        log::native_info("ignoring UPDATE USING TIMESTAMP (single-node no-op)");
+                    } else if (param.kind == UpdateParameter::Kind::TTL) {
+                        assert_not_implemented("UPDATE USING TTL is not implemented");
+                    }
+                }
                 assert_true_not_implemented(!stmt.if_, "UPDATE IF is not implemented");
 
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
@@ -728,7 +805,14 @@ namespace cql::engine {
 
                 co_return create_void_success();
             } else if constexpr (SameAs<T, Delete>) { ZoneScopedN("engine::delete");
-                assert_true_not_implemented(stmt.using_parameters.length == 0, "DELETE USING TIMESTAMP is not implemented");
+                for (const auto& param : stmt.using_parameters) {
+                    if (param.kind == UpdateParameter::Kind::TIMESTAMP) {
+                        assert_true(engine.single_node, "DELETE USING TIMESTAMP not supported in non-single-node mode");
+                        log::native_info("ignoring DELETE USING TIMESTAMP (single-node no-op)");
+                    } else if (param.kind == UpdateParameter::Kind::TTL) {
+                        assert_not_implemented("DELETE USING TTL is not implemented");
+                    }
+                }
                 assert_true_not_implemented(!stmt.if_, "DELETE IF is not implemented");
                 assert_true_not_implemented(stmt.selections.length == 0, "column-level DELETE is not implemented");
 
@@ -810,8 +894,11 @@ namespace cql::engine {
                         assert_true_not_implemented(false, "ALTER TABLE ALTER is not implemented");
                         co_return ExecutionResult{};
                     } else if constexpr (SameAs<I, Options>) {
-                        assert_true_not_implemented(false, "ALTER TABLE ... WITH options are not implemented");
-                        co_return ExecutionResult{};
+                        for (const auto& opt : instr.identifier_values) {
+                            if (!handle_table_option_pair(opt, engine))
+                                co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Unknown table option"};
+                        }
+                        co_return create_schema_changed(ks_name, stmt.table.table_name);
                     } else {
                         static_assert(!SameAs<I,I>);
                         co_return ExecutionResult{};

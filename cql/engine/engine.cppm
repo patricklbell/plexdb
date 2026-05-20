@@ -52,6 +52,7 @@ export namespace cql::engine {
         schema::Schema schema;
         AutoString8 current_keyspace{""};
         MapFixedSentinel<U64, PreparedEntry, MAX_PREPARED_STATEMENTS> prepared_cache;
+        bool single_node = true;
     };
 
     coroutine::Task<> init(Engine& engine, Pager* in_pager);

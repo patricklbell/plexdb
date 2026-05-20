@@ -1,4 +1,3 @@
-- avoid allocation in iterator
 - Pager cache: consider page handle design as alternative to transaction-scoped arena cache
     - rpage/rwpage return a RAII handle that pins the cache entry; handle destruction releases the pin
     - On slot collision with a pinned entry, spill to arena overflow instead of evicting
@@ -249,7 +248,6 @@ These are no-ops for single-node: just need to accept and ignore the `WITH` clau
 **High-value features (each unblocks a whole test category):**
 - Static columns (24 hits) — requires a separate per-partition blob, not per-row
 - `WITH` options on `CREATE`/`ALTER TABLE` (17 hits combined) — single-node can accept and ignore
-- `frozen<T>` in parser (16 hits) — parser needs to unwrap the type
 - Collection literals in INSERT (15 hits) — list/set/map storage in blob format
 - Collection bind params (14 hits) — native protocol deserialization of collection types
 
