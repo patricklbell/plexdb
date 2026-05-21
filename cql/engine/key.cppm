@@ -174,9 +174,9 @@ export namespace cql::key {
         assert_true(tbl.partition_key_col_indices.length >= 1, "table has no partition key");
         U64 col_idx = tbl.partition_key_col_indices[0];
         const schema::Column& col = tbl.cols[col_idx];
-        assert_true(col.type.ctype == CollectionType::basic, "partition key must be a basic type");
+        assert_true(type_matches_tag<Type::Basic>(col.type.variants), "partition key must be a basic type");
         DynamicArray<U8> out;
-        append_component(out, val, col.type.basic.value_dtype, false);
+        append_component(out, val, get<Type::Basic>(col.type.variants).value_dtype, false);
         return out;
     }
 
@@ -191,8 +191,8 @@ export namespace cql::key {
         for (U64 i = 0; i < tbl.partition_key_col_indices.length; i++) {
             U64 col_idx = tbl.partition_key_col_indices[i];
             const schema::Column& col = tbl.cols[col_idx];
-            assert_true(col.type.ctype == CollectionType::basic, "partition key must be a basic type");
-            append_component(out, partition_vals[i], col.type.basic.value_dtype, composite);
+            assert_true(type_matches_tag<Type::Basic>(col.type.variants), "partition key must be a basic type");
+            append_component(out, partition_vals[i], get<Type::Basic>(col.type.variants).value_dtype, composite);
         }
         return out;
     }
@@ -202,9 +202,9 @@ export namespace cql::key {
         assert_true(tbl.clustering_key_col_indices.length >= 1, "table has no clustering key");
         U64 col_idx = tbl.clustering_key_col_indices[0];
         const schema::Column& col = tbl.cols[col_idx];
-        assert_true(col.type.ctype == CollectionType::basic, "clustering key must be a basic type");
+        assert_true(type_matches_tag<Type::Basic>(col.type.variants), "clustering key must be a basic type");
         DynamicArray<U8> out;
-        append_component(out, val, col.type.basic.value_dtype, false);
+        append_component(out, val, get<Type::Basic>(col.type.variants).value_dtype, false);
         return out;
     }
 
@@ -217,8 +217,8 @@ export namespace cql::key {
         for (U64 i = 0; i < tbl.clustering_key_col_indices.length; i++) {
             U64 col_idx = tbl.clustering_key_col_indices[i];
             const schema::Column& col = tbl.cols[col_idx];
-            assert_true(col.type.ctype == CollectionType::basic, "clustering key must be a basic type");
-            append_component(out, clustering_vals[i], col.type.basic.value_dtype, composite);
+            assert_true(type_matches_tag<Type::Basic>(col.type.variants), "clustering key must be a basic type");
+            append_component(out, clustering_vals[i], get<Type::Basic>(col.type.variants).value_dtype, composite);
         }
         return out;
     }

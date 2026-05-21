@@ -183,8 +183,8 @@ namespace cql::native {
                     U64 bind_spec_idx = bind_specs.length;
                     for (U64 idx = 0; idx < bind_specs.length; idx++) {
                         if (bind_specs[idx].name == name) {
-                            assert_true_not_implemented(bind_specs[idx].type.ctype == CollectionType::basic, "collection type bind parameters are not implemented");
-                            dtype = bind_specs[idx].type.basic.value_dtype;
+                            assert_true_not_implemented(type_matches_tag<Type::Basic>(bind_specs[idx].type.variants), "collection type bind parameters are not implemented");
+                            dtype = get<Type::Basic>(bind_specs[idx].type.variants).value_dtype;
                             bind_spec_idx = idx;
                             break;
                         }
@@ -195,8 +195,8 @@ namespace cql::native {
             } else {
                 for (U16 bind_spec_idx = 0; bind_spec_idx < n_values && p < end; bind_spec_idx++) {
                     assert_true_not_implemented(bind_spec_idx < bind_specs.length, "more positional bind values than expected - error handling is not implemented");
-                    assert_true_not_implemented(bind_specs[bind_spec_idx].type.ctype == CollectionType::basic, "collection type bind parameters are not implemented");
-                    BasicType dtype = bind_specs[bind_spec_idx].type.basic.value_dtype;
+                    assert_true_not_implemented(type_matches_tag<Type::Basic>(bind_specs[bind_spec_idx].type.variants), "collection type bind parameters are not implemented");
+                    BasicType dtype = get<Type::Basic>(bind_specs[bind_spec_idx].type.variants).value_dtype;
                     push_back(bound_values, read_cql_value_as_constant(p, end, dtype));
                 }
             }
@@ -336,27 +336,24 @@ namespace cql::native {
     }
 
     void append_type_codes_option(Frame& f, Type cdtype) {
-        switch (cdtype.ctype) {
-            case CollectionType::basic:{
-                append_be_u16(f, basic_type_to_type_code(cdtype.basic.value_dtype));
-            }break;
-            case CollectionType::list:{
+        visit(cdtype.variants, [&f](const auto& v) {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, Type::Basic>) {
+                append_be_u16(f, basic_type_to_type_code(v.value_dtype));
+            } else if constexpr (SameAs<T, Type::List>) {
                 append_be_u16(f, type_codes::List);
-                append_be_u16(f, basic_type_to_type_code(cdtype.list.element.basic));
-            }break;
-            case CollectionType::set:{
+                append_be_u16(f, basic_type_to_type_code(get<BasicType>(v.element)));
+            } else if constexpr (SameAs<T, Type::Set>) {
                 append_be_u16(f, type_codes::Set);
-                append_be_u16(f, basic_type_to_type_code(cdtype.set.key.basic));
-            }break;
-            case CollectionType::map:{
+                append_be_u16(f, basic_type_to_type_code(get<BasicType>(v.key)));
+            } else if constexpr (SameAs<T, Type::Map>) {
                 append_be_u16(f, type_codes::Map);
-                append_be_u16(f, basic_type_to_type_code(cdtype.map.key.basic));
-                append_be_u16(f, basic_type_to_type_code(cdtype.map.value.basic));
-            }break;
-            case CollectionType::vector:{
+                append_be_u16(f, basic_type_to_type_code(get<BasicType>(v.key)));
+                append_be_u16(f, basic_type_to_type_code(get<BasicType>(v.value)));
+            } else if constexpr (SameAs<T, Type::Vector>) {
                 assert_not_implemented("native protocol type code for vector collection type is not implemented");
-            }break;
-        }
+            }
+        });
     }
 
     void append_cql_value(Frame& f, const ColumnValue& value, Type cdtype) {
@@ -366,47 +363,47 @@ namespace cql::native {
             if constexpr (SameAs<T, Null>) {
                 append_be_s32(f, -1);
             } else if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
-                assert_true(cdtype.ctype == CollectionType::basic, "static value type requires ctype basic, this should never happen");
-                append_cql_basic_element(f, cdtype.basic.value_dtype, v);
+                assert_true(type_matches_tag<Type::Basic>(cdtype.variants), "static value type requires ctype basic, this should never happen");
+                append_cql_basic_element(f, get<Type::Basic>(cdtype.variants).value_dtype, v);
             } else if constexpr (IsCqlDM<T>) {
-                assert_true(cdtype.ctype == CollectionType::map, "static value type requires ctype map, this should never happen");
+                assert_true(type_matches_tag<Type::Map>(cdtype.variants), "static value type requires ctype map, this should never happen");
+                const auto& m = get<Type::Map>(cdtype.variants);
                 U64 pair_count = length(v);
                 S32 body = 4;
                 for (auto& it : v) {
-                    body += 4 + basic_element_byte_size(cdtype.map.key.basic, it.first);
-                    body += 4 + basic_element_byte_size(cdtype.map.value.basic, it.second);
+                    body += 4 + basic_element_byte_size(get<BasicType>(m.key), it.first);
+                    body += 4 + basic_element_byte_size(get<BasicType>(m.value), it.second);
                 }
                 append_be_s32(f, body);
                 append_be_s32(f, S32(pair_count));
                 for (auto& it : v) {
-                    append_cql_basic_element(f, cdtype.map.key.basic, it.first);
-                    append_cql_basic_element(f, cdtype.map.value.basic, it.second);
+                    append_cql_basic_element(f, get<BasicType>(m.key), it.first);
+                    append_cql_basic_element(f, get<BasicType>(m.value), it.second);
                 }
             } else if constexpr (IsCqlDS<T>) {
-                assert_true(cdtype.ctype == CollectionType::set, "static value type requires ctype set, this should never happen");
+                assert_true(type_matches_tag<Type::Set>(cdtype.variants), "static value type requires ctype set, this should never happen");
+                const auto key_dtype = get<BasicType>(get<Type::Set>(cdtype.variants).key);
                 U64 elem_count = length(v);
                 S32 body = 4;
-                for (auto& e : v) body += 4 + basic_element_byte_size(cdtype.set.key.basic, e);
+                for (auto& e : v) body += 4 + basic_element_byte_size(key_dtype, e);
                 append_be_s32(f, body);
                 append_be_s32(f, S32(elem_count));
-                for (auto& e : v) append_cql_basic_element(f, cdtype.set.key.basic, e);
+                for (auto& e : v) append_cql_basic_element(f, key_dtype, e);
             } else if constexpr (IsCqlDA<T>) {
+                bool is_vec = type_matches_tag<Type::Vector>(cdtype.variants);
                 assert_true(
-                    cdtype.ctype == CollectionType::list || cdtype.ctype == CollectionType::vector,
+                    type_matches_tag<Type::List>(cdtype.variants) || is_vec,
                     "static value type requires ctype list/vector, this should never happen"
                 );
-                U64 elem_count = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.count : v.length;
+                U64 elem_count = is_vec ? get<Type::Vector>(cdtype.variants).count : v.length;
+                const auto elem_dtype = is_vec ? get<BasicType>(get<Type::Vector>(cdtype.variants).element) : get<BasicType>(get<Type::List>(cdtype.variants).element);
                 S32 body = 4;
-                for (U64 i = 0; i < elem_count; ++i) {
-                    auto dtype = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element.basic : cdtype.list.element.basic;
-                    body += 4 + basic_element_byte_size(dtype, v[i]);
-                }
+                for (U64 i = 0; i < elem_count; ++i)
+                    body += 4 + basic_element_byte_size(elem_dtype, v[i]);
                 append_be_s32(f, body);
                 append_be_s32(f, S32(elem_count));
-                for (U64 i = 0; i < elem_count; ++i) {
-                    auto dtype = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element.basic : cdtype.list.element.basic;
-                    append_cql_basic_element(f, dtype, v[i]);
-                }
+                for (U64 i = 0; i < elem_count; ++i)
+                    append_cql_basic_element(f, elem_dtype, v[i]);
             } else {
                 static_assert(!SameAs<T, T>, "missing implementation for read value");
             }

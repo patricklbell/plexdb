@@ -57,7 +57,7 @@ namespace cql::engine {
         U64               ncols;
     };
 
-    static constexpr BuiltinCol sys_local_cols[] = {
+    static const BuiltinCol sys_local_cols[] = {
         {"key",                     create_basic(BasicType::text), "partition_key",  0},
         {"bootstrapped",            create_basic(BasicType::text), "regular",       -1},
         {"broadcast_address",       create_basic(BasicType::inet), "regular",       -1},
@@ -77,7 +77,7 @@ namespace cql::engine {
         {"schema_version",          create_basic(BasicType::uuid), "regular",       -1},
         {"tokens",                  create_set  (BasicType::text),    "regular",    -1},
     };
-    static constexpr BuiltinCol sys_peers_cols[] = {
+    static const BuiltinCol sys_peers_cols[] = {
         {"peer",            create_basic(BasicType::inet), "partition_key",  0},
         {"data_center",     create_basic(BasicType::text), "regular",       -1},
         {"host_id",         create_basic(BasicType::uuid), "regular",       -1},
@@ -88,7 +88,7 @@ namespace cql::engine {
         {"schema_version",  create_basic(BasicType::uuid), "regular",       -1},
         {"tokens",          create_set  (BasicType::text),    "regular",       -1},
     };
-    static constexpr BuiltinCol sys_peers_v2_cols[] = {
+    static const BuiltinCol sys_peers_v2_cols[] = {
         {"peer",            create_basic(BasicType::text), "partition_key",  0},
         {"peer_port",       create_basic(BasicType::int_), "regular",       -1},
         {"data_center",     create_basic(BasicType::text), "regular",       -1},
@@ -102,12 +102,12 @@ namespace cql::engine {
         {"schema_version",  create_basic(BasicType::uuid), "regular",       -1},
         {"tokens",          create_basic(BasicType::text), "regular",       -1},
     };
-    static constexpr BuiltinCol ss_keyspaces_cols[] = {
+    static const BuiltinCol ss_keyspaces_cols[] = {
         {"keyspace_name",  create_basic(BasicType::text),                     "partition_key", 0},
         {"durable_writes", create_basic(BasicType::boolean),                  "regular",      -1},
         {"replication",    create_map  (BasicType::text, BasicType::text),    "regular",      -1},
     };
-    static constexpr BuiltinCol ss_tables_cols[] = {
+    static const BuiltinCol ss_tables_cols[] = {
         {"keyspace_name",               create_basic(BasicType::text),                  "partition_key",   0},
         {"table_name",                  create_basic(BasicType::text),                  "clustering",      0},
         {"bloom_filter_fp_chance",      create_basic(BasicType::double_),               "regular",        -1},
@@ -128,7 +128,7 @@ namespace cql::engine {
         {"read_repair_chance",          create_basic(BasicType::double_),               "regular",        -1},
         {"speculative_retry",           create_basic(BasicType::text),                  "regular",        -1},
     };
-    static constexpr BuiltinCol ss_columns_cols[] = {
+    static const BuiltinCol ss_columns_cols[] = {
         {"keyspace_name",    create_basic(BasicType::text), "partition_key", 0},
         {"table_name",       create_basic(BasicType::text), "clustering",    0},
         {"column_name",      create_basic(BasicType::text), "clustering",    1},
@@ -137,7 +137,7 @@ namespace cql::engine {
         {"position",         create_basic(BasicType::int_), "regular",      -1},
         {"type",             create_basic(BasicType::text), "regular",      -1},
     };
-    static constexpr BuiltinCol ss_views_cols[] = {
+    static const BuiltinCol ss_views_cols[] = {
         {"keyspace_name",               create_basic(BasicType::text),                  "partition_key",  0},
         {"view_name",                   create_basic(BasicType::text),                  "clustering",     0},
         {"base_table_id",               create_basic(BasicType::uuid),                  "regular",       -1},
@@ -159,20 +159,20 @@ namespace cql::engine {
         {"speculative_retry",           create_basic(BasicType::text),                  "regular",       -1},
         {"where_clause",                create_basic(BasicType::text),                  "regular",       -1},
     };
-    static constexpr BuiltinCol ss_indexes_cols[] = {
+    static const BuiltinCol ss_indexes_cols[] = {
         {"keyspace_name", create_basic(BasicType::text),                  "partition_key", 0},
         {"table_name",    create_basic(BasicType::text),                  "clustering",    0},
         {"index_name",    create_basic(BasicType::text),                  "clustering",    1},
         {"kind",          create_basic(BasicType::text),                  "regular",      -1},
         {"options",       create_map  (BasicType::text, BasicType::text), "regular",      -1},
     };
-    static constexpr BuiltinCol ss_triggers_cols[] = {
+    static const BuiltinCol ss_triggers_cols[] = {
         {"keyspace_name", create_basic(BasicType::text),                  "partition_key",  0},
         {"table_name",    create_basic(BasicType::text),                  "clustering",     0},
         {"trigger_name",  create_basic(BasicType::text),                  "clustering",     1},
         {"options",       create_map  (BasicType::text, BasicType::text), "regular",       -1},
     };
-    static constexpr BuiltinCol ss_dropped_cols[] = {
+    static const BuiltinCol ss_dropped_cols[] = {
         {"keyspace_name", create_basic(BasicType::text),      "partition_key", 0},
         {"table_name",    create_basic(BasicType::text),      "clustering",    0},
         {"column_name",   create_basic(BasicType::text),      "clustering",    1},
@@ -180,13 +180,13 @@ namespace cql::engine {
         {"kind",          create_basic(BasicType::text),      "regular",      -1},
         {"type",          create_basic(BasicType::text),      "regular",      -1},
     };
-    static constexpr BuiltinCol ss_types_cols[] = {
+    static const BuiltinCol ss_types_cols[] = {
         {"keyspace_name", create_basic(BasicType::text),   "partition_key",  0},
         {"type_name",     create_basic(BasicType::text),   "clustering",     0},
         {"field_names",   create_list (BasicType::text),   "regular",       -1},
         {"field_types",   create_list (BasicType::text),   "regular",       -1},
     };
-    static constexpr BuiltinCol ss_functions_cols[] = {
+    static const BuiltinCol ss_functions_cols[] = {
         {"keyspace_name",        create_basic(BasicType::text),    "partition_key", 0},
         {"function_name",        create_basic(BasicType::text),    "clustering",    0},
         {"argument_types",       create_list (BasicType::text),    "clustering",    1},
@@ -196,7 +196,7 @@ namespace cql::engine {
         {"language",             create_basic(BasicType::text),    "regular",      -1},
         {"return_type",          create_basic(BasicType::text),    "regular",      -1},
     };
-    static constexpr BuiltinCol ss_aggregates_cols[] = {
+    static const BuiltinCol ss_aggregates_cols[] = {
         {"keyspace_name",  create_basic(BasicType::text),   "partition_key",  0},
         {"aggregate_name", create_basic(BasicType::text),   "clustering",     0},
         {"argument_types", create_list (BasicType::text),   "clustering",     1},
@@ -208,7 +208,7 @@ namespace cql::engine {
     };
 
     #define BTBL(ks, tbl, arr) BuiltinTbl{ks, tbl, arr, sizeof(arr)/sizeof((arr)[0])}
-    static constexpr BuiltinTbl builtin_tables[] = {
+    static const BuiltinTbl builtin_tables[] = {
         BTBL("system",        "local",           sys_local_cols),
         BTBL("system",        "peers",           sys_peers_cols),
         BTBL("system",        "peers_v2",        sys_peers_v2_cols),

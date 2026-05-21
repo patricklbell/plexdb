@@ -12,6 +12,35 @@ import plexdb.coroutine;
 using namespace plexdb;
 
 namespace cql::schema {
+    static PackedType pack_type(const Type& t) {
+        return visit(t.variants, [](const auto& v) -> PackedType {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, Type::Basic>)
+                return PackedType{0, static_cast<U8>(v.value_dtype), 0, 0, false};
+            else if constexpr (SameAs<T, Type::List>)
+                return PackedType{1, static_cast<U8>(get<BasicType>(v.element)), 0, 0, v.frozen};
+            else if constexpr (SameAs<T, Type::Set>)
+                return PackedType{2, static_cast<U8>(get<BasicType>(v.key)), 0, 0, v.frozen};
+            else if constexpr (SameAs<T, Type::Map>)
+                return PackedType{3, static_cast<U8>(get<BasicType>(v.key)), static_cast<U8>(get<BasicType>(v.value)), 0, v.frozen};
+            else {
+                static_assert(SameAs<T, Type::Vector>, "unhandled Type variant in pack_type");
+                return PackedType{4, static_cast<U8>(get<BasicType>(v.element)), 0, v.count, v.frozen};
+            }
+        });
+    }
+
+    static Type unpack_type(PackedType p) {
+        auto bt = [](U8 b) { return static_cast<BasicType>(b); };
+        switch (p.index) {
+            case 0:  return create_basic(bt(p.elem_bt));
+            case 1:  { Type t; t.variants = Type::List{ElementType{bt(p.elem_bt)}, p.frozen}; return t; }
+            case 2:  { Type t; t.variants = Type::Set{ElementType{bt(p.elem_bt)}, p.frozen}; return t; }
+            case 3:  { Type t; t.variants = Type::Map{ElementType{bt(p.elem_bt)}, ElementType{bt(p.val_bt)}, p.frozen}; return t; }
+            default: { Type t; t.variants = Type::Vector{ElementType{bt(p.elem_bt)}, p.vec_count, p.frozen}; return t; }
+        }
+    }
+
     coroutine::Task<void> get_str(blob::BlobDynamicPaged& blob, const AutoString8& str, U64* offset) {
         co_await blob::get(blob, reinterpret_cast<U8*>(str.c_str), str.length, *offset);
         *offset += str.length;
@@ -129,7 +158,7 @@ namespace cql::schema {
                     Column col {
                         .tombstone = col_storage.header.tombstone,
                         .name = col_storage.name,
-                        .type = col_storage.header.type,
+                        .type = unpack_type(col_storage.header.type),
                         .key_kind = col_storage.header.key_kind,
                         .key_position = col_storage.header.key_position,
                     };
@@ -555,7 +584,7 @@ namespace cql::schema {
             .header = ColumnHeader{
                 .tombstone = false,
                 .name_length = create.name.identifier.length,
-                .type = create.type,
+                .type = pack_type(create.type),
                 .table_idx = tbl.idx,
                 .key_kind = key_kind,
                 .key_position = key_position,
@@ -576,7 +605,7 @@ namespace cql::schema {
         Column col {
             .tombstone = col_storage_ref.header.tombstone,
             .name = col_storage_ref.name,
-            .type = col_storage_ref.header.type,
+            .type = unpack_type(col_storage_ref.header.type),
             .key_kind = key_kind,
             .key_position = key_position,
         };

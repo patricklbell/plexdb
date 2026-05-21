@@ -16,8 +16,10 @@ export namespace cql {
     struct NestedColumnValue;  // forward declare for recursive collection types
 
     // @todo support UDTs
-    using ColumnValueBasicTypes = TypeList<AutoString8, S64, S32, S16, U8, F64, F32, Blob, UUID,
-        Inet, VarInt, Decimal, Duration>;
+    using ColumnValueBasicTypes = TypeList<
+        AutoString8, S64, S32, S16, U8, F64, F32,
+        Blob, UUID, Inet, VarInt, Decimal, Duration
+    >;
     using ColumnValueTypes = Concat<
         ColumnValueBasicTypes,
         ExpandDynamicArray<ColumnValueBasicTypes>,
@@ -225,17 +227,18 @@ export namespace cql::io {
     }
 
     ColumnValue read_column_value(const Read auto& r, const Type& cdtype) {
-        switch (cdtype.ctype) {
-            case CollectionType::basic:
-                return read_column_value(r, cdtype.basic.value_dtype);
-            case CollectionType::list: {
+        return visit(cdtype.variants, [&r](const auto& v) -> ColumnValue {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, Type::Basic>) {
+                return read_column_value(r, v.value_dtype);
+            } else if constexpr (SameAs<T, Type::List>) {
                 U64 length;
                 r(reinterpret_cast<U8*>(&length), sizeof(length));
-                if (cdtype.list.element.is_collection) {
+                if (type_matches_tag<Type>(v.element)) {
                     DynamicArray<NestedColumnValue> arr{};
                     for (U64 i = 0; i < length; i++) {
                         NestedColumnValue nv;
-                        nv.value = read_column_value(r, *cdtype.list.element.nested);
+                        nv.value = read_column_value(r, get<Type>(v.element));
                         push_back(arr, move(nv));
                     }
                     return {move(arr)};
@@ -243,10 +246,10 @@ export namespace cql::io {
                 auto read_arr = [&]<typename El>() -> ColumnValue {
                     DynamicArray<El> arr{};
                     for (U64 i = 0; i < length; i++)
-                        push_back(arr, get<El>(read_column_value(r, cdtype.list.element.basic)));
+                        push_back(arr, get<El>(read_column_value(r, get<BasicType>(v.element))));
                     return {move(arr)};
                 };
-                switch (cdtype.list.element.basic) {
+                switch (get<BasicType>(v.element)) {
                     case BasicType::text:       return read_arr.template operator()<AutoString8>();
                     case BasicType::smallint:   return read_arr.template operator()<S16>();
                     case BasicType::int_:       return read_arr.template operator()<S32>();
@@ -270,24 +273,22 @@ export namespace cql::io {
                     case BasicType::decimal:    return read_arr.template operator()<Decimal>();
                     case BasicType::duration:   return read_arr.template operator()<Duration>();
                 }
-
                 assert_true(false, "invalid basic type for list read");
                 return {};
-            } break;
-            case CollectionType::set: {
+            } else if constexpr (SameAs<T, Type::Set>) {
                 U64 length;
                 r(reinterpret_cast<U8*>(&length), sizeof(length));
-                if (cdtype.set.key.is_collection) {
+                if (type_matches_tag<Type>(v.key)) {
                     assert_not_implemented("reading nested-element set is not implemented");
                     return {};
                 }
                 auto read_set = [&]<typename K>() -> ColumnValue {
                     DynamicSet<K> s{};
                     for (U64 i = 0; i < length; i++)
-                        insert(s, get<K>(read_column_value(r, cdtype.set.key.basic)));
+                        insert(s, get<K>(read_column_value(r, get<BasicType>(v.key))));
                     return {move(s)};
                 };
-                switch (cdtype.set.key.basic) {
+                switch (get<BasicType>(v.key)) {
                     case BasicType::text:       return read_set.template operator()<AutoString8>();
                     case BasicType::smallint:   return read_set.template operator()<S16>();
                     case BasicType::int_:       return read_set.template operator()<S32>();
@@ -311,23 +312,21 @@ export namespace cql::io {
                     case BasicType::decimal:    return read_set.template operator()<Decimal>();
                     case BasicType::duration:   return read_set.template operator()<Duration>();
                 }
-
                 assert_true(false, "invalid basic type for set read");
                 return {};
-            } break;
-            case CollectionType::map: {
+            } else if constexpr (SameAs<T, Type::Map>) {
                 U64 length;
                 r(reinterpret_cast<U8*>(&length), sizeof(length));
-                if (cdtype.map.key.is_collection || cdtype.map.value.is_collection) {
+                if (type_matches_tag<Type>(v.key) || type_matches_tag<Type>(v.value)) {
                     assert_not_implemented("reading nested-element map is not implemented");
                     return {};
                 }
                 auto read_map_kv = [&]<typename K, typename V>() -> ColumnValue {
                     DynamicMap<K, V> m{};
                     for (U64 i = 0; i < length; i++) {
-                        K k = get<K>(read_column_value(r, cdtype.map.key.basic));
-                        V v = get<V>(read_column_value(r, cdtype.map.value.basic));
-                        insert(m, move(k), move(v));
+                        K k = get<K>(read_column_value(r, get<BasicType>(v.key)));
+                        V val = get<V>(read_column_value(r, get<BasicType>(v.value)));
+                        insert(m, move(k), move(val));
                     }
                     return {move(m)};
                 };
@@ -359,40 +358,40 @@ export namespace cql::io {
                     assert_true(false, "invalid basic type for map value read");
                     return {};
                 };
-                switch (cdtype.map.key.basic) {
-                    case BasicType::text:       return read_map_v.template operator()<AutoString8>(cdtype.map.value.basic);
-                    case BasicType::smallint:   return read_map_v.template operator()<S16>(cdtype.map.value.basic);
-                    case BasicType::int_:       return read_map_v.template operator()<S32>(cdtype.map.value.basic);
+                BasicType map_val_bt = get<BasicType>(v.value);
+                switch (get<BasicType>(v.key)) {
+                    case BasicType::text:       return read_map_v.template operator()<AutoString8>(map_val_bt);
+                    case BasicType::smallint:   return read_map_v.template operator()<S16>(map_val_bt);
+                    case BasicType::int_:       return read_map_v.template operator()<S32>(map_val_bt);
                     case BasicType::bigint:
                     case BasicType::timestamp:
                     case BasicType::counter:
-                    case BasicType::time:       return read_map_v.template operator()<S64>(cdtype.map.value.basic);
-                    case BasicType::boolean:    return read_map_v.template operator()<U8>(cdtype.map.value.basic);
-                    case BasicType::float_:     return read_map_v.template operator()<F32>(cdtype.map.value.basic);
-                    case BasicType::double_:    return read_map_v.template operator()<F64>(cdtype.map.value.basic);
+                    case BasicType::time:       return read_map_v.template operator()<S64>(map_val_bt);
+                    case BasicType::boolean:    return read_map_v.template operator()<U8>(map_val_bt);
+                    case BasicType::float_:     return read_map_v.template operator()<F32>(map_val_bt);
+                    case BasicType::double_:    return read_map_v.template operator()<F64>(map_val_bt);
                     case BasicType::uuid:
-                    case BasicType::timeuuid:   return read_map_v.template operator()<UUID>(cdtype.map.value.basic);
-                    case BasicType::tinyint:    return read_map_v.template operator()<U8>(cdtype.map.value.basic);
-                    case BasicType::date:       return read_map_v.template operator()<S32>(cdtype.map.value.basic);
+                    case BasicType::timeuuid:   return read_map_v.template operator()<UUID>(map_val_bt);
+                    case BasicType::tinyint:    return read_map_v.template operator()<U8>(map_val_bt);
+                    case BasicType::date:       return read_map_v.template operator()<S32>(map_val_bt);
                     case BasicType::ascii:
-                    case BasicType::varchar:    return read_map_v.template operator()<AutoString8>(cdtype.map.value.basic);
-                    case BasicType::blob:       return read_map_v.template operator()<Blob>(cdtype.map.value.basic);
-                    case BasicType::hex:        return read_map_v.template operator()<Blob>(cdtype.map.value.basic);
-                    case BasicType::inet:       return read_map_v.template operator()<Inet>(cdtype.map.value.basic);
-                    case BasicType::varint:     return read_map_v.template operator()<VarInt>(cdtype.map.value.basic);
-                    case BasicType::decimal:    return read_map_v.template operator()<Decimal>(cdtype.map.value.basic);
-                    case BasicType::duration:   return read_map_v.template operator()<Duration>(cdtype.map.value.basic);
+                    case BasicType::varchar:    return read_map_v.template operator()<AutoString8>(map_val_bt);
+                    case BasicType::blob:       return read_map_v.template operator()<Blob>(map_val_bt);
+                    case BasicType::hex:        return read_map_v.template operator()<Blob>(map_val_bt);
+                    case BasicType::inet:       return read_map_v.template operator()<Inet>(map_val_bt);
+                    case BasicType::varint:     return read_map_v.template operator()<VarInt>(map_val_bt);
+                    case BasicType::decimal:    return read_map_v.template operator()<Decimal>(map_val_bt);
+                    case BasicType::duration:   return read_map_v.template operator()<Duration>(map_val_bt);
                 }
                 assert_true(false, "invalid basic type for map key read");
                 return {};
-            } break;
-            case CollectionType::vector:{
-                U64 count = cdtype.vector.count;
-                if (cdtype.vector.element.is_collection) {
+            } else {  // Vector
+                U64 count = v.count;
+                if (type_matches_tag<Type>(v.element)) {
                     DynamicArray<NestedColumnValue> arr{};
                     for (U64 i = 0; i < count; i++) {
                         NestedColumnValue nv;
-                        nv.value = read_column_value(r, *cdtype.vector.element.nested);
+                        nv.value = read_column_value(r, get<Type>(v.element));
                         push_back(arr, move(nv));
                     }
                     return {move(arr)};
@@ -400,10 +399,10 @@ export namespace cql::io {
                 auto read_vec = [&]<typename El>() -> ColumnValue {
                     DynamicArray<El> arr{};
                     for (U64 i = 0; i < count; i++)
-                        push_back(arr, get<El>(read_column_value(r, cdtype.vector.element.basic)));
+                        push_back(arr, get<El>(read_column_value(r, get<BasicType>(v.element))));
                     return {move(arr)};
                 };
-                switch (cdtype.vector.element.basic) {
+                switch (get<BasicType>(v.element)) {
                     case BasicType::text:       return read_vec.template operator()<AutoString8>();
                     case BasicType::smallint:   return read_vec.template operator()<S16>();
                     case BasicType::int_:       return read_vec.template operator()<S32>();
@@ -429,10 +428,8 @@ export namespace cql::io {
                 }
                 assert_true(false, "invalid basic type for vector read");
                 return {};
-            }break;
-        }
-        assert_true(false, "invalid collection type");
-        return {};
+            }
+        });
     }
 
     void read_column_mask(const Read auto& r, const MarkColumnActive auto& mark_active) {
@@ -488,14 +485,14 @@ export namespace cql::io {
 
     template<typename T>
     bool can_write_typed_basic_as_column_value(BasicType dtype) {
-        if constexpr (Either<RemoveCV<T>, AutoString8>) { return dtype == BasicType::text || dtype == BasicType::ascii || dtype == BasicType::varchar; }
-        else if constexpr (Either<RemoveCV<T>, S16>)    { return dtype == BasicType::smallint; }
-        else if constexpr (Either<RemoveCV<T>, S32>)    { return dtype == BasicType::int_ || dtype == BasicType::date; }
-        else if constexpr (Either<RemoveCV<T>, S64>)    { return dtype == BasicType::bigint || dtype == BasicType::timestamp || dtype == BasicType::counter || dtype == BasicType::time; }
-        else if constexpr (Either<RemoveCV<T>, U8>)     { return dtype == BasicType::boolean || dtype == BasicType::tinyint; }
-        else if constexpr (Either<RemoveCV<T>, F32>)    { return dtype == BasicType::float_; }
-        else if constexpr (Either<RemoveCV<T>, F64>)    { return dtype == BasicType::double_; }
-        else if constexpr (Either<RemoveCV<T>, UUID>)   { return dtype == BasicType::uuid || dtype == BasicType::timeuuid; }
+        if constexpr (Either<RemoveCV<T>, AutoString8>)   { return dtype == BasicType::text || dtype == BasicType::ascii || dtype == BasicType::varchar; }
+        else if constexpr (Either<RemoveCV<T>, S16>)      { return dtype == BasicType::smallint; }
+        else if constexpr (Either<RemoveCV<T>, S32>)      { return dtype == BasicType::int_ || dtype == BasicType::date; }
+        else if constexpr (Either<RemoveCV<T>, S64>)      { return dtype == BasicType::bigint || dtype == BasicType::timestamp || dtype == BasicType::counter || dtype == BasicType::time; }
+        else if constexpr (Either<RemoveCV<T>, U8>)       { return dtype == BasicType::boolean || dtype == BasicType::tinyint; }
+        else if constexpr (Either<RemoveCV<T>, F32>)      { return dtype == BasicType::float_; }
+        else if constexpr (Either<RemoveCV<T>, F64>)      { return dtype == BasicType::double_; }
+        else if constexpr (Either<RemoveCV<T>, UUID>)     { return dtype == BasicType::uuid || dtype == BasicType::timeuuid; }
         else if constexpr (Either<RemoveCV<T>, Null>)     { return true; }
         else if constexpr (Either<RemoveCV<T>, Blob>)     { return dtype == BasicType::blob || dtype == BasicType::hex; }
         else if constexpr (Either<RemoveCV<T>, Inet>)     { return dtype == BasicType::inet; }
@@ -513,16 +510,17 @@ export namespace cql::io {
     }
 
     bool can_cast_write_evaluated_as_column_value(const Evaluated& evaluated, const Type& cdtype) {
-        return visit(evaluated.value, [&](const auto& cv) -> bool {
+        return visit(evaluated.value, [&cdtype](const auto& cv) -> bool {
             using T = Decay<decltype(cv)>;
             if constexpr (SameAs<T, Constant>) {
-                return cdtype.ctype == CollectionType::basic && can_cast_write_constant_as_column_value(cv, cdtype.basic.value_dtype);
+                return type_matches_tag<Type::Basic>(cdtype.variants) &&
+                       can_cast_write_constant_as_column_value(cv, get<Type::Basic>(cdtype.variants).value_dtype);
             } else if constexpr (SameAs<T, MapLiteral>) {
-                return cdtype.ctype == CollectionType::map;
+                return type_matches_tag<Type::Map>(cdtype.variants);
             } else if constexpr (SameAs<T, SetLiteral>) {
-                return cdtype.ctype == CollectionType::set;
+                return type_matches_tag<Type::Set>(cdtype.variants);
             } else if constexpr (SameAs<T, ListOrVectorLiteral>) {
-                return cdtype.ctype == CollectionType::list || cdtype.ctype == CollectionType::vector;
+                return type_matches_tag<Type::List>(cdtype.variants) || type_matches_tag<Type::Vector>(cdtype.variants);
             } else if constexpr (SameAs<T, UdtLiteral>) {
                 assert_not_implemented("writing UDT literal as column value is not implemented");
                 return false;
@@ -631,18 +629,15 @@ export namespace cql::io {
     }
 
     void write_default_column_value(const Write auto& w, const Type& cdtype) {
-        switch (cdtype.ctype) {
-            case CollectionType::basic:{
-                write_default_column_value(w, cdtype.basic.value_dtype);
-            }break;
-            case CollectionType::list:
-            case CollectionType::set:
-            case CollectionType::map:
-            case CollectionType::vector:{
+        visit(cdtype.variants, [&w](const auto& v) {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, Type::Basic>) {
+                write_default_column_value(w, v.value_dtype);
+            } else {
                 U64 length = 0_u64;
                 w(reinterpret_cast<const U8*>(&length), sizeof(length));
-            }break;
-        }
+            }
+        });
     }
 
     template<typename T>
@@ -740,8 +735,8 @@ export namespace cql::io {
     }
 
     inline Type element_type_to_type(const ElementType& e) {
-        if (!e.is_collection) return create_basic(e.basic);
-        return *e.nested;
+        if (type_matches_tag<BasicType>(e)) return create_basic(get<BasicType>(e));
+        return get<Type>(e);
     }
 
     void cast_write_evaluated_as_column_value(const Write auto& w, const Evaluated& evaluated, const Type& cdtype) {
@@ -750,12 +745,13 @@ export namespace cql::io {
         visit(evaluated.value, [&](const auto& cv) {
             using T = Decay<decltype(cv)>;
             if constexpr (SameAs<T, Constant>) {
-                assert_true(cdtype.ctype == CollectionType::basic, "bad can write check!");
-                cast_write_constant_as_column_value(w, cv, cdtype.basic.value_dtype);
+                assert_true(type_matches_tag<Type::Basic>(cdtype.variants), "bad can write check!");
+                cast_write_constant_as_column_value(w, cv, get<Type::Basic>(cdtype.variants).value_dtype);
             } else if constexpr (SameAs<T, MapLiteral>) {
-                assert_true(cdtype.ctype == CollectionType::map, "map literal written to non-map column");
-                Type key_type = element_type_to_type(cdtype.map.key);
-                Type val_type = element_type_to_type(cdtype.map.value);
+                assert_true(type_matches_tag<Type::Map>(cdtype.variants), "map literal written to non-map column");
+                auto& m = get<Type::Map>(cdtype.variants);
+                Type key_type = element_type_to_type(m.key);
+                Type val_type = element_type_to_type(m.value);
                 U64 len = cv.key_values.length;
                 w(reinterpret_cast<const U8*>(&len), sizeof(len));
                 for (U64 i = 0; i < len; i++) {
@@ -765,8 +761,8 @@ export namespace cql::io {
                     cast_write_evaluated_as_column_value(w, v, val_type);
                 }
             } else if constexpr (SameAs<T, SetLiteral>) {
-                assert_true(cdtype.ctype == CollectionType::set, "set literal written to non-set column");
-                Type key_type = element_type_to_type(cdtype.set.key);
+                assert_true(type_matches_tag<Type::Set>(cdtype.variants), "set literal written to non-set column");
+                Type key_type = element_type_to_type(get<Type::Set>(cdtype.variants).key);
                 U64 len = cv.keys.length;
                 w(reinterpret_cast<const U8*>(&len), sizeof(len));
                 for (U64 i = 0; i < len; i++) {
@@ -774,13 +770,15 @@ export namespace cql::io {
                     cast_write_evaluated_as_column_value(w, el, key_type);
                 }
             } else if constexpr (SameAs<T, ListOrVectorLiteral>) {
-                assert_true(cdtype.ctype == CollectionType::list || cdtype.ctype == CollectionType::vector, "list/vector literal written to incompatible column");
-                if (cdtype.ctype == CollectionType::list) {
+                bool is_vec = type_matches_tag<Type::Vector>(cdtype.variants);
+                bool is_list = type_matches_tag<Type::List>(cdtype.variants);
+                assert_true(is_list || is_vec, "list/vector literal written to incompatible column");
+                if (is_list) {
                     U64 len = cv.elements.length;
                     w(reinterpret_cast<const U8*>(&len), sizeof(len));
                 }
                 Type el_type = element_type_to_type(
-                    (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element : cdtype.list.element);
+                    is_vec ? get<Type::Vector>(cdtype.variants).element : get<Type::List>(cdtype.variants).element);
                 for (U64 i = 0; i < cv.elements.length; i++) {
                     Evaluated el = evaluate(cv.elements[i]);
                     cast_write_evaluated_as_column_value(w, el, el_type);
@@ -802,28 +800,39 @@ export namespace cql::io {
             // @warn can_write_typed_basic_as_column_value is permissive whereas ColumnValue should really be exact,
             //       this introduces an implicit cast which may be undesirable.
             if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
-                return cdtype.ctype == CollectionType::basic && can_write_typed_basic_as_column_value<T>(cdtype.basic.value_dtype);
+                return type_matches_tag<Type::Basic>(cdtype.variants) &&
+                       can_write_typed_basic_as_column_value<T>(get<Type::Basic>(cdtype.variants).value_dtype);
             } else if constexpr (SameAs<T, DynamicArray<NestedColumnValue>>) {
-                if (cdtype.ctype != CollectionType::list && cdtype.ctype != CollectionType::vector) return false;
-                auto& elem = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element : cdtype.list.element;
-                return elem.is_collection;
+                bool is_list = type_matches_tag<Type::List>(cdtype.variants);
+                bool is_vec  = type_matches_tag<Type::Vector>(cdtype.variants);
+                if (!is_list && !is_vec) return false;
+                auto& elem = is_vec ? get<Type::Vector>(cdtype.variants).element : get<Type::List>(cdtype.variants).element;
+                return type_matches_tag<Type>(elem);
             } else if constexpr (SameAs<T, DynamicSet<NestedColumnValue>>) {
-                return cdtype.ctype == CollectionType::set && cdtype.set.key.is_collection;
+                return type_matches_tag<Type::Set>(cdtype.variants) &&
+                       type_matches_tag<Type>(get<Type::Set>(cdtype.variants).key);
             } else if constexpr (SameAs<T, DynamicMap<NestedColumnValue, NestedColumnValue>>) {
-                return cdtype.ctype == CollectionType::map && cdtype.map.key.is_collection && cdtype.map.value.is_collection;
+                if (!type_matches_tag<Type::Map>(cdtype.variants)) return false;
+                auto& m = get<Type::Map>(cdtype.variants);
+                return type_matches_tag<Type>(m.key) && type_matches_tag<Type>(m.value);
             } else if constexpr (IsDynamicMap<T>) {
-                if (cdtype.ctype != CollectionType::map) return false;
-                return !cdtype.map.key.is_collection && !cdtype.map.value.is_collection &&
-                       can_write_typed_basic_as_column_value<typename T::Key>(cdtype.map.key.basic) &&
-                       can_write_typed_basic_as_column_value<typename T::Value>(cdtype.map.value.basic);
+                if (!type_matches_tag<Type::Map>(cdtype.variants)) return false;
+                auto& m = get<Type::Map>(cdtype.variants);
+                return type_matches_tag<BasicType>(m.key) && type_matches_tag<BasicType>(m.value) &&
+                       can_write_typed_basic_as_column_value<typename T::Key>(get<BasicType>(m.key)) &&
+                       can_write_typed_basic_as_column_value<typename T::Value>(get<BasicType>(m.value));
             } else if constexpr (IsDynamicSet<T>) {
-                if (cdtype.ctype != CollectionType::set) return false;
-                return !cdtype.set.key.is_collection &&
-                       can_write_typed_basic_as_column_value<typename T::Key>(cdtype.set.key.basic);
+                if (!type_matches_tag<Type::Set>(cdtype.variants)) return false;
+                auto& s = get<Type::Set>(cdtype.variants);
+                return type_matches_tag<BasicType>(s.key) &&
+                       can_write_typed_basic_as_column_value<typename T::Key>(get<BasicType>(s.key));
             } else if constexpr (IsDynamicArray<T>) {
-                if (cdtype.ctype != CollectionType::list && cdtype.ctype != CollectionType::vector) return false;
-                auto& elem = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element : cdtype.list.element;
-                return !elem.is_collection && can_write_typed_basic_as_column_value<typename T::Element>(elem.basic);
+                bool is_list = type_matches_tag<Type::List>(cdtype.variants);
+                bool is_vec  = type_matches_tag<Type::Vector>(cdtype.variants);
+                if (!is_list && !is_vec) return false;
+                auto& elem = is_vec ? get<Type::Vector>(cdtype.variants).element : get<Type::List>(cdtype.variants).element;
+                return type_matches_tag<BasicType>(elem) &&
+                       can_write_typed_basic_as_column_value<typename T::Element>(get<BasicType>(elem));
             } else if constexpr (SameAs<T, Null>) {
                 return true;
             } else {
@@ -879,45 +888,48 @@ export namespace cql::io {
             using T = Decay<decltype(v)>;
 
             if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
-                assert_true(cdtype.ctype == CollectionType::basic, "static value type requires ctype basic, this should never happen");
+                assert_true(type_matches_tag<Type::Basic>(cdtype.variants), "static value type requires ctype basic, this should never happen");
 
-                write_typed_basic(w, v, cdtype.basic.value_dtype);
+                write_typed_basic(w, v, get<Type::Basic>(cdtype.variants).value_dtype);
             } else if constexpr (SameAs<T, DynamicArray<NestedColumnValue>>) {
-                assert_true(cdtype.ctype == CollectionType::list || cdtype.ctype == CollectionType::vector, "nested array requires ctype list/vector");
-                if (cdtype.ctype == CollectionType::list) {
+                bool is_vec = type_matches_tag<Type::Vector>(cdtype.variants);
+                assert_true(type_matches_tag<Type::List>(cdtype.variants) || is_vec, "nested array requires ctype list/vector");
+                if (!is_vec) {
                     U64 len = v.length;
                     w(reinterpret_cast<const U8*>(&len), sizeof(len));
                 }
-                auto& elem = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element : cdtype.list.element;
+                const auto& elem = is_vec ? get<Type::Vector>(cdtype.variants).element : get<Type::List>(cdtype.variants).element;
                 for (const auto& el : v)
-                    write_column_value(w, el.value, *elem.nested);
+                    write_column_value(w, el.value, get<Type>(elem));
             } else if constexpr (SameAs<T, DynamicSet<NestedColumnValue>>) {
                 assert_not_implemented("writing nested-element set is not implemented");
             } else if constexpr (SameAs<T, DynamicMap<NestedColumnValue, NestedColumnValue>>) {
                 assert_not_implemented("writing nested-element map is not implemented");
             } else if constexpr (IsDynamicMap<T>) {
-                assert_true(cdtype.ctype == CollectionType::map, "static value type requires ctype map, this should never happen");
+                assert_true(type_matches_tag<Type::Map>(cdtype.variants), "static value type requires ctype map, this should never happen");
 
                 U64 len = length(v);
                 w(reinterpret_cast<const U8*>(&len), sizeof(len));
+                const auto& m = get<Type::Map>(cdtype.variants);
                 for (auto it = v.begin(); it != v.end(); ++it) {
-                    write_typed_basic(w, (*it).first, cdtype.map.key.basic);
-                    write_typed_basic(w, (*it).second, cdtype.map.value.basic);
+                    write_typed_basic(w, (*it).first, get<BasicType>(m.key));
+                    write_typed_basic(w, (*it).second, get<BasicType>(m.value));
                 }
             } else if constexpr (IsDynamicSet<T>) {
-                assert_true(cdtype.ctype == CollectionType::set, "static value type requires ctype set, this should never happen");
+                assert_true(type_matches_tag<Type::Set>(cdtype.variants), "static value type requires ctype set, this should never happen");
 
                 U64 len = length(v);
                 w(reinterpret_cast<const U8*>(&len), sizeof(len));
                 for (auto it = v.begin(); it != v.end(); ++it)
-                    write_typed_basic(w, *it, cdtype.set.key.basic);
+                    write_typed_basic(w, *it, get<BasicType>(get<Type::Set>(cdtype.variants).key));
             } else if constexpr (IsDynamicArray<T>) {
-                assert_true(cdtype.ctype == CollectionType::list || cdtype.ctype == CollectionType::vector, "static value type requires ctype list/vector, this should never happen");
+                bool is_vec = type_matches_tag<Type::Vector>(cdtype.variants);
+                assert_true(type_matches_tag<Type::List>(cdtype.variants) || is_vec, "static value type requires ctype list/vector, this should never happen");
 
-                if (cdtype.ctype == CollectionType::list) {
+                if (!is_vec) {
                     w(reinterpret_cast<const U8*>(&v.length), sizeof(v.length));
                 }
-                auto element_basic = (cdtype.ctype == CollectionType::vector) ? cdtype.vector.element.basic : cdtype.list.element.basic;
+                const auto element_basic = is_vec ? get<BasicType>(get<Type::Vector>(cdtype.variants).element) : get<BasicType>(get<Type::List>(cdtype.variants).element);
                 for (const auto& el: v)
                     write_typed_basic(w, el, element_basic);
             } else if constexpr (SameAs<T, Null>) {
@@ -1013,17 +1025,18 @@ export namespace plexdb {
     }
 
     AutoString8 to_str(const cql::ColumnValue& value, const cql::Type& cdtype) {
-        if (cdtype.ctype == cql::CollectionType::basic)
-            return to_str(value, cdtype.basic.value_dtype);
+        if (type_matches_tag<cql::Type::Basic>(cdtype.variants))
+            return to_str(value, get<cql::Type::Basic>(cdtype.variants).value_dtype);
         return visit(value, [&cdtype](auto& v) -> AutoString8 {
             using T = Decay<decltype(v)>;
             if constexpr (SameAs<T, DynamicArray<cql::NestedColumnValue>>) {
-                auto& elem = (cdtype.ctype == cql::CollectionType::vector) ? cdtype.vector.element : cdtype.list.element;
+                bool is_vec = type_matches_tag<cql::Type::Vector>(cdtype.variants);
+                const auto& elem = is_vec ? get<cql::Type::Vector>(cdtype.variants).element : get<cql::Type::List>(cdtype.variants).element;
                 AutoString8 result = "["_as;
                 bool first = true;
                 for (const auto& el : v) {
                     if (!first) result = result + ", ";
-                    result = result + to_str(el.value, *elem.nested);
+                    result = result + to_str(el.value, get<cql::Type>(elem));
                     first = false;
                 }
                 return result + "]";
@@ -1032,29 +1045,31 @@ export namespace plexdb {
                 bool first = true;
                 for (auto it = v.begin(); it != v.end(); ++it) {
                     if (!first) result = result + ", ";
-                    result = result + to_str((*it).value, *cdtype.set.key.nested);
+                    result = result + to_str((*it).value, get<cql::Type>(get<cql::Type::Set>(cdtype.variants).key));
                     first = false;
                 }
                 return result + "}";
             } else if constexpr (SameAs<T, DynamicMap<cql::NestedColumnValue, cql::NestedColumnValue>>) {
+                const auto& m = get<cql::Type::Map>(cdtype.variants);
                 AutoString8 result = "{"_as;
                 bool first = true;
                 for (auto it = v.begin(); it != v.end(); ++it) {
                     if (!first) result = result + ", ";
-                    result = result + to_str((*it).first.value, *cdtype.map.key.nested);
+                    result = result + to_str((*it).first.value, get<cql::Type>(m.key));
                     result = result + ": ";
-                    result = result + to_str((*it).second.value, *cdtype.map.value.nested);
+                    result = result + to_str((*it).second.value, get<cql::Type>(m.value));
                     first = false;
                 }
                 return result + "}";
             } else if constexpr (IsDynamicMap<T>) {
+                const auto& m = get<cql::Type::Map>(cdtype.variants);
                 AutoString8 result = "{"_as;
                 bool first = true;
                 for (auto it = v.begin(); it != v.end(); ++it) {
                     if (!first) result = result + ", ";
-                    result = result + to_str(cql::ColumnValue{(*it).first}, cdtype.map.key.basic);
+                    result = result + to_str(cql::ColumnValue{(*it).first}, get<cql::BasicType>(m.key));
                     result = result + ": ";
-                    result = result + to_str(cql::ColumnValue{(*it).second}, cdtype.map.value.basic);
+                    result = result + to_str(cql::ColumnValue{(*it).second}, get<cql::BasicType>(m.value));
                     first = false;
                 }
                 return result + "}";
@@ -1063,22 +1078,23 @@ export namespace plexdb {
                 bool first = true;
                 for (auto it = v.begin(); it != v.end(); ++it) {
                     if (!first) result = result + ", ";
-                    result = result + to_str(cql::ColumnValue{*it}, cdtype.set.key.basic);
+                    result = result + to_str(cql::ColumnValue{*it}, get<cql::BasicType>(get<cql::Type::Set>(cdtype.variants).key));
                     first = false;
                 }
                 return result + "}";
             } else if constexpr (IsDynamicArray<T>) {
-                auto& elem = (cdtype.ctype == cql::CollectionType::vector) ? cdtype.vector.element : cdtype.list.element;
+                bool is_vec = type_matches_tag<cql::Type::Vector>(cdtype.variants);
+                const auto& elem = is_vec ? get<cql::Type::Vector>(cdtype.variants).element : get<cql::Type::List>(cdtype.variants).element;
                 AutoString8 result = "["_as;
                 bool first = true;
                 for (const auto& el : v) {
                     if (!first) result = result + ", ";
-                    result = result + to_str(cql::ColumnValue{el}, elem.basic);
+                    result = result + to_str(cql::ColumnValue{el}, get<cql::BasicType>(elem));
                     first = false;
                 }
                 return result + "]";
             } else {
-                return to_str(cql::ColumnValue{v}, cdtype.basic.value_dtype);
+                return to_str(cql::ColumnValue{v}, get<cql::Type::Basic>(cdtype.variants).value_dtype);
             }
         });
     }

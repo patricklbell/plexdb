@@ -3,6 +3,7 @@ export module cql.engine.types;
 import plexdb.base;
 import plexdb.os;
 import plexdb.tagged_union;
+import plexdb.dynamic.tagged_union;
 import plexdb.dynamic.containers;
 
 using namespace plexdb;
@@ -33,186 +34,77 @@ export namespace cql {
         hex,
     };
 
-    enum class CollectionType : U8 {
-        basic,
-        list,
-        map,
-        set,
-        vector,
-    };
+    struct Type;
 
-    struct Type;  // forward declare for recursive ElementType
-
-    struct ElementType {
-        bool is_collection;
-        union {
-            BasicType basic;
-            Type* nested;  // heap-allocated; valid when is_collection == true
-        };
-
-        static constexpr ElementType from_basic(BasicType b) {
-            return ElementType{.is_collection = false, .basic = b};
-        }
-        static ElementType from_nested(Type* t) {
-            ElementType e;
-            e.is_collection = true;
-            e.nested = t;
-            return e;
-        }
+    struct ElementType : HybridTaggedUnion<TypeList<BasicType>, TypeList<Type>> {
+        using HybridTaggedUnion::HybridTaggedUnion;
         static ElementType from(Type t);  // defined after Type is complete
     };
 
+    bool operator==(const Type& a, const Type& b);
+
     struct Type {
-        CollectionType ctype;
+        struct Basic  { BasicType value_dtype;                                    };
+        struct List   { ElementType element; bool frozen;                         };
+        struct Set    { ElementType key;     bool frozen;                         };
+        struct Map    { ElementType key; ElementType value; bool frozen;          };
+        struct Vector { ElementType element; U64 count; bool frozen;              };
 
-        struct Basic  { BasicType value_dtype;                                           };
-        struct List   { ElementType element;                    bool frozen;             };
-        struct Set    { ElementType key;                        bool frozen;             };
-        struct Map    { ElementType key; ElementType value;     bool frozen;             };
-        struct Vector { ElementType element; U64 count;         bool frozen;             };
-
-        union {
-            struct Basic basic;
-            struct List list;
-            struct Set set;
-            struct Map map;
-            struct Vector vector;
-        };
+        TaggedUnion<Basic, List, Set, Map, Vector> variants;
     };
 
-    constexpr bool operator==(Type a, Type b);  // forward-declare for element_type_eq
+    inline bool operator==(const Type::Basic&  a, const Type::Basic&  b) { return a.value_dtype == b.value_dtype; }
+    inline bool operator==(const Type::List&   a, const Type::List&   b) { return a.element == b.element && a.frozen == b.frozen; }
+    inline bool operator==(const Type::Set&    a, const Type::Set&    b) { return a.key == b.key && a.frozen == b.frozen; }
+    inline bool operator==(const Type::Map&    a, const Type::Map&    b) { return a.key == b.key && a.value == b.value && a.frozen == b.frozen; }
+    inline bool operator==(const Type::Vector& a, const Type::Vector& b) { return a.element == b.element && a.count == b.count && a.frozen == b.frozen; }
 
-    inline bool element_type_eq(ElementType a, ElementType b) {
-        if (a.is_collection != b.is_collection) return false;
-        if (!a.is_collection) return a.basic == b.basic;
-        // both are collection — compare recursively
-        if (a.nested == nullptr || b.nested == nullptr) return a.nested == b.nested;
-        return *a.nested == *b.nested;
-    }
-
-    constexpr bool operator==(Type a, Type b) {
-        if (a.ctype != b.ctype) return false;
-        switch (a.ctype) {
-            case CollectionType::basic:  return a.basic.value_dtype == b.basic.value_dtype;
-            case CollectionType::list:   return element_type_eq(a.list.element, b.list.element) && a.list.frozen == b.list.frozen;
-            case CollectionType::set:    return element_type_eq(a.set.key, b.set.key) && a.set.frozen == b.set.frozen;
-            case CollectionType::map:    return element_type_eq(a.map.key, b.map.key) && element_type_eq(a.map.value, b.map.value) && a.map.frozen == b.map.frozen;
-            case CollectionType::vector: return element_type_eq(a.vector.element, b.vector.element) && a.vector.count == b.vector.count && a.vector.frozen == b.vector.frozen;
-        }
-        return false;
-    }
+    inline bool operator==(const Type& a, const Type& b) { return a.variants == b.variants; }
 
     inline ElementType ElementType::from(Type t) {
-        if (t.ctype == CollectionType::basic) return ElementType::from_basic(t.basic.value_dtype);
-        Type* p = reinterpret_cast<Type*>(os::allocate(sizeof(Type)));
-        new (p) Type(t);
-        return ElementType::from_nested(p);
+        if (type_matches_tag<Type::Basic>(t.variants))
+            return ElementType{get<Type::Basic>(t.variants).value_dtype};
+        return ElementType{move(t)};
     }
 
-    constexpr Type create_basic(BasicType d) {
-        return Type{.ctype = CollectionType::basic, .basic = {.value_dtype = d}};
-    }
-
-    constexpr Type create_list(BasicType el) {
-        Type t;
-        t.ctype = CollectionType::list;
-        t.list.element = ElementType::from_basic(el);
-        t.list.frozen = false;
-        return t;
-    }
-
-    inline Type create_list(ElementType el) {
-        Type t;
-        t.ctype = CollectionType::list;
-        t.list.element = el;
-        t.list.frozen = false;
-        return t;
-    }
-
-    constexpr Type create_set(BasicType key) {
-        Type t;
-        t.ctype = CollectionType::set;
-        t.set.key = ElementType::from_basic(key);
-        t.set.frozen = false;
-        return t;
-    }
-
-    inline Type create_set(ElementType key) {
-        Type t;
-        t.ctype = CollectionType::set;
-        t.set.key = key;
-        t.set.frozen = false;
-        return t;
-    }
-
-    constexpr Type create_map(BasicType key, BasicType val) {
-        Type t;
-        t.ctype = CollectionType::map;
-        t.map.key = ElementType::from_basic(key);
-        t.map.value = ElementType::from_basic(val);
-        t.map.frozen = false;
-        return t;
-    }
-
-    inline Type create_map(ElementType key, ElementType val) {
-        Type t;
-        t.ctype = CollectionType::map;
-        t.map.key = key;
-        t.map.value = val;
-        t.map.frozen = false;
-        return t;
-    }
-
-    constexpr Type create_vector(BasicType el, U64 count) {
-        Type t;
-        t.ctype = CollectionType::vector;
-        t.vector.element = ElementType::from_basic(el);
-        t.vector.count = count;
-        t.vector.frozen = false;
-        return t;
-    }
-
-    inline Type create_vector(ElementType el, U64 count) {
-        Type t;
-        t.ctype = CollectionType::vector;
-        t.vector.element = el;
-        t.vector.count = count;
-        t.vector.frozen = false;
-        return t;
-    }
+    inline Type create_basic(BasicType d) { return Type{.variants=Type::Basic{d}}; }
+    inline Type create_list(BasicType el) { return Type{.variants=Type::List{ElementType{el}, false}}; }
+    inline Type create_list(ElementType el) { return Type{.variants=Type::List{move(el), false}}; }
+    inline Type create_set(BasicType key) { return Type{.variants=Type::Set{ElementType{key}, false}}; }
+    inline Type create_set(ElementType key) { return Type{.variants=Type::Set{move(key), false}}; }
+    inline Type create_map(BasicType key, BasicType val) { return Type{.variants=Type::Map{ElementType{key}, ElementType{val}, false}}; }
+    inline Type create_map(ElementType key, ElementType val) { return Type{.variants=Type::Map{move(key), move(val), false}}; }
+    inline Type create_vector(BasicType el, U64 count) { return Type{.variants=Type::Vector{ElementType{el}, count, false}}; }
+    inline Type create_vector(ElementType el, U64 count) { return Type{.variants=Type::Vector{move(el), count, false}}; }
 }
 
 export namespace plexdb {
-    // @todo ensure hash ordering matches cassandra
     U64 hash(const cql::Type& t) {
         U8 buf[18];
         U64 len = 0;
-        buf[len++] = static_cast<U8>(t.ctype);
-        switch (t.ctype) {
-            case cql::CollectionType::basic:
-                buf[len++] = static_cast<U8>(t.basic.value_dtype);
-                break;
-            case cql::CollectionType::list:
-                if (!t.list.element.is_collection)
-                    buf[len++] = static_cast<U8>(t.list.element.basic);
-                break;
-            case cql::CollectionType::set:
-                if (!t.set.key.is_collection)
-                    buf[len++] = static_cast<U8>(t.set.key.basic);
-                break;
-            case cql::CollectionType::map:
-                if (!t.map.key.is_collection)
-                    buf[len++] = static_cast<U8>(t.map.key.basic);
-                if (!t.map.value.is_collection)
-                    buf[len++] = static_cast<U8>(t.map.value.basic);
-                break;
-            case cql::CollectionType::vector:
-                if (!t.vector.element.is_collection)
-                    buf[len++] = static_cast<U8>(t.vector.element.basic);
-                os::memory_copy(buf + len, &t.vector.count, sizeof(U64));
+        buf[len++] = static_cast<U8>(t.variants.index);
+        visit(t.variants, [&](const auto& v) {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, cql::Type::Basic>) {
+                buf[len++] = static_cast<U8>(v.value_dtype);
+            } else if constexpr (SameAs<T, cql::Type::List>) {
+                if (type_matches_tag<cql::BasicType>(v.element))
+                    buf[len++] = static_cast<U8>(get<cql::BasicType>(v.element));
+            } else if constexpr (SameAs<T, cql::Type::Set>) {
+                if (type_matches_tag<cql::BasicType>(v.key))
+                    buf[len++] = static_cast<U8>(get<cql::BasicType>(v.key));
+            } else if constexpr (SameAs<T, cql::Type::Map>) {
+                if (type_matches_tag<cql::BasicType>(v.key))
+                    buf[len++] = static_cast<U8>(get<cql::BasicType>(v.key));
+                if (type_matches_tag<cql::BasicType>(v.value))
+                    buf[len++] = static_cast<U8>(get<cql::BasicType>(v.value));
+            } else if constexpr (SameAs<T, cql::Type::Vector>) {
+                if (type_matches_tag<cql::BasicType>(v.element))
+                    buf[len++] = static_cast<U8>(get<cql::BasicType>(v.element));
+                os::memory_copy(buf + len, &v.count, sizeof(U64));
                 len += sizeof(U64);
-                break;
-        }
+            }
+        });
         return hash(String8(buf, len));
     }
 
@@ -244,22 +136,28 @@ export namespace plexdb {
         return "unknown";
     }
 
-    inline AutoString8 to_str_element_type(const cql::ElementType& e);
+    inline AutoString8 to_str(const cql::ElementType& e);
 
-    constexpr inline AutoString8 to_str(cql::Type cdtype) {
-        switch (cdtype.ctype) {
-            case cql::CollectionType::basic:  return AutoString8(to_str(cdtype.basic.value_dtype));
-            case cql::CollectionType::list:   return "list["_as + to_str_element_type(cdtype.list.element) + "]";
-            case cql::CollectionType::set:    return "set["_as + to_str_element_type(cdtype.set.key) + "]";
-            case cql::CollectionType::map:    return "map["_as + to_str_element_type(cdtype.map.key) + ", " + to_str_element_type(cdtype.map.value) + "]";
-            case cql::CollectionType::vector: return "vector["_as + to_str_element_type(cdtype.vector.element) + "]";
-        }
-        return "unknown"_as;
+    inline AutoString8 to_str(cql::Type cdtype) {
+        return visit(cdtype.variants, [](const auto& v) -> AutoString8 {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, cql::Type::Basic>)
+                return AutoString8(to_str(v.value_dtype));
+            else if constexpr (SameAs<T, cql::Type::List>)
+                return "list["_as + to_str(v.element) + "]";
+            else if constexpr (SameAs<T, cql::Type::Set>)
+                return "set["_as + to_str(v.key) + "]";
+            else if constexpr (SameAs<T, cql::Type::Map>)
+                return "map["_as + to_str(v.key) + ", " + to_str(v.value) + "]";
+            else {
+                static_assert(SameAs<T, cql::Type::Vector>, "unhandled Type variant in to_str");
+                return "vector["_as + to_str(v.element) + "]";
+            }
+        });
     }
 
-    inline AutoString8 to_str_element_type(const cql::ElementType& e) {
-        if (!e.is_collection) return AutoString8(to_str(e.basic));
-        if (e.nested == nullptr) return "null"_as;
-        return to_str(*e.nested);
+    inline AutoString8 to_str(const cql::ElementType& e) {
+        if (type_matches_tag<cql::BasicType>(e)) return AutoString8(to_str(get<cql::BasicType>(e)));
+        return to_str(get<cql::Type>(e));
     }
 }

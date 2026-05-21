@@ -58,10 +58,17 @@ export namespace cql::schema {
         U64 keyspace_idx;
         U64 btree_page;
     };
+    struct PackedType {
+        U8 index;      // 0=Basic,1=List,2=Set,3=Map,4=Vector
+        U8 elem_bt;    // BasicType: basic.value_dtype / list.element / set.key / map.key / vector.element
+        U8 val_bt;     // BasicType: map.value (unused otherwise)
+        U64 vec_count; // vector.count (unused otherwise)
+        bool frozen;
+    };
     struct ColumnHeader {
         bool tombstone;
         U64 name_length;
-        Type type;
+        PackedType type;
         U64 table_idx;
         KeyKind key_kind;
         U16 key_position;
