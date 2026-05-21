@@ -203,16 +203,6 @@ The remaining failures across ~20 error types map into five buckets:
 | Non-constant term eval | 5 | e.g. `uuid()` function calls |
 | NULL column writes | 1 | `INSERT ... (col) VALUES (null)` |
 
-### 2. Schema/DDL options
-
-| Failure | Count | Notes |
-|---|---|---|
-| `CREATE TABLE WITH` | 15 | compaction, `gc_grace_seconds`, etc. |
-| `ALTER TABLE WITH` | 2 | Same category |
-| `ALTER KEYSPACE WITH` | 3 | Replication options |
-
-These are no-ops for single-node: just need to accept and ignore the `WITH` clause.
-
 ### 3. Query features not yet wired
 
 | Failure | Count | Notes |
@@ -224,18 +214,6 @@ These are no-ops for single-node: just need to accept and ignore the `WITH` clau
 | ORDER BY | 2 | |
 | SELECT DISTINCT/JSON | 3 | |
 | SELECT aggregate/function | 2 | `count(*)`, `writetime()` |
-
-### 4. Parser gaps
-
-| Failure | Count |
-|---|---|
-| Frozen types (`frozen<map<...>>`) | 16 |
-
-### 5. Protocol / USING clause
-
-| Failure | Count |
-|---|---|
-| `INSERT`/`UPDATE USING TIMESTAMP/TTL` | 6 |
 
 ---
 
