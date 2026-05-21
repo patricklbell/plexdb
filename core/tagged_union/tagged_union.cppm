@@ -178,7 +178,7 @@ export namespace plexdb {
             requires (SameAs<Decay<T>, Types> || ...)
         TaggedUnion& operator=(T&& value) {
             using DecayedT = Decay<T>;
-            constexpr size_t new_index = TypeIndex<T, Types...>;
+            constexpr size_t new_index = TypeIndex<DecayedT, Types...>;
             
             if (index == new_index) {
                 *reinterpret_cast<DecayedT*>(&storage) = forward<T>(value);
@@ -259,5 +259,15 @@ namespace plexdb {
     decltype(auto) visit(const TaggedUnion<Types...>& u, Visitor&& vis) {
         assert_true(u.index != TaggedUnion<Types...>::invalid_index, "visiting empty TaggedUnion");
         return visit_impl<Visitor, Types...>(u, forward<Visitor>(vis), IndexSequenceFor<Types...>{});
+    }
+
+    export template<typename... Types>
+    bool operator==(const TaggedUnion<Types...>& a, const TaggedUnion<Types...>& b) {
+        if (a.index != b.index) return false;
+        if (a.index == TaggedUnion<Types...>::invalid_index) return true;
+        return visit(a, [&b](const auto& av) -> bool {
+            using T = RemoveCVRef<decltype(av)>;
+            return av == get<T>(b);
+        });
     }
 }

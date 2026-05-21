@@ -543,6 +543,17 @@ namespace plexdb {
         assert_true(u.index != HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>::invalid_index, "visiting empty HybridTaggedUnion");
         return htu_visit_impl(u, forward<Visitor>(vis), TypeList<STs..., DTs...>{}, IndexSequenceFor<STs..., DTs...>{});
     }
+
+    export template<typename... STs, typename... DTs>
+    bool operator==(const HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>& a,
+                    const HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>& b) {
+        if (a.index != b.index) return false;
+        if (a.index == HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>::invalid_index) return true;
+        return visit(a, [&b](const auto& av) -> bool {
+            using T = RemoveCVRef<decltype(av)>;
+            return av == get<T>(b);
+        });
+    }
 }
 
 namespace plexdb {
