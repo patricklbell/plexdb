@@ -604,18 +604,8 @@ namespace cql::parsers {
                 return bind | curly | list | func | hint | paren | cnst | dsl::else_ >> id;
             }();
             static constexpr auto value = lexy::callback<TermWithIdentifiers>(
-                [](Term&& t) -> TermWithIdentifiers {
-                    TermWithIdentifiers result;
-                    result.value.index = t.value.index;
-                    visit(t.value, [&](auto& v) {
-                        using T = Decay<decltype(v)>;
-                        new (&result.value.storage) T(move(v));
-                        v.~T();
-                    });
-                    t.value.index = decltype(t.value)::invalid_index;
-                    return result;
-                },
-                [](AutoString8&& s) -> TermWithIdentifiers { return {.value = move(s)}; }
+                [](Term&& t) -> TermWithIdentifiers { return TermWithIdentifiers{move(t)}; },
+                [](AutoString8&& s) -> TermWithIdentifiers { return TermWithIdentifiers{move(s)}; }
             );
         };
 
@@ -643,23 +633,23 @@ namespace cql::parsers {
                 [](TermWithIdentifiers&& t) -> TermWithIdentifiers { return move(t); },
                 [](TermWithIdentifiers&& lhs, lexy::op<op_plus>, TermWithIdentifiers&& rhs) -> TermWithIdentifiers {
                     TOIBinaryArithmetic bin{move(lhs), ArithmeticOperator::plus, move(rhs)};
-                    return {.value = TOIArithmeticOperation{.value = move(bin)}};
+                    return TermWithIdentifiers{TOIArithmeticOperation{.value = move(bin)}};
                 },
                 [](TermWithIdentifiers&& lhs, lexy::op<op_minus>, TermWithIdentifiers&& rhs) -> TermWithIdentifiers {
                     TOIBinaryArithmetic bin{move(lhs), ArithmeticOperator::minus, move(rhs)};
-                    return {.value = TOIArithmeticOperation{.value = move(bin)}};
+                    return TermWithIdentifiers{TOIArithmeticOperation{.value = move(bin)}};
                 },
                 [](TermWithIdentifiers&& lhs, lexy::op<op_times>, TermWithIdentifiers&& rhs) -> TermWithIdentifiers {
                     TOIBinaryArithmetic bin{move(lhs), ArithmeticOperator::times, move(rhs)};
-                    return {.value = TOIArithmeticOperation{.value = move(bin)}};
+                    return TermWithIdentifiers{TOIArithmeticOperation{.value = move(bin)}};
                 },
                 [](TermWithIdentifiers&& lhs, lexy::op<op_div>, TermWithIdentifiers&& rhs) -> TermWithIdentifiers {
                     TOIBinaryArithmetic bin{move(lhs), ArithmeticOperator::divide, move(rhs)};
-                    return {.value = TOIArithmeticOperation{.value = move(bin)}};
+                    return TermWithIdentifiers{TOIArithmeticOperation{.value = move(bin)}};
                 },
                 [](lexy::op<op_neg>, TermWithIdentifiers&& t) -> TermWithIdentifiers {
                     TOIUnaryMinus unary{move(t)};
-                    return {.value = TOIArithmeticOperation{.value = move(unary)}};
+                    return TermWithIdentifiers{TOIArithmeticOperation{.value = move(unary)}};
                 }
             );
         };

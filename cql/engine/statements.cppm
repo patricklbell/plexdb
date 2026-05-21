@@ -12,33 +12,17 @@ using namespace plexdb;
 
 export namespace cql {
     // ========================================================================
-    // Forward declarations (needed by literal/arithmetic types)
+    // Forward declarations for Term
     // ========================================================================
-    struct Term;
-    struct TermWithIdentifiers;
-
-    // ========================================================================
-    // Box<T> — owns a heap-allocated T*
-    // Method bodies are defined after T is complete (as explicit specialisations).
-    // ========================================================================
-    template<typename T>
-    struct Box {
-        T* ptr = nullptr;
-
-        Box() = default;
-
-        explicit Box(T&& val);
-        Box(const Box& o);
-        Box(Box&& o) noexcept;
-        Box& operator=(const Box& o);
-        Box& operator=(Box&& o) noexcept;
-        ~Box();
-
-        T& operator*() { return *ptr; }
-        const T& operator*() const { return *ptr; }
-        T* operator->() { return ptr; }
-        const T* operator->() const { return ptr; }
-    };
+    struct MapLiteral;
+    struct SetLiteral;
+    struct ListOrVectorLiteral;
+    struct UdtLiteral;
+    struct TupleLiteral;
+    struct FunctionCall;
+    struct ArithmeticOperation;
+    struct TypeHint;
+    struct TOIArithmeticOperation;
 
     // ========================================================================
     // constants
@@ -144,9 +128,59 @@ export namespace cql {
         ExpandTaggedUnion<ConstantTypes> value;
     };
 
+    struct BindMarker {
+        AutoString8 identifier;
+    };
+
     // ========================================================================
-    // literals (use DynamicArray<Term> - ok with forward-declared Term since
-    // DynamicArray only stores T* internally)
+    // Term
+    // ========================================================================
+    struct Term {
+        HybridTaggedUnion<
+            TypeList<Constant, BindMarker>,
+            TypeList<
+                MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
+                FunctionCall, ArithmeticOperation, TypeHint
+            >
+        > value;
+    };
+
+    struct TermWithIdentifiers {
+        TermWithIdentifiers() = default;
+
+        template<typename T>
+            requires (!SameAs<Decay<T>, Term> && !SameAs<Decay<T>, TermWithIdentifiers>)
+        explicit TermWithIdentifiers(T&& v) : value(forward<T>(v)) {}
+
+        // this custom constructor unwraps a term -> twi, used to unify the parsing
+        // @warn requires that type index needs to match term
+        explicit TermWithIdentifiers(Term&& t) noexcept {
+            value.index = t.value.index;
+            if (t.value.index < decltype(t.value)::static_count) {
+                visit(t.value, [&](auto& v) {
+                    using T = Decay<decltype(v)>;
+                    new (&value.storage) T(move(v));
+                    v.~T();
+                });
+            } else {
+                value.ptr   = t.value.ptr;
+                t.value.ptr = nullptr;
+            }
+            t.value.index = decltype(t.value)::invalid_index;
+        }
+
+        HybridTaggedUnion<
+            TypeList<Constant, BindMarker>,
+            TypeList<
+                MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
+                FunctionCall, ArithmeticOperation, TypeHint,
+                TOIArithmeticOperation, AutoString8
+            >
+        > value;
+    };
+
+    // ========================================================================
+    // literals
     // ========================================================================
     struct MapLiteral {
         DynamicArray<Pair<Term, Term>> key_values;
@@ -183,16 +217,12 @@ export namespace cql {
     };
 
     struct UnaryMinusArithmeticOperation {
-        Box<Term> operand;
-        explicit UnaryMinusArithmeticOperation(Term&& t);
-        UnaryMinusArithmeticOperation() = default;
+        Term operand;
     };
     struct BinaryArithmeticOperation {
-        Box<Term> lhs;
+        Term lhs;
         ArithmeticOperator op;
-        Box<Term> rhs;
-        BinaryArithmeticOperation(Term&& l, ArithmeticOperator o, Term&& r);
-        BinaryArithmeticOperation() = default;
+        Term rhs;
     };
     struct ArithmeticOperation {
         TaggedUnion<UnaryMinusArithmeticOperation, BinaryArithmeticOperation> value;
@@ -203,165 +233,23 @@ export namespace cql {
     // ========================================================================
     struct TypeHint {
         Type type;
-        Box<Term> operand;
-        TypeHint(Type t, Term&& o);
-        TypeHint() = default;
+        Term operand;
     };
 
     // ========================================================================
-    // bindings
-    // ========================================================================
-    struct BindMarker {
-        AutoString8 identifier;
-    };
-
-    // ========================================================================
-    // Term — defined after all variant types are complete
-    // ========================================================================
-    struct Term {
-        ExpandTaggedUnion<
-            TypeList<
-                Constant,
-                MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
-                FunctionCall,
-                ArithmeticOperation,
-                TypeHint,
-                BindMarker
-            >
-        > value;
-    };
-
-    // ========================================================================
-    // Box<Term> method bodies (now that Term is complete)
-    // ========================================================================
-    template<> inline Box<Term>::Box(Term&& val) {
-        ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
-        new (ptr) Term(move(val));
-    }
-    template<> inline Box<Term>::Box(const Box<Term>& o) {
-        if (o.ptr) {
-            ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
-            new (ptr) Term(*o.ptr);
-        }
-    }
-    template<> inline Box<Term>::Box(Box<Term>&& o) noexcept {
-        ptr = o.ptr;
-        o.ptr = nullptr;
-    }
-    template<> inline Box<Term>& Box<Term>::operator=(const Box<Term>& o) {
-        if (this == &o) return *this;
-        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
-        if (o.ptr) {
-            ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
-            new (ptr) Term(*o.ptr);
-        }
-        return *this;
-    }
-    template<> inline Box<Term>& Box<Term>::operator=(Box<Term>&& o) noexcept {
-        if (this == &o) return *this;
-        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
-        ptr = o.ptr;
-        o.ptr = nullptr;
-        return *this;
-    }
-    template<> inline Box<Term>::~Box() {
-        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
-    }
-
-    // ========================================================================
-    // ArithmeticOperation / TypeHint constructors (now that Term is complete)
-    // ========================================================================
-    inline UnaryMinusArithmeticOperation::UnaryMinusArithmeticOperation(Term&& t)
-        : operand(move(t)) {}
-
-    inline BinaryArithmeticOperation::BinaryArithmeticOperation(Term&& l, ArithmeticOperator o, Term&& r)
-        : lhs(move(l)), op(o), rhs(move(r)) {}
-
-    inline TypeHint::TypeHint(Type t, Term&& o)
-        : type(t), operand(move(o)) {}
-
-    // ========================================================================
-    // TOI types (TermWithIdentifiers variant types)
+    // TOI types
     // ========================================================================
     struct TOIUnaryMinus {
-        Box<TermWithIdentifiers> operand;
-        explicit TOIUnaryMinus(TermWithIdentifiers&& t);
-        TOIUnaryMinus() = default;
+        TermWithIdentifiers operand;
     };
     struct TOIBinaryArithmetic {
-        Box<TermWithIdentifiers> lhs;
+        TermWithIdentifiers lhs;
         ArithmeticOperator op;
-        Box<TermWithIdentifiers> rhs;
-        TOIBinaryArithmetic(TermWithIdentifiers&& l, ArithmeticOperator o, TermWithIdentifiers&& r);
-        TOIBinaryArithmetic() = default;
+        TermWithIdentifiers rhs;
     };
     struct TOIArithmeticOperation {
         TaggedUnion<TOIUnaryMinus, TOIBinaryArithmetic> value;
     };
-
-    // ========================================================================
-    // TermWithIdentifiers — defined after TOI types
-    // ========================================================================
-    struct TermWithIdentifiers {
-        ExpandTaggedUnion<
-            TypeList<
-                Constant,
-                MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
-                FunctionCall,
-                ArithmeticOperation,
-                TypeHint,
-                BindMarker,
-                TOIArithmeticOperation,
-                AutoString8
-            >
-        > value;
-    };
-
-    // ========================================================================
-    // Box<TermWithIdentifiers> method bodies
-    // ========================================================================
-    template<> inline Box<TermWithIdentifiers>::Box(TermWithIdentifiers&& val) {
-        ptr = reinterpret_cast<TermWithIdentifiers*>(os::allocate(sizeof(TermWithIdentifiers)));
-        new (ptr) TermWithIdentifiers(move(val));
-    }
-    template<> inline Box<TermWithIdentifiers>::Box(const Box<TermWithIdentifiers>& o) {
-        if (o.ptr) {
-            ptr = reinterpret_cast<TermWithIdentifiers*>(os::allocate(sizeof(TermWithIdentifiers)));
-            new (ptr) TermWithIdentifiers(*o.ptr);
-        }
-    }
-    template<> inline Box<TermWithIdentifiers>::Box(Box<TermWithIdentifiers>&& o) noexcept {
-        ptr = o.ptr;
-        o.ptr = nullptr;
-    }
-    template<> inline Box<TermWithIdentifiers>& Box<TermWithIdentifiers>::operator=(const Box<TermWithIdentifiers>& o) {
-        if (this == &o) return *this;
-        if (ptr) { ptr->~TermWithIdentifiers(); os::deallocate(ptr); ptr = nullptr; }
-        if (o.ptr) {
-            ptr = reinterpret_cast<TermWithIdentifiers*>(os::allocate(sizeof(TermWithIdentifiers)));
-            new (ptr) TermWithIdentifiers(*o.ptr);
-        }
-        return *this;
-    }
-    template<> inline Box<TermWithIdentifiers>& Box<TermWithIdentifiers>::operator=(Box<TermWithIdentifiers>&& o) noexcept {
-        if (this == &o) return *this;
-        if (ptr) { ptr->~TermWithIdentifiers(); os::deallocate(ptr); ptr = nullptr; }
-        ptr = o.ptr;
-        o.ptr = nullptr;
-        return *this;
-    }
-    template<> inline Box<TermWithIdentifiers>::~Box() {
-        if (ptr) { ptr->~TermWithIdentifiers(); os::deallocate(ptr); ptr = nullptr; }
-    }
-
-    // ========================================================================
-    // TOI constructors (now that TermWithIdentifiers is complete)
-    // ========================================================================
-    inline TOIUnaryMinus::TOIUnaryMinus(TermWithIdentifiers&& t)
-        : operand(move(t)) {}
-
-    inline TOIBinaryArithmetic::TOIBinaryArithmetic(TermWithIdentifiers&& l, ArithmeticOperator o, TermWithIdentifiers&& r)
-        : lhs(move(l)), op(o), rhs(move(r)) {}
 
     // ========================================================================
     // common
