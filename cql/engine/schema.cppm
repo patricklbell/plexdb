@@ -47,6 +47,7 @@ export namespace cql::schema {
         U64 keyspaces_page;
         U64 tables_page;
         U64 columns_page;
+        U64 types_page;
     };
     struct KeyspaceHeader {
         bool tombstone;
@@ -58,17 +59,20 @@ export namespace cql::schema {
         U64 keyspace_idx;
         U64 btree_page;
     };
-    struct PackedType {
-        U8 index;      // 0=Basic,1=List,2=Set,3=Map,4=Vector
-        U8 elem_bt;    // BasicType: basic.value_dtype / list.element / set.key / map.key / vector.element
-        U8 val_bt;     // BasicType: map.value (unused otherwise)
-        U64 vec_count; // vector.count (unused otherwise)
+    // IDs 0-21 map directly to BasicType enum values (no registry entry).
+    // IDs >= 22 index into the types_blob registry (entry index = id - 22).
+    inline constexpr U32 type_registry_base = 22;
+    struct TypeRegistryEntry {
+        U8  kind;       // 1=List, 2=Set, 3=Map, 4=Vector  (5=UDT future)
+        U32 elem_id;    // element/key type ID
+        U32 val_id;     // value type ID (Map only)
+        U64 vec_count;  // Vector only
         bool frozen;
     };
     struct ColumnHeader {
         bool tombstone;
         U64 name_length;
-        PackedType type;
+        U32 type_id;
         U64 table_idx;
         KeyKind key_kind;
         U16 key_position;
@@ -106,6 +110,7 @@ export namespace cql::schema {
         DynamicArray<ColumnStorage> columns;
         DynamicArray<TableStorage> tables;
         DynamicArray<KeyspaceStorage> keyspaces;
+        DynamicArray<TypeRegistryEntry> type_entries;
     };
 
     struct Schema {
@@ -116,6 +121,7 @@ export namespace cql::schema {
         blob::BlobDynamicPaged keyspaces_blob;
         blob::BlobDynamicPaged tables_blob;
         blob::BlobDynamicPaged columns_blob;
+        blob::BlobDynamicPaged types_blob;
 
         Schema() = default;
     };

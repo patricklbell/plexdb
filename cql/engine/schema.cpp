@@ -12,32 +12,64 @@ import plexdb.coroutine;
 using namespace plexdb;
 
 namespace cql::schema {
-    static PackedType pack_type(const Type& t) {
-        return visit(t.variants, [](const auto& v) -> PackedType {
-            using T = RemoveCVRef<decltype(v)>;
-            if constexpr (SameAs<T, Type::Basic>)
-                return PackedType{0, static_cast<U8>(v.value_dtype), 0, 0, false};
-            else if constexpr (SameAs<T, Type::List>)
-                return PackedType{1, static_cast<U8>(get<BasicType>(v.element)), 0, 0, v.frozen};
-            else if constexpr (SameAs<T, Type::Set>)
-                return PackedType{2, static_cast<U8>(get<BasicType>(v.key)), 0, 0, v.frozen};
-            else if constexpr (SameAs<T, Type::Map>)
-                return PackedType{3, static_cast<U8>(get<BasicType>(v.key)), static_cast<U8>(get<BasicType>(v.value)), 0, v.frozen};
-            else {
-                static_assert(SameAs<T, Type::Vector>, "unhandled Type variant in pack_type");
-                return PackedType{4, static_cast<U8>(get<BasicType>(v.element)), 0, v.count, v.frozen};
-            }
-        });
+    static ElementType unpack_element_type(const Schema& schema, U32 id);
+    static Type        unpack_type(const Schema& schema, U32 id);
+    static U32         register_type(Schema& schema, const Type& t);
+
+    static U32 pack_element_type(Schema& schema, const ElementType& e) {
+        if (type_matches_tag<BasicType>(e))
+            return static_cast<U32>(get<BasicType>(e));
+        return register_type(schema, get<Type>(e));
     }
 
-    static Type unpack_type(PackedType p) {
-        auto bt = [](U8 b) { return static_cast<BasicType>(b); };
-        switch (p.index) {
-            case 0:  return create_basic(bt(p.elem_bt));
-            case 1:  { Type t; t.variants = Type::List{ElementType{bt(p.elem_bt)}, p.frozen}; return t; }
-            case 2:  { Type t; t.variants = Type::Set{ElementType{bt(p.elem_bt)}, p.frozen}; return t; }
-            case 3:  { Type t; t.variants = Type::Map{ElementType{bt(p.elem_bt)}, ElementType{bt(p.val_bt)}, p.frozen}; return t; }
-            default: { Type t; t.variants = Type::Vector{ElementType{bt(p.elem_bt)}, p.vec_count, p.frozen}; return t; }
+    static U32 register_type(Schema& schema, const Type& t) {
+        if (type_matches_tag<Type::Basic>(t.variants))
+            return static_cast<U32>(get<Type::Basic>(t.variants).value_dtype);
+
+        TypeRegistryEntry entry = visit(t.variants, [&](const auto& v) -> TypeRegistryEntry {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, Type::Basic>)
+                return {};  // unreachable — handled above
+            else if constexpr (SameAs<T, Type::List>)
+                return {1, pack_element_type(schema, v.element), 0, 0, v.frozen};
+            else if constexpr (SameAs<T, Type::Set>)
+                return {2, pack_element_type(schema, v.key), 0, 0, v.frozen};
+            else if constexpr (SameAs<T, Type::Map>)
+                return {3, pack_element_type(schema, v.key), pack_element_type(schema, v.value), 0, v.frozen};
+            else {
+                static_assert(SameAs<T, Type::Vector>, "unhandled Type variant in register_type");
+                return {4, pack_element_type(schema, v.element), 0, v.count, v.frozen};
+            }
+        });
+
+        for (U64 i = 0; i < schema.storage.type_entries.length; i++) {
+            const TypeRegistryEntry& existing = schema.storage.type_entries[i];
+            if (existing.kind == entry.kind && existing.elem_id == entry.elem_id &&
+                existing.val_id == entry.val_id && existing.vec_count == entry.vec_count &&
+                existing.frozen == entry.frozen)
+                return static_cast<U32>(type_registry_base + i);
+        }
+
+        push_back(schema.storage.type_entries, entry);
+        return static_cast<U32>(type_registry_base + schema.storage.type_entries.length - 1);
+    }
+
+    static ElementType unpack_element_type(const Schema& schema, U32 id) {
+        if (id < type_registry_base)
+            return ElementType{static_cast<BasicType>(id)};
+        return ElementType{unpack_type(schema, id)};
+    }
+
+    static Type unpack_type(const Schema& schema, U32 id) {
+        if (id < type_registry_base) {
+            Type t; t.variants = Type::Basic{static_cast<BasicType>(id)}; return t;
+        }
+        const TypeRegistryEntry& e = schema.storage.type_entries[id - type_registry_base];
+        switch (e.kind) {
+            case 1: { Type t; t.variants = Type::List{unpack_element_type(schema, e.elem_id), e.frozen}; return t; }
+            case 2: { Type t; t.variants = Type::Set{unpack_element_type(schema, e.elem_id), e.frozen}; return t; }
+            case 3: { Type t; t.variants = Type::Map{unpack_element_type(schema, e.elem_id), unpack_element_type(schema, e.val_id), e.frozen}; return t; }
+            default: { Type t; t.variants = Type::Vector{unpack_element_type(schema, e.elem_id), e.vec_count, e.frozen}; return t; }
         }
     }
 
@@ -61,6 +93,7 @@ namespace cql::schema {
         co_await blob::load(schema.keyspaces_blob, in_pager, schema_header.keyspaces_page);
         co_await blob::load(schema.tables_blob,    in_pager, schema_header.tables_page);
         co_await blob::load(schema.columns_blob,   in_pager, schema_header.columns_page);
+        co_await blob::load(schema.types_blob,     in_pager, schema_header.types_page);
 
         //
         // allocate storage and cache blob contents in memory
@@ -123,6 +156,12 @@ namespace cql::schema {
             push_back(schema.storage.columns, move(col_storage));
         }
 
+        for (U64 type_offset = 0; type_offset < schema.types_blob.size_bytes;) {
+            TypeRegistryEntry entry{};
+            co_await blob::tget(schema.types_blob, &entry, &type_offset);
+            push_back(schema.storage.type_entries, entry);
+        }
+
         //
         // resolves indices and construct views
         //
@@ -158,7 +197,7 @@ namespace cql::schema {
                     Column col {
                         .tombstone = col_storage.header.tombstone,
                         .name = col_storage.name,
-                        .type = unpack_type(col_storage.header.type),
+                        .type = unpack_type(schema, col_storage.header.type_id),
                         .key_kind = col_storage.header.key_kind,
                         .key_position = col_storage.header.key_position,
                     };
@@ -204,11 +243,13 @@ namespace cql::schema {
         U64 keyspaces_page = co_await blob::create_paged_dynamic(pager, 0);
         U64 tables_page    = co_await blob::create_paged_dynamic(pager, 0);
         U64 columns_page   = co_await blob::create_paged_dynamic(pager, 0);
+        U64 types_page     = co_await blob::create_paged_dynamic(pager, 0);
 
         SchemaHeader header{
             .keyspaces_page = keyspaces_page,
             .tables_page = tables_page,
             .columns_page = columns_page,
+            .types_page = types_page,
         };
 
         blob::BlobStaticPaged schema_blob;
@@ -577,6 +618,21 @@ namespace cql::schema {
         assert_true_not_implemented(!create.mask, "column MASKED WITH is not implemented");
         assert_true(read_column_impl(schema, tbl, create.name.identifier).error == Error::MissingColumn, "column already exists");
 
+        U64 prev_type_count = schema.storage.type_entries.length;
+        U32 type_id = register_type(schema, create.type);
+
+        // Persist any newly registered type entries.
+        if (schema.storage.type_entries.length > prev_type_count) {
+            U64 new_types_offset = prev_type_count * sizeof(TypeRegistryEntry);
+            co_await blob::resize(schema.types_blob, schema.storage.type_entries.length * sizeof(TypeRegistryEntry));
+            for (U64 i = prev_type_count; i < schema.storage.type_entries.length; i++) {
+                co_await blob::update(schema.types_blob,
+                    reinterpret_cast<const U8*>(&schema.storage.type_entries[i]),
+                    sizeof(TypeRegistryEntry), new_types_offset);
+                new_types_offset += sizeof(TypeRegistryEntry);
+            }
+        }
+
         U64 offset_bytes = schema.columns_blob.size_bytes;
 
         ColumnStorage col_storage {
@@ -584,7 +640,7 @@ namespace cql::schema {
             .header = ColumnHeader{
                 .tombstone = false,
                 .name_length = create.name.identifier.length,
-                .type = pack_type(create.type),
+                .type_id = type_id,
                 .table_idx = tbl.idx,
                 .key_kind = key_kind,
                 .key_position = key_position,
@@ -605,7 +661,7 @@ namespace cql::schema {
         Column col {
             .tombstone = col_storage_ref.header.tombstone,
             .name = col_storage_ref.name,
-            .type = unpack_type(col_storage_ref.header.type),
+            .type = unpack_type(schema, col_storage_ref.header.type_id),
             .key_kind = key_kind,
             .key_position = key_position,
         };
