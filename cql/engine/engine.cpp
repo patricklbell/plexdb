@@ -469,7 +469,6 @@ namespace cql::engine {
                         .kind = ResultKind::Rows,
                         .keyspace = ks_name,
                         .table = stmt.from.table_name,
-                        .row_limit_count = 1,
                         .rows = RowRange{
                             .start = move(start_it),
                             .stop  = move(stop_it),
@@ -571,24 +570,64 @@ namespace cql::engine {
 
                         assert_true_not_implemented(!stmt.if_not_exists, "INSERT IF NOT EXISTS is not implemented");
 
-                        // collect serialized row bytes into buffer (sync)
+                        auto is_static_col = [tbl](U64 ci) -> bool {
+                            for (U64 si : tbl->static_col_indices) if (si == ci) return true;
+                            return false;
+                        };
+
+                        // collect regular (non-static) row bytes into buffer (sync)
                         DynamicArray<U8> row_buffer;
                         auto write = create_buffer_writer(row_buffer);
 
                         io::write_column_mask(
                             write,
-                            [&](U64 col_idx) { return static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name)); },
+                            [&](U64 col_idx) {
+                                return static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name))
+                                    && !is_static_col(col_idx);
+                            },
                             tbl->cols.length
                         );
-                        for (const auto& col : tbl->cols) {
-                            auto names_idx_opt = try_get_names_idx(col.name);
-                            if (names_idx_opt) {
-                                const auto& eval = evaluate(v.values[*names_idx_opt]);
-                                io::cast_write_evaluated_as_column_value(write, eval, col.type);
+                        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                            if (!is_static_col(ci)) {
+                                auto names_idx_opt = try_get_names_idx(tbl->cols[ci].name);
+                                if (names_idx_opt) {
+                                    const auto& eval = evaluate(v.values[*names_idx_opt]);
+                                    io::cast_write_evaluated_as_column_value(write, eval, tbl->cols[ci].type);
+                                }
                             }
                         }
 
-                        // write buffer to new blob (async)
+                        // collect static column bytes into separate buffer (if any static cols present in INSERT)
+                        DynamicArray<U8> static_buffer;
+                        bool any_static_in_insert = false;
+                        for (U64 si : tbl->static_col_indices) {
+                            if (try_get_names_idx(tbl->cols[si].name)) {
+                                any_static_in_insert = true;
+                                break;
+                            }
+                        }
+                        if (any_static_in_insert) {
+                            auto write_static = create_buffer_writer(static_buffer);
+                            io::write_column_mask(
+                                write_static,
+                                [&](U64 col_idx) {
+                                    return is_static_col(col_idx)
+                                        && static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name));
+                                },
+                                tbl->cols.length
+                            );
+                            for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                                if (is_static_col(ci)) {
+                                    auto names_idx_opt = try_get_names_idx(tbl->cols[ci].name);
+                                    if (names_idx_opt) {
+                                        const auto& eval = evaluate(v.values[*names_idx_opt]);
+                                        io::cast_write_evaluated_as_column_value(write_static, eval, tbl->cols[ci].type);
+                                    }
+                                }
+                            }
+                        }
+
+                        // write regular row buffer to new blob (async)
                         U64 row_page = co_await blob::create_paged_dynamic(*engine.pager);
                         blob::BlobDynamicPaged row_blob;
                         co_await blob::load(row_blob, engine.pager, row_page);
@@ -601,17 +640,51 @@ namespace cql::engine {
                         }
                         DynamicArray<U8> pk_bytes = key::serialize_partition(*tbl, partition_evals);
 
-                        if (tbl->clustering_key_col_indices.length > 0) {
-                            auto clustering_page_opt = co_await btree::tfind<U64>(tbl->btree, pk_bytes);
-                            U64 clustering_page;
-                            if (clustering_page_opt) {
-                                clustering_page = *clustering_page_opt;
+                        if (schema::has_clustering_keys(*tbl)) {
+                            // look up or create the partition entry
+                            auto entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
+                            schema::PartitionEntry entry;
+                            bool new_partition;
+                            if (entry_opt) {
+                                entry = *entry_opt;
+                                new_partition = false;
                             } else {
-                                clustering_page = co_await btree::create_paged(*engine.pager, btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{});
-                                co_await btree::tinsert(tbl->btree, pk_bytes, clustering_page);
+                                entry.data_page = co_await btree::create_paged(
+                                    *engine.pager,
+                                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+                                );
+                                entry.static_page = 0;
+                                new_partition = true;
                             }
-                            schema::PartitionBTree clustering_btree{engine.pager, clustering_page,
-                                                                     btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
+
+                            // create or replace static blob when static columns are present in this INSERT
+                            if (any_static_in_insert) {
+                                if (entry.static_page == 0) {
+                                    entry.static_page = co_await blob::create_paged_dynamic(*engine.pager);
+                                    blob::BlobDynamicPaged static_blob;
+                                    co_await blob::load(static_blob, engine.pager, entry.static_page);
+                                    co_await blob::insert(static_blob, static_buffer.ptr, static_buffer.length);
+                                } else {
+                                    blob::BlobDynamicPaged static_blob;
+                                    co_await blob::load(static_blob, engine.pager, entry.static_page);
+                                    co_await blob::remove(static_blob);
+                                    entry.static_page = co_await blob::create_paged_dynamic(*engine.pager);
+                                    co_await blob::load(static_blob, engine.pager, entry.static_page);
+                                    co_await blob::insert(static_blob, static_buffer.ptr, static_buffer.length);
+                                }
+                            }
+
+                            // persist the partition entry (insert new or update existing static_page)
+                            if (new_partition) {
+                                co_await btree::tinsert(tbl->btree, pk_bytes, entry);
+                            } else if (any_static_in_insert) {
+                                co_await btree::tupdate(tbl->btree, pk_bytes, entry);
+                            }
+
+                            schema::ClusteringBTree clustering_btree{
+                                engine.pager, entry.data_page,
+                                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+                            };
                             DynamicArray<Evaluated> clustering_evals;
                             for (U64 ck_ci : tbl->clustering_key_col_indices) {
                                 push_back(clustering_evals, evaluate(v.values[*try_get_names_idx(tbl->cols[ck_ci].name)]));
@@ -619,7 +692,7 @@ namespace cql::engine {
                             DynamicArray<U8> ck_bytes = key::serialize_clustering(*tbl, clustering_evals);
                             co_await btree::tinsert(clustering_btree, ck_bytes, row_page);
                         } else {
-                            co_await btree::tinsert(tbl->btree, pk_bytes, row_page);
+                            co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{row_page, 0});
                         }
 
                         co_return create_void_success();
@@ -667,7 +740,7 @@ namespace cql::engine {
                 assert_true(static_cast<bool>(pk_val), "UPDATE requires partition key equality in WHERE clause");
 
                 DynamicArray<U8> pk_bytes = key::serialize_partition_single(*tbl, *pk_val);
-                auto existing_page_opt = co_await btree::tfind<U64>(tbl->btree, pk_bytes);
+                auto existing_entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
 
                 auto col_idx_for = [&](String8 name) -> Optional<U64> {
                     for (U64 i = 0; i < tbl->cols.length; i++) {
@@ -676,7 +749,8 @@ namespace cql::engine {
                     return {};
                 };
 
-                if (existing_page_opt) {
+                if (existing_entry_opt) {
+                    auto existing_entry = *existing_entry_opt;
                     // read existing row into col_values
                     DynamicArray<ColumnValue> col_values;
                     DynamicArray<bool> col_present;
@@ -684,14 +758,14 @@ namespace cql::engine {
                     resize(col_present, tbl->cols.length);
                     {
                         ColumnIterator col_it;
-                        co_await load(col_it, engine.pager, tbl, *existing_page_opt);
+                        co_await load(col_it, engine.pager, tbl, existing_entry.data_page, existing_entry.static_page);
                         ColumnIterator col_end{};
                         U64 ci = 0;
                         while (col_it != col_end && ci < tbl->cols.length) {
-                            ColumnValue val = *col_it;
+                            ColumnValue val = co_await col_it.deref();
                             col_present[ci] = !type_matches_tag<Null>(val);
                             col_values[ci] = move(val);
-                            ++col_it;
+                            co_await col_it.advance();
                             ++ci;
                         }
                     }
@@ -720,17 +794,26 @@ namespace cql::engine {
                             } else {
                                 if (io::can_cast_write_evaluated_as_column_value(eval, tbl->cols[idx].type)) {
                                     col_present[idx] = true;
-                                    // round-trip through in-memory buffer to get ColumnValue
                                     DynamicArray<U8> tmp_buffer;
                                     auto w = create_buffer_writer(tmp_buffer);
                                     io::cast_write_evaluated_as_column_value(w, eval, tbl->cols[idx].type);
                                     U64 read_offset = 0;
-                                    auto r = [&tmp_buffer, &read_offset](U8* out_value, U64 size) {
-                                        os::memory_copy(out_value, tmp_buffer.ptr + read_offset, size);
+                                    auto r = [&tmp_buffer, &read_offset](U8* out_value, U64 size) -> coroutine::Task<void> {
+                                        if (out_value != nullptr)
+                                            os::memory_copy(out_value, tmp_buffer.ptr + read_offset, size);
                                         read_offset += size;
+                                        co_return;
                                     };
-                                    col_values[idx] = io::read_column_value(r, tbl->cols[idx].type);
+                                    col_values[idx] = co_await io::read_column_value(r, tbl->cols[idx].type);
                                 }
+                            }
+                        } else if (type_matches_tag<ColumnValue>(eval.value)) {
+                            ColumnValue& cv = get<ColumnValue>(eval.value);
+                            if (type_matches_tag<Null>(cv)) {
+                                col_present[idx] = false;
+                            } else if (io::can_write_column_value(cv, tbl->cols[idx].type)) {
+                                col_present[idx] = true;
+                                col_values[idx] = move(cv);
                             }
                         }
                     }
@@ -750,7 +833,7 @@ namespace cql::engine {
                     blob::BlobDynamicPaged row_blob;
                     co_await blob::load(row_blob, engine.pager, new_row_page);
                     co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
-                    co_await btree::tinsert(tbl->btree, pk_bytes, new_row_page);
+                    co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{new_row_page, 0});
                 } else {
                     // insert new row with only assigned columns + PK
                     DynamicArray<bool> col_present;
@@ -800,7 +883,7 @@ namespace cql::engine {
                     blob::BlobDynamicPaged row_blob;
                     co_await blob::load(row_blob, engine.pager, row_page);
                     co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
-                    co_await btree::tinsert(tbl->btree, pk_bytes, row_page);
+                    co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{row_page, 0});
                 }
 
                 co_return create_void_success();
@@ -841,9 +924,9 @@ namespace cql::engine {
                 assert_true_not_implemented(static_cast<bool>(pk_val), "DELETE for non-partition key equality in WHERE clause is not implemented");
 
                 DynamicArray<U8> pk_bytes = key::serialize_partition_single(*tbl, *pk_val);
-                if (auto opt_row_page = co_await btree::tfind<U64>(tbl->btree, pk_bytes); static_cast<bool>(opt_row_page)) {
+                if (auto opt_entry = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes); static_cast<bool>(opt_entry)) {
                     blob::BlobDynamicPaged row_blob;
-                    co_await blob::load(row_blob, engine.pager, *opt_row_page);
+                    co_await blob::load(row_blob, engine.pager, opt_entry->data_page);
                     co_await blob::remove(row_blob);
                     co_await btree::remove(tbl->btree, pk_bytes);
                 }
@@ -960,7 +1043,7 @@ namespace cql::engine {
         return result;
     }
 
-    static void bind_values_to_statement(Statement& stmt, DynamicArray<Constant>& bound_values) {
+    static void bind_values_to_statement(Statement& stmt, DynamicArray<Term>& bound_values) {
         if (bound_values.length == 0) return;
 
         visit(stmt.value, [&](auto& s) {
@@ -972,7 +1055,7 @@ namespace cql::engine {
                 U64 bind_idx = 0;
                 for (U64 i = 0; i < nv.values.length && bind_idx < bound_values.length; i++) {
                     if (type_matches_tag<BindMarker>(nv.values[i].value)) {
-                        nv.values[i].value = move(bound_values[bind_idx]);
+                        nv.values[i] = move(bound_values[bind_idx]);
                         bind_idx++;
                     }
                 }
@@ -980,7 +1063,7 @@ namespace cql::engine {
         });
     }
 
-    coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values) {
+    coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Term>&& bound_values) {
         bind_values_to_statement(statement, bound_values);
         co_return co_await execute(engine, statement);
     }
@@ -1033,7 +1116,7 @@ namespace cql::engine {
         return find(engine.prepared_cache, prepared_id);
     }
 
-    coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Constant>&& bound_values) {
+    coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values) {
         auto* entry = find(engine.prepared_cache, prepared_id);
         if (entry == nullptr) {
             co_return ExecutionResult{ .status = ExecutionStatus::Invalid, .message = "Prepared statement not found" };
