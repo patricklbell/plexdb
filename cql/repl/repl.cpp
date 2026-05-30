@@ -139,12 +139,16 @@ namespace cql::repl {
                         while (row_it != row_end && row_count < row_limit) {
                             ColumnRange col_range = co_await row_it.deref();
                             bool first = true;
-                            for (U64 ci = 0; ci < tbl->cols.length && col_range.start != col_range.stop; ci++, ++col_range.start) {
-                                if (!is_selected(ci)) continue;
-                                os::stream_write(ostream, first ? " " : " | ");
-                                AutoString8 val_str = to_str(*col_range.start, tbl->cols[ci].type);
-                                os::stream_write(ostream, val_str.c_str, val_str.length);
-                                first = false;
+                            U64 ci = 0;
+                            while (col_range.start != col_range.stop && ci < tbl->cols.length) {
+                                if (is_selected(ci)) {
+                                    AutoString8 val_str = to_str(co_await col_range.start.deref(), tbl->cols[ci].type);
+                                    os::stream_write(ostream, first ? " " : " | ");
+                                    os::stream_write(ostream, val_str.c_str, val_str.length);
+                                    first = false;
+                                }
+                                co_await col_range.start.advance();
+                                ++ci;
                             }
                             os::stream_write(ostream, "\n");
                             co_await row_it.advance();
