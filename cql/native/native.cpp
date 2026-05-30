@@ -60,6 +60,7 @@ namespace cql::native {
         return len;
     }
 
+<<<<<<< Updated upstream
     static VarInt decode_varint_cql(const U8* val, S32 len) {
         VarInt result;
         if (len == 0) return result;
@@ -108,6 +109,9 @@ namespace cql::native {
     }
 
     ColumnValue read_cql_value_as_column_value(const U8*& p, const U8* end, BasicType dtype) {
+=======
+    Constant read_cql_value_as_constant(const U8*& p, const U8* end, type::Basic dtype) {
+>>>>>>> Stashed changes
         assert_true(p + 4 <= end, "truncated value length");
         S32 len = read_be_s32(p);
         p += 4;
@@ -117,22 +121,28 @@ namespace cql::native {
         p += len;
 
         switch (dtype) {
+<<<<<<< Updated upstream
             case BasicType::text: case BasicType::ascii: case BasicType::varchar:
                 return ColumnValue{AutoString8(val, U64(len))};
             case BasicType::int_:{
+=======
+            case type::Basic::text: case type::Basic::ascii: case type::Basic::varchar:
+                return Constant{.value = AutoString8(val, U64(len))};
+            case type::Basic::int_:{
+>>>>>>> Stashed changes
                 assert_true(len == 4, "int value must be 4 bytes");
                 S32 v = S32((U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3]));
                 return ColumnValue{v};
             }
-            case BasicType::bigint: case BasicType::timestamp: case BasicType::counter: case BasicType::time:{
+            case type::Basic::bigint: case type::Basic::timestamp: case type::Basic::counter: case type::Basic::time:{
                 assert_true(len == 8, "bigint value must be 8 bytes");
                 return ColumnValue{read_be_s64(val)};
             }
-            case BasicType::smallint:{
+            case type::Basic::smallint:{
                 assert_true(len == 2, "smallint value must be 2 bytes");
                 return ColumnValue{S16((U16(val[0]) << 8) | U16(val[1]))};
             }
-            case BasicType::double_:{
+            case type::Basic::double_:{
                 assert_true(len == 8, "double value must be 8 bytes");
                 U64 bits = (U64(val[0]) << 56) | (U64(val[1]) << 48) | (U64(val[2]) << 40) | (U64(val[3]) << 32) |
                            (U64(val[4]) << 24) | (U64(val[5]) << 16) | (U64(val[6]) << 8) | U64(val[7]);
@@ -140,15 +150,16 @@ namespace cql::native {
                 os::memory_copy(&d, &bits, sizeof(d));
                 return ColumnValue{d};
             }
-            case BasicType::float_:{
+            case type::Basic::float_:{
                 assert_true(len == 4, "float value must be 4 bytes");
                 U32 bits = (U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3]);
                 F32 fv;
                 os::memory_copy(&fv, &bits, sizeof(fv));
                 return ColumnValue{fv};
             }
-            case BasicType::boolean:{
+            case type::Basic::boolean:{
                 assert_true(len == 1, "boolean value must be 1 byte");
+<<<<<<< Updated upstream
                 return ColumnValue{U8(val[0])};
             }
             case BasicType::tinyint:{
@@ -160,12 +171,32 @@ namespace cql::native {
                 UUID uuid{};
                 os::memory_copy(&uuid.value[0], val, 16);
                 return ColumnValue{uuid};
+=======
+                return Constant{.value = bool(val[0])};
             }
-            case BasicType::date:{
+            case type::Basic::uuid:{
+                assert_true(len == 16, "uuid value must be 16 bytes");
+                UUID uuid{};
+                os::memory_copy(&uuid.value[0], val, 16);
+                return Constant{.value = uuid};
+            }
+            case type::Basic::timeuuid:{
+                assert_true(len == 16, "timeuuid value must be 16 bytes");
+                UUID uuid{};
+                os::memory_copy(&uuid.value[0], val, 16);
+                return Constant{.value = uuid};
+            }
+            case type::Basic::tinyint:{
+                S64 v = S64(S8(val[0]));
+                return Constant{.value = v};
+>>>>>>> Stashed changes
+            }
+            case type::Basic::date:{
                 assert_true(len == 4, "date value must be 4 bytes");
                 S32 v = read_be_s32(val);
                 return ColumnValue{v};
             }
+<<<<<<< Updated upstream
             case BasicType::blob: case BasicType::hex:{
                 Blob b;
                 resize(b.value, U64(len));
@@ -198,6 +229,12 @@ namespace cql::native {
                 dur.days        = S32(read_vint_cql(dp));
                 dur.nanoseconds = read_vint_cql(dp);
                 return ColumnValue{dur};
+=======
+            case type::Basic::blob: case type::Basic::decimal:
+            case type::Basic::duration: case type::Basic::inet:
+            case type::Basic::varint: case type::Basic::hex:{
+                return Constant{.value = AutoString8(val, U64(len))};
+>>>>>>> Stashed changes
             }
             default:
                 assert_not_implemented("CQL value decoding for this basic type is not implemented");
@@ -312,9 +349,18 @@ namespace cql::native {
                     push_back(bound_values, Term{.value = Constant{.value = Null{}}});
                 for (U16 value_idx = 0; value_idx < n_values && p < end; value_idx++) {
                     String8 name = read_cql_string(p, end);
+<<<<<<< Updated upstream
                     U64 bind_spec_idx = bind_specs.length;
                     for (U64 idx = 0; idx < bind_specs.length; idx++) {
                         if (bind_specs[idx].name == name) {
+=======
+                    type::Basic dtype{};
+                    U64 bind_spec_idx = bind_specs.length;
+                    for (U64 idx = 0; idx < bind_specs.length; idx++) {
+                        if (bind_specs[idx].name == name) {
+                            assert_true_not_implemented(type_matches_tag<type::Basic>(bind_specs[idx].type.value), "collection type bind parameters are not implemented");
+                            dtype = get<type::Basic>(bind_specs[idx].type.value);
+>>>>>>> Stashed changes
                             bind_spec_idx = idx;
                             break;
                         }
@@ -325,7 +371,13 @@ namespace cql::native {
             } else {
                 for (U16 bind_spec_idx = 0; bind_spec_idx < n_values && p < end; bind_spec_idx++) {
                     assert_true_not_implemented(bind_spec_idx < bind_specs.length, "more positional bind values than expected - error handling is not implemented");
+<<<<<<< Updated upstream
                     push_back(bound_values, read_cql_value_as_term(p, end, bind_specs[bind_spec_idx].type));
+=======
+                    assert_true_not_implemented(type_matches_tag<type::Basic>(bind_specs[bind_spec_idx].type.value), "collection type bind parameters are not implemented");
+                    type::Basic dtype = get<type::Basic>(bind_specs[bind_spec_idx].type.value);
+                    push_back(bound_values, read_cql_value_as_constant(p, end, dtype));
+>>>>>>> Stashed changes
                 }
             }
         }
@@ -463,54 +515,54 @@ namespace cql::native {
             append_bytes(f, data, U64(n));
     }
 
-    void append_type_codes_option(Frame& f, Type cdtype) {
-        visit(cdtype.variants, [&f](const auto& v) {
+    void append_type_codes_option(Frame& f, type::Type cdtype) {
+        visit(cdtype.value, [&f](const auto& v) {
             using T = RemoveCVRef<decltype(v)>;
-            if constexpr (SameAs<T, Type::Basic>) {
-                append_be_u16(f, basic_type_to_type_code(v.value_dtype));
-            } else if constexpr (SameAs<T, Type::List>) {
+            if constexpr (SameAs<T, type::Basic>) {
+                append_be_u16(f, basic_type_to_type_code(v));
+            } else if constexpr (SameAs<T, type::List>) {
                 append_be_u16(f, type_codes::List);
-                append_be_u16(f, basic_type_to_type_code(get<BasicType>(v.element)));
-            } else if constexpr (SameAs<T, Type::Set>) {
+                append_be_u16(f, basic_type_to_type_code(get<type::Basic>(v.element.value)));
+            } else if constexpr (SameAs<T, type::Set>) {
                 append_be_u16(f, type_codes::Set);
-                append_be_u16(f, basic_type_to_type_code(get<BasicType>(v.key)));
-            } else if constexpr (SameAs<T, Type::Map>) {
+                append_be_u16(f, basic_type_to_type_code(get<type::Basic>(v.key.value)));
+            } else if constexpr (SameAs<T, type::Map>) {
                 append_be_u16(f, type_codes::Map);
-                append_be_u16(f, basic_type_to_type_code(get<BasicType>(v.key)));
-                append_be_u16(f, basic_type_to_type_code(get<BasicType>(v.value)));
-            } else if constexpr (SameAs<T, Type::Vector>) {
+                append_be_u16(f, basic_type_to_type_code(get<type::Basic>(v.key.value)));
+                append_be_u16(f, basic_type_to_type_code(get<type::Basic>(v.value.value)));
+            } else if constexpr (SameAs<T, type::Vector>) {
                 assert_not_implemented("native protocol type code for vector collection type is not implemented");
             }
         });
     }
 
-    void append_cql_value(Frame& f, const ColumnValue& value, Type cdtype) {
+    void append_cql_value(Frame& f, const ColumnValue& value, type::Type cdtype) {
         visit(value, [&](const auto& v) {
             using T = Decay<decltype(v)>;
 
             if constexpr (SameAs<T, Null>) {
                 append_be_s32(f, -1);
             } else if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
-                assert_true(type_matches_tag<Type::Basic>(cdtype.variants), "static value type requires ctype basic, this should never happen");
-                append_cql_basic_element(f, get<Type::Basic>(cdtype.variants).value_dtype, v);
+                assert_true(type_matches_tag<type::Basic>(cdtype.value), "static value type requires ctype basic, this should never happen");
+                append_cql_basic_element(f, get<type::Basic>(cdtype.value), v);
             } else if constexpr (IsCqlDM<T>) {
-                assert_true(type_matches_tag<Type::Map>(cdtype.variants), "static value type requires ctype map, this should never happen");
-                const auto& m = get<Type::Map>(cdtype.variants);
+                assert_true(type_matches_tag<type::Map>(cdtype.value), "static value type requires ctype map, this should never happen");
+                const auto& m = get<type::Map>(cdtype.value);
                 U64 pair_count = length(v);
                 S32 body = 4;
                 for (auto& it : v) {
-                    body += 4 + basic_element_byte_size(get<BasicType>(m.key), it.first);
-                    body += 4 + basic_element_byte_size(get<BasicType>(m.value), it.second);
+                    body += 4 + basic_element_byte_size(get<type::Basic>(m.key.value), it.first);
+                    body += 4 + basic_element_byte_size(get<type::Basic>(m.value.value), it.second);
                 }
                 append_be_s32(f, body);
                 append_be_s32(f, S32(pair_count));
                 for (auto& it : v) {
-                    append_cql_basic_element(f, get<BasicType>(m.key), it.first);
-                    append_cql_basic_element(f, get<BasicType>(m.value), it.second);
+                    append_cql_basic_element(f, get<type::Basic>(m.key.value), it.first);
+                    append_cql_basic_element(f, get<type::Basic>(m.value.value), it.second);
                 }
             } else if constexpr (IsCqlDS<T>) {
-                assert_true(type_matches_tag<Type::Set>(cdtype.variants), "static value type requires ctype set, this should never happen");
-                const auto key_dtype = get<BasicType>(get<Type::Set>(cdtype.variants).key);
+                assert_true(type_matches_tag<type::Set>(cdtype.value), "static value type requires ctype set, this should never happen");
+                const auto key_dtype = get<type::Basic>(get<type::Set>(cdtype.value).key.value);
                 U64 elem_count = length(v);
                 S32 body = 4;
                 for (auto& e : v) body += 4 + basic_element_byte_size(key_dtype, e);
@@ -518,13 +570,13 @@ namespace cql::native {
                 append_be_s32(f, S32(elem_count));
                 for (auto& e : v) append_cql_basic_element(f, key_dtype, e);
             } else if constexpr (IsCqlDA<T>) {
-                bool is_vec = type_matches_tag<Type::Vector>(cdtype.variants);
+                bool is_vec = type_matches_tag<type::Vector>(cdtype.value);
                 assert_true(
-                    type_matches_tag<Type::List>(cdtype.variants) || is_vec,
+                    type_matches_tag<type::List>(cdtype.value) || is_vec,
                     "static value type requires ctype list/vector, this should never happen"
                 );
-                U64 elem_count = is_vec ? get<Type::Vector>(cdtype.variants).count : v.length;
-                const auto elem_dtype = is_vec ? get<BasicType>(get<Type::Vector>(cdtype.variants).element) : get<BasicType>(get<Type::List>(cdtype.variants).element);
+                U64 elem_count = is_vec ? get<type::Vector>(cdtype.value).count : v.length;
+                const auto elem_dtype = is_vec ? get<type::Basic>(get<type::Vector>(cdtype.value).element.value) : get<type::Basic>(get<type::List>(cdtype.value).element.value);
                 S32 body = 4;
                 for (U64 i = 0; i < elem_count; ++i)
                     body += 4 + basic_element_byte_size(elem_dtype, v[i]);

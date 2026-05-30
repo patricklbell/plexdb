@@ -128,43 +128,44 @@ namespace cql::key {
     // Fixed-width types in composite keys: prepend a 2-byte big-endian length (constant, so ordering is unaffected).
     // Variable-length types in composite keys: use escaped-terminated encoding to preserve ordering.
     static void append_component(DynamicArray<U8>& out, const Evaluated& eval,
-                                  BasicType dtype, bool is_composite) {
+                                  type::Basic dtype, bool is_composite) {
+        const Constant& c = get<Constant>(eval.value);
         switch (dtype) {
-            case BasicType::bigint:
-            case BasicType::timestamp:
-            case BasicType::counter: {
+            case type::Basic::bigint:
+            case type::Basic::timestamp:
+            case type::Basic::counter: {
                 if (is_composite) append_u16_be(out, 8);
                 append_s64_be(out, eval_as_s64(eval));
                 break;
             }
-            case BasicType::int_: {
+            case type::Basic::int_: {
                 if (is_composite) append_u16_be(out, 4);
                 append_s32_be(out, static_cast<S32>(eval_as_s64(eval)));
                 break;
             }
-            case BasicType::smallint: {
+            case type::Basic::smallint: {
                 if (is_composite) append_u16_be(out, 2);
                 append_s16_be(out, static_cast<S16>(eval_as_s64(eval)));
                 break;
             }
-            case BasicType::tinyint: {
-                U8 bits = static_cast<U8>(static_cast<S8>(eval_as_s64(eval))) ^ 0x80U;
+            case type::Basic::tinyint: {
+                U8 bits = static_cast<U8>(static_cast<S8>(get<S64>(c.value))) ^ 0x80U;
                 if (is_composite) append_u16_be(out, 1);
                 push_back(out, bits);
                 break;
             }
-            case BasicType::boolean: {
+            case type::Basic::boolean: {
                 if (is_composite) append_u16_be(out, 1);
                 push_back(out, eval_as_bool(eval) ? U8(1) : U8(0));
                 break;
             }
-            case BasicType::double_: {
+            case type::Basic::double_: {
                 if (is_composite) append_u16_be(out, 8);
                 append_f64_be(out, eval_as_f64(eval));
                 break;
             }
-            case BasicType::float_: {
-                F32 v = eval_as_f32(eval);
+            case type::Basic::float_: {
+                F32 v = static_cast<F32>(get<F64>(c.value));
                 U32 bits;
                 os::memory_copy(&bits, &v, sizeof(bits));
                 bits = (bits & 0x80000000U) ? ~bits : (bits ^ 0x80000000U);
@@ -173,31 +174,31 @@ namespace cql::key {
                 append_bytes(out, bytes, 4);
                 break;
             }
-            case BasicType::text:
-            case BasicType::varchar:
-            case BasicType::ascii: {
-                const AutoString8& s = eval_as_string(eval);
+            case type::Basic::text:
+            case type::Basic::varchar:
+            case type::Basic::ascii: {
+                const AutoString8& s = get<AutoString8>(c.value);
                 const U8* p = reinterpret_cast<const U8*>(s.c_str);
                 const U16 n = static_cast<U16>(s.length);
                 if (is_composite) append_escaped_terminated(out, p, n);
                 else              append_bytes(out, p, n);
                 break;
             }
-            case BasicType::uuid:
-            case BasicType::timeuuid: {
-                const UUID& u = eval_as_uuid(eval);
+            case type::Basic::uuid:
+            case type::Basic::timeuuid: {
+                const UUID& u = get<UUID>(c.value);
                 if (is_composite) append_u16_be(out, static_cast<U16>(UUID::length));
                 append_bytes(out, &u.value[0], static_cast<U16>(UUID::length));
                 break;
             }
-            case BasicType::blob: {
-                const Blob& b = eval_as_blob(eval);
+            case type::Basic::blob: {
+                const Blob& b = get<Blob>(c.value);
                 if (is_composite) append_escaped_terminated(out, b.value.ptr, static_cast<U16>(b.value.length));
                 else              append_bytes(out, b.value.ptr, static_cast<U16>(b.value.length));
                 break;
             }
-            case BasicType::hex: {
-                const Hex& h = eval_as_hex(eval);
+            case type::Basic::hex: {
+                const Hex& h = get<Hex>(c.value);
                 if (is_composite) append_escaped_terminated(out, h.value.ptr, static_cast<U16>(h.value.length));
                 else              append_bytes(out, h.value.ptr, static_cast<U16>(h.value.length));
                 break;
@@ -215,9 +216,9 @@ export namespace cql::key {
         assert_true(tbl.partition_key_col_indices.length >= 1, "table has no partition key");
         U64 col_idx = tbl.partition_key_col_indices[0];
         const schema::Column& col = tbl.cols[col_idx];
-        assert_true(type_matches_tag<Type::Basic>(col.type.variants), "partition key must be a basic type");
+        assert_true(type_matches_tag<type::Basic>(col.type.value), "partition key must be a basic type");
         DynamicArray<U8> out;
-        append_component(out, val, get<Type::Basic>(col.type.variants).value_dtype, false);
+        append_component(out, val, get<type::Basic>(col.type.value), false);
         return out;
     }
 
@@ -232,8 +233,8 @@ export namespace cql::key {
         for (U64 i = 0; i < tbl.partition_key_col_indices.length; i++) {
             U64 col_idx = tbl.partition_key_col_indices[i];
             const schema::Column& col = tbl.cols[col_idx];
-            assert_true(type_matches_tag<Type::Basic>(col.type.variants), "partition key must be a basic type");
-            append_component(out, partition_vals[i], get<Type::Basic>(col.type.variants).value_dtype, composite);
+            assert_true(type_matches_tag<type::Basic>(col.type.value), "partition key must be a basic type");
+            append_component(out, partition_vals[i], get<type::Basic>(col.type.value), composite);
         }
         return out;
     }
@@ -243,9 +244,9 @@ export namespace cql::key {
         assert_true(tbl.clustering_key_col_indices.length >= 1, "table has no clustering key");
         U64 col_idx = tbl.clustering_key_col_indices[0];
         const schema::Column& col = tbl.cols[col_idx];
-        assert_true(type_matches_tag<Type::Basic>(col.type.variants), "clustering key must be a basic type");
+        assert_true(type_matches_tag<type::Basic>(col.type.value), "clustering key must be a basic type");
         DynamicArray<U8> out;
-        append_component(out, val, get<Type::Basic>(col.type.variants).value_dtype, false);
+        append_component(out, val, get<type::Basic>(col.type.value), false);
         return out;
     }
 
@@ -258,8 +259,8 @@ export namespace cql::key {
         for (U64 i = 0; i < tbl.clustering_key_col_indices.length; i++) {
             U64 col_idx = tbl.clustering_key_col_indices[i];
             const schema::Column& col = tbl.cols[col_idx];
-            assert_true(type_matches_tag<Type::Basic>(col.type.variants), "clustering key must be a basic type");
-            append_component(out, clustering_vals[i], get<Type::Basic>(col.type.variants).value_dtype, composite);
+            assert_true(type_matches_tag<type::Basic>(col.type.value), "clustering key must be a basic type");
+            append_component(out, clustering_vals[i], get<type::Basic>(col.type.value), composite);
         }
         return out;
     }

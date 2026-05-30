@@ -175,6 +175,11 @@ export namespace plexdb::os {
     Handle           async_file_wake_fd(AsyncFileCtx*);
 
     // ========================================================================
+    // entropy
+    // ========================================================================
+    void random_bytes(U8* buf, U64 count);
+
+    // ========================================================================
     // process
     // ========================================================================
     // @note returns empty optional on failure, zero handle for child process

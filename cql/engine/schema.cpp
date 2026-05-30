@@ -12,38 +12,42 @@ import plexdb.coroutine;
 using namespace plexdb;
 
 namespace cql::schema {
-    static ElementType unpack_element_type(const Schema& schema, U32 id);
-    static Type        unpack_type(const Schema& schema, U32 id);
-    static U32         register_type(Schema& schema, const Type& t);
+    static type::Type unpack_type(const Schema& schema, U32 id);
+    static U32        register_type(Schema& schema, const type::Type& t);
 
-    static U32 pack_element_type(Schema& schema, const ElementType& e) {
-        if (type_matches_tag<BasicType>(e))
-            return static_cast<U32>(get<BasicType>(e));
-        return register_type(schema, get<Type>(e));
+    static U32 pack_type(Schema& schema, const type::Type& t) {
+        if (type_matches_tag<type::Basic>(t.value))
+            return static_cast<U32>(get<type::Basic>(t.value));
+        return register_type(schema, t);
     }
 
-    static U32 register_type(Schema& schema, const Type& t) {
-        if (type_matches_tag<Type::Basic>(t.variants))
-            return static_cast<U32>(get<Type::Basic>(t.variants).value_dtype);
+    static U32 register_type(Schema& schema, const type::Type& t) {
+        if (type_matches_tag<type::Basic>(t.value))
+            return static_cast<U32>(get<type::Basic>(t.value));
 
-        TypeRegistryEntry entry = visit(t.variants, [&](const auto& v) -> TypeRegistryEntry {
+        TypeRegistryEntry entry = visit(t.value, [&](const auto& v) -> TypeRegistryEntry {
             using T = RemoveCVRef<decltype(v)>;
-            if constexpr (SameAs<T, Type::Basic>)
-                return {};  // unreachable — handled above
-            else if constexpr (SameAs<T, Type::List>)
-                return {1, pack_element_type(schema, v.element), 0, 0, v.frozen};
-            else if constexpr (SameAs<T, Type::Set>)
-                return {2, pack_element_type(schema, v.key), 0, 0, v.frozen};
-            else if constexpr (SameAs<T, Type::Map>)
-                return {3, pack_element_type(schema, v.key), pack_element_type(schema, v.value), 0, v.frozen};
+
+            if constexpr (SameAs<T, type::Basic>) {
+                assert_true(false, "unexpected type reached visitor, this should never happen!");
+                return {};
+            } else if constexpr (SameAs<T, type::List>)
+                return {TypeRegistryKind::List, pack_type(schema, v.element), 0, 0, v.frozen};
+            else if constexpr (SameAs<T, type::Set>)
+                return {TypeRegistryKind::Set, pack_type(schema, v.key), 0, 0, v.frozen};
+            else if constexpr (SameAs<T, type::Map>)
+                return {TypeRegistryKind::Map, pack_type(schema, v.key), pack_type(schema, v.value), 0, v.frozen};
+            else if constexpr (SameAs<T, type::Vector>)
+                return {TypeRegistryKind::Vector, pack_type(schema, v.element), 0, v.count, v.frozen};
             else {
-                static_assert(SameAs<T, Type::Vector>, "unhandled Type variant in register_type");
-                return {4, pack_element_type(schema, v.element), 0, v.count, v.frozen};
+                static_assert(!SameAs<T, T>, "unhandled Type variant in register_type");
+                return {};
             }
         });
 
         for (U64 i = 0; i < schema.storage.type_entries.length; i++) {
             const TypeRegistryEntry& existing = schema.storage.type_entries[i];
+            // @todo comparison operator, map
             if (existing.kind == entry.kind && existing.elem_id == entry.elem_id &&
                 existing.val_id == entry.val_id && existing.vec_count == entry.vec_count &&
                 existing.frozen == entry.frozen)
@@ -54,23 +58,20 @@ namespace cql::schema {
         return static_cast<U32>(type_registry_base + schema.storage.type_entries.length - 1);
     }
 
-    static ElementType unpack_element_type(const Schema& schema, U32 id) {
-        if (id < type_registry_base)
-            return ElementType{static_cast<BasicType>(id)};
-        return ElementType{unpack_type(schema, id)};
-    }
-
-    static Type unpack_type(const Schema& schema, U32 id) {
+    static type::Type unpack_type(const Schema& schema, U32 id) {
         if (id < type_registry_base) {
-            Type t; t.variants = Type::Basic{static_cast<BasicType>(id)}; return t;
+            return type::create_basic(static_cast<type::Basic>(id));
         }
         const TypeRegistryEntry& e = schema.storage.type_entries[id - type_registry_base];
         switch (e.kind) {
-            case 1: { Type t; t.variants = Type::List{unpack_element_type(schema, e.elem_id), e.frozen}; return t; }
-            case 2: { Type t; t.variants = Type::Set{unpack_element_type(schema, e.elem_id), e.frozen}; return t; }
-            case 3: { Type t; t.variants = Type::Map{unpack_element_type(schema, e.elem_id), unpack_element_type(schema, e.val_id), e.frozen}; return t; }
-            default: { Type t; t.variants = Type::Vector{unpack_element_type(schema, e.elem_id), e.vec_count, e.frozen}; return t; }
+            case TypeRegistryKind::List  : { return type::create_list  (unpack_type(schema, e.elem_id), e.frozen); }
+            case TypeRegistryKind::Set   : { return type::create_set   (unpack_type(schema, e.elem_id), e.frozen); }
+            case TypeRegistryKind::Map   : { return type::create_map   (unpack_type(schema, e.elem_id), unpack_type(schema, e.val_id), e.frozen); }
+            case TypeRegistryKind::Vector: { return type::create_vector(unpack_type(schema, e.elem_id), e.vec_count, e.frozen); }
         }
+
+        assert_true(false, "invalid type registry kind, io may be corrupted");
+        return type::create_basic(type::Basic::int_);
     }
 
     coroutine::Task<void> get_str(blob::BlobDynamicPaged& blob, const AutoString8& str, U64* offset) {

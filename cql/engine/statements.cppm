@@ -146,6 +146,7 @@ export namespace cql {
         minus,
         times,
         divide,
+        mod,
     };
 
     struct UnaryMinusArithmeticOperation {
@@ -164,12 +165,59 @@ export namespace cql {
     // type hinting
     // ========================================================================
     struct TypeHint {
-        Type type;
-        Term operand;
+        type::Type type;
+        Box<Term> operand;
+        TypeHint(type::Type t, Term&& o);
+        TypeHint() = default;
     };
 
     // ========================================================================
-    // TOI types
+    // Box<Term> method bodies (now that Term is complete)
+    // ========================================================================
+    template<> inline Box<Term>::Box(Term&& val) {
+        ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
+        new (ptr) Term(move(val));
+    }
+    template<> inline Box<Term>::Box(const Box<Term>& o) {
+        if (o.ptr) {
+            ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
+            new (ptr) Term(*o.ptr);
+        }
+    }
+    template<> inline Box<Term>::Box(Box<Term>&& o) noexcept {
+        ptr = o.ptr;
+        o.ptr = nullptr;
+    }
+    template<> inline Box<Term>& Box<Term>::operator=(const Box<Term>& o) {
+        if (this == &o) return *this;
+        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
+        if (o.ptr) {
+            ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
+            new (ptr) Term(*o.ptr);
+        }
+        return *this;
+    }
+    template<> inline Box<Term>& Box<Term>::operator=(Box<Term>&& o) noexcept {
+        if (this == &o) return *this;
+        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
+        ptr = o.ptr;
+        o.ptr = nullptr;
+        return *this;
+    }
+    template<> inline Box<Term>::~Box() {
+        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
+    }
+
+    // ========================================================================
+    // TypeHint constructor (now that Term is complete)
+    // ========================================================================
+    inline TypeHint::TypeHint(type::Type t, Term&& o)
+        : type(t)
+        , operand(move(o))
+    {}
+
+    // ========================================================================
+    // TOI types (TermWithIdentifiers variant types)
     // ========================================================================
     struct TOIUnaryMinus {
         TermWithIdentifiers operand;
@@ -261,7 +309,7 @@ export namespace cql {
 
     struct ColumnDefinition {
         ColumnName name;
-        Type type;
+        type::Type type;
         bool _static;
         Optional<ColumnMask> mask;
         bool primary_key;
@@ -434,7 +482,7 @@ export namespace cql {
         };
         struct Cast {
             Selector column;
-            Type to;
+            type::Type to;
         };
         struct SelectColumn {
             Selector column;
@@ -495,4 +543,3 @@ export namespace cql {
         > value;
     };
 }
-

@@ -30,7 +30,7 @@ export namespace cql::engine {
     // ========================================================================
     struct BindVariableSpec {
         AutoString8 name;
-        Type type;
+        type::Type type;
     };
 
     struct PreparedEntry {
@@ -110,6 +110,7 @@ export namespace cql::engine {
 
     coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement);
     coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Term>&& bound_values);
+    coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values);
     coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values);
 
     // ========================================================================

@@ -156,6 +156,10 @@ namespace {
         return false;
     }
 
+    std::string body_string(const NativeResponse& resp) {
+        return std::string(reinterpret_cast<const char*>(resp.body.data()), resp.body.size());
+    }
+
     // Read the RESULT kind (first 4 bytes of body)
     int32_t result_kind(const NativeResponse& resp) {
         if (resp.body.size() < 4) return -1;
@@ -731,6 +735,145 @@ PAGER_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native][!mayfail]")
             CHECK(result_kind(select_resp) == 0x0002);
             CHECK(body_contains(select_resp, "Bob"));
         }
+
+        // End-to-end evaluator coverage over the native protocol.
+        send_frame(client, create_query("CREATE TABLE prep_ks.expr_values (val bigint PRIMARY KEY, tag text);"));
+        auto expr_resp = recv_frame(client);
+        CHECK(expr_resp.opcode == 0x08);
+        CHECK(result_kind(expr_resp) == 0x0005);
+
+        send_frame(client, create_query("CREATE TABLE prep_ks.expr_texts (tag text PRIMARY KEY, note text);"));
+        expr_resp = recv_frame(client);
+        CHECK(expr_resp.opcode == 0x08);
+        CHECK(result_kind(expr_resp) == 0x0005);
+
+        send_frame(client, create_query("CREATE TABLE prep_ks.expr_now (tag text PRIMARY KEY, val bigint);"));
+        expr_resp = recv_frame(client);
+        CHECK(expr_resp.opcode == 0x08);
+        CHECK(result_kind(expr_resp) == 0x0005);
+
+        struct NumericCase {
+            const char* query;
+            S64 expected;
+            const char* tag;
+        };
+
+        const NumericCase numeric_cases[] = {
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (1 + 2 * 3, 'mul_precedence');", 7, "mul_precedence"},
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES ((1 + 2) * 3, 'paren');", 9, "paren"},
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (10 - 4 - 1, 'left_sub');", 5, "left_sub"},
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (20 / 5 / 2, 'left_div');", 2, "left_div"},
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (20 % 6 % 4, 'mod');", 2, "mod"},
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (-7, 'neg');", -7, "neg"},
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (toDate(86400000), 'date');", 1, "date"},
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (toTimestamp(minTimeuuid(1234567890)), 'mints');", 1234567890, "mints"},
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (toTimestamp(maxTimeuuid(1234567891)), 'maxts');", 1234567891, "maxts"},
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (toUnixTimestamp(minTimeuuid(1234567892)), 'unixts');", 1234567892, "unixts"},
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (dateOf(minTimeuuid(1234567893)), 'dateof');", 1234567893, "dateof"},
+        };
+
+        for (const auto& c : numeric_cases) {
+            send_frame(client, create_query(c.query));
+            expr_resp = recv_frame(client);
+            CHECK(expr_resp.opcode == 0x08);
+            CHECK(result_kind(expr_resp) == 0x0001);
+
+            std::string select_query = "SELECT tag FROM prep_ks.expr_values WHERE val = ";
+            select_query += std::to_string(c.expected);
+            select_query += ";";
+            send_frame(client, create_query(select_query.c_str()));
+            expr_resp = recv_frame(client);
+            CHECK(expr_resp.opcode == 0x08);
+            CHECK(result_kind(expr_resp) == 0x0002);
+            CHECK(body_contains(expr_resp, c.tag));
+        }
+
+        send_frame(client, create_query("INSERT INTO prep_ks.expr_texts (tag, note) VALUES ('hello', 'he' + 'llo');"));
+        expr_resp = recv_frame(client);
+        CHECK(expr_resp.opcode == 0x08);
+        CHECK(result_kind(expr_resp) == 0x0001);
+
+        send_frame(client, create_query("SELECT note FROM prep_ks.expr_texts WHERE tag = 'hello';"));
+        expr_resp = recv_frame(client);
+        CHECK(expr_resp.opcode == 0x08);
+        CHECK(result_kind(expr_resp) == 0x0002);
+        CHECK(body_contains(expr_resp, "hello"));
+
+        send_frame(client, create_query("INSERT INTO prep_ks.expr_now (tag, val) VALUES ('currentTimestamp', currentTimestamp());"));
+        expr_resp = recv_frame(client);
+        CHECK(expr_resp.opcode == 0x08);
+        CHECK(result_kind(expr_resp) == 0x0001);
+
+        send_frame(client, create_query("INSERT INTO prep_ks.expr_now (tag, val) VALUES ('currentDate', currentDate());"));
+        expr_resp = recv_frame(client);
+        CHECK(expr_resp.opcode == 0x08);
+        CHECK(result_kind(expr_resp) == 0x0001);
+
+        send_frame(client, create_query("INSERT INTO prep_ks.expr_now (tag, val) VALUES ('currentTime', currentTime());"));
+        expr_resp = recv_frame(client);
+        CHECK(expr_resp.opcode == 0x08);
+        CHECK(result_kind(expr_resp) == 0x0001);
+
+        send_frame(client, create_query("INSERT INTO prep_ks.expr_now (tag, val) VALUES ('toTimestampNow', toTimestamp(now()));"));
+        expr_resp = recv_frame(client);
+        CHECK(expr_resp.opcode == 0x08);
+        CHECK(result_kind(expr_resp) == 0x0001);
+
+        send_frame(client, create_query("INSERT INTO prep_ks.expr_now (tag, val) VALUES ('toUnixTimestampNow', toUnixTimestamp(now()));"));
+        expr_resp = recv_frame(client);
+        CHECK(expr_resp.opcode == 0x08);
+        CHECK(result_kind(expr_resp) == 0x0001);
+
+        send_frame(client, create_query("SELECT * FROM prep_ks.expr_now;"));
+        expr_resp = recv_frame(client);
+        CHECK(expr_resp.opcode == 0x08);
+        CHECK(result_kind(expr_resp) == 0x0002);
+        CHECK(body_contains(expr_resp, "currentTimestamp"));
+        CHECK(body_contains(expr_resp, "currentDate"));
+        CHECK(body_contains(expr_resp, "currentTime"));
+        CHECK(body_contains(expr_resp, "toTimestampNow"));
+        CHECK(body_contains(expr_resp, "toUnixTimestampNow"));
+
+        // Prepared statement path for bind markers.
+        {
+            Bytes b;
+            b.cql_long_string("INSERT INTO prep_ks.expr_values (val, tag) VALUES (?, 'bind')");
+            b.prepend_header(0x09, 5);
+            send_frame(client, b);
+
+            auto prep_resp = recv_frame(client);
+            CHECK(prep_resp.opcode == 0x08);
+            CHECK(result_kind(prep_resp) == 0x0004);
+
+            const uint8_t* p = prep_resp.body.data() + 4;
+            uint16_t id_len = (uint16_t(p[0]) << 8) | p[1];
+            CHECK(id_len == 8);
+            std::vector<uint8_t> prepared_id(p + 2, p + 2 + id_len);
+
+            Bytes ex;
+            ex.u16(uint16_t(prepared_id.size()));
+            for (auto byte : prepared_id) ex.u8(byte);
+            ex.u16(0x0001);
+            ex.u8(0x01);
+            ex.u16(1);
+            ex.s32(8);
+            ex.u8(0); ex.u8(0); ex.u8(0); ex.u8(0);
+            ex.u8(0); ex.u8(0); ex.u8(0); ex.u8(41);
+            ex.prepend_header(0x0A, 2);
+            send_frame(client, ex);
+            expr_resp = recv_frame(client);
+            CHECK(expr_resp.opcode == 0x08);
+            CHECK(result_kind(expr_resp) == 0x0001);
+
+            send_frame(client, create_query("SELECT tag FROM prep_ks.expr_values WHERE val = 41;"));
+            expr_resp = recv_frame(client);
+            UNSCOPED_INFO(body_string(expr_resp));
+            CHECK(expr_resp.opcode == 0x08);
+            CHECK(result_kind(expr_resp) == 0x0002);
+            CHECK(body_contains(expr_resp, "bind"));
+        }
+
+
 
         os::signal_notify_safe(interrupt);
     }, [&](auto on_ready, auto& signal_consumer, auto& poll) {

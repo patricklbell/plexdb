@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <string>
+
 import plexdb.base;
 import plexdb.tagged_union;
 import plexdb.dynamic.tagged_union;
@@ -12,6 +14,15 @@ import cql.engine.types;
 using namespace plexdb;
 using namespace cql;
 using namespace cql::parsers;
+
+namespace {
+    std::string g_parse_errors;
+
+    void collect_parse_error(const String8& error) {
+        g_parse_errors.append(error.data, error.length);
+        g_parse_errors.push_back('\n');
+    }
+}
 
 TEST_CASE("CQL CREATE KEYSPACE", "[cql.cql]") {
     SECTION("basic") {
@@ -205,15 +216,15 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
         REQUIRE(tbl.column_definitions.length == 3);
 
         REQUIRE(tbl.column_definitions[0].name.identifier == "id");
-        REQUIRE(tbl.column_definitions[0].type == create_basic(BasicType::int_));
+        REQUIRE(tbl.column_definitions[0].type == type::create_basic(type::Basic::int_));
         REQUIRE(tbl.column_definitions[0].primary_key == true);
 
         REQUIRE(tbl.column_definitions[1].name.identifier == "name");
-        REQUIRE(tbl.column_definitions[1].type == create_basic(BasicType::text));
+        REQUIRE(tbl.column_definitions[1].type == type::create_basic(type::Basic::text));
         REQUIRE(tbl.column_definitions[1].primary_key == false);
 
         REQUIRE(tbl.column_definitions[2].name.identifier == "age");
-        REQUIRE(tbl.column_definitions[2].type == create_basic(BasicType::int_));
+        REQUIRE(tbl.column_definitions[2].type == type::create_basic(type::Basic::int_));
         REQUIRE(tbl.column_definitions[2].primary_key == false);
     }
 
@@ -237,11 +248,11 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.column_definitions.length == 5);
-        REQUIRE(tbl.column_definitions[0].type == create_basic(BasicType::int_));
-        REQUIRE(tbl.column_definitions[1].type == create_basic(BasicType::text));
-        REQUIRE(tbl.column_definitions[2].type == create_basic(BasicType::bigint));
-        REQUIRE(tbl.column_definitions[3].type == create_basic(BasicType::timestamp));
-        REQUIRE(tbl.column_definitions[4].type == create_basic(BasicType::boolean));
+        REQUIRE(tbl.column_definitions[0].type == type::create_basic(type::Basic::int_));
+        REQUIRE(tbl.column_definitions[1].type == type::create_basic(type::Basic::text));
+        REQUIRE(tbl.column_definitions[2].type == type::create_basic(type::Basic::bigint));
+        REQUIRE(tbl.column_definitions[3].type == type::create_basic(type::Basic::timestamp));
+        REQUIRE(tbl.column_definitions[4].type == type::create_basic(type::Basic::boolean));
     }
 
     SECTION("CREATE TABLE with FLOAT and DOUBLE types") {
@@ -251,8 +262,8 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.column_definitions.length == 3);
-        REQUIRE(tbl.column_definitions[1].type == create_basic(BasicType::float_));
-        REQUIRE(tbl.column_definitions[2].type == create_basic(BasicType::double_));
+        REQUIRE(tbl.column_definitions[1].type == type::create_basic(type::Basic::float_));
+        REQUIRE(tbl.column_definitions[2].type == type::create_basic(type::Basic::double_));
     }
 
     SECTION("CREATE TABLE with UUID type") {
@@ -262,7 +273,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.column_definitions.length == 2);
-        REQUIRE(tbl.column_definitions[0].type == create_basic(BasicType::uuid));
+        REQUIRE(tbl.column_definitions[0].type == type::create_basic(type::Basic::uuid));
         REQUIRE(tbl.column_definitions[0].primary_key == true);
     }
 
@@ -394,6 +405,70 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
         check_neg(nv.values[0], 100);
         check_neg(nv.values[1], 50);
         check_neg(nv.values[2], 1);
+    }
+
+    SECTION("INSERT INTO arithmetic precedence") {
+        auto query = "INSERT INTO ks.data VALUES (1 + 2 * 3 - 5);";
+        g_parse_errors.clear();
+        auto result = parse(query, &collect_parse_error);
+
+        UNSCOPED_INFO(g_parse_errors);
+        REQUIRE(result.has_value());
+        const auto& ins = get<Insert>(result->value);
+        const auto& expr = get<ArithmeticOperation>(get<Insert::NamesValues>(ins.insert_clause).values[0].value);
+        const auto& top = get<BinaryArithmeticOperation>(expr.value);
+        REQUIRE(top.op == ArithmeticOperator::minus);
+
+        const auto& left = get<ArithmeticOperation>(top.lhs->value);
+        const auto& left_bin = get<BinaryArithmeticOperation>(left.value);
+        REQUIRE(left_bin.op == ArithmeticOperator::plus);
+        REQUIRE(get<S64>(get<Constant>(left_bin.lhs->value).value) == 1);
+
+        const auto& times_expr = get<ArithmeticOperation>(left_bin.rhs->value);
+        const auto& times_bin = get<BinaryArithmeticOperation>(times_expr.value);
+        REQUIRE(times_bin.op == ArithmeticOperator::times);
+        REQUIRE(get<S64>(get<Constant>(times_bin.lhs->value).value) == 2);
+        REQUIRE(get<S64>(get<Constant>(times_bin.rhs->value).value) == 3);
+        REQUIRE(get<S64>(get<Constant>(top.rhs->value).value) == 5);
+    }
+
+    SECTION("INSERT INTO modulo operator") {
+        auto query = "INSERT INTO ks.data VALUES (20 % 6);";
+        g_parse_errors.clear();
+        auto result = parse(query, &collect_parse_error);
+
+        UNSCOPED_INFO(g_parse_errors);
+        REQUIRE(result.has_value());
+        const auto& ins = get<Insert>(result->value);
+        const auto& expr = get<ArithmeticOperation>(get<Insert::NamesValues>(ins.insert_clause).values[0].value);
+        const auto& mod_bin = get<BinaryArithmeticOperation>(expr.value);
+        REQUIRE(mod_bin.op == ArithmeticOperator::mod);
+        REQUIRE(get<S64>(get<Constant>(mod_bin.lhs->value).value) == 20);
+        REQUIRE(get<S64>(get<Constant>(mod_bin.rhs->value).value) == 6);
+    }
+
+    SECTION("INSERT INTO named values with arithmetic expression") {
+        auto query = "INSERT INTO ks.data (id, tag) VALUES (1 + 2 * 3, 'mul_precedence');";
+        g_parse_errors.clear();
+        auto result = parse(query, &collect_parse_error);
+        UNSCOPED_INFO(g_parse_errors);
+        REQUIRE(result.has_value());
+    }
+
+    SECTION("INSERT INTO named values with string concatenation") {
+        auto query = "INSERT INTO ks.data (id, tag) VALUES (1, 'he' + 'llo');";
+        g_parse_errors.clear();
+        auto result = parse(query, &collect_parse_error);
+        UNSCOPED_INFO(g_parse_errors);
+        REQUIRE(result.has_value());
+    }
+
+    SECTION("INSERT INTO named values with function call") {
+        auto query = "INSERT INTO ks.data (id, tag) VALUES (toDate(86400000), 'date');";
+        g_parse_errors.clear();
+        auto result = parse(query, &collect_parse_error);
+        UNSCOPED_INFO(g_parse_errors);
+        REQUIRE(result.has_value());
     }
 
     SECTION("INSERT INTO with large integer") {

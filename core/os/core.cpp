@@ -12,6 +12,7 @@ module;
     #include <sys/eventfd.h>
     #include <linux/aio_abi.h>
     #include <errno.h>
+    #include <sys/random.h>
 #endif
 
 module plexdb.os.core;
@@ -467,6 +468,15 @@ namespace plexdb::os {
     void stream_close(Handle h) {
         int fd = handle_to_fd(h);
         close(fd);
+    }
+
+    void random_bytes(U8* buf, U64 count) {
+        while (count > 0) {
+            ssize_t n = getrandom(buf, count, 0);
+            if (n <= 0) continue;
+            buf += n;
+            count -= static_cast<U64>(n);
+        }
     }
 
 #else

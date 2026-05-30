@@ -66,6 +66,8 @@ target_sources(plexbd_cql
 
     PRIVATE
         engine/engine.cpp
+        engine/evaluator.cpp
+        engine/io.cpp
         engine/it.cpp
         engine/schema.cpp
         engine/system_schema.cpp

@@ -148,158 +148,169 @@ export namespace cql {
         os::memory_copy(buf + 8, &dur.nanoseconds, 8);
         return plexdb::hash(plexdb::String8(buf, 16));
     }
+
+    namespace type {
+        // @warn be careful about changing these values as they encoded directly in the schema's type registry
+        // see schema.cppm
+        enum class Basic : U8 {
+            ascii,
+            bigint,
+            blob,
+            boolean,
+            counter,
+            date,
+            decimal,
+            double_,
+            duration,
+            float_,
+            inet,
+            int_,
+            smallint,
+            text,
+            time,
+            timestamp,
+            timeuuid,
+            tinyint,
+            uuid,
+            varchar,
+            varint,
+            hex,
+        };
+
+        struct List;
+        struct Set;
+        struct Map;
+        struct Vector;
+
+        struct Type {
+            HybridTaggedUnion<TypeList<Basic>, TypeList<List, Set, Map, Vector>> value;
+        };
+
+        struct List {
+            Type element;
+            bool frozen;
+        };
+
+        struct Set {
+            Type key;
+            bool frozen;
+        };
+
+        struct Map {
+            Type key;
+            Type value;
+            bool frozen;
+        };
+
+        struct Vector {
+            Type element;
+            U64 count;
+            bool frozen;
+        };
+
+        bool operator==(const Type& a, const Type& b);
+
+        inline bool operator==(const List&   a, const List&   b) { return a.element == b.element && a.frozen == b.frozen; }
+        inline bool operator==(const Set&    a, const Set&    b) { return a.key == b.key && a.frozen == b.frozen; }
+        inline bool operator==(const Map&    a, const Map&    b) { return a.key == b.key && a.value == b.value && a.frozen == b.frozen; }
+        inline bool operator==(const Vector& a, const Vector& b) { return a.element == b.element && a.count == b.count && a.frozen == b.frozen; }
+
+        inline bool operator==(const Type& a, const Type& b) { return a.value == b.value; }
+
+        inline Type create_basic(Basic d) { return Type{Basic{d}}; }
+        inline Type create_list(Basic el, bool frozen=false) { return Type{List{Type{el}, frozen}}; }
+        inline Type create_list(Type el, bool frozen=false) { return Type{List{move(el), frozen}}; }
+        inline Type create_set(Basic key, bool frozen=false) { return Type{Set{Type{key}, frozen}}; }
+        inline Type create_set(Type key, bool frozen=false) { return Type{Set{move(key), frozen}}; }
+        inline Type create_map(Basic key, Basic val, bool frozen=false) { return Type{Map{Type{key}, Type{val}, frozen}}; }
+        inline Type create_map(Type key, Type val, bool frozen=false) { return Type{Map{move(key), move(val), frozen}}; }
+        inline Type create_vector(Basic el, U64 count, bool frozen=false) { return Type{Vector{Type{el}, count, frozen}}; }
+        inline Type create_vector(Type el, U64 count, bool frozen=false) { return Type{Vector{move(el), count, frozen}}; }
+    }
 }
 
-export namespace cql {
-    enum class BasicType : U8 {
-        ascii,
-        bigint,
-        blob,
-        boolean,
-        counter,
-        date,
-        decimal,
-        double_,
-        duration,
-        float_,
-        inet,
-        int_,
-        smallint,
-        text,
-        time,
-        timestamp,
-        timeuuid,
-        tinyint,
-        uuid,
-        varchar,
-        varint,
-        hex,
-    };
-
-    struct Type;
-
-    struct ElementType : HybridTaggedUnion<TypeList<BasicType>, TypeList<Type>> {
-        using HybridTaggedUnion::HybridTaggedUnion;
-        static ElementType from(Type t);  // defined after Type is complete
-    };
-
-    bool operator==(const Type& a, const Type& b);
-
-    struct Type {
-        struct Basic  { BasicType value_dtype;                                    };
-        struct List   { ElementType element; bool frozen;                         };
-        struct Set    { ElementType key;     bool frozen;                         };
-        struct Map    { ElementType key; ElementType value; bool frozen;          };
-        struct Vector { ElementType element; U64 count; bool frozen;              };
-
-        TaggedUnion<Basic, List, Set, Map, Vector> variants;
-    };
-
-    inline bool operator==(const Type::Basic&  a, const Type::Basic&  b) { return a.value_dtype == b.value_dtype; }
-    inline bool operator==(const Type::List&   a, const Type::List&   b) { return a.element == b.element && a.frozen == b.frozen; }
-    inline bool operator==(const Type::Set&    a, const Type::Set&    b) { return a.key == b.key && a.frozen == b.frozen; }
-    inline bool operator==(const Type::Map&    a, const Type::Map&    b) { return a.key == b.key && a.value == b.value && a.frozen == b.frozen; }
-    inline bool operator==(const Type::Vector& a, const Type::Vector& b) { return a.element == b.element && a.count == b.count && a.frozen == b.frozen; }
-
-    inline bool operator==(const Type& a, const Type& b) { return a.variants == b.variants; }
-
-    inline ElementType ElementType::from(Type t) {
-        if (type_matches_tag<Type::Basic>(t.variants))
-            return ElementType{get<Type::Basic>(t.variants).value_dtype};
-        return ElementType{move(t)};
+namespace {
+    static inline U64 mix(U64 h, U64 x) {
+        h ^= x;
+        h *= 0x9e3779b97f4a7c15ULL;
+        h ^= h >> 32;
+        return h;
     }
-
-    inline Type create_basic(BasicType d) { return Type{.variants=Type::Basic{d}}; }
-    inline Type create_list(BasicType el) { return Type{.variants=Type::List{ElementType{el}, false}}; }
-    inline Type create_list(ElementType el) { return Type{.variants=Type::List{move(el), false}}; }
-    inline Type create_set(BasicType key) { return Type{.variants=Type::Set{ElementType{key}, false}}; }
-    inline Type create_set(ElementType key) { return Type{.variants=Type::Set{move(key), false}}; }
-    inline Type create_map(BasicType key, BasicType val) { return Type{.variants=Type::Map{ElementType{key}, ElementType{val}, false}}; }
-    inline Type create_map(ElementType key, ElementType val) { return Type{.variants=Type::Map{move(key), move(val), false}}; }
-    inline Type create_vector(BasicType el, U64 count) { return Type{.variants=Type::Vector{ElementType{el}, count, false}}; }
-    inline Type create_vector(ElementType el, U64 count) { return Type{.variants=Type::Vector{move(el), count, false}}; }
 }
 
 export namespace plexdb {
-    U64 hash(const cql::Type& t) {
-        U8 buf[18];
-        U64 len = 0;
-        buf[len++] = static_cast<U8>(t.variants.index);
-        visit(t.variants, [&](const auto& v) {
-            using T = RemoveCVRef<decltype(v)>;
-            if constexpr (SameAs<T, cql::Type::Basic>) {
-                buf[len++] = static_cast<U8>(v.value_dtype);
-            } else if constexpr (SameAs<T, cql::Type::List>) {
-                if (type_matches_tag<cql::BasicType>(v.element))
-                    buf[len++] = static_cast<U8>(get<cql::BasicType>(v.element));
-            } else if constexpr (SameAs<T, cql::Type::Set>) {
-                if (type_matches_tag<cql::BasicType>(v.key))
-                    buf[len++] = static_cast<U8>(get<cql::BasicType>(v.key));
-            } else if constexpr (SameAs<T, cql::Type::Map>) {
-                if (type_matches_tag<cql::BasicType>(v.key))
-                    buf[len++] = static_cast<U8>(get<cql::BasicType>(v.key));
-                if (type_matches_tag<cql::BasicType>(v.value))
-                    buf[len++] = static_cast<U8>(get<cql::BasicType>(v.value));
-            } else if constexpr (SameAs<T, cql::Type::Vector>) {
-                if (type_matches_tag<cql::BasicType>(v.element))
-                    buf[len++] = static_cast<U8>(get<cql::BasicType>(v.element));
-                os::memory_copy(buf + len, &v.count, sizeof(U64));
-                len += sizeof(U64);
-            }
-        });
-        return hash(String8(buf, len));
+    U64 hash(const cql::type::Type& t);
+
+    U64 hash(const cql::type::Basic& t) {
+        return hash(static_cast<U8>(t));
     }
 
-    constexpr inline String8 to_str(cql::BasicType dtype) {
+    U64 hash(const cql::type::List& t) {
+        return mix(hash(t.element), static_cast<U64>(t.frozen));
+    }
+
+    U64 hash(const cql::type::Set& t) {
+        return mix(hash(t.key), static_cast<U64>(t.frozen));
+    }
+
+    U64 hash(const cql::type::Map& t) {
+        return mix(mix(hash(t.key), hash(t.value)), static_cast<U64>(t.frozen));
+    }
+
+    U64 hash(const cql::type::Vector& t) {
+        return mix(mix(hash(t.element), static_cast<U64>(t.frozen)), static_cast<U64>(t.count));
+    }
+
+    U64 hash(const cql::type::Type& t) {
+        return visit(t.value, [&](const auto& v) {
+            return hash(v);
+        });
+    }
+
+    constexpr inline String8 to_str(cql::type::Basic dtype) {
         switch (dtype) {
-            case cql::BasicType::text:       return "text";
-            case cql::BasicType::int_:       return "int";
-            case cql::BasicType::bigint:     return "bigint";
-            case cql::BasicType::smallint:   return "smallint";
-            case cql::BasicType::counter:    return "counter";
-            case cql::BasicType::timestamp:  return "timestamp";
-            case cql::BasicType::boolean:    return "boolean";
-            case cql::BasicType::float_:     return "float";
-            case cql::BasicType::double_:    return "double";
-            case cql::BasicType::uuid:       return "uuid";
-            case cql::BasicType::ascii:      return "ascii";
-            case cql::BasicType::blob:       return "blob";
-            case cql::BasicType::date:       return "date";
-            case cql::BasicType::decimal:    return "decimal";
-            case cql::BasicType::duration:   return "duration";
-            case cql::BasicType::inet:       return "inet";
-            case cql::BasicType::time:       return "time";
-            case cql::BasicType::timeuuid:   return "timeuuid";
-            case cql::BasicType::tinyint:    return "tinyint";
-            case cql::BasicType::varchar:    return "varchar";
-            case cql::BasicType::varint:     return "varint";
-            case cql::BasicType::hex:        return "hex";
+            case cql::type::Basic::text:       return "text";
+            case cql::type::Basic::int_:       return "int";
+            case cql::type::Basic::bigint:     return "bigint";
+            case cql::type::Basic::smallint:   return "smallint";
+            case cql::type::Basic::counter:    return "counter";
+            case cql::type::Basic::timestamp:  return "timestamp";
+            case cql::type::Basic::boolean:    return "boolean";
+            case cql::type::Basic::float_:     return "float";
+            case cql::type::Basic::double_:    return "double";
+            case cql::type::Basic::uuid:       return "uuid";
+            case cql::type::Basic::ascii:      return "ascii";
+            case cql::type::Basic::blob:       return "blob";
+            case cql::type::Basic::date:       return "date";
+            case cql::type::Basic::decimal:    return "decimal";
+            case cql::type::Basic::duration:   return "duration";
+            case cql::type::Basic::inet:       return "inet";
+            case cql::type::Basic::time:       return "time";
+            case cql::type::Basic::timeuuid:   return "timeuuid";
+            case cql::type::Basic::tinyint:    return "tinyint";
+            case cql::type::Basic::varchar:    return "varchar";
+            case cql::type::Basic::varint:     return "varint";
+            case cql::type::Basic::hex:        return "hex";
         }
         return "unknown";
     }
 
-    inline AutoString8 to_str(const cql::ElementType& e);
-
-    inline AutoString8 to_str(cql::Type cdtype) {
-        return visit(cdtype.variants, [](const auto& v) -> AutoString8 {
+    // @todo separate cases into functions, same as hash
+    inline AutoString8 to_str(cql::type::Type cdtype) {
+        return visit(cdtype.value, [](const auto& v) -> AutoString8 {
             using T = RemoveCVRef<decltype(v)>;
-            if constexpr (SameAs<T, cql::Type::Basic>)
-                return AutoString8(to_str(v.value_dtype));
-            else if constexpr (SameAs<T, cql::Type::List>)
+            if constexpr (SameAs<T, cql::type::Basic>)
+                return AutoString8(to_str(v));
+            else if constexpr (SameAs<T, cql::type::List>)
                 return "list["_as + to_str(v.element) + "]";
-            else if constexpr (SameAs<T, cql::Type::Set>)
+            else if constexpr (SameAs<T, cql::type::Set>)
                 return "set["_as + to_str(v.key) + "]";
-            else if constexpr (SameAs<T, cql::Type::Map>)
+            else if constexpr (SameAs<T, cql::type::Map>)
                 return "map["_as + to_str(v.key) + ", " + to_str(v.value) + "]";
             else {
-                static_assert(SameAs<T, cql::Type::Vector>, "unhandled Type variant in to_str");
+                static_assert(SameAs<T, cql::type::Vector>, "unhandled Type variant in to_str");
                 return "vector["_as + to_str(v.element) + "]";
             }
         });
-    }
-
-    inline AutoString8 to_str(const cql::ElementType& e) {
-        if (type_matches_tag<cql::BasicType>(e)) return AutoString8(to_str(get<cql::BasicType>(e)));
-        return to_str(get<cql::Type>(e));
     }
 }

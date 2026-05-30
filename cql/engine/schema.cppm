@@ -19,7 +19,7 @@ export namespace cql::schema {
         bool tombstone;
         bool is_static = false;
         String8 name;
-        const Type type;
+        const type::Type type;
         KeyKind key_kind = KeyKind::None;
         U16 key_position = 0;
     };
@@ -74,11 +74,19 @@ export namespace cql::schema {
         U64 keyspace_idx;
         U64 btree_page;
     };
-    // IDs 0-21 map directly to BasicType enum values (no registry entry).
+
+    enum TypeRegistryKind: U8 {
+        List,
+        Set,
+        Map,
+        Vector,
+    };
+
+    // IDs 0-21 map directly to type::Basic enum values (no registry entry).
     // IDs >= 22 index into the types_blob registry (entry index = id - 22).
     inline constexpr U32 type_registry_base = 22;
     struct TypeRegistryEntry {
-        U8  kind;       // 1=List, 2=Set, 3=Map, 4=Vector  (5=UDT future)
+        TypeRegistryKind kind;
         U32 elem_id;    // element/key type ID
         U32 val_id;     // value type ID (Map only)
         U64 vec_count;  // Vector only

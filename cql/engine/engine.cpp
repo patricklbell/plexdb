@@ -252,8 +252,8 @@ namespace cql::engine {
         return valid;
     }
 
-    static coroutine::Task<ExecutionResult> execute_inside_transaction(Engine& engine, const Statement& statement) {
-        co_return co_await visit(statement.value, [&engine](const auto& stmt) -> coroutine::Task<ExecutionResult> {
+    static coroutine::Task<ExecutionResult> execute_inside_transaction(Engine& engine, const Statement& statement, EvalContext ctx) {
+        co_return co_await visit(statement.value, [&engine, ctx](const auto& stmt) -> coroutine::Task<ExecutionResult> {
             using T = RemoveCVRef<decltype(stmt)>;
 
             if constexpr (SameAs<T, CreateKeyspace>) {
@@ -401,25 +401,25 @@ namespace cql::engine {
                                     cer.column.identifier == tbl->cols[tbl->partition_key_col_indices[0]].name) {
                                     switch (cer.operator_) {
                                         case Operator::eq:{
-                                            pk_begin = evaluate(cer.value);
+                                            pk_begin = evaluate(cer.value, ctx);
                                             is_equality = true;
                                             is_begin_inclusive = true;
                                             is_end_inclusive = true;
                                         }break;
                                         case Operator::lt:{
-                                            pk_end = evaluate(cer.value);
+                                            pk_end = evaluate(cer.value, ctx);
                                             is_end_inclusive = false;
                                         }break;
                                         case Operator::le:{
-                                            pk_end = evaluate(cer.value);
+                                            pk_end = evaluate(cer.value, ctx);
                                             is_end_inclusive = true;
                                         }break;
                                         case Operator::gt:{
-                                            pk_begin = evaluate(cer.value);
+                                            pk_begin = evaluate(cer.value, ctx);
                                             is_begin_inclusive = false;
                                         }break;
                                         case Operator::ge:{
-                                            pk_begin = evaluate(cer.value);
+                                            pk_begin = evaluate(cer.value, ctx);
                                             is_begin_inclusive = true;
                                         }break;
                                         default:{
@@ -535,7 +535,7 @@ namespace cql::engine {
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
                 if (tbl == nullptr) co_return create_table_not_found(ks_name, stmt.table.table_name);
 
-                co_return co_await visit(stmt.insert_clause, [&engine, ks, tbl, &stmt](const auto& v) -> coroutine::Task<ExecutionResult> {
+                co_return co_await visit(stmt.insert_clause, [&engine, ks, tbl, &stmt, ctx](const auto& v) -> coroutine::Task<ExecutionResult> {
                     using T = Decay<decltype(v)>;
 
                     if constexpr (SameAs<T, Insert::NamesValues>) {
@@ -553,7 +553,7 @@ namespace cql::engine {
                             auto names_idx_opt = try_get_names_idx(col.name);
                             if (names_idx_opt) {
                                 if (col.tombstone) co_return create_insert_into_deleted_column(ks->name, tbl->name);
-                                const auto& eval = evaluate(v.values[*names_idx_opt]);
+                                const auto& eval = evaluate(v.values[*names_idx_opt], ctx);
                                 if (!io::can_cast_write_evaluated_as_column_value(eval, col.type))
                                     co_return create_insert_incompatible_literal(ks->name, tbl->name);
                             }
@@ -591,7 +591,7 @@ namespace cql::engine {
                             if (!is_static_col(ci)) {
                                 auto names_idx_opt = try_get_names_idx(tbl->cols[ci].name);
                                 if (names_idx_opt) {
-                                    const auto& eval = evaluate(v.values[*names_idx_opt]);
+                                    const auto& eval = evaluate(v.values[*names_idx_opt], ctx);
                                     io::cast_write_evaluated_as_column_value(write, eval, tbl->cols[ci].type);
                                 }
                             }
@@ -636,7 +636,7 @@ namespace cql::engine {
                         // build partition key and insert into btree(s)
                         DynamicArray<Evaluated> partition_evals;
                         for (U64 pk_ci : tbl->partition_key_col_indices) {
-                            push_back(partition_evals, evaluate(v.values[*try_get_names_idx(tbl->cols[pk_ci].name)]));
+                            push_back(partition_evals, evaluate(v.values[*try_get_names_idx(tbl->cols[pk_ci].name)], ctx));
                         }
                         DynamicArray<U8> pk_bytes = key::serialize_partition(*tbl, partition_evals);
 
@@ -687,7 +687,7 @@ namespace cql::engine {
                             };
                             DynamicArray<Evaluated> clustering_evals;
                             for (U64 ck_ci : tbl->clustering_key_col_indices) {
-                                push_back(clustering_evals, evaluate(v.values[*try_get_names_idx(tbl->cols[ck_ci].name)]));
+                                push_back(clustering_evals, evaluate(v.values[*try_get_names_idx(tbl->cols[ck_ci].name)], ctx));
                             }
                             DynamicArray<U8> ck_bytes = key::serialize_clustering(*tbl, clustering_evals);
                             co_await btree::tinsert(clustering_btree, ck_bytes, row_page);
@@ -733,7 +733,7 @@ namespace cql::engine {
                         if (tbl->partition_key_col_indices.length > 0 &&
                             cer.column.identifier == tbl->cols[tbl->partition_key_col_indices[0]].name &&
                             cer.operator_ == Operator::eq) {
-                            pk_val = evaluate(cer.value);
+                            pk_val = evaluate(cer.value, ctx);
                         }
                     }
                 }
@@ -786,7 +786,7 @@ namespace cql::engine {
                             assert_true_not_implemented(false, "non-constant/non-bind UPDATE assignment is not implemented");
                         }
 
-                        auto eval = evaluate(move(rhs_term));
+                        auto eval = evaluate(move(rhs_term), ctx);
                         if (type_matches_tag<Constant>(eval.value)) {
                             auto& c = get<Constant>(eval.value);
                             if (type_matches_tag<Null>(c.value)) {
@@ -861,7 +861,7 @@ namespace cql::engine {
                             assert_true_not_implemented(false, "non-constant/non-bind UPDATE assignment is not implemented");
                         }
 
-                        auto eval = evaluate(move(rhs_term));
+                        auto eval = evaluate(move(rhs_term), ctx);
                         if (type_matches_tag<Constant>(eval.value) && type_matches_tag<Null>(get<Constant>(eval.value).value)) {
                             col_present[idx] = false;
                         } else {
@@ -917,7 +917,7 @@ namespace cql::engine {
                         if (tbl->partition_key_col_indices.length > 0 &&
                             cer.column.identifier == tbl->cols[tbl->partition_key_col_indices[0]].name &&
                             cer.operator_ == Operator::eq) {
-                            pk_val = evaluate(cer.value);
+                            pk_val = evaluate(cer.value, ctx);
                         }
                     }
                 }
@@ -999,7 +999,7 @@ namespace cql::engine {
     coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement) {
         pager::Transaction tx{engine.pager};
         co_await tx.begin();
-        auto result = co_await execute_inside_transaction(engine, statement);
+        auto result = co_await execute_inside_transaction(engine, statement, EvalContext{});
         co_await tx.commit();
         co_return result;
     }
@@ -1020,7 +1020,7 @@ namespace cql::engine {
         for (U64 i = 0; i < nv.values.length; i++) {
             if (type_matches_tag<BindMarker>(nv.values[i].value)) {
                 String8 col_name = nv.names[i].identifier;
-                Type col_type = create_basic(BasicType::text);
+                type::Type col_type = type::create_basic(type::Basic::text);
                 for (U64 ci = 0; ci < tbl->cols.length; ci++) {
                     if (tbl->cols[ci].name == col_name) {
                         col_type = tbl->cols[ci].type;
@@ -1045,12 +1045,10 @@ namespace cql::engine {
 
     static void bind_values_to_statement(Statement& stmt, DynamicArray<Term>& bound_values) {
         if (bound_values.length == 0) return;
-
         visit(stmt.value, [&](auto& s) {
             using T = RemoveCVRef<decltype(s)>;
             if constexpr (SameAs<T, Insert>) {
                 if (!type_matches_tag<Insert::NamesValues>(s.insert_clause)) return;
-
                 auto& nv = get<Insert::NamesValues>(s.insert_clause);
                 U64 bind_idx = 0;
                 for (U64 i = 0; i < nv.values.length && bind_idx < bound_values.length; i++) {
@@ -1066,6 +1064,16 @@ namespace cql::engine {
     coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Term>&& bound_values) {
         bind_values_to_statement(statement, bound_values);
         co_return co_await execute(engine, statement);
+    }
+
+    coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values) {
+        number_bind_markers(statement);
+        EvalContext ctx{.positional_bindings = {bound_values.ptr, bound_values.length}};
+        pager::Transaction tx{engine.pager};
+        co_await tx.begin();
+        auto result = co_await execute_inside_transaction(engine, statement, move(ctx));
+        co_await tx.commit();
+        co_return result;
     }
 
     // ========================================================================

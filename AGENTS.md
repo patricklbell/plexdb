@@ -12,6 +12,8 @@
 
 ## Dev environment
 - C++20 modules with CMake. Static libraries: `plexdb` (core) and `cql` (CQL object store).
+- Module interface units (`.cppm`): export types and declare functions only — no function bodies except for templates (which must be defined in the interface for instantiation). Remember to add corresponding `.cpp` implementation units to CMakeLists.txt.
+- Module implementation units (`.cpp`): define all non-template function bodies. Helper functions not declared in the interface must be `static` to give them internal linkage.
 
 ## Schema (cql.engine.schema)
 - `schema::Column` has `key_kind` (`KeyKind::None`, `PartitionKey`, `ClusteringKey`), `key_position` (0-based ordering within that key), and `is_static: bool`.
