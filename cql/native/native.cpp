@@ -60,32 +60,77 @@ namespace cql::native {
         return len;
     }
 
-    Constant read_cql_value_as_constant(const U8*& p, const U8* end, BasicType dtype) {
+    static VarInt decode_varint_cql(const U8* val, S32 len) {
+        VarInt result;
+        if (len == 0) return result;
+        bool negative = (val[0] & 0x80u) != 0;
+        result.negative = negative;
+        if (!negative) {
+            S32 start = 0;
+            while (start < len - 1 && val[start] == 0) start++;
+            resize(result.magnitude, U64(len - start));
+            os::memory_copy(result.magnitude.ptr, val + start, U64(len - start));
+        } else {
+            resize(result.magnitude, U64(len));
+            U16 carry = 1;
+            for (S32 i = len - 1; i >= 0; i--) {
+                U16 sum = U16(~val[i]) + carry;
+                result.magnitude.ptr[i] = U8(sum);
+                carry = sum >> 8;
+            }
+            S32 start = 0;
+            while (start < S32(result.magnitude.length) - 1 && result.magnitude.ptr[start] == 0) start++;
+            if (start > 0) {
+                U64 new_len = result.magnitude.length - U64(start);
+                os::memory_move(result.magnitude.ptr, result.magnitude.ptr + start, new_len);
+                resize(result.magnitude, new_len);
+            }
+        }
+        return result;
+    }
+
+    static S64 read_vint_cql(const U8*& p) {
+        U8 b = *p++;
+        if ((b & 0x80u) == 0) {
+            return S64((U64(b) >> 1) ^ -(U64(b) & 1));
+        }
+        int n_extra = 0;
+        for (int bit = 7; bit >= 0 && ((b >> bit) & 1); bit--) n_extra++;
+        U64 raw;
+        if (n_extra >= 8) {
+            U64 b0=*p++, b1=*p++, b2=*p++, b3=*p++, b4=*p++, b5=*p++, b6=*p++, b7=*p++;
+            raw = (b0<<56)|(b1<<48)|(b2<<40)|(b3<<32)|(b4<<24)|(b5<<16)|(b6<<8)|b7;
+        } else {
+            raw = U64(b & (0xffu >> (n_extra + 1)));
+            for (int i = 0; i < n_extra; i++) raw = (raw << 8) | U64(*p++);
+        }
+        return S64((raw >> 1) ^ -(raw & 1));
+    }
+
+    ColumnValue read_cql_value_as_column_value(const U8*& p, const U8* end, BasicType dtype) {
         assert_true(p + 4 <= end, "truncated value length");
         S32 len = read_be_s32(p);
         p += 4;
-        if (len < 0) return Constant{.value = Null{}};
+        if (len < 0) return ColumnValue{Null{}};
         assert_true(p + len <= end, "value body truncated");
         const U8* val = p;
         p += len;
 
         switch (dtype) {
             case BasicType::text: case BasicType::ascii: case BasicType::varchar:
-                return Constant{.value = AutoString8(val, U64(len))};
+                return ColumnValue{AutoString8(val, U64(len))};
             case BasicType::int_:{
                 assert_true(len == 4, "int value must be 4 bytes");
-                S64 v = S64(S32((U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3])));
-                return Constant{.value = v};
+                S32 v = S32((U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3]));
+                return ColumnValue{v};
             }
             case BasicType::bigint: case BasicType::timestamp: case BasicType::counter: case BasicType::time:{
                 assert_true(len == 8, "bigint value must be 8 bytes");
-                S64 v = read_be_s64(val);
-                return Constant{.value = v};
+                return ColumnValue{read_be_s64(val)};
             }
             case BasicType::smallint:{
                 assert_true(len == 2, "smallint value must be 2 bytes");
-                S64 v = S64(S16((U16(val[0]) << 8) | U16(val[1])));
-                return Constant{.value = v};
+                return ColumnValue{S16((U16(val[0]) << 8) | U16(val[1]))};
             }
             case BasicType::double_:{
                 assert_true(len == 8, "double value must be 8 bytes");
@@ -93,49 +138,137 @@ namespace cql::native {
                            (U64(val[4]) << 24) | (U64(val[5]) << 16) | (U64(val[6]) << 8) | U64(val[7]);
                 F64 d;
                 os::memory_copy(&d, &bits, sizeof(d));
-                return Constant{.value = d};
+                return ColumnValue{d};
             }
             case BasicType::float_:{
                 assert_true(len == 4, "float value must be 4 bytes");
                 U32 bits = (U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3]);
                 F32 fv;
                 os::memory_copy(&fv, &bits, sizeof(fv));
-                return Constant{.value = F64(fv)};
+                return ColumnValue{fv};
             }
             case BasicType::boolean:{
                 assert_true(len == 1, "boolean value must be 1 byte");
-                return Constant{.value = bool(val[0])};
-            }
-            case BasicType::uuid:{
-                assert_true(len == 16, "uuid value must be 16 bytes");
-                UUID uuid{};
-                os::memory_copy(&uuid.value[0], val, 16);
-                return Constant{.value = uuid};
-            }
-            case BasicType::timeuuid:{
-                assert_true(len == 16, "timeuuid value must be 16 bytes");
-                UUID uuid{};
-                os::memory_copy(&uuid.value[0], val, 16);
-                return Constant{.value = uuid};
+                return ColumnValue{U8(val[0])};
             }
             case BasicType::tinyint:{
-                S64 v = S64(S8(val[0]));
-                return Constant{.value = v};
+                assert_true(len == 1, "tinyint value must be 1 byte");
+                return ColumnValue{U8(val[0])};
+            }
+            case BasicType::uuid: case BasicType::timeuuid:{
+                assert_true(len == 16, "uuid/timeuuid value must be 16 bytes");
+                UUID uuid{};
+                os::memory_copy(&uuid.value[0], val, 16);
+                return ColumnValue{uuid};
             }
             case BasicType::date:{
                 assert_true(len == 4, "date value must be 4 bytes");
-                S64 v = S64(read_be_s32(val));
-                return Constant{.value = v};
+                S32 v = read_be_s32(val);
+                return ColumnValue{v};
             }
-            case BasicType::blob: case BasicType::decimal:
-            case BasicType::duration: case BasicType::inet:
-            case BasicType::varint: case BasicType::hex:{
-                return Constant{.value = AutoString8(val, U64(len))};
+            case BasicType::blob: case BasicType::hex:{
+                Blob b;
+                resize(b.value, U64(len));
+                os::memory_copy(b.value.ptr, val, U64(len));
+                return ColumnValue{move(b)};
+            }
+            case BasicType::inet:{
+                assert_true(len == 4 || len == 16, "inet value must be 4 or 16 bytes");
+                Inet inet;
+                inet.is_v6 = (len == 16);
+                if (inet.is_v6) os::memory_copy(&inet.v6[0], val, 16);
+                else            os::memory_copy(&inet.v4[0], val, 4);
+                return ColumnValue{move(inet)};
+            }
+            case BasicType::varint:{
+                return ColumnValue{decode_varint_cql(val, len)};
+            }
+            case BasicType::decimal:{
+                assert_true(len >= 4, "decimal value must be at least 4 bytes");
+                Decimal d;
+                d.scale = read_be_s32(val);
+                d.unscaled = decode_varint_cql(val + 4, len - 4);
+                return ColumnValue{move(d)};
+            }
+            case BasicType::duration:{
+                assert_true(len > 0, "duration value must not be empty");
+                const U8* dp = val;
+                Duration dur;
+                dur.months      = S32(read_vint_cql(dp));
+                dur.days        = S32(read_vint_cql(dp));
+                dur.nanoseconds = read_vint_cql(dp);
+                return ColumnValue{dur};
             }
             default:
                 assert_not_implemented("CQL value decoding for this basic type is not implemented");
-                return Constant{.value = Null{}};
+                return ColumnValue{Null{}};
         }
+    }
+
+    Term read_cql_value_as_term(const U8*& p, const U8* end, const Type& dtype) {
+        return visit(dtype.variants, [&](const auto& v) -> Term {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, Type::Basic>) {
+                Term t;
+                t.value = read_cql_value_as_column_value(p, end, v.value_dtype);
+                return t;
+            } else if constexpr (SameAs<T, Type::List>) {
+                assert_true(p + 4 <= end, "truncated list bind value length");
+                S32 outer_len = read_be_s32(p);
+                p += 4;
+                if (outer_len < 0) return Term{.value = Constant{.value = Null{}}};
+                const U8* coll_end = p + U64(outer_len);
+                assert_true(coll_end <= end, "list bind value body truncated");
+                assert_true(p + 4 <= coll_end, "truncated list element count");
+                S32 count = read_be_s32(p);
+                p += 4;
+                Type elem_type = io::element_type_to_type(v.element);
+                ListOrVectorLiteral lit{};
+                for (S32 i = 0; i < count && p < coll_end; i++)
+                    push_back(lit.elements, read_cql_value_as_term(p, coll_end, elem_type));
+                p = coll_end;
+                return Term{.value = move(lit)};
+            } else if constexpr (SameAs<T, Type::Set>) {
+                assert_true(p + 4 <= end, "truncated set bind value length");
+                S32 outer_len = read_be_s32(p);
+                p += 4;
+                if (outer_len < 0) return Term{.value = Constant{.value = Null{}}};
+                const U8* coll_end = p + U64(outer_len);
+                assert_true(coll_end <= end, "set bind value body truncated");
+                assert_true(p + 4 <= coll_end, "truncated set element count");
+                S32 count = read_be_s32(p);
+                p += 4;
+                Type key_type = io::element_type_to_type(v.key);
+                SetLiteral lit{};
+                for (S32 i = 0; i < count && p < coll_end; i++)
+                    push_back(lit.keys, read_cql_value_as_term(p, coll_end, key_type));
+                p = coll_end;
+                return Term{.value = move(lit)};
+            } else if constexpr (SameAs<T, Type::Map>) {
+                assert_true(p + 4 <= end, "truncated map bind value length");
+                S32 outer_len = read_be_s32(p);
+                p += 4;
+                if (outer_len < 0) return Term{.value = Constant{.value = Null{}}};
+                const U8* coll_end = p + U64(outer_len);
+                assert_true(coll_end <= end, "map bind value body truncated");
+                assert_true(p + 4 <= coll_end, "truncated map element count");
+                S32 count = read_be_s32(p);
+                p += 4;
+                Type key_type = io::element_type_to_type(v.key);
+                Type val_type = io::element_type_to_type(v.value);
+                MapLiteral lit{};
+                for (S32 i = 0; i < count && p < coll_end; i++) {
+                    Term key = read_cql_value_as_term(p, coll_end, key_type);
+                    Term val = read_cql_value_as_term(p, coll_end, val_type);
+                    push_back(lit.key_values, Pair<Term, Term>{move(key), move(val)});
+                }
+                p = coll_end;
+                return Term{.value = move(lit)};
+            } else {
+                assert_not_implemented("vector collection type bind parameters are not implemented");
+                return Term{.value = Constant{.value = Null{}}};
+            }
+        });
     }
 
     coroutine::Task<bool> try_append_tcp_read(const tcp::Request& req, DynamicArray<U8>& buf) {
@@ -154,8 +287,8 @@ namespace cql::native {
     // Read query parameter values. In v5, flags is [int] (32-bit); in v4 it is [byte].
     // v5 also adds optional keyspace and now_in_seconds fields.
     template<U8 Version>
-    DynamicArray<Constant> read_query_parameter_values(const U8*& p, const U8* end, const DynamicArray<engine::BindVariableSpec>& bind_specs) {
-        DynamicArray<Constant> bound_values;
+    DynamicArray<Term> read_query_parameter_values(const U8*& p, const U8* end, const DynamicArray<engine::BindVariableSpec>& bind_specs) {
+        DynamicArray<Term> bound_values;
         if (p + 2 > end) return bound_values;
         p += 2; // consistency [short] @todo
 
@@ -176,28 +309,23 @@ namespace cql::native {
 
             if (flags & 0x40u) {
                 for (U64 bi = 0; bi < bind_specs.length; bi++)
-                    push_back(bound_values, Constant{.value = Null{}});
+                    push_back(bound_values, Term{.value = Constant{.value = Null{}}});
                 for (U16 value_idx = 0; value_idx < n_values && p < end; value_idx++) {
                     String8 name = read_cql_string(p, end);
-                    BasicType dtype{};
                     U64 bind_spec_idx = bind_specs.length;
                     for (U64 idx = 0; idx < bind_specs.length; idx++) {
                         if (bind_specs[idx].name == name) {
-                            assert_true_not_implemented(type_matches_tag<Type::Basic>(bind_specs[idx].type.variants), "collection type bind parameters are not implemented");
-                            dtype = get<Type::Basic>(bind_specs[idx].type.variants).value_dtype;
                             bind_spec_idx = idx;
                             break;
                         }
                     }
                     assert_true_not_implemented(bind_spec_idx < bind_specs.length, "named bind parameter not found in prepared statement spec - error handling is not implemented");
-                    bound_values[bind_spec_idx] = read_cql_value_as_constant(p, end, dtype);
+                    bound_values[bind_spec_idx] = read_cql_value_as_term(p, end, bind_specs[bind_spec_idx].type);
                 }
             } else {
                 for (U16 bind_spec_idx = 0; bind_spec_idx < n_values && p < end; bind_spec_idx++) {
                     assert_true_not_implemented(bind_spec_idx < bind_specs.length, "more positional bind values than expected - error handling is not implemented");
-                    assert_true_not_implemented(type_matches_tag<Type::Basic>(bind_specs[bind_spec_idx].type.variants), "collection type bind parameters are not implemented");
-                    BasicType dtype = get<Type::Basic>(bind_specs[bind_spec_idx].type.variants).value_dtype;
-                    push_back(bound_values, read_cql_value_as_constant(p, end, dtype));
+                    push_back(bound_values, read_cql_value_as_term(p, end, bind_specs[bind_spec_idx].type));
                 }
             }
         }
@@ -468,9 +596,14 @@ namespace cql::native {
             RowIterator& row_end = rows.stop;
             while (row_it != row_end && U64(row_count) < row_limit) {
                 ColumnRange col_range = co_await row_it.deref();
-                for (U64 ci = 0; ci < tbl->cols.length && col_range.start != col_range.stop; ci++, ++col_range.start) {
-                    if (is_selected(ci))
-                        append_cql_value(f, *col_range.start, tbl->cols[ci].type);
+                U64 ci = 0;
+                while (col_range.start != col_range.stop && ci < tbl->cols.length) {
+                    if (is_selected(ci)) {
+                        ColumnValue v = co_await col_range.start.deref();
+                        append_cql_value(f, v, tbl->cols[ci].type);
+                    }
+                    co_await col_range.start.advance();
+                    ++ci;
                 }
                 row_count++;
                 co_await row_it.advance();

@@ -247,7 +247,8 @@ namespace type_codes {
     // Read [short bytes]: [short] n + n bytes, returns length and sets out_data
     U16 read_cql_short_bytes(const U8*& p, const U8* end, const U8*& out_data);
 
-    Constant read_cql_value_as_constant(const U8*& p, const U8* end, BasicType dtype);
+    ColumnValue read_cql_value_as_column_value(const U8*& p, const U8* end, BasicType dtype);
+    Term read_cql_value_as_term(const U8*& p, const U8* end, const Type& dtype);
 
     // Acquire a TCP buffer, read data into it, append to buf, then release.
     coroutine::Task<bool> try_append_tcp_read(const tcp::Request& req, DynamicArray<U8>& buf);

@@ -1158,3 +1158,227 @@ PAGER_TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]")
     os::file_delete(db_path);
     os::file_delete(wal_path);
 }
+
+// ============================================================================
+// Static column tests
+// ============================================================================
+
+// Static column value is shared by all clustering rows in the same partition.
+PAGER_TEST_CASE("Static columns: value shared across clustering rows", "[cql.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    auto pager = create_test_pager(db_file, 4_kb);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
+    Engine engine;
+    co_await engine::init(engine, &pager);
+
+    run_server_test("test-client", [&](os::Notifier& interrupt) {
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
+        send_frame(client, create_startup());
+        CHECK(recv_frame(client).opcode == 0x02);
+
+        send_frame(client, create_query("CREATE KEYSPACE ks;"));
+        CHECK(recv_frame(client).opcode == 0x08);
+        // Table with partition key (country), clustering key (name), and a static column (flag).
+        send_frame(client, create_query(
+            "CREATE TABLE ks.cyclists ("
+            "  country text,"
+            "  name    text,"
+            "  flag    text STATIC,"
+            "  PRIMARY KEY (country, name)"
+            ");"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        // Insert two clustering rows for the same partition, setting flag on the first.
+        send_frame(client, create_query(
+            "INSERT INTO ks.cyclists (country, name, flag) VALUES ('Belgium', 'Boonen', 'BE');"));
+        CHECK(recv_frame(client).opcode == 0x08);
+        send_frame(client, create_query(
+            "INSERT INTO ks.cyclists (country, name) VALUES ('Belgium', 'Steels');"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        // Both rows should see 'BE' in the flag column.
+        send_frame(client, create_query("SELECT * FROM ks.cyclists WHERE country = 'Belgium';"));
+        auto resp = recv_frame(client);
+        CHECK(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK(body_contains(resp, "Boonen"));
+        CHECK(body_contains(resp, "Steels"));
+        // Flag 'BE' appears — at least once per returned row.
+        CHECK(body_contains(resp, "BE"));
+
+        os::signal_notify_safe(interrupt);
+    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+    });
+    destroy_test_pager(pager);
+}
+
+// Inserting a new static value overwrites the previous one partition-wide.
+PAGER_TEST_CASE("Static columns: overwrite replaces value partition-wide", "[cql.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    auto pager = create_test_pager(db_file, 4_kb);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
+    Engine engine;
+    co_await engine::init(engine, &pager);
+
+    run_server_test("test-client", [&](os::Notifier& interrupt) {
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
+        send_frame(client, create_startup());
+        CHECK(recv_frame(client).opcode == 0x02);
+
+        send_frame(client, create_query("CREATE KEYSPACE ks;"));
+        CHECK(recv_frame(client).opcode == 0x08);
+        send_frame(client, create_query(
+            "CREATE TABLE ks.t (pk int, ck int, info text STATIC, PRIMARY KEY (pk, ck));"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        // First insert sets info = 'v1'.
+        send_frame(client, create_query("INSERT INTO ks.t (pk, ck, info) VALUES (1, 10, 'v1');"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        // Second insert on the same partition updates info = 'v2'.
+        send_frame(client, create_query("INSERT INTO ks.t (pk, ck, info) VALUES (1, 20, 'v2');"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        // Both rows should see 'v2'; 'v1' should no longer appear.
+        send_frame(client, create_query("SELECT * FROM ks.t WHERE pk = 1;"));
+        auto resp = recv_frame(client);
+        CHECK(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK( body_contains(resp, "v2"));
+        CHECK(!body_contains(resp, "v1"));
+
+        os::signal_notify_safe(interrupt);
+    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+    });
+    destroy_test_pager(pager);
+}
+
+// Static values must persist across an engine restart (reopen from disk).
+PAGER_TEST_CASE("Static columns: persist across reopen", "[cql.native]") {
+    int port1 = get_unique_port();
+    int port2 = get_unique_port();
+
+    os::Handle pid = os::process_get_handle();
+    auto db_path  = fmt("/tmp/plexdb_cql::static_%" PRIu64 "_db",  pid.u64[0]);
+    auto wal_path = fmt("/tmp/plexdb_cql::static_%" PRIu64 "_wal", pid.u64[0]);
+
+    if (os::file_exists(db_path))  os::file_delete(db_path);
+    if (os::file_exists(wal_path)) os::file_delete(wal_path);
+
+    os::Handle db_file  = os::file_open(db_path);
+    os::Handle wal_file = os::file_open(wal_path);
+    REQUIRE(!os::is_zero_handle(db_file));
+    REQUIRE(!os::is_zero_handle(wal_file));
+
+    {
+        auto pager = create_test_pager(db_file, wal_file, 4_kb);
+        pager::begin_transaction(pager);
+        co_await engine::create_database(pager);
+        co_await pager::commit_transaction(pager);
+        Engine engine;
+        co_await engine::init(engine, &pager);
+
+        run_server_test("writer", [&](os::Notifier& interrupt) {
+            Socket client{socket_open()};
+            socket_set_timeout(client, 2000);
+            CHECK(socket_connect(client, "127.0.0.1", (U16)port1));
+            send_frame(client, create_startup());
+            CHECK(recv_frame(client).opcode == 0x02);
+
+            send_frame(client, create_query("CREATE KEYSPACE ks;"));
+            CHECK(recv_frame(client).opcode == 0x08);
+            send_frame(client, create_query(
+                "CREATE TABLE ks.t (pk int, ck int, info text STATIC, PRIMARY KEY (pk, ck));"));
+            CHECK(recv_frame(client).opcode == 0x08);
+            send_frame(client, create_query("INSERT INTO ks.t (pk, ck, info) VALUES (7, 1, 'persistent');"));
+            CHECK(recv_frame(client).opcode == 0x08);
+
+            os::signal_notify_safe(interrupt);
+        }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+            native::run(port1, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        });
+        destroy_test_pager(pager);
+    }
+
+    // Reopen
+    os::Handle db2  = os::file_open(db_path);
+    os::Handle wal2 = os::file_open(wal_path);
+    auto pager2 = test_pager(db2, wal2);
+    Engine engine2;
+    co_await engine::init(engine2, &pager2);
+
+    run_server_test("reader", [&](os::Notifier& interrupt) {
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        CHECK(socket_connect(client, "127.0.0.1", (U16)port2));
+        send_frame(client, create_startup());
+        CHECK(recv_frame(client).opcode == 0x02);
+
+        send_frame(client, create_query("SELECT * FROM ks.t WHERE pk = 7;"));
+        auto resp = recv_frame(client);
+        CHECK(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK(body_contains(resp, "persistent"));
+
+        os::signal_notify_safe(interrupt);
+    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+        native::run(port2, engine2, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+    });
+    destroy_test_pager(pager2);
+    os::file_close(db2);
+    os::file_close(wal2);
+    os::file_delete(db_path);
+    os::file_delete(wal_path);
+}
+
+// DDL: static column on a table without clustering columns must be rejected.
+PAGER_TEST_CASE("Static columns: rejected on table without clustering key", "[cql.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    auto pager = create_test_pager(db_file, 4_kb);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
+    Engine engine;
+    co_await engine::init(engine, &pager);
+
+    run_server_test("test-client", [&](os::Notifier& interrupt) {
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
+        send_frame(client, create_startup());
+        CHECK(recv_frame(client).opcode == 0x02);
+
+        send_frame(client, create_query("CREATE KEYSPACE ks;"));
+        CHECK(recv_frame(client).opcode == 0x08);
+        // No clustering column — STATIC should be rejected.
+        send_frame(client, create_query(
+            "CREATE TABLE ks.bad (id int PRIMARY KEY, info text STATIC);"));
+        auto resp = recv_frame(client);
+        // Expect an error response (opcode 0x00 = ERROR).
+        CHECK(resp.opcode == 0x00);
+
+        os::signal_notify_safe(interrupt);
+    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+    });
+    destroy_test_pager(pager);
+}
