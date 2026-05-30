@@ -184,9 +184,10 @@ namespace cql::schema {
                     .cols = {},
                     .partition_key_col_indices = {},
                     .clustering_key_col_indices = {},
+                    .static_col_indices = {},
                     .btree = PartitionBTree{
                         in_pager, tbl_storage.header.btree_page,
-                        btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+                        btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
                     },
                 };
 
@@ -196,6 +197,7 @@ namespace cql::schema {
 
                     Column col {
                         .tombstone = col_storage.header.tombstone,
+                        .is_static = col_storage.header.is_static,
                         .name = col_storage.name,
                         .type = unpack_type(schema, col_storage.header.type_id),
                         .key_kind = col_storage.header.key_kind,
@@ -205,7 +207,7 @@ namespace cql::schema {
                     push_back(tbl.cols, move(col));
                 }
 
-                // Build partition/clustering key index arrays from column key_kind/key_position.
+                // Build partition/clustering/static index arrays from column key_kind/key_position.
                 // Use insertion sort on the small arrays to maintain position order.
                 for (U64 ci = 0; ci < tbl.cols.length; ci++) {
                     const Column& col = tbl.cols[ci];
@@ -227,6 +229,8 @@ namespace cql::schema {
                             tbl.clustering_key_col_indices[insert_pos-1] = ci;
                             insert_pos--;
                         }
+                    } else if (col.is_static) {
+                        push_back(tbl.static_col_indices, ci);
                     }
                 }
 
@@ -509,7 +513,7 @@ namespace cql::schema {
 
         U64 btree_page = co_await btree::create_paged(
             *schema.tables_blob.pager,
-            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
         );
 
         U64 offset_bytes = schema.tables_blob.size_bytes;
@@ -543,9 +547,10 @@ namespace cql::schema {
             .cols = {},
             .partition_key_col_indices = {},
             .clustering_key_col_indices = {},
+            .static_col_indices = {},
             .btree = PartitionBTree{
                 schema.tables_blob.pager, tbl_storage_ref.header.btree_page,
-                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
             },
         };
         // @todo avoid this copy
@@ -613,8 +618,12 @@ namespace cql::schema {
 
     coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create,
                                                     KeyKind key_kind, U16 key_position) {
-        // @todo implement proper static column semantics (shared across clustering rows within a partition)
-        assert_true_not_implemented(!create._static, "static column storage is not implemented");
+        if (create._static) {
+            if (tbl.clustering_key_col_indices.length == 0)
+                co_return Result<Column*>{nullptr, Error::InvalidOptions, "static columns require at least one clustering column"};
+            if (key_kind != KeyKind::None)
+                co_return Result<Column*>{nullptr, Error::InvalidOptions, "primary key columns cannot be static"};
+        }
         assert_true_not_implemented(!create.mask, "column MASKED WITH is not implemented");
         assert_true(read_column_impl(schema, tbl, create.name.identifier).error == Error::MissingColumn, "column already exists");
 
@@ -639,6 +648,7 @@ namespace cql::schema {
             .offset_in_blob_bytes = offset_bytes,
             .header = ColumnHeader{
                 .tombstone = false,
+                .is_static = create._static,
                 .name_length = create.name.identifier.length,
                 .type_id = type_id,
                 .table_idx = tbl.idx,
@@ -658,14 +668,18 @@ namespace cql::schema {
         co_await blob::tupdate(schema.columns_blob, &col_storage_ref.header, &offset_bytes);
         co_await update_str(schema.columns_blob, col_storage_ref.name, &offset_bytes);
 
+        U64 new_col_idx = tbl.cols.length;
         Column col {
             .tombstone = col_storage_ref.header.tombstone,
+            .is_static = col_storage_ref.header.is_static,
             .name = col_storage_ref.name,
             .type = unpack_type(schema, col_storage_ref.header.type_id),
             .key_kind = key_kind,
             .key_position = key_position,
         };
-        co_return Result<Column*>{&push_back(tbl.cols, move(col))};
+        Column* col_ptr = &push_back(tbl.cols, move(col));
+        if (create._static) push_back(tbl.static_col_indices, new_col_idx);
+        co_return Result<Column*>{col_ptr};
     }
 
     coroutine::Task<Result<void>> delete_column(Schema& schema, Table& tbl, String8 name) {

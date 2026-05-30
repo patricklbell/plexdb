@@ -17,23 +17,38 @@ export namespace cql::schema {
 
     struct Column {
         bool tombstone;
+        bool is_static = false;
         String8 name;
         const Type type;
         KeyKind key_kind = KeyKind::None;
         U16 key_position = 0;
     };
 
-    using PartitionBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<sizeof(U64)>>;
+    // Stored as the fixed-size value in the outer (partition) BTree for all tables.
+    // data_page: row blob page (no clustering keys) or clustering BTree page (with clustering keys).
+    // static_page: 0 if no static row exists for that partition; otherwise the static row blob page.
+    #pragma pack(push, 1)
+    struct PartitionEntry { U64 data_page; U64 static_page; };
+    #pragma pack(pop)
+    static_assert(sizeof(PartitionEntry) == 16);
+
+    // Outer partition BTree: pk_bytes → PartitionEntry
+    using PartitionBTree  = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<sizeof(PartitionEntry)>>;
+    // Inner clustering BTree: ck_bytes → row_page (U64)
+    using ClusteringBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<sizeof(U64)>>;
 
     struct Table {
         U64 idx;
         bool tombstone;
         String8 name;
         DynamicArray<Column> cols;
-        DynamicArray<U64> partition_key_col_indices;   // sorted by key_position; replaces primary_col_idx
+        DynamicArray<U64> partition_key_col_indices;   // sorted by key_position
         DynamicArray<U64> clustering_key_col_indices;  // sorted by key_position
+        DynamicArray<U64> static_col_indices;          // col indices where is_static == true
         PartitionBTree btree;
     };
+
+    bool has_clustering_keys(const Table& tbl) { return tbl.clustering_key_col_indices.length > 0; }
 
     struct Keyspace {
         U64 idx;
@@ -71,6 +86,7 @@ export namespace cql::schema {
     };
     struct ColumnHeader {
         bool tombstone;
+        bool is_static;
         U64 name_length;
         U32 type_id;
         U64 table_idx;
