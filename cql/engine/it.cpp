@@ -15,94 +15,105 @@ import plexdb.blob;
 
 import cql.engine.io;
 import cql.engine.schema;
+import cql.engine.types;
 import cql.engine.statements;
 
 namespace cql {
     // ========================================================================
     // column iterator
-    //   @todo move mask logic into io
     // ========================================================================
 
-    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx) {
+
+    static coroutine::Task<U64> read_blob_header(
+        blob::BlobDynamicPaged& b, U64& out_col_count, DynamicArray<U64>& out_masks
+    ) {
+        co_await blob::get(b, reinterpret_cast<U8*>(&out_col_count),
+                           io::COLUMN_COUNT_BYTE_COUNT, 0);
+        U64 mask_words = ceil_div(out_col_count, io::MASK_BIT_COUNT);
+        resize(out_masks, mask_words);
+        if (mask_words > 0) {
+            co_await blob::get(b, reinterpret_cast<U8*>(out_masks.ptr),
+                               mask_words * io::MASK_BYTE_COUNT, io::COLUMN_COUNT_BYTE_COUNT);
+        }
+        co_return io::COLUMN_COUNT_BYTE_COUNT + mask_words * io::MASK_BYTE_COUNT;
+    }
+
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table,
+                           U64 page_idx, U64 static_page_idx) {
         it.table = table;
-        assert_true(it.table->cols.length != 0, "column cannot be empty, it must at least have a PK");
+        assert_true(it.table->cols.length != 0,
+                    "column cannot be empty, it must at least have a PK");
 
-        blob::BlobDynamicPaged row_blob;
-        co_await blob::load(row_blob, pager, page_idx);
-
-        resize(it.row_data, row_blob.size_bytes);
-        co_await blob::get(row_blob, it.row_data.ptr, row_blob.size_bytes);
-
-        static_assert(sizeof(it.row_column_count) == io::COLUMN_COUNT_BYTE_COUNT);
-        os::memory_copy(&it.row_column_count, it.row_data.ptr, sizeof(it.row_column_count));
-
-        it.current_column_idx = 0;
-        // header layout: [column_count(U64)] + [ceil(row_column_count/64) * mask(U64)]
-        it.current_byte_offset = io::COLUMN_COUNT_BYTE_COUNT +
-            ceil_div(it.row_column_count, io::MASK_BIT_COUNT) * io::MASK_BYTE_COUNT;
-
-        if (it.row_column_count > 0) {
-            static_assert(sizeof(it.current_mask) == io::MASK_BYTE_COUNT, "mask size matches io size");
-            os::memory_copy(&it.current_mask, it.row_data.ptr + io::COLUMN_COUNT_BYTE_COUNT, sizeof(it.current_mask));
-        }
-
-    }
-
-    ColumnValue ColumnIterator::operator*() { ZoneScopedN("it::column_read");
-        assert_true(this->table != nullptr, "cannot dereference an end iterator, this should never happen!");
-
-        if (this->current_column_idx >= this->row_column_count) {
-            return {Null{}};
-        }
+        // Open cursors and read all mask words. Opens its own short transaction
+        // if none is currently active; otherwise uses the caller's transaction.
         {
-            U64 bit_idx = this->current_column_idx % io::MASK_BIT_COUNT;
-            if (!(this->current_mask & (1_u64 << bit_idx))) {
-                return {Null{}};
+            bool own_tx = !pager->transaction_active;
+            pager::Transaction tx{pager};
+            if (own_tx) co_await tx.begin();
+
+            it.row_cursor = co_await blob::create_cursor(pager, page_idx);
+            U64 data_offset = co_await read_blob_header(
+                it.row_cursor.blob, it.row_column_count, it.masks);
+            it.row_cursor.offset = data_offset;
+
+            if (static_page_idx != 0 && table->static_col_indices.length > 0) {
+                it.static_cursor = co_await blob::create_cursor(pager, static_page_idx);
+                U64 static_col_count = 0;
+                U64 static_data_offset = co_await read_blob_header(
+                    it.static_cursor.blob, static_col_count, it.static_masks);
+                it.static_cursor.offset = static_data_offset;
             }
+
+            if (own_tx) co_await tx.commit();
         }
 
-        U64 read_offset = this->current_byte_offset;
-        return io::read_column_value(
-            [this, &read_offset](U8* out_value, U64 size) {
-                os::memory_copy(out_value, this->row_data.ptr + read_offset, size);
-                read_offset += size;
-            },
-            this->table->cols[this->current_column_idx].type
-        );
+        it.current_column_idx    = 0;
+        it.current_value_consumed = false;
     }
 
-    ColumnIterator& ColumnIterator::operator++() {
-        assert_true(this->table != nullptr, "cannot increment end iterator");
+    coroutine::Task<ColumnValue> ColumnIterator::deref() { ZoneScopedN("it::column_read");
+        assert_true(this->table != nullptr,
+                    "cannot dereference an end iterator, this should never happen!");
+
+        if (this->current_column_idx >= this->row_column_count)
+            co_return ColumnValue{Null{}};
+
+        if (this->current_is_null())
+            co_return ColumnValue{Null{}};
+
+        blob::BlobCursor& cursor = this->current_is_static()
+            ? this->static_cursor : this->row_cursor;
+
+        auto r = [&cursor](U8* dst, U64 size) -> coroutine::Task<void> {
+            co_await blob::read(cursor, dst, size);
+        };
+        ColumnValue result = co_await io::read_column_value(r, this->table->cols[this->current_column_idx].type);
+        this->current_value_consumed = true;
+        co_return result;
+    }
+
+    coroutine::Task<void> ColumnIterator::advance() {
+        assert_true(this->table != nullptr, "cannot advance end iterator");
+
         if (this->current_column_idx >= this->row_column_count) {
             this->table = nullptr;
-            return *this;
-        }
-        assert_true(this->current_byte_offset <= this->row_data.length,
-                    "sum of column sizes did not match expectation from row data size");
-
-        // advance byte offset past current column's stored bytes (only if active)
-        U64 bit_idx = this->current_column_idx % io::MASK_BIT_COUNT;
-        if (this->current_mask & (1_u64 << bit_idx)) {
-            io::read_column_value(
-                [this](U8* out_value, U64 size) {
-                    // @todo @perf avoid copy for variable-length skip (track byte size separately)
-                    os::memory_copy(out_value, this->row_data.ptr + this->current_byte_offset, size);
-                    this->current_byte_offset += size;
-                },
-                this->table->cols[this->current_column_idx].type
-            );
+            co_return;
         }
 
+        if (!this->current_is_null() && !this->current_value_consumed) {
+            blob::BlobCursor& cursor = this->current_is_static()
+                ? this->static_cursor : this->row_cursor;
+            auto r = [&cursor](U8* dst, U64 size) -> coroutine::Task<void> {
+                if (dst != nullptr) co_await blob::read(cursor, dst, size);
+                else cursor.skip(size);
+            };
+            co_await io::skip_column_value(r, this->table->cols[this->current_column_idx].type);
+        }
+        this->current_value_consumed = false;
         this->current_column_idx++;
 
-        if (this->current_column_idx < this->row_column_count &&
-            this->current_column_idx % io::MASK_BIT_COUNT == 0) {
-            U64 mask_offset = io::COLUMN_COUNT_BYTE_COUNT +
-                io::MASK_BYTE_COUNT * (this->current_column_idx / io::MASK_BIT_COUNT);
-            os::memory_copy(&this->current_mask, this->row_data.ptr + mask_offset, sizeof(this->current_mask));
-        }
-
-        return *this;
+        if (this->current_column_idx >= this->row_column_count)
+            this->table = nullptr;
     }
 
     // ========================================================================
@@ -110,14 +121,12 @@ namespace cql {
     // ========================================================================
 
     coroutine::Task<ColumnRange> RowIterator::deref() {
-        U64 row_page = (table->clustering_key_col_indices.length > 0)
+        auto partition_entry = *partition_it;
+        U64 row_page = schema::has_clustering_keys(*table)
             ? *clustering_it
-            : *partition_it;
-        pager::Transaction tx{this->pager};
-        co_await tx.begin();
+            : partition_entry.data_page;
         ColumnIterator col_it;
-        co_await load(col_it, this->pager, this->table, row_page);
-        co_await tx.commit();
+        co_await load(col_it, this->pager, this->table, row_page, partition_entry.static_page);
         co_return ColumnRange{
             .start = move(col_it),
             .stop  = ColumnIterator{},
@@ -127,19 +136,17 @@ namespace cql {
     coroutine::Task<void> RowIterator::advance() {
         pager::Transaction tx{this->pager};
         co_await tx.begin();
-        if (table->clustering_key_col_indices.length == 0) {
+        if (!schema::has_clustering_keys(*table)) {
             co_await this->partition_it.advance();
         } else {
             co_await this->clustering_it.advance();
             if (clustering_it == clustering_end_it) {
-                // Exhausted this partition; move to the next
                 co_await this->partition_it.advance();
-                auto end_it = btree::end<U64>(table->btree);
+                auto end_it = btree::end<schema::PartitionEntry>(table->btree);
                 if (partition_it != end_it) {
-                    // Open clustering btree for next partition
-                    U64 clustering_page = *partition_it;
-                    clustering_btree = PartitionBTree{
-                        pager, clustering_page,
+                    auto entry = *partition_it;
+                    clustering_btree = ClusteringBTree{
+                        pager, entry.data_page,
                         btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
                     };
                     clustering_it     = co_await btree::begin<U64>(clustering_btree);
@@ -150,11 +157,24 @@ namespace cql {
         co_await tx.commit();
     }
 
+    static coroutine::Task<void> create_clustering(RowIterator& it, Pager* pager, schema::Table* table) {
+        if (schema::has_clustering_keys(*table) &&
+            it.partition_it != btree::end<schema::PartitionEntry>(table->btree)) {
+            auto entry = *it.partition_it;
+            it.clustering_btree = ClusteringBTree{
+                pager, entry.data_page,
+                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+            };
+            it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
+            it.clustering_end_it = btree::end<U64>(it.clustering_btree);
+        }
+    }
+
     RowIterator create_table_end_it(Pager* pager, schema::Table* table) {
         RowIterator it;
         it.pager        = pager;
         it.table        = table;
-        it.partition_it = btree::end<U64>(table->btree);
+        it.partition_it = btree::end<schema::PartitionEntry>(table->btree);
         return it;
     }
 
@@ -162,19 +182,8 @@ namespace cql {
         RowIterator it;
         it.pager        = pager;
         it.table        = table;
-        it.partition_it = co_await btree::begin<U64>(table->btree);
-
-        if (table->clustering_key_col_indices.length > 0 &&
-            it.partition_it != btree::end<U64>(table->btree)) {
-            U64 clustering_page = *it.partition_it;
-            it.clustering_btree = PartitionBTree{
-                pager, clustering_page,
-                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
-            };
-            it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
-            it.clustering_end_it = btree::end<U64>(it.clustering_btree);
-        }
-
+        it.partition_it = co_await btree::begin<schema::PartitionEntry>(table->btree);
+        co_await create_clustering(it, pager, table);
         co_return it;
     }
 
@@ -182,79 +191,42 @@ namespace cql {
         RowIterator it;
         it.pager        = pager;
         it.table        = table;
-        it.partition_it = co_await btree::find_it<U64, btree::SearchStrategy::RequireEquality>(table->btree, pk_key);
-
-        if (table->clustering_key_col_indices.length > 0 &&
-            it.partition_it != btree::end<U64>(table->btree)) {
-            U64 clustering_page = *it.partition_it;
-            it.clustering_btree = PartitionBTree{
-                pager, clustering_page,
-                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
-            };
-            it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
-            it.clustering_end_it = btree::end<U64>(it.clustering_btree);
-        }
-
+        it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::RequireEquality>(table->btree, pk_key);
+        co_await create_clustering(it, pager, table);
         co_return it;
     }
 
-    // stop iterator: exclusive end for "< pk" — position at first key >= pk
     coroutine::Task<RowIterator> create_table_lt_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
         RowIterator it;
         it.pager        = pager;
         it.table        = table;
-        it.partition_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_key);
+        it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_key);
         co_return it;
     }
 
-    // stop iterator: exclusive end for "<= pk" — position at first key > pk
     coroutine::Task<RowIterator> create_table_le_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
         RowIterator it;
         it.pager        = pager;
         it.table        = table;
-        it.partition_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(table->btree, pk_key);
+        it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreater>(table->btree, pk_key);
         co_return it;
     }
 
-    // start iterator: first key > pk
     coroutine::Task<RowIterator> create_table_gt_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
         RowIterator it;
         it.pager        = pager;
         it.table        = table;
-        it.partition_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(table->btree, pk_key);
-
-        if (table->clustering_key_col_indices.length > 0 &&
-            it.partition_it != btree::end<U64>(table->btree)) {
-            U64 clustering_page = *it.partition_it;
-            it.clustering_btree = PartitionBTree{
-                pager, clustering_page,
-                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
-            };
-            it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
-            it.clustering_end_it = btree::end<U64>(it.clustering_btree);
-        }
-
+        it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreater>(table->btree, pk_key);
+        co_await create_clustering(it, pager, table);
         co_return it;
     }
 
-    // start iterator: first key >= pk
     coroutine::Task<RowIterator> create_table_ge_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
         RowIterator it;
         it.pager        = pager;
         it.table        = table;
-        it.partition_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_key);
-
-        if (table->clustering_key_col_indices.length > 0 &&
-            it.partition_it != btree::end<U64>(table->btree)) {
-            U64 clustering_page = *it.partition_it;
-            it.clustering_btree = PartitionBTree{
-                pager, clustering_page,
-                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
-            };
-            it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
-            it.clustering_end_it = btree::end<U64>(it.clustering_btree);
-        }
-
+        it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_key);
+        co_await create_clustering(it, pager, table);
         co_return it;
     }
 }

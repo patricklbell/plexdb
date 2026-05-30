@@ -9,17 +9,21 @@ import plexdb.blob;
 
 import cql.engine.io;
 import cql.engine.schema;
+import cql.engine.statements;
 
 using namespace plexdb;
 
 export namespace cql {
-    // ColumnIterator pre-fetches all row bytes on construction so operator*/++ are sync.
+    // ColumnIterator streams column values one at a time from a BlobCursor.
+    // Mask words are loaded upfront (tiny). deref() and advance() each open
+    // and commit their own short transaction; skip of fixed-width columns is
+    // pure arithmetic with no transaction.
     struct ColumnIterator {
     public:
         ColumnIterator() = default;
 
-        ColumnValue operator*();
-        ColumnIterator& operator++();
+        coroutine::Task<ColumnValue> deref();
+        coroutine::Task<void>        advance();
 
         bool operator==(const ColumnIterator& other) const {
             return (table == nullptr && other.table == nullptr) ||
@@ -27,42 +31,62 @@ export namespace cql {
         }
         bool operator!=(const ColumnIterator& other) const { return !(*this == other); }
 
-        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx);
+        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table,
+                                      U64 page_idx, U64 static_page_idx);
 
     private:
         const schema::Table* table = nullptr;
-        DynamicArray<U8> row_data;
-        U64 row_column_count = 0;
+
+        blob::BlobCursor row_cursor;
+        blob::BlobCursor static_cursor;   // valid() == false when no static page
+
+        U64 row_column_count   = 0;
         U64 current_column_idx = 0;
-        U64 current_byte_offset = 0;  // absolute byte position into row_data for current column data
-        U64 current_mask = 0;
+
+        // All mask words loaded upfront in load(); safe to hold across transactions.
+        DynamicArray<U64> masks;
+        DynamicArray<U64> static_masks;
+
+        // Set by deref() when it reads a non-null value, cleared by advance().
+        // advance() skips bytes only when this is false (caller skipped deref).
+        bool current_value_consumed = false;
+
+        bool current_is_null() const {
+            U64 word = current_column_idx / io::MASK_BIT_COUNT;
+            U64 bit  = current_column_idx % io::MASK_BIT_COUNT;
+            if (static_cast<bool>(static_cursor) && table->cols[current_column_idx].is_static)
+                return word >= static_masks.length || !(static_masks[word] & (1_u64 << bit));
+            return word >= masks.length || !(masks[word] & (1_u64 << bit));
+        }
+
+        bool current_is_static() const {
+            return static_cast<bool>(static_cursor) && table->cols[current_column_idx].is_static;
+        }
     };
 
-    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx);
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table,
+                           U64 page_idx, U64 static_page_idx = 0);
 
     struct ColumnRange {
         ColumnIterator start;
         ColumnIterator stop;
 
         ColumnIterator& begin() { return start; }
-        ColumnIterator& end() { return stop; }
+        ColumnIterator& end()   { return stop;  }
     };
 
-    using PartitionBTree = schema::PartitionBTree;
+    using PartitionBTree  = schema::PartitionBTree;
+    using ClusteringBTree = schema::ClusteringBTree;
 
     struct RowIterator {
         Pager* pager = nullptr;
         schema::Table* table = nullptr;
 
-        // Partition-level iterator; value = row_page (no clustering) or clustering_btree_page (clustering)
-        btree::Iterator<PartitionBTree, U64> partition_it;
+        btree::Iterator<PartitionBTree, schema::PartitionEntry> partition_it;
 
-        // Clustering-level (only when table->clustering_key_col_indices.length > 0).
-        // clustering_btree is stored by value; clustering_it.btree points at &clustering_btree.
-        // Custom copy/move maintain that invariant after object moves.
-        PartitionBTree clustering_btree;
-        btree::Iterator<PartitionBTree, U64> clustering_it;
-        btree::Iterator<PartitionBTree, U64> clustering_end_it;
+        ClusteringBTree clustering_btree;
+        btree::Iterator<ClusteringBTree, U64> clustering_it;
+        btree::Iterator<ClusteringBTree, U64> clustering_end_it;
 
         RowIterator() = default;
 
@@ -97,14 +121,13 @@ export namespace cql {
         coroutine::Task<void>        advance();
 
         bool operator==(const RowIterator& other) const {
-            assert_true(table == other.table || table == nullptr || other.table == nullptr, "invalid iterator comparison");
+            assert_true(table == other.table || table == nullptr || other.table == nullptr,
+                        "invalid iterator comparison");
             return partition_it == other.partition_it;
         }
         bool operator!=(const RowIterator& other) const { return !(*this == other); }
 
     private:
-        // After copying/moving iterator fields, fix up clustering_it.btree so it points
-        // to this->clustering_btree rather than src.clustering_btree.
         void fix_clustering_btree_ptr(const RowIterator& src) {
             if (clustering_it.btree == &src.clustering_btree)
                 clustering_it.btree = &clustering_btree;
