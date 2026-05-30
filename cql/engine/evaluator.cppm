@@ -12,7 +12,7 @@ using namespace plexdb;
 
 export namespace cql {
     using EvaluatedTypes = TypeList<
-        Constant, MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral
+        Constant, MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral, ColumnValue
     >;
     struct Evaluated {
         // @note @warn DO NOT modify without also checking TermWithIdentifier
@@ -38,6 +38,9 @@ export namespace cql {
         }
         if (type_matches_tag<UdtLiteral>(term.value)) {
             return {get<UdtLiteral>(move(term.value))};
+        }
+        if (type_matches_tag<ColumnValue>(term.value)) {
+            return {get<ColumnValue>(move(term.value))};
         }
         if (type_matches_tag<BindMarker>(term.value)) {
             // unresolved bind marker evaluates to null

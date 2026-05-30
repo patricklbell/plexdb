@@ -6,6 +6,7 @@ import plexdb.dynamic.containers;
 
 import cql.engine.io;
 import cql.engine.types;
+import cql.engine.statements;
 
 using namespace plexdb;
 

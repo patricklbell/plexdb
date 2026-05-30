@@ -82,48 +82,89 @@ namespace cql::key {
         push_back(out, U8(0x00));
     }
 
+    static S64 eval_as_s64(const Evaluated& eval) {
+        if (type_matches_tag<Constant>(eval.value)) return get<S64>(get<Constant>(eval.value).value);
+        const ColumnValue& cv = get<ColumnValue>(eval.value);
+        if (type_matches_tag<S64>(cv)) return get<S64>(cv);
+        if (type_matches_tag<S32>(cv)) return S64(get<S32>(cv));
+        if (type_matches_tag<S16>(cv)) return S64(get<S16>(cv));
+        if (type_matches_tag<U8>(cv))  return S64(get<U8>(cv));
+        assert_true(false, "unexpected ColumnValue type for integer key"); return 0;
+    }
+    static bool eval_as_bool(const Evaluated& eval) {
+        if (type_matches_tag<Constant>(eval.value)) return get<bool>(get<Constant>(eval.value).value);
+        return get<U8>(get<ColumnValue>(eval.value)) != 0;
+    }
+    static F64 eval_as_f64(const Evaluated& eval) {
+        if (type_matches_tag<Constant>(eval.value)) return get<F64>(get<Constant>(eval.value).value);
+        const ColumnValue& cv = get<ColumnValue>(eval.value);
+        if (type_matches_tag<F64>(cv)) return get<F64>(cv);
+        return F64(get<F32>(cv));
+    }
+    static F32 eval_as_f32(const Evaluated& eval) {
+        if (type_matches_tag<Constant>(eval.value)) return F32(get<F64>(get<Constant>(eval.value).value));
+        const ColumnValue& cv = get<ColumnValue>(eval.value);
+        if (type_matches_tag<F32>(cv)) return get<F32>(cv);
+        return F32(get<F64>(cv));
+    }
+    static const AutoString8& eval_as_string(const Evaluated& eval) {
+        if (type_matches_tag<Constant>(eval.value)) return get<AutoString8>(get<Constant>(eval.value).value);
+        return get<AutoString8>(get<ColumnValue>(eval.value));
+    }
+    static const UUID& eval_as_uuid(const Evaluated& eval) {
+        if (type_matches_tag<Constant>(eval.value)) return get<UUID>(get<Constant>(eval.value).value);
+        return get<UUID>(get<ColumnValue>(eval.value));
+    }
+    static const Blob& eval_as_blob(const Evaluated& eval) {
+        if (type_matches_tag<Constant>(eval.value)) return get<Blob>(get<Constant>(eval.value).value);
+        return get<Blob>(get<ColumnValue>(eval.value));
+    }
+    static const Hex& eval_as_hex(const Evaluated& eval) {
+        if (type_matches_tag<Constant>(eval.value)) return get<Hex>(get<Constant>(eval.value).value);
+        return get<Hex>(get<ColumnValue>(eval.value));
+    }
+
     // Append one key component.
     // Fixed-width types in composite keys: prepend a 2-byte big-endian length (constant, so ordering is unaffected).
     // Variable-length types in composite keys: use escaped-terminated encoding to preserve ordering.
     static void append_component(DynamicArray<U8>& out, const Evaluated& eval,
                                   BasicType dtype, bool is_composite) {
-        const Constant& c = get<Constant>(eval.value);
         switch (dtype) {
             case BasicType::bigint:
             case BasicType::timestamp:
             case BasicType::counter: {
                 if (is_composite) append_u16_be(out, 8);
-                append_s64_be(out, get<S64>(c.value));
+                append_s64_be(out, eval_as_s64(eval));
                 break;
             }
             case BasicType::int_: {
                 if (is_composite) append_u16_be(out, 4);
-                append_s32_be(out, static_cast<S32>(get<S64>(c.value)));
+                append_s32_be(out, static_cast<S32>(eval_as_s64(eval)));
                 break;
             }
             case BasicType::smallint: {
                 if (is_composite) append_u16_be(out, 2);
-                append_s16_be(out, static_cast<S16>(get<S64>(c.value)));
+                append_s16_be(out, static_cast<S16>(eval_as_s64(eval)));
                 break;
             }
             case BasicType::tinyint: {
-                U8 bits = static_cast<U8>(static_cast<S8>(get<S64>(c.value))) ^ 0x80U;
+                U8 bits = static_cast<U8>(static_cast<S8>(eval_as_s64(eval))) ^ 0x80U;
                 if (is_composite) append_u16_be(out, 1);
                 push_back(out, bits);
                 break;
             }
             case BasicType::boolean: {
                 if (is_composite) append_u16_be(out, 1);
-                push_back(out, get<bool>(c.value) ? U8(1) : U8(0));
+                push_back(out, eval_as_bool(eval) ? U8(1) : U8(0));
                 break;
             }
             case BasicType::double_: {
                 if (is_composite) append_u16_be(out, 8);
-                append_f64_be(out, get<F64>(c.value));
+                append_f64_be(out, eval_as_f64(eval));
                 break;
             }
             case BasicType::float_: {
-                F32 v = static_cast<F32>(get<F64>(c.value));
+                F32 v = eval_as_f32(eval);
                 U32 bits;
                 os::memory_copy(&bits, &v, sizeof(bits));
                 bits = (bits & 0x80000000U) ? ~bits : (bits ^ 0x80000000U);
@@ -135,7 +176,7 @@ namespace cql::key {
             case BasicType::text:
             case BasicType::varchar:
             case BasicType::ascii: {
-                const AutoString8& s = get<AutoString8>(c.value);
+                const AutoString8& s = eval_as_string(eval);
                 const U8* p = reinterpret_cast<const U8*>(s.c_str);
                 const U16 n = static_cast<U16>(s.length);
                 if (is_composite) append_escaped_terminated(out, p, n);
@@ -144,19 +185,19 @@ namespace cql::key {
             }
             case BasicType::uuid:
             case BasicType::timeuuid: {
-                const UUID& u = get<UUID>(c.value);
+                const UUID& u = eval_as_uuid(eval);
                 if (is_composite) append_u16_be(out, static_cast<U16>(UUID::length));
                 append_bytes(out, &u.value[0], static_cast<U16>(UUID::length));
                 break;
             }
             case BasicType::blob: {
-                const Blob& b = get<Blob>(c.value);
+                const Blob& b = eval_as_blob(eval);
                 if (is_composite) append_escaped_terminated(out, b.value.ptr, static_cast<U16>(b.value.length));
                 else              append_bytes(out, b.value.ptr, static_cast<U16>(b.value.length));
                 break;
             }
             case BasicType::hex: {
-                const Hex& h = get<Hex>(c.value);
+                const Hex& h = eval_as_hex(eval);
                 if (is_composite) append_escaped_terminated(out, h.value.ptr, static_cast<U16>(h.value.length));
                 else              append_bytes(out, h.value.ptr, static_cast<U16>(h.value.length));
                 break;
