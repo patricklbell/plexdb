@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <plexdb/test_macros/test_macros.h>
+
 import plexdb.base;
+import plexdb.coroutine;
 import plexdb.tagged_union;
 import plexdb.dynamic.containers;
 import plexdb.dynamic.tagged_union;
@@ -24,19 +27,20 @@ struct Buffer {
     }
 
     auto reader() {
-        return [this](U8* dst, U64 size) {
-            for (U64 i = 0; i < size; i++) dst[i] = data[cursor + i];
+        return [this](U8* dst, U64 size) -> coroutine::Task<void> {
+            if (dst) for (U64 i = 0; i < size; i++) dst[i] = data[cursor + i];
             cursor += size;
+            co_return;
         };
     }
 };
 
-TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
+IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
     SECTION("text") {
         Buffer buf;
         ColumnValue in{AutoString8("hello world")};
         write_column_value(buf.writer(), in, create_basic(BasicType::text));
-        auto out = read_column_value(buf.reader(), BasicType::text);
+        auto out = co_await read_column_value(buf.reader(), BasicType::text);
         REQUIRE(type_matches_tag<AutoString8>(out));
         REQUIRE(get<AutoString8>(out) == "hello world");
     }
@@ -45,7 +49,7 @@ TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
         Buffer buf;
         ColumnValue in{AutoString8("")};
         write_column_value(buf.writer(), in, create_basic(BasicType::text));
-        auto out = read_column_value(buf.reader(), BasicType::text);
+        auto out = co_await read_column_value(buf.reader(), BasicType::text);
         REQUIRE(type_matches_tag<AutoString8>(out));
         REQUIRE(get<AutoString8>(out).length == 0);
     }
@@ -54,7 +58,7 @@ TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
         Buffer buf;
         ColumnValue in{S32(-42)};
         write_column_value(buf.writer(), in, create_basic(BasicType::int_));
-        auto out = read_column_value(buf.reader(), BasicType::int_);
+        auto out = co_await read_column_value(buf.reader(), BasicType::int_);
         REQUIRE(type_matches_tag<S32>(out));
         REQUIRE(get<S32>(out) == -42);
     }
@@ -63,7 +67,7 @@ TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
         Buffer buf;
         ColumnValue in{S64(9999999999LL)};
         write_column_value(buf.writer(), in, create_basic(BasicType::bigint));
-        auto out = read_column_value(buf.reader(), BasicType::bigint);
+        auto out = co_await read_column_value(buf.reader(), BasicType::bigint);
         REQUIRE(type_matches_tag<S64>(out));
         REQUIRE(get<S64>(out) == 9999999999LL);
     }
@@ -72,7 +76,7 @@ TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
         Buffer buf;
         ColumnValue in{S16(-32000)};
         write_column_value(buf.writer(), in, create_basic(BasicType::smallint));
-        auto out = read_column_value(buf.reader(), BasicType::smallint);
+        auto out = co_await read_column_value(buf.reader(), BasicType::smallint);
         REQUIRE(type_matches_tag<S16>(out));
         REQUIRE(get<S16>(out) == -32000);
     }
@@ -81,14 +85,14 @@ TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
         Buffer buf;
         ColumnValue in_t{U8(1)};
         write_column_value(buf.writer(), in_t, create_basic(BasicType::boolean));
-        auto out_t = read_column_value(buf.reader(), BasicType::boolean);
+        auto out_t = co_await read_column_value(buf.reader(), BasicType::boolean);
         REQUIRE(type_matches_tag<U8>(out_t));
         REQUIRE(get<U8>(out_t) == 1);
 
         Buffer buf2;
         ColumnValue in_f{U8(0)};
         write_column_value(buf2.writer(), in_f, create_basic(BasicType::boolean));
-        auto out_f = read_column_value(buf2.reader(), BasicType::boolean);
+        auto out_f = co_await read_column_value(buf2.reader(), BasicType::boolean);
         REQUIRE(get<U8>(out_f) == 0);
     }
 
@@ -96,7 +100,7 @@ TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
         Buffer buf;
         ColumnValue in{F32(3.14f)};
         write_column_value(buf.writer(), in, create_basic(BasicType::float_));
-        auto out = read_column_value(buf.reader(), BasicType::float_);
+        auto out = co_await read_column_value(buf.reader(), BasicType::float_);
         REQUIRE(type_matches_tag<F32>(out));
         REQUIRE(get<F32>(out) == 3.14f);
     }
@@ -105,7 +109,7 @@ TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
         Buffer buf;
         ColumnValue in{F64(-2.71828)};
         write_column_value(buf.writer(), in, create_basic(BasicType::double_));
-        auto out = read_column_value(buf.reader(), BasicType::double_);
+        auto out = co_await read_column_value(buf.reader(), BasicType::double_);
         REQUIRE(type_matches_tag<F64>(out));
         REQUIRE(get<F64>(out) == -2.71828);
     }
@@ -116,13 +120,13 @@ TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
         for (U64 i = 0; i < 16; i++) id.value[i] = static_cast<U8>(i + 1);
         ColumnValue in{id};
         write_column_value(buf.writer(), in, create_basic(BasicType::uuid));
-        auto out = read_column_value(buf.reader(), BasicType::uuid);
+        auto out = co_await read_column_value(buf.reader(), BasicType::uuid);
         REQUIRE(type_matches_tag<UUID>(out));
         REQUIRE(get<UUID>(out) == id);
     }
 }
 
-TEST_CASE("io roundtrip - inet", "[cql.engine.io]") {
+IO_TEST_CASE("io roundtrip - inet", "[cql.engine.io]") {
     SECTION("ipv4") {
         Buffer buf;
         Inet addr;
@@ -130,7 +134,7 @@ TEST_CASE("io roundtrip - inet", "[cql.engine.io]") {
         addr.v4[0] = 192; addr.v4[1] = 168; addr.v4[2] = 1; addr.v4[3] = 42;
         ColumnValue in{addr};
         write_column_value(buf.writer(), in, create_basic(BasicType::inet));
-        auto out = read_column_value(buf.reader(), BasicType::inet);
+        auto out = co_await read_column_value(buf.reader(), BasicType::inet);
         REQUIRE(type_matches_tag<Inet>(out));
         REQUIRE(get<Inet>(out) == addr);
     }
@@ -142,13 +146,13 @@ TEST_CASE("io roundtrip - inet", "[cql.engine.io]") {
         for (int i = 0; i < 16; i++) addr.v6[i] = static_cast<U8>(i * 0x11);
         ColumnValue in{addr};
         write_column_value(buf.writer(), in, create_basic(BasicType::inet));
-        auto out = read_column_value(buf.reader(), BasicType::inet);
+        auto out = co_await read_column_value(buf.reader(), BasicType::inet);
         REQUIRE(type_matches_tag<Inet>(out));
         REQUIRE(get<Inet>(out) == addr);
     }
 }
 
-TEST_CASE("io roundtrip - varint", "[cql.engine.io]") {
+IO_TEST_CASE("io roundtrip - varint", "[cql.engine.io]") {
     SECTION("positive") {
         Buffer buf;
         VarInt val;
@@ -157,7 +161,7 @@ TEST_CASE("io roundtrip - varint", "[cql.engine.io]") {
         push_back(val.magnitude, U8(0x00));
         ColumnValue in{val};
         write_column_value(buf.writer(), in, create_basic(BasicType::varint));
-        auto out = read_column_value(buf.reader(), BasicType::varint);
+        auto out = co_await read_column_value(buf.reader(), BasicType::varint);
         REQUIRE(type_matches_tag<VarInt>(out));
         REQUIRE(get<VarInt>(out) == val);
     }
@@ -169,7 +173,7 @@ TEST_CASE("io roundtrip - varint", "[cql.engine.io]") {
         push_back(val.magnitude, U8(0xFF));
         ColumnValue in{val};
         write_column_value(buf.writer(), in, create_basic(BasicType::varint));
-        auto out = read_column_value(buf.reader(), BasicType::varint);
+        auto out = co_await read_column_value(buf.reader(), BasicType::varint);
         REQUIRE(type_matches_tag<VarInt>(out));
         REQUIRE(get<VarInt>(out) == val);
     }
@@ -180,13 +184,13 @@ TEST_CASE("io roundtrip - varint", "[cql.engine.io]") {
         val.negative = false;
         ColumnValue in{val};
         write_column_value(buf.writer(), in, create_basic(BasicType::varint));
-        auto out = read_column_value(buf.reader(), BasicType::varint);
+        auto out = co_await read_column_value(buf.reader(), BasicType::varint);
         REQUIRE(type_matches_tag<VarInt>(out));
         REQUIRE(get<VarInt>(out).magnitude.length == 0);
     }
 }
 
-TEST_CASE("io roundtrip - decimal", "[cql.engine.io]") {
+IO_TEST_CASE("io roundtrip - decimal", "[cql.engine.io]") {
     Buffer buf;
     Decimal val;
     val.scale = 3;
@@ -195,22 +199,22 @@ TEST_CASE("io roundtrip - decimal", "[cql.engine.io]") {
     push_back(val.unscaled.magnitude, U8(0x0F));
     ColumnValue in{val};
     write_column_value(buf.writer(), in, create_basic(BasicType::decimal));
-    auto out = read_column_value(buf.reader(), BasicType::decimal);
+    auto out = co_await read_column_value(buf.reader(), BasicType::decimal);
     REQUIRE(type_matches_tag<Decimal>(out));
     REQUIRE(get<Decimal>(out) == val);
 }
 
-TEST_CASE("io roundtrip - duration", "[cql.engine.io]") {
+IO_TEST_CASE("io roundtrip - duration", "[cql.engine.io]") {
     Buffer buf;
     Duration val{.months = 1, .days = 15, .nanoseconds = 3600000000000LL};
     ColumnValue in{val};
     write_column_value(buf.writer(), in, create_basic(BasicType::duration));
-    auto out = read_column_value(buf.reader(), BasicType::duration);
+    auto out = co_await read_column_value(buf.reader(), BasicType::duration);
     REQUIRE(type_matches_tag<Duration>(out));
     REQUIRE(get<Duration>(out) == val);
 }
 
-TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
+IO_TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
     SECTION("list<text>") {
         Buffer buf;
         Type t = create_list(BasicType::text);
@@ -220,7 +224,7 @@ TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
         push_back(arr, AutoString8("gamma"));
         ColumnValue in{move(arr)};
         write_column_value(buf.writer(), in, t);
-        auto out = read_column_value(buf.reader(), t);
+        auto out = co_await read_column_value(buf.reader(), t);
         REQUIRE(type_matches_tag<DynamicArray<AutoString8>>(out));
         auto& got = get<DynamicArray<AutoString8>>(out);
         REQUIRE(got.length == 3);
@@ -238,7 +242,7 @@ TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
         push_back(arr, S32(0));
         ColumnValue in{move(arr)};
         write_column_value(buf.writer(), in, t);
-        auto out = read_column_value(buf.reader(), t);
+        auto out = co_await read_column_value(buf.reader(), t);
         REQUIRE(type_matches_tag<DynamicArray<S32>>(out));
         auto& got = get<DynamicArray<S32>>(out);
         REQUIRE(got.length == 3);
@@ -253,7 +257,7 @@ TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
         DynamicArray<S64> arr{};
         ColumnValue in{move(arr)};
         write_column_value(buf.writer(), in, t);
-        auto out = read_column_value(buf.reader(), t);
+        auto out = co_await read_column_value(buf.reader(), t);
         REQUIRE(type_matches_tag<DynamicArray<S64>>(out));
         REQUIRE(get<DynamicArray<S64>>(out).length == 0);
     }
@@ -267,7 +271,7 @@ TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
         push_back(arr, F32(-0.5f));
         ColumnValue in{move(arr)};
         write_column_value(buf.writer(), in, t);
-        auto out = read_column_value(buf.reader(), t);
+        auto out = co_await read_column_value(buf.reader(), t);
         REQUIRE(type_matches_tag<DynamicArray<F32>>(out));
         auto& got = get<DynamicArray<F32>>(out);
         REQUIRE(got.length == 3);
@@ -285,7 +289,7 @@ TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
         insert(s, S64(300LL));
         ColumnValue in{move(s)};
         write_column_value(buf.writer(), in, t);
-        auto out = read_column_value(buf.reader(), t);
+        auto out = co_await read_column_value(buf.reader(), t);
         REQUIRE(type_matches_tag<DynamicSet<S64>>(out));
         REQUIRE(length(get<DynamicSet<S64>>(out)) == 3);
     }
@@ -298,45 +302,45 @@ TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
         insert(m, AutoString8("key2"), S64(-1LL));
         ColumnValue in{move(m)};
         write_column_value(buf.writer(), in, t);
-        auto out = read_column_value(buf.reader(), t);
+        auto out = co_await read_column_value(buf.reader(), t);
         REQUIRE(type_matches_tag<DynamicMap<AutoString8, S64>>(out));
         REQUIRE(length(get<DynamicMap<AutoString8, S64>>(out)) == 2);
     }
 }
 
-TEST_CASE("io write_default_column_value", "[cql.engine.io]") {
-    auto check_default = [](BasicType dtype) {
+IO_TEST_CASE("io write_default_column_value", "[cql.engine.io]") {
+    auto check_default = [](BasicType dtype) -> coroutine::Task<void> {
         Buffer buf;
         write_default_column_value(buf.writer(), dtype);
-        read_column_value(buf.reader(), dtype);
+        co_await read_column_value(buf.reader(), dtype);
         REQUIRE(buf.cursor == buf.data.length);
     };
 
-    check_default(BasicType::text);
-    check_default(BasicType::int_);
-    check_default(BasicType::bigint);
-    check_default(BasicType::smallint);
-    check_default(BasicType::boolean);
-    check_default(BasicType::float_);
-    check_default(BasicType::double_);
-    check_default(BasicType::uuid);
-    check_default(BasicType::blob);
-    check_default(BasicType::inet);
-    check_default(BasicType::varint);
-    check_default(BasicType::decimal);
-    check_default(BasicType::duration);
+    co_await check_default(BasicType::text);
+    co_await check_default(BasicType::int_);
+    co_await check_default(BasicType::bigint);
+    co_await check_default(BasicType::smallint);
+    co_await check_default(BasicType::boolean);
+    co_await check_default(BasicType::float_);
+    co_await check_default(BasicType::double_);
+    co_await check_default(BasicType::uuid);
+    co_await check_default(BasicType::blob);
+    co_await check_default(BasicType::inet);
+    co_await check_default(BasicType::varint);
+    co_await check_default(BasicType::decimal);
+    co_await check_default(BasicType::duration);
 
     SECTION("default int is zero") {
         Buffer buf;
         write_default_column_value(buf.writer(), BasicType::int_);
-        auto out = read_column_value(buf.reader(), BasicType::int_);
+        auto out = co_await read_column_value(buf.reader(), BasicType::int_);
         REQUIRE(get<S32>(out) == 0);
     }
 
     SECTION("default inet is ipv4 zero") {
         Buffer buf;
         write_default_column_value(buf.writer(), BasicType::inet);
-        auto out = read_column_value(buf.reader(), BasicType::inet);
+        auto out = co_await read_column_value(buf.reader(), BasicType::inet);
         REQUIRE(type_matches_tag<Inet>(out));
         REQUIRE(get<Inet>(out).is_v6 == false);
     }
