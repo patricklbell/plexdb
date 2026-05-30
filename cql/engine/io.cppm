@@ -1,3 +1,6 @@
+module;
+#include <coroutine>
+
 export module cql.engine.io;
 
 import plexdb.base;
@@ -5,6 +8,7 @@ import plexdb.tagged_union;
 import plexdb.os;
 import plexdb.dynamic.containers;
 import plexdb.dynamic.tagged_union;
+import plexdb.coroutine;
 
 import cql.engine.evaluator;
 import cql.engine.types;
@@ -12,37 +16,10 @@ import cql.engine.statements;
 
 using namespace plexdb;
 
-export namespace cql {
-    struct NestedColumnValue;  // forward declare for recursive collection types
-
-    // @todo support UDTs
-    using ColumnValueBasicTypes = TypeList<
-        AutoString8, S64, S32, S16, U8, F64, F32,
-        Blob, UUID, Inet, VarInt, Decimal, Duration
-    >;
-    using ColumnValueTypes = Concat<
-        ColumnValueBasicTypes,
-        ExpandDynamicArray<ColumnValueBasicTypes>,
-        ExpandDynamicMap<ColumnValueBasicTypes, ColumnValueBasicTypes>,
-        ExpandDynamicSet<ColumnValueBasicTypes>,
-        TypeList<
-            DynamicArray<NestedColumnValue>,
-            DynamicSet<NestedColumnValue>,
-            DynamicMap<NestedColumnValue, NestedColumnValue>
-        >,
-        TypeList<Null>
-    >;
-    using ColumnValue = ExpandTaggedUnion<ColumnValueTypes>;
-
-    struct NestedColumnValue {
-        ColumnValue value;
-    };
-}
-
 export namespace cql::io {
     template<typename F>
     concept Read = requires(F f, U8* src, U64 size) {
-        f(src, size);
+        { f(src, size) } -> SameAs<coroutine::Task<void>>;
     };
 
     template<typename F>
@@ -67,385 +44,499 @@ export namespace cql::io {
     // ========================================================================
     // read
     // ========================================================================
-    ColumnValue read_column_value(const Read auto& r, BasicType dtype) {
+    coroutine::Task<ColumnValue> read_column_value(const Read auto& r, BasicType dtype) {
         switch (dtype) {
             case BasicType::text:{
                 U64 length;
-                r(reinterpret_cast<U8*>(&length), sizeof(length));
+                co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
 
                 AutoString8 value{length};
-                r(reinterpret_cast<U8*>(value.c_str), length);
+                co_await r(reinterpret_cast<U8*>(value.c_str), length);
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::smallint:{
                 S16 value;
-                r(reinterpret_cast<U8*>(&value), sizeof(value));
+                co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::int_:{
                 S32 value;
-                r(reinterpret_cast<U8*>(&value), sizeof(value));
+                co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::counter:
             case BasicType::timestamp:
             case BasicType::bigint:{
                 S64 value;
-                r(reinterpret_cast<U8*>(&value), sizeof(value));
+                co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::boolean:{
                 U8 value;
-                r(reinterpret_cast<U8*>(&value), sizeof(value));
+                co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::float_:{
                 F32 value;
-                r(reinterpret_cast<U8*>(&value), sizeof(value));
+                co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::double_:{
                 F64 value;
-                r(reinterpret_cast<U8*>(&value), sizeof(value));
+                co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::uuid:{
                 UUID value;
-                r(&value.value[0], value.length);
+                co_await r(&value.value[0], value.length);
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::blob:{
                 U64 length;
-                r(reinterpret_cast<U8*>(&length), sizeof(length));
+                co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
 
                 Blob value;
                 resize(value.value, length);
                 assert_true(value.value.length == length, "resize successful");
-                r(value.value.ptr, length);
+                co_await r(value.value.ptr, length);
 
-                return {move(value)};
+                co_return {move(value)};
             }
             case BasicType::ascii:
             case BasicType::varchar:{
                 U64 length;
-                r(reinterpret_cast<U8*>(&length), sizeof(length));
+                co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
 
                 AutoString8 value{length};
-                r(reinterpret_cast<U8*>(value.c_str), length);
+                co_await r(reinterpret_cast<U8*>(value.c_str), length);
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::tinyint:{
                 U8 value;
-                r(reinterpret_cast<U8*>(&value), sizeof(value));
+                co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::date:{
                 S32 value;
-                r(reinterpret_cast<U8*>(&value), sizeof(value));
+                co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::time:{
                 S64 value;
-                r(reinterpret_cast<U8*>(&value), sizeof(value));
+                co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::timeuuid:{
                 UUID value;
-                r(&value.value[0], value.length);
+                co_await r(&value.value[0], value.length);
 
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::inet:{
                 U8 is_v6;
-                r(reinterpret_cast<U8*>(&is_v6), sizeof(is_v6));
+                co_await r(reinterpret_cast<U8*>(&is_v6), sizeof(is_v6));
                 Inet value;
                 value.is_v6 = static_cast<bool>(is_v6);
                 if (value.is_v6) {
-                    r(&value.v6[0], 16);
+                    co_await r(&value.v6[0], 16);
                 } else {
-                    r(&value.v4[0], 4);
+                    co_await r(&value.v4[0], 4);
                 }
-                return {move(value)};
+                co_return {move(value)};
             }break;
             case BasicType::varint:{
                 U8 negative;
-                r(reinterpret_cast<U8*>(&negative), sizeof(negative));
+                co_await r(reinterpret_cast<U8*>(&negative), sizeof(negative));
                 U64 mag_length;
-                r(reinterpret_cast<U8*>(&mag_length), sizeof(mag_length));
+                co_await r(reinterpret_cast<U8*>(&mag_length), sizeof(mag_length));
                 VarInt value;
                 value.negative = static_cast<bool>(negative);
                 resize(value.magnitude, mag_length);
-                r(value.magnitude.ptr, mag_length);
-                return {move(value)};
+                co_await r(value.magnitude.ptr, mag_length);
+                co_return {move(value)};
             }break;
             case BasicType::decimal:{
                 S32 scale;
-                r(reinterpret_cast<U8*>(&scale), sizeof(scale));
+                co_await r(reinterpret_cast<U8*>(&scale), sizeof(scale));
                 U8 negative;
-                r(reinterpret_cast<U8*>(&negative), sizeof(negative));
+                co_await r(reinterpret_cast<U8*>(&negative), sizeof(negative));
                 U64 mag_length;
-                r(reinterpret_cast<U8*>(&mag_length), sizeof(mag_length));
+                co_await r(reinterpret_cast<U8*>(&mag_length), sizeof(mag_length));
                 Decimal value;
                 value.scale = scale;
                 value.unscaled.negative = static_cast<bool>(negative);
                 resize(value.unscaled.magnitude, mag_length);
-                r(value.unscaled.magnitude.ptr, mag_length);
-                return {move(value)};
+                co_await r(value.unscaled.magnitude.ptr, mag_length);
+                co_return {move(value)};
             }break;
             case BasicType::duration:{
                 Duration value;
-                r(reinterpret_cast<U8*>(&value.months), sizeof(value.months));
-                r(reinterpret_cast<U8*>(&value.days), sizeof(value.days));
-                r(reinterpret_cast<U8*>(&value.nanoseconds), sizeof(value.nanoseconds));
-                return {move(value)};
+                co_await r(reinterpret_cast<U8*>(&value.months), sizeof(value.months));
+                co_await r(reinterpret_cast<U8*>(&value.days), sizeof(value.days));
+                co_await r(reinterpret_cast<U8*>(&value.nanoseconds), sizeof(value.nanoseconds));
+                co_return {move(value)};
             }break;
             case BasicType::hex:{
                 U64 length;
-                r(reinterpret_cast<U8*>(&length), sizeof(length));
+                co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
                 Blob value;
                 resize(value.value, length);
                 assert_true(value.value.length == length, "resize successful");
-                r(value.value.ptr, length);
-                return {move(value)};
+                co_await r(value.value.ptr, length);
+                co_return {move(value)};
             }break;
         }
 
         assert_true(false, "invalid basic type for read");
-        return {};
+        co_return {};
     }
 
-    ColumnValue read_column_value(const Read auto& r, const Type& cdtype) {
-        return visit(cdtype.variants, [&r](const auto& v) -> ColumnValue {
-            using T = RemoveCVRef<decltype(v)>;
-            if constexpr (SameAs<T, Type::Basic>) {
-                return read_column_value(r, v.value_dtype);
-            } else if constexpr (SameAs<T, Type::List>) {
-                U64 length;
-                r(reinterpret_cast<U8*>(&length), sizeof(length));
-                if (type_matches_tag<Type>(v.element)) {
-                    DynamicArray<NestedColumnValue> arr{};
-                    for (U64 i = 0; i < length; i++) {
-                        NestedColumnValue nv;
-                        nv.value = read_column_value(r, get<Type>(v.element));
-                        push_back(arr, move(nv));
-                    }
-                    return {move(arr)};
+    coroutine::Task<ColumnValue> read_column_value(const Read auto& r, const Type& cdtype) {
+        if (type_matches_tag<Type::Basic>(cdtype.variants)) {
+            co_return co_await read_column_value(r, get<Type::Basic>(cdtype.variants).value_dtype);
+        }
+
+        if (type_matches_tag<Type::List>(cdtype.variants)) {
+            auto& v = get<Type::List>(cdtype.variants);
+            U64 length;
+            co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
+            if (type_matches_tag<Type>(v.element)) {
+                DynamicArray<NestedColumnValue> arr{};
+                for (U64 i = 0; i < length; i++) {
+                    NestedColumnValue nv;
+                    nv.value = co_await read_column_value(r, get<Type>(v.element));
+                    push_back(arr, move(nv));
                 }
-                auto read_arr = [&]<typename El>() -> ColumnValue {
-                    DynamicArray<El> arr{};
-                    for (U64 i = 0; i < length; i++)
-                        push_back(arr, get<El>(read_column_value(r, get<BasicType>(v.element))));
-                    return {move(arr)};
-                };
-                switch (get<BasicType>(v.element)) {
-                    case BasicType::text:       return read_arr.template operator()<AutoString8>();
-                    case BasicType::smallint:   return read_arr.template operator()<S16>();
-                    case BasicType::int_:       return read_arr.template operator()<S32>();
-                    case BasicType::bigint:
-                    case BasicType::timestamp:
-                    case BasicType::counter:
-                    case BasicType::time:       return read_arr.template operator()<S64>();
-                    case BasicType::boolean:    return read_arr.template operator()<U8>();
-                    case BasicType::float_:     return read_arr.template operator()<F32>();
-                    case BasicType::double_:    return read_arr.template operator()<F64>();
-                    case BasicType::uuid:
-                    case BasicType::timeuuid:   return read_arr.template operator()<UUID>();
-                    case BasicType::tinyint:    return read_arr.template operator()<U8>();
-                    case BasicType::date:       return read_arr.template operator()<S32>();
-                    case BasicType::ascii:
-                    case BasicType::varchar:    return read_arr.template operator()<AutoString8>();
-                    case BasicType::blob:       return read_arr.template operator()<Blob>();
-                    case BasicType::hex:        return read_arr.template operator()<Blob>();
-                    case BasicType::inet:       return read_arr.template operator()<Inet>();
-                    case BasicType::varint:     return read_arr.template operator()<VarInt>();
-                    case BasicType::decimal:    return read_arr.template operator()<Decimal>();
-                    case BasicType::duration:   return read_arr.template operator()<Duration>();
-                }
-                assert_true(false, "invalid basic type for list read");
-                return {};
-            } else if constexpr (SameAs<T, Type::Set>) {
-                U64 length;
-                r(reinterpret_cast<U8*>(&length), sizeof(length));
-                if (type_matches_tag<Type>(v.key)) {
-                    assert_not_implemented("reading nested-element set is not implemented");
-                    return {};
-                }
-                auto read_set = [&]<typename K>() -> ColumnValue {
-                    DynamicSet<K> s{};
-                    for (U64 i = 0; i < length; i++)
-                        insert(s, get<K>(read_column_value(r, get<BasicType>(v.key))));
-                    return {move(s)};
-                };
-                switch (get<BasicType>(v.key)) {
-                    case BasicType::text:       return read_set.template operator()<AutoString8>();
-                    case BasicType::smallint:   return read_set.template operator()<S16>();
-                    case BasicType::int_:       return read_set.template operator()<S32>();
-                    case BasicType::bigint:
-                    case BasicType::timestamp:
-                    case BasicType::counter:
-                    case BasicType::time:       return read_set.template operator()<S64>();
-                    case BasicType::boolean:    return read_set.template operator()<U8>();
-                    case BasicType::float_:     return read_set.template operator()<F32>();
-                    case BasicType::double_:    return read_set.template operator()<F64>();
-                    case BasicType::uuid:
-                    case BasicType::timeuuid:   return read_set.template operator()<UUID>();
-                    case BasicType::tinyint:    return read_set.template operator()<U8>();
-                    case BasicType::date:       return read_set.template operator()<S32>();
-                    case BasicType::ascii:
-                    case BasicType::varchar:    return read_set.template operator()<AutoString8>();
-                    case BasicType::blob:       return read_set.template operator()<Blob>();
-                    case BasicType::hex:        return read_set.template operator()<Blob>();
-                    case BasicType::inet:       return read_set.template operator()<Inet>();
-                    case BasicType::varint:     return read_set.template operator()<VarInt>();
-                    case BasicType::decimal:    return read_set.template operator()<Decimal>();
-                    case BasicType::duration:   return read_set.template operator()<Duration>();
-                }
-                assert_true(false, "invalid basic type for set read");
-                return {};
-            } else if constexpr (SameAs<T, Type::Map>) {
-                U64 length;
-                r(reinterpret_cast<U8*>(&length), sizeof(length));
-                if (type_matches_tag<Type>(v.key) || type_matches_tag<Type>(v.value)) {
-                    assert_not_implemented("reading nested-element map is not implemented");
-                    return {};
-                }
-                auto read_map_kv = [&]<typename K, typename V>() -> ColumnValue {
-                    DynamicMap<K, V> m{};
-                    for (U64 i = 0; i < length; i++) {
-                        K k = get<K>(read_column_value(r, get<BasicType>(v.key)));
-                        V val = get<V>(read_column_value(r, get<BasicType>(v.value)));
-                        insert(m, move(k), move(val));
-                    }
-                    return {move(m)};
-                };
-                auto read_map_v = [&]<typename K>(BasicType val_dtype) -> ColumnValue {
-                    switch (val_dtype) {
-                        case BasicType::text:       return read_map_kv.template operator()<K, AutoString8>();
-                        case BasicType::smallint:   return read_map_kv.template operator()<K, S16>();
-                        case BasicType::int_:       return read_map_kv.template operator()<K, S32>();
-                        case BasicType::bigint:
-                        case BasicType::timestamp:
-                        case BasicType::counter:
-                        case BasicType::time:       return read_map_kv.template operator()<K, S64>();
-                        case BasicType::boolean:    return read_map_kv.template operator()<K, U8>();
-                        case BasicType::float_:     return read_map_kv.template operator()<K, F32>();
-                        case BasicType::double_:    return read_map_kv.template operator()<K, F64>();
-                        case BasicType::uuid:
-                        case BasicType::timeuuid:   return read_map_kv.template operator()<K, UUID>();
-                        case BasicType::tinyint:    return read_map_kv.template operator()<K, U8>();
-                        case BasicType::date:       return read_map_kv.template operator()<K, S32>();
-                        case BasicType::ascii:
-                        case BasicType::varchar:    return read_map_kv.template operator()<K, AutoString8>();
-                        case BasicType::blob:       return read_map_kv.template operator()<K, Blob>();
-                        case BasicType::hex:        return read_map_kv.template operator()<K, Blob>();
-                        case BasicType::inet:       return read_map_kv.template operator()<K, Inet>();
-                        case BasicType::varint:     return read_map_kv.template operator()<K, VarInt>();
-                        case BasicType::decimal:    return read_map_kv.template operator()<K, Decimal>();
-                        case BasicType::duration:   return read_map_kv.template operator()<K, Duration>();
-                    }
-                    assert_true(false, "invalid basic type for map value read");
-                    return {};
-                };
-                BasicType map_val_bt = get<BasicType>(v.value);
-                switch (get<BasicType>(v.key)) {
-                    case BasicType::text:       return read_map_v.template operator()<AutoString8>(map_val_bt);
-                    case BasicType::smallint:   return read_map_v.template operator()<S16>(map_val_bt);
-                    case BasicType::int_:       return read_map_v.template operator()<S32>(map_val_bt);
-                    case BasicType::bigint:
-                    case BasicType::timestamp:
-                    case BasicType::counter:
-                    case BasicType::time:       return read_map_v.template operator()<S64>(map_val_bt);
-                    case BasicType::boolean:    return read_map_v.template operator()<U8>(map_val_bt);
-                    case BasicType::float_:     return read_map_v.template operator()<F32>(map_val_bt);
-                    case BasicType::double_:    return read_map_v.template operator()<F64>(map_val_bt);
-                    case BasicType::uuid:
-                    case BasicType::timeuuid:   return read_map_v.template operator()<UUID>(map_val_bt);
-                    case BasicType::tinyint:    return read_map_v.template operator()<U8>(map_val_bt);
-                    case BasicType::date:       return read_map_v.template operator()<S32>(map_val_bt);
-                    case BasicType::ascii:
-                    case BasicType::varchar:    return read_map_v.template operator()<AutoString8>(map_val_bt);
-                    case BasicType::blob:       return read_map_v.template operator()<Blob>(map_val_bt);
-                    case BasicType::hex:        return read_map_v.template operator()<Blob>(map_val_bt);
-                    case BasicType::inet:       return read_map_v.template operator()<Inet>(map_val_bt);
-                    case BasicType::varint:     return read_map_v.template operator()<VarInt>(map_val_bt);
-                    case BasicType::decimal:    return read_map_v.template operator()<Decimal>(map_val_bt);
-                    case BasicType::duration:   return read_map_v.template operator()<Duration>(map_val_bt);
-                }
-                assert_true(false, "invalid basic type for map key read");
-                return {};
-            } else {  // Vector
-                U64 count = v.count;
-                if (type_matches_tag<Type>(v.element)) {
-                    DynamicArray<NestedColumnValue> arr{};
-                    for (U64 i = 0; i < count; i++) {
-                        NestedColumnValue nv;
-                        nv.value = read_column_value(r, get<Type>(v.element));
-                        push_back(arr, move(nv));
-                    }
-                    return {move(arr)};
-                }
-                auto read_vec = [&]<typename El>() -> ColumnValue {
-                    DynamicArray<El> arr{};
-                    for (U64 i = 0; i < count; i++)
-                        push_back(arr, get<El>(read_column_value(r, get<BasicType>(v.element))));
-                    return {move(arr)};
-                };
-                switch (get<BasicType>(v.element)) {
-                    case BasicType::text:       return read_vec.template operator()<AutoString8>();
-                    case BasicType::smallint:   return read_vec.template operator()<S16>();
-                    case BasicType::int_:       return read_vec.template operator()<S32>();
-                    case BasicType::bigint:
-                    case BasicType::timestamp:
-                    case BasicType::counter:
-                    case BasicType::time:       return read_vec.template operator()<S64>();
-                    case BasicType::boolean:    return read_vec.template operator()<U8>();
-                    case BasicType::float_:     return read_vec.template operator()<F32>();
-                    case BasicType::double_:    return read_vec.template operator()<F64>();
-                    case BasicType::uuid:
-                    case BasicType::timeuuid:   return read_vec.template operator()<UUID>();
-                    case BasicType::tinyint:    return read_vec.template operator()<U8>();
-                    case BasicType::date:       return read_vec.template operator()<S32>();
-                    case BasicType::ascii:
-                    case BasicType::varchar:    return read_vec.template operator()<AutoString8>();
-                    case BasicType::blob:       return read_vec.template operator()<Blob>();
-                    case BasicType::hex:        return read_vec.template operator()<Blob>();
-                    case BasicType::inet:       return read_vec.template operator()<Inet>();
-                    case BasicType::varint:     return read_vec.template operator()<VarInt>();
-                    case BasicType::decimal:    return read_vec.template operator()<Decimal>();
-                    case BasicType::duration:   return read_vec.template operator()<Duration>();
-                }
-                assert_true(false, "invalid basic type for vector read");
-                return {};
+                co_return {move(arr)};
             }
-        });
+            auto read_arr = [&]<typename El>() -> coroutine::Task<ColumnValue> {
+                DynamicArray<El> arr{};
+                for (U64 i = 0; i < length; i++)
+                    push_back(arr, get<El>(co_await read_column_value(r, get<BasicType>(v.element))));
+                co_return {move(arr)};
+            };
+            switch (get<BasicType>(v.element)) {
+                case BasicType::text:       co_return co_await read_arr.template operator()<AutoString8>();
+                case BasicType::smallint:   co_return co_await read_arr.template operator()<S16>();
+                case BasicType::int_:       co_return co_await read_arr.template operator()<S32>();
+                case BasicType::bigint:
+                case BasicType::timestamp:
+                case BasicType::counter:
+                case BasicType::time:       co_return co_await read_arr.template operator()<S64>();
+                case BasicType::boolean:    co_return co_await read_arr.template operator()<U8>();
+                case BasicType::float_:     co_return co_await read_arr.template operator()<F32>();
+                case BasicType::double_:    co_return co_await read_arr.template operator()<F64>();
+                case BasicType::uuid:
+                case BasicType::timeuuid:   co_return co_await read_arr.template operator()<UUID>();
+                case BasicType::tinyint:    co_return co_await read_arr.template operator()<U8>();
+                case BasicType::date:       co_return co_await read_arr.template operator()<S32>();
+                case BasicType::ascii:
+                case BasicType::varchar:    co_return co_await read_arr.template operator()<AutoString8>();
+                case BasicType::blob:       co_return co_await read_arr.template operator()<Blob>();
+                case BasicType::hex:        co_return co_await read_arr.template operator()<Blob>();
+                case BasicType::inet:       co_return co_await read_arr.template operator()<Inet>();
+                case BasicType::varint:     co_return co_await read_arr.template operator()<VarInt>();
+                case BasicType::decimal:    co_return co_await read_arr.template operator()<Decimal>();
+                case BasicType::duration:   co_return co_await read_arr.template operator()<Duration>();
+            }
+            assert_true(false, "invalid basic type for list read");
+            co_return {};
+        }
+
+        if (type_matches_tag<Type::Set>(cdtype.variants)) {
+            auto& v = get<Type::Set>(cdtype.variants);
+            U64 length;
+            co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
+            if (type_matches_tag<Type>(v.key)) {
+                assert_not_implemented("reading nested-element set is not implemented");
+                co_return {};
+            }
+            auto read_set = [&]<typename K>() -> coroutine::Task<ColumnValue> {
+                DynamicSet<K> s{};
+                for (U64 i = 0; i < length; i++)
+                    insert(s, get<K>(co_await read_column_value(r, get<BasicType>(v.key))));
+                co_return {move(s)};
+            };
+            switch (get<BasicType>(v.key)) {
+                case BasicType::text:       co_return co_await read_set.template operator()<AutoString8>();
+                case BasicType::smallint:   co_return co_await read_set.template operator()<S16>();
+                case BasicType::int_:       co_return co_await read_set.template operator()<S32>();
+                case BasicType::bigint:
+                case BasicType::timestamp:
+                case BasicType::counter:
+                case BasicType::time:       co_return co_await read_set.template operator()<S64>();
+                case BasicType::boolean:    co_return co_await read_set.template operator()<U8>();
+                case BasicType::float_:     co_return co_await read_set.template operator()<F32>();
+                case BasicType::double_:    co_return co_await read_set.template operator()<F64>();
+                case BasicType::uuid:
+                case BasicType::timeuuid:   co_return co_await read_set.template operator()<UUID>();
+                case BasicType::tinyint:    co_return co_await read_set.template operator()<U8>();
+                case BasicType::date:       co_return co_await read_set.template operator()<S32>();
+                case BasicType::ascii:
+                case BasicType::varchar:    co_return co_await read_set.template operator()<AutoString8>();
+                case BasicType::blob:       co_return co_await read_set.template operator()<Blob>();
+                case BasicType::hex:        co_return co_await read_set.template operator()<Blob>();
+                case BasicType::inet:       co_return co_await read_set.template operator()<Inet>();
+                case BasicType::varint:     co_return co_await read_set.template operator()<VarInt>();
+                case BasicType::decimal:    co_return co_await read_set.template operator()<Decimal>();
+                case BasicType::duration:   co_return co_await read_set.template operator()<Duration>();
+            }
+            assert_true(false, "invalid basic type for set read");
+            co_return {};
+        }
+
+        if (type_matches_tag<Type::Map>(cdtype.variants)) {
+            auto& v = get<Type::Map>(cdtype.variants);
+            U64 length;
+            co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
+            if (type_matches_tag<Type>(v.key) || type_matches_tag<Type>(v.value)) {
+                assert_not_implemented("reading nested-element map is not implemented");
+                co_return {};
+            }
+            auto read_map_kv = [&]<typename K, typename V>() -> coroutine::Task<ColumnValue> {
+                DynamicMap<K, V> m{};
+                for (U64 i = 0; i < length; i++) {
+                    K k = get<K>(co_await read_column_value(r, get<BasicType>(v.key)));
+                    V val = get<V>(co_await read_column_value(r, get<BasicType>(v.value)));
+                    insert(m, move(k), move(val));
+                }
+                co_return {move(m)};
+            };
+            auto read_map_v = [&]<typename K>(BasicType val_dtype) -> coroutine::Task<ColumnValue> {
+                switch (val_dtype) {
+                    case BasicType::text:       co_return co_await read_map_kv.template operator()<K, AutoString8>();
+                    case BasicType::smallint:   co_return co_await read_map_kv.template operator()<K, S16>();
+                    case BasicType::int_:       co_return co_await read_map_kv.template operator()<K, S32>();
+                    case BasicType::bigint:
+                    case BasicType::timestamp:
+                    case BasicType::counter:
+                    case BasicType::time:       co_return co_await read_map_kv.template operator()<K, S64>();
+                    case BasicType::boolean:    co_return co_await read_map_kv.template operator()<K, U8>();
+                    case BasicType::float_:     co_return co_await read_map_kv.template operator()<K, F32>();
+                    case BasicType::double_:    co_return co_await read_map_kv.template operator()<K, F64>();
+                    case BasicType::uuid:
+                    case BasicType::timeuuid:   co_return co_await read_map_kv.template operator()<K, UUID>();
+                    case BasicType::tinyint:    co_return co_await read_map_kv.template operator()<K, U8>();
+                    case BasicType::date:       co_return co_await read_map_kv.template operator()<K, S32>();
+                    case BasicType::ascii:
+                    case BasicType::varchar:    co_return co_await read_map_kv.template operator()<K, AutoString8>();
+                    case BasicType::blob:       co_return co_await read_map_kv.template operator()<K, Blob>();
+                    case BasicType::hex:        co_return co_await read_map_kv.template operator()<K, Blob>();
+                    case BasicType::inet:       co_return co_await read_map_kv.template operator()<K, Inet>();
+                    case BasicType::varint:     co_return co_await read_map_kv.template operator()<K, VarInt>();
+                    case BasicType::decimal:    co_return co_await read_map_kv.template operator()<K, Decimal>();
+                    case BasicType::duration:   co_return co_await read_map_kv.template operator()<K, Duration>();
+                }
+                assert_true(false, "invalid basic type for map value read");
+                co_return {};
+            };
+            BasicType map_val_bt = get<BasicType>(v.value);
+            switch (get<BasicType>(v.key)) {
+                case BasicType::text:       co_return co_await read_map_v.template operator()<AutoString8>(map_val_bt);
+                case BasicType::smallint:   co_return co_await read_map_v.template operator()<S16>(map_val_bt);
+                case BasicType::int_:       co_return co_await read_map_v.template operator()<S32>(map_val_bt);
+                case BasicType::bigint:
+                case BasicType::timestamp:
+                case BasicType::counter:
+                case BasicType::time:       co_return co_await read_map_v.template operator()<S64>(map_val_bt);
+                case BasicType::boolean:    co_return co_await read_map_v.template operator()<U8>(map_val_bt);
+                case BasicType::float_:     co_return co_await read_map_v.template operator()<F32>(map_val_bt);
+                case BasicType::double_:    co_return co_await read_map_v.template operator()<F64>(map_val_bt);
+                case BasicType::uuid:
+                case BasicType::timeuuid:   co_return co_await read_map_v.template operator()<UUID>(map_val_bt);
+                case BasicType::tinyint:    co_return co_await read_map_v.template operator()<U8>(map_val_bt);
+                case BasicType::date:       co_return co_await read_map_v.template operator()<S32>(map_val_bt);
+                case BasicType::ascii:
+                case BasicType::varchar:    co_return co_await read_map_v.template operator()<AutoString8>(map_val_bt);
+                case BasicType::blob:       co_return co_await read_map_v.template operator()<Blob>(map_val_bt);
+                case BasicType::hex:        co_return co_await read_map_v.template operator()<Blob>(map_val_bt);
+                case BasicType::inet:       co_return co_await read_map_v.template operator()<Inet>(map_val_bt);
+                case BasicType::varint:     co_return co_await read_map_v.template operator()<VarInt>(map_val_bt);
+                case BasicType::decimal:    co_return co_await read_map_v.template operator()<Decimal>(map_val_bt);
+                case BasicType::duration:   co_return co_await read_map_v.template operator()<Duration>(map_val_bt);
+            }
+            assert_true(false, "invalid basic type for map key read");
+            co_return {};
+        }
+
+        // Vector
+        {
+            auto& v = get<Type::Vector>(cdtype.variants);
+            U64 count = v.count;
+            if (type_matches_tag<Type>(v.element)) {
+                DynamicArray<NestedColumnValue> arr{};
+                for (U64 i = 0; i < count; i++) {
+                    NestedColumnValue nv;
+                    nv.value = co_await read_column_value(r, get<Type>(v.element));
+                    push_back(arr, move(nv));
+                }
+                co_return {move(arr)};
+            }
+            auto read_vec = [&]<typename El>() -> coroutine::Task<ColumnValue> {
+                DynamicArray<El> arr{};
+                for (U64 i = 0; i < count; i++)
+                    push_back(arr, get<El>(co_await read_column_value(r, get<BasicType>(v.element))));
+                co_return {move(arr)};
+            };
+            switch (get<BasicType>(v.element)) {
+                case BasicType::text:       co_return co_await read_vec.template operator()<AutoString8>();
+                case BasicType::smallint:   co_return co_await read_vec.template operator()<S16>();
+                case BasicType::int_:       co_return co_await read_vec.template operator()<S32>();
+                case BasicType::bigint:
+                case BasicType::timestamp:
+                case BasicType::counter:
+                case BasicType::time:       co_return co_await read_vec.template operator()<S64>();
+                case BasicType::boolean:    co_return co_await read_vec.template operator()<U8>();
+                case BasicType::float_:     co_return co_await read_vec.template operator()<F32>();
+                case BasicType::double_:    co_return co_await read_vec.template operator()<F64>();
+                case BasicType::uuid:
+                case BasicType::timeuuid:   co_return co_await read_vec.template operator()<UUID>();
+                case BasicType::tinyint:    co_return co_await read_vec.template operator()<U8>();
+                case BasicType::date:       co_return co_await read_vec.template operator()<S32>();
+                case BasicType::ascii:
+                case BasicType::varchar:    co_return co_await read_vec.template operator()<AutoString8>();
+                case BasicType::blob:       co_return co_await read_vec.template operator()<Blob>();
+                case BasicType::hex:        co_return co_await read_vec.template operator()<Blob>();
+                case BasicType::inet:       co_return co_await read_vec.template operator()<Inet>();
+                case BasicType::varint:     co_return co_await read_vec.template operator()<VarInt>();
+                case BasicType::decimal:    co_return co_await read_vec.template operator()<Decimal>();
+                case BasicType::duration:   co_return co_await read_vec.template operator()<Duration>();
+            }
+            assert_true(false, "invalid basic type for vector read");
+            co_return {};
+        }
     }
 
-    void read_column_mask(const Read auto& r, const MarkColumnActive auto& mark_active) {
+    coroutine::Task<void> read_column_mask(const Read auto& r, const MarkColumnActive auto& mark_active) {
         U64 column_count;
-        r(reinterpret_cast<U8*>(&column_count), sizeof(column_count));
+        co_await r(reinterpret_cast<U8*>(&column_count), sizeof(column_count));
         static_assert(sizeof(column_count) == COLUMN_COUNT_BYTE_COUNT);
 
         for (U64 mask_idx = 0; mask_idx < ceil_div(column_count, MASK_BIT_COUNT); mask_idx++) {
             U64 mask;
-            r(reinterpret_cast<U8*>(&mask), sizeof(mask));
+            co_await r(reinterpret_cast<U8*>(&mask), sizeof(mask));
 
             for (U64 bit_idx = 0; bit_idx < min(MASK_BIT_COUNT, column_count - mask_idx*MASK_BIT_COUNT); bit_idx++) {
                 if (mask & (1_u64 << bit_idx)) {
                     mark_active(mask_idx*MASK_BIT_COUNT + bit_idx);
                 }
             }
+        }
+    }
+
+    // ========================================================================
+    // skip
+    // ========================================================================
+    coroutine::Task<void> skip_column_value(const Read auto& r, BasicType dtype) {
+        switch (dtype) {
+            case BasicType::boolean:
+            case BasicType::tinyint:   co_await r(nullptr, 1);             co_return;
+            case BasicType::smallint:  co_await r(nullptr, sizeof(S16));   co_return;
+            case BasicType::int_:
+            case BasicType::date:
+            case BasicType::float_:    co_await r(nullptr, sizeof(S32));   co_return;
+            case BasicType::bigint:
+            case BasicType::counter:
+            case BasicType::timestamp:
+            case BasicType::time:
+            case BasicType::double_:   co_await r(nullptr, sizeof(S64));   co_return;
+            case BasicType::uuid:
+            case BasicType::timeuuid:  co_await r(nullptr, 16);            co_return;
+            case BasicType::duration:  co_await r(nullptr, 4+4+8);         co_return;
+            case BasicType::text:
+            case BasicType::ascii:
+            case BasicType::varchar:
+            case BasicType::blob:
+            case BasicType::hex: {
+                U64 length;
+                co_await r(reinterpret_cast<U8*>(&length), sizeof(U64));
+                co_await r(nullptr, length);
+                co_return;
+            }
+            case BasicType::varint: {
+                co_await r(nullptr, 1);  // negative byte
+                U64 mag_length;
+                co_await r(reinterpret_cast<U8*>(&mag_length), sizeof(U64));
+                co_await r(nullptr, mag_length);
+                co_return;
+            }
+            case BasicType::decimal: {
+                co_await r(nullptr, sizeof(S32) + 1);  // scale + negative byte
+                U64 mag_length;
+                co_await r(reinterpret_cast<U8*>(&mag_length), sizeof(U64));
+                co_await r(nullptr, mag_length);
+                co_return;
+            }
+            case BasicType::inet: {
+                U8 is_v6;
+                co_await r(&is_v6, 1);
+                co_await r(nullptr, is_v6 ? 16_u64 : 4_u64);
+                co_return;
+            }
+        }
+        assert_true(false, "invalid basic type in skip_column_value");
+    }
+
+    coroutine::Task<void> skip_column_value(const Read auto& r, const Type& col_type) {
+        if (type_matches_tag<Type::Basic>(col_type.variants)) {
+            co_await skip_column_value(r, get<Type::Basic>(col_type.variants).value_dtype);
+            co_return;
+        }
+
+        U64 count = 0;
+        BasicType elem_bt{};
+        bool elem_is_type = false;
+        const Type* elem_type_ptr = nullptr;
+
+        if (type_matches_tag<Type::List>(col_type.variants)) {
+            auto& lv = get<Type::List>(col_type.variants);
+            co_await r(reinterpret_cast<U8*>(&count), sizeof(count));
+            elem_is_type = type_matches_tag<Type>(lv.element);
+            if (elem_is_type) elem_type_ptr = &get<Type>(lv.element);
+            else              elem_bt = get<BasicType>(lv.element);
+        } else if (type_matches_tag<Type::Set>(col_type.variants)) {
+            auto& sv = get<Type::Set>(col_type.variants);
+            co_await r(reinterpret_cast<U8*>(&count), sizeof(count));
+            elem_is_type = type_matches_tag<Type>(sv.key);
+            if (elem_is_type) elem_type_ptr = &get<Type>(sv.key);
+            else              elem_bt = get<BasicType>(sv.key);
+        } else if (type_matches_tag<Type::Map>(col_type.variants)) {
+            auto& mv = get<Type::Map>(col_type.variants);
+            co_await r(reinterpret_cast<U8*>(&count), sizeof(count));
+            bool key_is_type = type_matches_tag<Type>(mv.key);
+            bool val_is_type = type_matches_tag<Type>(mv.value);
+            BasicType kbt = key_is_type ? BasicType{} : get<BasicType>(mv.key);
+            BasicType vbt = val_is_type ? BasicType{} : get<BasicType>(mv.value);
+            for (U64 i = 0; i < count; i++) {
+                if (key_is_type) co_await skip_column_value(r, get<Type>(mv.key));
+                else             co_await skip_column_value(r, kbt);
+                if (val_is_type) co_await skip_column_value(r, get<Type>(mv.value));
+                else             co_await skip_column_value(r, vbt);
+            }
+            co_return;
+        } else if (type_matches_tag<Type::Vector>(col_type.variants)) {
+            auto& vv = get<Type::Vector>(col_type.variants);
+            count = vv.count;
+            elem_is_type = type_matches_tag<Type>(vv.element);
+            if (elem_is_type) elem_type_ptr = &get<Type>(vv.element);
+            else              elem_bt = get<BasicType>(vv.element);
+        }
+
+        for (U64 i = 0; i < count; i++) {
+            if (elem_is_type) co_await skip_column_value(r, *elem_type_ptr);
+            else              co_await skip_column_value(r, elem_bt);
         }
     }
 
@@ -509,6 +600,8 @@ export namespace cql::io {
         });
     }
 
+    bool can_write_column_value(const ColumnValue& value, const Type& cdtype);
+
     bool can_cast_write_evaluated_as_column_value(const Evaluated& evaluated, const Type& cdtype) {
         return visit(evaluated.value, [&cdtype](const auto& cv) -> bool {
             using T = Decay<decltype(cv)>;
@@ -527,6 +620,8 @@ export namespace cql::io {
             } else if constexpr (SameAs<T, TupleLiteral>) {
                 assert_not_implemented("writing tuple literal as column value is not implemented");
                 return false;
+            } else if constexpr (SameAs<T, ColumnValue>) {
+                return can_write_column_value(cv, cdtype);
             } else {
                 static_assert(!SameAs<T,T>, "missing type case");
                 return false;
@@ -739,6 +834,8 @@ export namespace cql::io {
         return get<Type>(e);
     }
 
+    void write_column_value(const Write auto& w, const ColumnValue& value, const Type& cdtype);
+
     void cast_write_evaluated_as_column_value(const Write auto& w, const Evaluated& evaluated, const Type& cdtype) {
         assert_true(can_cast_write_evaluated_as_column_value(evaluated, cdtype), "invalid evaluated value for write");
 
@@ -787,6 +884,8 @@ export namespace cql::io {
                 assert_not_implemented("writing UDT literal as column value is not implemented");
             } else if constexpr (SameAs<T, TupleLiteral>) {
                 assert_not_implemented("writing tuple literal as column value is not implemented");
+            } else if constexpr (SameAs<T, ColumnValue>) {
+                write_column_value(w, cv, cdtype);
             } else {
                 static_assert(!SameAs<T,T>, "missing type case");
             }
@@ -797,8 +896,6 @@ export namespace cql::io {
         return visit(value, [&cdtype](const auto& v) -> bool {
             using T = Decay<decltype(v)>;
 
-            // @warn can_write_typed_basic_as_column_value is permissive whereas ColumnValue should really be exact,
-            //       this introduces an implicit cast which may be undesirable.
             if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
                 return type_matches_tag<Type::Basic>(cdtype.variants) &&
                        can_write_typed_basic_as_column_value<T>(get<Type::Basic>(cdtype.variants).value_dtype);
