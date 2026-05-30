@@ -8,15 +8,19 @@
 ## Commenting style
 - Minimal comments. Do not explain what is obvious from the code.
 - Use `@todo` for future work, `@note` for important assumptions, `@profile` for performance notes, `@padding` for struct padding.
+- Never reference specific tasks, fixes, callers, or changes in comments. No "added for X", "changed to Y", "round-trip:", "old/new path:", or any annotation that will rot as the code evolves.
 
 ## Dev environment
 - C++20 modules with CMake. Static libraries: `plexdb` (core) and `cql` (CQL object store).
 
 ## Schema (cql.engine.schema)
-- `schema::Column` has `key_kind` (`KeyKind::None`, `PartitionKey`, `ClusteringKey`) and `key_position` (0-based ordering within that key).
-- `schema::Table` has `partition_key_col_indices` and `clustering_key_col_indices`, both `DynamicArray<U64>` sorted by `key_position`. These replaced the old single `primary_col_idx`.
-- `schema::PartitionBTree = BTreePaged<VarlenKeyPolicy<>, FixedValuePolicy<sizeof(U64)>>`. The btree key is serialized partition key bytes; the value is either `row_page` (no clustering key) or `clustering_btree_page` (with clustering key).
+- `schema::Column` has `key_kind` (`KeyKind::None`, `PartitionKey`, `ClusteringKey`), `key_position` (0-based ordering within that key), and `is_static: bool`.
+- `schema::Table` has `partition_key_col_indices`, `clustering_key_col_indices`, and `static_col_indices`, all `DynamicArray<U64>` sorted by `key_position`. `has_clustering_keys()` returns `clustering_key_col_indices.length > 0`.
+- `schema::PartitionEntry` is a `#pragma pack(push,1)` struct `{ U64 data_page; U64 static_page; }` (16 bytes). `data_page` is the row blob page (non-clustering) or clustering BTree root page; `static_page` is 0 when no static row exists for that partition.
+- `schema::PartitionBTree = BTreePaged<VarlenKeyPolicy<>, FixedValuePolicy<sizeof(PartitionEntry)>>`. The btree key is serialized partition key bytes; the value is a `PartitionEntry`.
+- `schema::ClusteringBTree = BTreePaged<VarlenKeyPolicy<>, FixedValuePolicy<sizeof(U64)>>`. Used as the inner per-partition BTree for tables with clustering keys; value is the row blob page.
 - `schema::Table.btree` is the per-table `PartitionBTree`.
+- Static column constraints (enforced in `create_column`): table must have at least one clustering column; partition key columns cannot be static.
 
 ## Types (cql.engine.types)
 - Collection type structs `List`, `Set`, `Map`, `Vector` each carry a `frozen` bool field. Frozen types are parsed and stored but currently treated permissively — they behave identically to their non-frozen counterparts.
@@ -31,16 +35,17 @@
 - Functions: `serialize_partition_single` / `serialize_partition` (multiple columns) and `serialize_clustering_single` / `serialize_clustering`.
 
 ## Row/column iterator architecture (cql.engine.it)
-- `PartitionBTree` (re-exported from `cql.engine.schema`) is `BTreePaged<VarlenKeyPolicy<>, FixedValuePolicy<sizeof(U64)>>`.
+- `PartitionBTree` and `ClusteringBTree` are re-exported from `cql.engine.schema` (see Schema section for definitions).
 - `RowIterator` is a **two-level** iterator:
-  - `partition_it: btree::Iterator<PartitionBTree, U64>` — outer level over serialized partition key bytes. Value = `row_page` (non-clustering tables) or `clustering_btree_page` (clustering tables).
-  - `clustering_btree: PartitionBTree` — stored by value inside `RowIterator`. `clustering_it` and `clustering_end_it` point into `&clustering_btree`. Move/copy constructors call `fix_clustering_btree_ptr` to keep these pointers valid after object moves.
-  - `clustering_it` / `clustering_end_it: btree::Iterator<PartitionBTree, U64>` — inner level over serialized clustering key bytes within one partition. Only valid when `table->clustering_key_col_indices.length > 0`.
-- `deref()` → `coroutine::Task<ColumnRange>`. Reads `row_page` from `clustering_it` (clustering tables) or `partition_it` (non-clustering tables), then loads the row blob.
+  - `partition_it: btree::Iterator<PartitionBTree, schema::PartitionEntry>` — outer level over serialized partition key bytes.
+  - `clustering_btree: ClusteringBTree` — stored by value inside `RowIterator`. `clustering_it` and `clustering_end_it` point into `&clustering_btree`. Move/copy constructors call `fix_clustering_btree_ptr` to keep these pointers valid after object moves.
+  - `clustering_it` / `clustering_end_it: btree::Iterator<ClusteringBTree, U64>` — inner level over serialized clustering key bytes within one partition. Only valid when `table->has_clustering_keys()`.
+- `deref()` → `coroutine::Task<ColumnRange>`. Reads `row_page` from `clustering_it` (clustering tables) or `partition_entry.data_page` (non-clustering tables). Passes `partition_entry.static_page` to `load()` so the `ColumnIterator` can load the static blob.
 - `advance()` → `coroutine::Task<void>`. For clustering tables: advances `clustering_it`; when exhausted advances `partition_it` and opens a new `clustering_btree` for the next partition.
 - `RowRange` holds `RowIterator start` and `RowIterator stop`. Stop iterators produced by `_lt_it` / `_le_it` do not initialize clustering iterators (they are compared using only `partition_it`).
-- `ColumnRange` holds two `ColumnIterator`s (`start`, `stop`). `ColumnIterator` reads column values from a `BlobDynamicPaged` row blob in schema order, returning `Null` for inactive columns. It is move-only; iterate by incrementing `col_range.start` directly.
-- Row blob layout: `[column_count: U64][mask words: U64 × ⌈column_count/64⌉][column data...]`. Byte offset into data = `COLUMN_COUNT_BYTE_COUNT + ceil_div(row_column_count, MASK_BIT_COUNT) * MASK_BYTE_COUNT`.
+- `ColumnRange` holds two `ColumnIterator`s (`start`, `stop`). `ColumnIterator` reads column values in schema order, returning `Null` for inactive columns. It pre-fetches all bytes on construction so `operator*` and `operator++` are synchronous.
+- **`ColumnIterator` two-buffer design**: `row_data` holds the regular blob (non-static columns); `static_row_data` holds the static blob (only allocated when `static_page_idx != 0`). `operator*` / `operator++` dispatch between the two buffers based on `col.is_static`. No third merge buffer is allocated.
+- Row blob layout (both regular and static): `[column_count: U64][mask words: U64 × ⌈column_count/64⌉][column data...]`. In the regular blob, mask bits for static columns are always 0 (and vice versa for the static blob). Byte offset into data = `COLUMN_COUNT_BYTE_COUNT + ceil_div(row_column_count, MASK_BIT_COUNT) * MASK_BYTE_COUNT`.
 - **Consumer pattern:**
   ```cpp
   RowIterator& row_it = result.rows->start;

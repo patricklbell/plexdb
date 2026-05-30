@@ -197,7 +197,6 @@ The remaining failures across ~20 error types map into five buckets:
 
 | Failure | Count | Notes |
 |---|---|---|
-| Static columns | 24 | `schema::create_column` hits not-impl |
 | Collection literals in INSERT | 15 | list (9), set (5), map (1) |
 | Collection bind params (native protocol) | 14 | list/set/map via `?` placeholders |
 | Non-constant term eval | 5 | e.g. `uuid()` function calls |
@@ -224,7 +223,6 @@ The remaining failures across ~20 error types map into five buckets:
 - Multiple WHERE relations on the same column (6 hits) — currently only one relation per column is processed
 
 **High-value features (each unblocks a whole test category):**
-- Static columns (24 hits) — requires a separate per-partition blob, not per-row
 - `WITH` options on `CREATE`/`ALTER TABLE` (17 hits combined) — single-node can accept and ignore
 - Collection literals in INSERT (15 hits) — list/set/map storage in blob format
 - Collection bind params (14 hits) — native protocol deserialization of collection types
