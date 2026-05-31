@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
+#include <plexdb/test_macros/test_macros.h>
 
 import plexdb.base;
+import plexdb.coroutine;
 import plexdb.dynamic.containers;
 import plexdb.tagged_union;
 import plexdb.dynamic.tagged_union;
@@ -26,9 +28,10 @@ namespace {
         }
 
         auto reader() {
-            return [this](U8* dst, U64 size) {
+            return [this](U8* dst, U64 size) -> coroutine::Task<void> {
                 for (U64 i = 0; i < size; i++) dst[i] = data[cursor + i];
                 cursor += size;
+                co_return;
             };
         }
     };
@@ -196,7 +199,7 @@ TEST_CASE("evaluator - builtins", "[cql.engine.evaluator]") {
     }
 }
 
-TEST_CASE("evaluator - nested expression evaluation in collection writes", "[cql.engine.evaluator]") {
+IO_TEST_CASE("evaluator - nested expression evaluation in collection writes", "[cql.engine.evaluator]") {
     DynamicArray<Constant> positional{};
     push_back(positional, Constant{S64(4)});
 
@@ -222,7 +225,7 @@ TEST_CASE("evaluator - nested expression evaluation in collection writes", "[cql
     Buffer buf;
     cast_write_evaluated_as_column_value(buf.writer(), evaluated, type::create_list(type::Basic::bigint), ctx);
 
-    auto out = read_column_value(buf.reader(), type::create_list(type::Basic::bigint));
+    auto out = co_await read_column_value(buf.reader(), type::create_list(type::Basic::bigint));
     REQUIRE(type_matches_tag<DynamicArray<S64>>(out));
     auto& arr = get<DynamicArray<S64>>(out);
     REQUIRE(arr.length == 3);

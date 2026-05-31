@@ -601,7 +601,7 @@ PAGER_TEST_CASE("Native protocol collection serialization", "[cql.native]") {
     destroy_test_pager(pager);
 }
 
-PAGER_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native][!mayfail]") {
+PAGER_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
@@ -882,7 +882,7 @@ PAGER_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native][!mayfail]")
     destroy_test_pager(pager);
 }
 
-PAGER_TEST_CASE("Native protocol QUERY with bind values", "[cql.native][!mayfail]") {
+PAGER_TEST_CASE("Native protocol QUERY with bind values", "[cql.native]") {
     int port = get_unique_port();
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));

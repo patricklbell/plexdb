@@ -7,6 +7,7 @@ import plexdb.pager;
 import plexdb.btree;
 import plexdb.blob;
 
+import cql.engine.column_value;
 import cql.engine.io;
 import cql.engine.schema;
 import cql.engine.statements;

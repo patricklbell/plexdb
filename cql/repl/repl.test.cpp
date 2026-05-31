@@ -75,7 +75,7 @@ namespace {
     }
 }
 
-PAGER_TEST_CASE("REPL create keyspace and table", "[cql.repl][!mayfail]") {
+PAGER_TEST_CASE("REPL create keyspace and table", "[cql.repl]") {
     os::File db_file{os::file_tmp()};
     REQUIRE(!os::is_zero_handle(db_file));
 
@@ -88,8 +88,8 @@ PAGER_TEST_CASE("REPL create keyspace and table", "[cql.repl][!mayfail]") {
     co_await engine::init(eng, &pager);
 
     const char* input =
-        "CREATE KEYSPACE test WITH replication = 'SimpleStrategy';\n"
-        "CREATE TABLE test.items (id int PRIMARY KEY, name text);\n";
+        "CREATE KEYSPACE test_ks;\n"
+        "CREATE TABLE test_ks.items (id int PRIMARY KEY, name text);\n";
 
     std::string out = run_repl_batch(eng, input);
     destroy_test_pager(pager);

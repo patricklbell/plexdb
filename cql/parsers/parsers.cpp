@@ -646,7 +646,7 @@ namespace cql::parsers {
                 },
                 [](TermWithIdentifiers&& lhs, lexy::op<op_mod>, TermWithIdentifiers&& rhs) -> TermWithIdentifiers {
                     TOIBinaryArithmetic bin{move(lhs), ArithmeticOperator::mod, move(rhs)};
-                    return {.value = TOIArithmeticOperation{.value = move(bin)}};
+                    return TermWithIdentifiers{TOIArithmeticOperation{.value = move(bin)}};
                 },
                 [](lexy::op<op_neg>, TermWithIdentifiers&& t) -> TermWithIdentifiers {
                     TOIUnaryMinus unary{move(t)};

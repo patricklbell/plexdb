@@ -11,6 +11,7 @@ export import cql.engine.it;
 
 import cql.engine.statements;
 import cql.engine.io;
+import cql.engine.evaluator;
 
 import plexdb.base;
 import plexdb.coroutine;
@@ -106,11 +107,13 @@ export namespace cql::engine {
 
         const schema::Table* resolved_table = nullptr;
         DynamicArray<U64> select_col_indices = {};
+
+        DynamicArray<cql::WhereClause::Relation> filter_predicates = {};
+        cql::EvalContext filter_ctx = {};
     };
 
     coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement);
     coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Term>&& bound_values);
-    coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values);
     coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values);
 
     // ========================================================================

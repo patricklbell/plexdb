@@ -6,6 +6,7 @@ import plexdb.tagged_union;
 import plexdb.dynamic.tagged_union;
 import plexdb.dynamic.containers;
 
+import cql.engine.column_value;
 import cql.engine.evaluator;
 import cql.engine.schema;
 import cql.engine.types;
@@ -101,29 +102,6 @@ namespace cql::key {
         if (type_matches_tag<F64>(cv)) return get<F64>(cv);
         return F64(get<F32>(cv));
     }
-    static F32 eval_as_f32(const Evaluated& eval) {
-        if (type_matches_tag<Constant>(eval.value)) return F32(get<F64>(get<Constant>(eval.value).value));
-        const ColumnValue& cv = get<ColumnValue>(eval.value);
-        if (type_matches_tag<F32>(cv)) return get<F32>(cv);
-        return F32(get<F64>(cv));
-    }
-    static const AutoString8& eval_as_string(const Evaluated& eval) {
-        if (type_matches_tag<Constant>(eval.value)) return get<AutoString8>(get<Constant>(eval.value).value);
-        return get<AutoString8>(get<ColumnValue>(eval.value));
-    }
-    static const UUID& eval_as_uuid(const Evaluated& eval) {
-        if (type_matches_tag<Constant>(eval.value)) return get<UUID>(get<Constant>(eval.value).value);
-        return get<UUID>(get<ColumnValue>(eval.value));
-    }
-    static const Blob& eval_as_blob(const Evaluated& eval) {
-        if (type_matches_tag<Constant>(eval.value)) return get<Blob>(get<Constant>(eval.value).value);
-        return get<Blob>(get<ColumnValue>(eval.value));
-    }
-    static const Hex& eval_as_hex(const Evaluated& eval) {
-        if (type_matches_tag<Constant>(eval.value)) return get<Hex>(get<Constant>(eval.value).value);
-        return get<Hex>(get<ColumnValue>(eval.value));
-    }
-
     // Append one key component.
     // Fixed-width types in composite keys: prepend a 2-byte big-endian length (constant, so ordering is unaffected).
     // Variable-length types in composite keys: use escaped-terminated encoding to preserve ordering.

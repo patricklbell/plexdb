@@ -10,7 +10,10 @@ import plexdb.os;
 import plexdb.tagged_union;
 import plexdb.coroutine;
 import cql.engine;
+import cql.engine.column_value;
 import cql.engine.io; // @note require for to_str on database value
+import cql.engine.statements;
+import cql.engine.evaluator;
 import cql.parsers;
 
 using namespace plexdb;
@@ -136,19 +139,44 @@ namespace cql::repl {
                         U64 row_limit = result.row_limit_count;
                         RowIterator& row_it  = result.rows->start;
                         RowIterator& row_end = result.rows->stop;
+                        bool has_filter = result.filter_predicates.length > 0;
                         while (row_it != row_end && row_count < row_limit) {
                             ColumnRange col_range = co_await row_it.deref();
-                            bool first = true;
-                            U64 ci = 0;
-                            while (col_range.start != col_range.stop && ci < tbl->cols.length) {
-                                if (is_selected(ci)) {
-                                    AutoString8 val_str = to_str(co_await col_range.start.deref(), tbl->cols[ci].type);
+
+                            if (has_filter) {
+                                DynamicArray<ColumnValue> row_values;
+                                while (col_range.start != col_range.stop && row_values.length < tbl->cols.length) {
+                                    push_back(row_values, co_await col_range.start.deref());
+                                    co_await col_range.start.advance();
+                                }
+                                EvalContext row_ctx = result.filter_ctx;
+                                row_ctx.table      = result.resolved_table;
+                                row_ctx.row_values = row_values.ptr;
+                                if (!evaluate_where(result.filter_predicates, row_ctx)) {
+                                    co_await row_it.advance();
+                                    continue;
+                                }
+                                bool first = true;
+                                for (U64 ci2 = 0; ci2 < tbl->cols.length; ci2++) {
+                                    if (!is_selected(ci2)) continue;
+                                    AutoString8 val_str = to_str(row_values.ptr[ci2], tbl->cols[ci2].type);
                                     os::stream_write(ostream, first ? " " : " | ");
                                     os::stream_write(ostream, val_str.c_str, val_str.length);
                                     first = false;
                                 }
-                                co_await col_range.start.advance();
-                                ++ci;
+                            } else {
+                                bool first = true;
+                                U64 ci = 0;
+                                while (col_range.start != col_range.stop && ci < tbl->cols.length) {
+                                    if (is_selected(ci)) {
+                                        AutoString8 val_str = to_str(co_await col_range.start.deref(), tbl->cols[ci].type);
+                                        os::stream_write(ostream, first ? " " : " | ");
+                                        os::stream_write(ostream, val_str.c_str, val_str.length);
+                                        first = false;
+                                    }
+                                    co_await col_range.start.advance();
+                                    ++ci;
+                                }
                             }
                             os::stream_write(ostream, "\n");
                             co_await row_it.advance();

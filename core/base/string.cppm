@@ -90,6 +90,8 @@ export namespace plexdb {
     AutoString8 operator+(const String8& lhs, const String8& rhs);
     AutoString8 operator""_as(const char* str, size_t len);
 
+    AutoString8 bytes_to_hex(const U8* data, U64 len);
+
     AutoString8 to_str(const String8& x);
     AutoString8 to_str(const AutoString8& x);
     AutoString8 to_str(S64 x);

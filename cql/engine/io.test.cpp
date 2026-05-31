@@ -8,6 +8,7 @@ import plexdb.tagged_union;
 import plexdb.dynamic.containers;
 import plexdb.dynamic.tagged_union;
 
+import cql.engine.column_value;
 import cql.engine.types;
 import cql.engine.statements;
 import cql.engine.io;

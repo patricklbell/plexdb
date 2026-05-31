@@ -7,6 +7,7 @@ import plexdb.tagged_union;
 import plexdb.dynamic.tagged_union;
 
 import cql.engine.types;
+import cql.engine.column_value;
 
 using namespace plexdb;
 
@@ -34,34 +35,6 @@ export namespace cql {
 
     struct BindMarker {
         AutoString8 identifier;
-    };
-
-    // ========================================================================
-    // ColumnValue
-    // ========================================================================
-    struct NestedColumnValue;  // forward declare for recursive collection types
-
-    // @todo support UDTs
-    using ColumnValueBasicTypes = TypeList<
-        AutoString8, S64, S32, S16, U8, F64, F32,
-        Blob, UUID, Inet, VarInt, Decimal, Duration
-    >;
-    using ColumnValueTypes = Concat<
-        ColumnValueBasicTypes,
-        ExpandDynamicArray<ColumnValueBasicTypes>,
-        ExpandDynamicMap<ColumnValueBasicTypes, ColumnValueBasicTypes>,
-        ExpandDynamicSet<ColumnValueBasicTypes>,
-        TypeList<
-            DynamicArray<NestedColumnValue>,
-            DynamicSet<NestedColumnValue>,
-            DynamicMap<NestedColumnValue, NestedColumnValue>
-        >,
-        TypeList<Null>
-    >;
-    using ColumnValue = ExpandTaggedUnion<ColumnValueTypes>;
-
-    struct NestedColumnValue {
-        ColumnValue value;
     };
 
     // ========================================================================
@@ -166,55 +139,8 @@ export namespace cql {
     // ========================================================================
     struct TypeHint {
         type::Type type;
-        Box<Term> operand;
-        TypeHint(type::Type t, Term&& o);
-        TypeHint() = default;
+        Term operand;
     };
-
-    // ========================================================================
-    // Box<Term> method bodies (now that Term is complete)
-    // ========================================================================
-    template<> inline Box<Term>::Box(Term&& val) {
-        ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
-        new (ptr) Term(move(val));
-    }
-    template<> inline Box<Term>::Box(const Box<Term>& o) {
-        if (o.ptr) {
-            ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
-            new (ptr) Term(*o.ptr);
-        }
-    }
-    template<> inline Box<Term>::Box(Box<Term>&& o) noexcept {
-        ptr = o.ptr;
-        o.ptr = nullptr;
-    }
-    template<> inline Box<Term>& Box<Term>::operator=(const Box<Term>& o) {
-        if (this == &o) return *this;
-        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
-        if (o.ptr) {
-            ptr = reinterpret_cast<Term*>(os::allocate(sizeof(Term)));
-            new (ptr) Term(*o.ptr);
-        }
-        return *this;
-    }
-    template<> inline Box<Term>& Box<Term>::operator=(Box<Term>&& o) noexcept {
-        if (this == &o) return *this;
-        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
-        ptr = o.ptr;
-        o.ptr = nullptr;
-        return *this;
-    }
-    template<> inline Box<Term>::~Box() {
-        if (ptr) { ptr->~Term(); os::deallocate(ptr); ptr = nullptr; }
-    }
-
-    // ========================================================================
-    // TypeHint constructor (now that Term is complete)
-    // ========================================================================
-    inline TypeHint::TypeHint(type::Type t, Term&& o)
-        : type(t)
-        , operand(move(o))
-    {}
 
     // ========================================================================
     // TOI types (TermWithIdentifiers variant types)

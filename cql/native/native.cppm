@@ -19,6 +19,7 @@ import plexdb.tcp;
 import cql.crc;
 import cql.parsers;
 import cql.engine;
+import cql.engine.column_value;
 import cql.engine.statements;
 import cql.engine.io;
 import cql.log;

@@ -14,6 +14,16 @@ import plexdb.os;
 import xxhash;
 
 namespace plexdb {
+    AutoString8 bytes_to_hex(const U8* data, U64 len) {
+        constexpr char hx[] = "0123456789abcdef";
+        AutoString8 result{len * 2};
+        for (U64 i = 0; i < len; i++) {
+            result.c_str[i*2]     = hx[data[i] >> 4];
+            result.c_str[i*2 + 1] = hx[data[i] & 0xf];
+        }
+        return result;
+    }
+
     String8::String8(const AutoString8& str) : data(str.c_str), length(str.length) {}
     String8::String8(const char* in_c_str) : data(in_c_str), length(strlen(in_c_str)) {}
 

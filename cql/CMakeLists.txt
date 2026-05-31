@@ -49,6 +49,7 @@ target_sources(plexbd_cql
         FILES
             crc/crc.cppm
             engine/engine.cppm
+            engine/column_value.cppm
             engine/evaluator.cppm
             engine/io.cppm
             engine/it.cppm

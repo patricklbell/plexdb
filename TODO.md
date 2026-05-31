@@ -197,10 +197,21 @@ The remaining failures across ~20 error types map into five buckets:
 
 | Failure | Count | Notes |
 |---|---|---|
+| Static columns | 24 | `schema::create_column` hits not-impl |
 | Collection literals in INSERT | 15 | list (9), set (5), map (1) |
 | Collection bind params (native protocol) | 14 | list/set/map via `?` placeholders |
 | Non-constant term eval | 5 | e.g. `uuid()` function calls |
 | NULL column writes | 1 | `INSERT ... (col) VALUES (null)` |
+
+### 2. Schema/DDL options
+
+| Failure | Count | Notes |
+|---|---|---|
+| `CREATE TABLE WITH` | 15 | compaction, `gc_grace_seconds`, etc. |
+| `ALTER TABLE WITH` | 2 | Same category |
+| `ALTER KEYSPACE WITH` | 3 | Replication options |
+
+These are no-ops for single-node: just need to accept and ignore the `WITH` clause.
 
 ### 3. Query features not yet wired
 
@@ -214,6 +225,18 @@ The remaining failures across ~20 error types map into five buckets:
 | SELECT DISTINCT/JSON | 3 | |
 | SELECT aggregate/function | 2 | `count(*)`, `writetime()` |
 
+### 4. Parser gaps
+
+| Failure | Count |
+|---|---|
+| Frozen types (`frozen<map<...>>`) | 16 |
+
+### 5. Protocol / USING clause
+
+| Failure | Count |
+|---|---|
+| `INSERT`/`UPDATE USING TIMESTAMP/TTL` | 6 |
+
 ---
 
 ### What's needed for a solid single-node MVP
@@ -223,6 +246,7 @@ The remaining failures across ~20 error types map into five buckets:
 - Multiple WHERE relations on the same column (6 hits) — currently only one relation per column is processed
 
 **High-value features (each unblocks a whole test category):**
+- Static columns (24 hits) — requires a separate per-partition blob, not per-row
 - `WITH` options on `CREATE`/`ALTER TABLE` (17 hits combined) — single-node can accept and ignore
 - Collection literals in INSERT (15 hits) — list/set/map storage in blob format
 - Collection bind params (14 hits) — native protocol deserialization of collection types

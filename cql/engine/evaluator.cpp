@@ -6,6 +6,7 @@ import plexdb.tagged_union;
 import plexdb.dynamic.containers;
 import plexdb.dynamic.tagged_union;
 
+import cql.engine.schema;
 import cql.engine.statements;
 import cql.engine.types;
 
@@ -95,6 +96,48 @@ namespace cql {
     }
 
     // ========================================================================
+    // value extraction helpers
+    // ========================================================================
+
+    // Extract a typed value from the inner union of an Evaluated (searches both Constant.value
+    // and ColumnValue). Returns nullptr if not found.
+    template<typename T>
+    static const T* as_value(const Evaluated& e) {
+        const T* result = nullptr;
+        visit(e.value, [&](const auto& top) {
+            using TT = Decay<decltype(top)>;
+            if constexpr (SameAs<TT, Constant>) {
+                visit(top.value, [&](const auto& v) {
+                    if constexpr (SameAs<Decay<decltype(v)>, T>) result = &v;
+                });
+            } else if constexpr (SameAs<TT, ColumnValue>) {
+                visit(top, [&](const auto& v) {
+                    if constexpr (SameAs<Decay<decltype(v)>, T>) result = &v;
+                });
+            }
+        });
+        return result;
+    }
+
+    // Extract top-level Constant from Evaluated.
+    static const Constant* get_if_constant(const Evaluated& e) {
+        return visit(e.value, [](const auto& v) -> const Constant* {
+            if constexpr (SameAs<Decay<decltype(v)>, Constant>) return &v;
+            else return nullptr;
+        });
+    }
+
+    // Look up a column by name and return its value as Evaluated.
+    static Evaluated lookup_column_value(const AutoString8& col_name, const EvalContext& ctx) {
+        if (!ctx.table || !ctx.row_values) return Evaluated{Constant{Null{}}};
+        for (U64 ci = 0; ci < ctx.table->cols.length; ci++) {
+            if (ctx.table->cols[ci].name == String8(col_name.c_str, col_name.length))
+                return Evaluated{ctx.row_values[ci]};
+        }
+        return Evaluated{Constant{Null{}}};
+    }
+
+    // ========================================================================
     // function registry
     // ========================================================================
     static DynamicArray<FunctionEntry>& builtin_function_registry() {
@@ -126,51 +169,48 @@ namespace cql {
             return Evaluated{Constant{os::unix_ns_since_midnight_now()}};
         });
         add("todate"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
-            if (args.length != 1 || !type_matches_tag<Constant>(args[0].value)) return Evaluated{Constant{Null{}}};
-            auto& value = get<Constant>(args[0].value).value;
-            if (type_matches_tag<S64>(value))
-                return Evaluated{Constant{static_cast<S64>(get<S64>(value) / MS_PER_DAY)}};
-            if (type_matches_tag<UUID>(value))
-                return Evaluated{Constant{static_cast<S64>(timeuuid_to_unix_ms(get<UUID>(value)) / MS_PER_DAY)}};
+            if (args.length != 1) return Evaluated{Constant{Null{}}};
+            if (const S64* ts = as_value<S64>(args[0]))
+                return Evaluated{Constant{static_cast<S64>(*ts / MS_PER_DAY)}};
+            if (const UUID* uuid = as_value<UUID>(args[0]))
+                return Evaluated{Constant{static_cast<S64>(timeuuid_to_unix_ms(*uuid) / MS_PER_DAY)}};
             return Evaluated{Constant{Null{}}};
         });
         add("totimestamp"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
-            if (args.length != 1 || !type_matches_tag<Constant>(args[0].value)) return Evaluated{Constant{Null{}}};
-            auto& value = get<Constant>(args[0].value).value;
-            if (type_matches_tag<S64>(value))  return Evaluated{Constant{get<S64>(value)}};
-            if (type_matches_tag<UUID>(value))  return Evaluated{Constant{timeuuid_to_unix_ms(get<UUID>(value))}};
+            if (args.length != 1) return Evaluated{Constant{Null{}}};
+            if (const S64* ts = as_value<S64>(args[0]))  return Evaluated{Constant{*ts}};
+            if (const UUID* uuid = as_value<UUID>(args[0])) return Evaluated{Constant{timeuuid_to_unix_ms(*uuid)}};
             return Evaluated{Constant{Null{}}};
         });
         add("tounixtimestamp"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
-            if (args.length != 1 || !type_matches_tag<Constant>(args[0].value)) return Evaluated{Constant{Null{}}};
-            auto& value = get<Constant>(args[0].value).value;
-            if (type_matches_tag<S64>(value))  return Evaluated{Constant{get<S64>(value)}};
-            if (type_matches_tag<UUID>(value))  return Evaluated{Constant{timeuuid_to_unix_ms(get<UUID>(value))}};
+            if (args.length != 1) return Evaluated{Constant{Null{}}};
+            if (const S64* ts = as_value<S64>(args[0]))  return Evaluated{Constant{*ts}};
+            if (const UUID* uuid = as_value<UUID>(args[0])) return Evaluated{Constant{timeuuid_to_unix_ms(*uuid)}};
             return Evaluated{Constant{Null{}}};
         });
         add("mintimeuuid"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
-            if (args.length != 1 || !type_matches_tag<Constant>(args[0].value)
-                                 || !type_matches_tag<S64>(get<Constant>(args[0].value).value))
-                return Evaluated{Constant{Null{}}};
-            return Evaluated{Constant{min_timeuuid(get<S64>(get<Constant>(args[0].value).value))}};
+            if (args.length != 1) return Evaluated{Constant{Null{}}};
+            const S64* ts = as_value<S64>(args[0]);
+            if (!ts) return Evaluated{Constant{Null{}}};
+            return Evaluated{Constant{min_timeuuid(*ts)}};
         });
         add("maxtimeuuid"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
-            if (args.length != 1 || !type_matches_tag<Constant>(args[0].value)
-                                 || !type_matches_tag<S64>(get<Constant>(args[0].value).value))
-                return Evaluated{Constant{Null{}}};
-            return Evaluated{Constant{max_timeuuid(get<S64>(get<Constant>(args[0].value).value))}};
+            if (args.length != 1) return Evaluated{Constant{Null{}}};
+            const S64* ts = as_value<S64>(args[0]);
+            if (!ts) return Evaluated{Constant{Null{}}};
+            return Evaluated{Constant{max_timeuuid(*ts)}};
         });
         add("dateof"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
-            if (args.length != 1 || !type_matches_tag<Constant>(args[0].value)
-                                 || !type_matches_tag<UUID>(get<Constant>(args[0].value).value))
-                return Evaluated{Constant{Null{}}};
-            return Evaluated{Constant{timeuuid_to_unix_ms(get<UUID>(get<Constant>(args[0].value).value))}};
+            if (args.length != 1) return Evaluated{Constant{Null{}}};
+            const UUID* uuid = as_value<UUID>(args[0]);
+            if (!uuid) return Evaluated{Constant{Null{}}};
+            return Evaluated{Constant{timeuuid_to_unix_ms(*uuid)}};
         });
         add("unixtimestampof"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
-            if (args.length != 1 || !type_matches_tag<Constant>(args[0].value)
-                                 || !type_matches_tag<UUID>(get<Constant>(args[0].value).value))
-                return Evaluated{Constant{Null{}}};
-            return Evaluated{Constant{timeuuid_to_unix_ms(get<UUID>(get<Constant>(args[0].value).value))}};
+            if (args.length != 1) return Evaluated{Constant{Null{}}};
+            const UUID* uuid = as_value<UUID>(args[0]);
+            if (!uuid) return Evaluated{Constant{Null{}}};
+            return Evaluated{Constant{timeuuid_to_unix_ms(*uuid)}};
         });
 
         return registry;
@@ -218,53 +258,11 @@ namespace cql {
         return nullptr;
     }
 
-    static U64 number_bind_markers_in_term(Term& term, U64 idx) {
-        if (type_matches_tag<BindMarker>(term.value)) {
-            auto& m = get<BindMarker>(term.value);
-            if (m.identifier.length == 0) {
-                m.identifier = to_str(idx);
-                return idx + 1;
-            }
-            return idx;
-        }
-        if (type_matches_tag<ArithmeticOperation>(term.value)) {
-            auto& arith = get<ArithmeticOperation>(term.value);
-            if (type_matches_tag<BinaryArithmeticOperation>(arith.value)) {
-                auto& bin = get<BinaryArithmeticOperation>(arith.value);
-                idx = number_bind_markers_in_term(*bin.lhs, idx);
-                idx = number_bind_markers_in_term(*bin.rhs, idx);
-            } else {
-                idx = number_bind_markers_in_term(*get<UnaryMinusArithmeticOperation>(arith.value).operand, idx);
-            }
-        }
-        if (type_matches_tag<FunctionCall>(term.value)) {
-            auto& call = get<FunctionCall>(term.value);
-            for (U64 i = 0; i < call.arguments.length; i++)
-                idx = number_bind_markers_in_term(call.arguments[i], idx);
-        }
-        if (type_matches_tag<TypeHint>(term.value))
-            idx = number_bind_markers_in_term(*get<TypeHint>(term.value).operand, idx);
-        return idx;
-    }
-
-    void number_bind_markers(Statement& stmt) {
-        U64 idx = 0;
-        visit(stmt.value, [&](auto& s) {
-            using T = RemoveCVRef<decltype(s)>;
-            if constexpr (SameAs<T, Insert>) {
-                if (!type_matches_tag<Insert::NamesValues>(s.insert_clause)) return;
-                auto& nv = get<Insert::NamesValues>(s.insert_clause);
-                for (U64 i = 0; i < nv.values.length; i++)
-                    idx = number_bind_markers_in_term(nv.values[i], idx);
-            }
-            // @todo Update, Delete, Select WHERE clause
-        });
-    }
-
     // ========================================================================
     // term evaluation
     // ========================================================================
     static Evaluated evaluate_term(const Term& term, const EvalContext& ctx);
+    static Evaluated evaluate_toi(const TermWithIdentifiers& twi, const EvalContext& ctx);
     static Evaluated evaluate_function_call(const FunctionCall& call, const EvalContext& ctx);
 
     static Evaluated evaluate_binary_arithmetic(const Constant& lhs, ArithmeticOperator op, const Constant& rhs) {
@@ -316,38 +314,54 @@ namespace cql {
         return Evaluated{Constant{Null{}}};
     }
 
-    static Evaluated evaluate_term(const Term& term, const EvalContext& ctx) {
-        if (type_matches_tag<Constant>(term.value))             return {get<Constant>(term.value)};
-        if (type_matches_tag<MapLiteral>(term.value))           return {get<MapLiteral>(term.value)};
-        if (type_matches_tag<SetLiteral>(term.value))           return {get<SetLiteral>(term.value)};
-        if (type_matches_tag<ListOrVectorLiteral>(term.value))  return {get<ListOrVectorLiteral>(term.value)};
-        if (type_matches_tag<TupleLiteral>(term.value))         return {get<TupleLiteral>(term.value)};
-        if (type_matches_tag<UdtLiteral>(term.value))           return {get<UdtLiteral>(term.value)};
-        if (type_matches_tag<BindMarker>(term.value)) {
-            auto& marker = get<BindMarker>(term.value);
-            if (const Constant* c = lookup_positional_binding(marker.identifier, ctx)) return {*c};
-            if (const Constant* c = lookup_named_binding(marker.identifier, ctx))      return {*c};
+    // Shared handler for all term variants that are identical between Term and TermWithIdentifiers.
+    // Delegates arithmetic/function-call recursion through evaluate_term (TWI operands are always Term).
+    template<typename V>
+    static Evaluated evaluate_term_content(const V& v, const EvalContext& ctx) {
+        using T = Decay<V>;
+        if constexpr (SameAs<T, Constant>) {
+            return {v};
+        } else if constexpr (SameAs<T, BindMarker>) {
+            if (const Constant* c = lookup_positional_binding(v.identifier, ctx)) return {*c};
+            if (const Constant* c = lookup_named_binding(v.identifier, ctx))      return {*c};
+            return Evaluated{Constant{Null{}}};
+        } else if constexpr (SameAs<T, MapLiteral>  || SameAs<T, SetLiteral>    ||
+                             SameAs<T, ListOrVectorLiteral> || SameAs<T, UdtLiteral> ||
+                             SameAs<T, TupleLiteral>) {
+            return {v};
+        } else if constexpr (SameAs<T, FunctionCall>) {
+            return evaluate_function_call(v, ctx);
+        } else if constexpr (SameAs<T, ArithmeticOperation>) {
+            return visit(v.value, [&](const auto& arith_v) -> Evaluated {
+                using AT = Decay<decltype(arith_v)>;
+                if constexpr (SameAs<AT, UnaryMinusArithmeticOperation>) {
+                    Evaluated operand = evaluate_term(arith_v.operand, ctx);
+                    const Constant* c = get_if_constant(operand);
+                    if (!c) return Evaluated{Constant{Null{}}};
+                    return evaluate_unary_minus(*c);
+                } else if constexpr (SameAs<AT, BinaryArithmeticOperation>) {
+                    Evaluated lhs = evaluate_term(arith_v.lhs, ctx);
+                    Evaluated rhs = evaluate_term(arith_v.rhs, ctx);
+                    const Constant* lc = get_if_constant(lhs);
+                    const Constant* rc = get_if_constant(rhs);
+                    if (!lc || !rc) return Evaluated{Constant{Null{}}};
+                    return evaluate_binary_arithmetic(*lc, arith_v.op, *rc);
+                } else {
+                    static_assert(!SameAs<AT, AT>, "missing ArithmeticOperation case");
+                    return Evaluated{Constant{Null{}}};
+                }
+            });
+        } else if constexpr (SameAs<T, TypeHint>) {
+            return evaluate_term(v.operand, ctx);
+        } else {
             return Evaluated{Constant{Null{}}};
         }
-        if (type_matches_tag<FunctionCall>(term.value))
-            return evaluate_function_call(get<FunctionCall>(term.value), ctx);
-        if (type_matches_tag<ArithmeticOperation>(term.value)) {
-            auto& arith = get<ArithmeticOperation>(term.value);
-            if (type_matches_tag<UnaryMinusArithmeticOperation>(arith.value)) {
-                Evaluated operand = evaluate_term(*get<UnaryMinusArithmeticOperation>(arith.value).operand, ctx);
-                if (!type_matches_tag<Constant>(operand.value)) return Evaluated{Constant{Null{}}};
-                return evaluate_unary_minus(get<Constant>(operand.value));
-            }
-            auto& binary = get<BinaryArithmeticOperation>(arith.value);
-            Evaluated lhs = evaluate_term(*binary.lhs, ctx);
-            Evaluated rhs = evaluate_term(*binary.rhs, ctx);
-            if (!type_matches_tag<Constant>(lhs.value) || !type_matches_tag<Constant>(rhs.value))
-                return Evaluated{Constant{Null{}}};
-            return evaluate_binary_arithmetic(get<Constant>(lhs.value), binary.op, get<Constant>(rhs.value));
-        }
-        if (type_matches_tag<TypeHint>(term.value))
-            return evaluate_term(*get<TypeHint>(term.value).operand, ctx);
-        return Evaluated{Constant{Null{}}};
+    }
+
+    static Evaluated evaluate_term(const Term& term, const EvalContext& ctx) {
+        return visit(term.value, [&](const auto& v) -> Evaluated {
+            return evaluate_term_content(v, ctx);
+        });
     }
 
     static Evaluated evaluate_function_call(const FunctionCall& call, const EvalContext& ctx) {
@@ -359,12 +373,207 @@ namespace cql {
         return fn->fn(args, ctx);
     }
 
-    Evaluated evaluate(const Term& term, const EvalContext& ctx) {
-        return evaluate_term(term, ctx);
+    static Evaluated evaluate_toi(const TermWithIdentifiers& twi, const EvalContext& ctx) {
+        return visit(twi.value, [&](const auto& v) -> Evaluated {
+            using T = Decay<decltype(v)>;
+            if constexpr (SameAs<T, AutoString8>) {
+                return lookup_column_value(v, ctx);
+            } else if constexpr (SameAs<T, TOIArithmeticOperation>) {
+                return visit(v.value, [&](const auto& arith_v) -> Evaluated {
+                    using AT = Decay<decltype(arith_v)>;
+                    if constexpr (SameAs<AT, TOIUnaryMinus>) {
+                        Evaluated operand = evaluate_toi(arith_v.operand, ctx);
+                        const Constant* c = get_if_constant(operand);
+                        if (!c) return Evaluated{Constant{Null{}}};
+                        return evaluate_unary_minus(*c);
+                    } else if constexpr (SameAs<AT, TOIBinaryArithmetic>) {
+                        Evaluated lhs = evaluate_toi(arith_v.lhs, ctx);
+                        Evaluated rhs = evaluate_toi(arith_v.rhs, ctx);
+                        const Constant* lc = get_if_constant(lhs);
+                        const Constant* rc = get_if_constant(rhs);
+                        if (!lc || !rc) return Evaluated{Constant{Null{}}};
+                        return evaluate_binary_arithmetic(*lc, arith_v.op, *rc);
+                    } else {
+                        static_assert(!SameAs<AT, AT>, "missing TOIArithmeticOperation case");
+                        return Evaluated{Constant{Null{}}};
+                    }
+                });
+            } else {
+                return evaluate_term_content(v, ctx);
+            }
+        });
     }
 
-    Evaluated evaluate(const Term& term) {
-        return evaluate_term(term, EvalContext{});
+    Evaluated evaluate(const Term& term, const EvalContext& ctx) { return evaluate_term(term, ctx); }
+    Evaluated evaluate(const Term& term)                          { return evaluate_term(term, EvalContext{}); }
+    Evaluated evaluate(const TermWithIdentifiers& twi, const EvalContext& ctx) { return evaluate_toi(twi, ctx); }
+
+    // ========================================================================
+    // predicate helpers
+    // ========================================================================
+    static bool as_s64(const Evaluated& e, S64& out) {
+        bool found = false;
+        visit(e.value, [&](const auto& top) {
+            using T = Decay<decltype(top)>;
+            if constexpr (SameAs<T, Constant>) {
+                visit(top.value, [&](const auto& v) {
+                    using V = Decay<decltype(v)>;
+                    if constexpr (SameAs<V, S64>)  { out = v; found = true; }
+                    else if constexpr (SameAs<V, bool>) { out = v ? 1 : 0; found = true; }
+                });
+            } else if constexpr (SameAs<T, ColumnValue>) {
+                visit(top, [&](const auto& cv) {
+                    using V = Decay<decltype(cv)>;
+                    if constexpr (SameAs<V, S64>) { out = cv; found = true; }
+                    else if constexpr (SameAs<V, S32>) { out = S64(cv); found = true; }
+                    else if constexpr (SameAs<V, S16>) { out = S64(cv); found = true; }
+                    else if constexpr (SameAs<V, U8>)  { out = S64(cv); found = true; }
+                });
+            }
+        });
+        return found;
+    }
+
+    static bool as_f64(const Evaluated& e, F64& out) {
+        bool found = false;
+        visit(e.value, [&](const auto& top) {
+            using T = Decay<decltype(top)>;
+            if constexpr (SameAs<T, Constant>) {
+                visit(top.value, [&](const auto& v) {
+                    using V = Decay<decltype(v)>;
+                    if constexpr (SameAs<V, F64>) { out = v; found = true; }
+                    else if constexpr (SameAs<V, S64>) { out = static_cast<F64>(v); found = true; }
+                });
+            } else if constexpr (SameAs<T, ColumnValue>) {
+                visit(top, [&](const auto& cv) {
+                    using V = Decay<decltype(cv)>;
+                    if constexpr (SameAs<V, F64>) { out = cv; found = true; }
+                    else if constexpr (SameAs<V, F32>) { out = F64(cv); found = true; }
+                    else if constexpr (SameAs<V, S64>) { out = static_cast<F64>(cv); found = true; }
+                    else if constexpr (SameAs<V, S32>) { out = static_cast<F64>(cv); found = true; }
+                });
+            }
+        });
+        return found;
+    }
+
+    static bool eval_is_null(const Evaluated& e) { return as_value<Null>(e) != nullptr; }
+
+    static S64 compare_evaluated(const Evaluated& lhs, const Evaluated& rhs, bool& comparable) {
+        comparable = true;
+        if (eval_is_null(lhs) || eval_is_null(rhs)) { comparable = false; return 0; }
+
+        S64 l_int, r_int;
+        if (as_s64(lhs, l_int) && as_s64(rhs, r_int))
+            return l_int < r_int ? -1 : (l_int > r_int ? 1 : 0);
+
+        F64 l_flt, r_flt;
+        if (as_f64(lhs, l_flt) && as_f64(rhs, r_flt))
+            return l_flt < r_flt ? -1 : (l_flt > r_flt ? 1 : 0);
+
+        const AutoString8* ls = as_value<AutoString8>(lhs);
+        const AutoString8* rs = as_value<AutoString8>(rhs);
+        if (ls && rs) {
+            U64 min_len = ls->length < rs->length ? ls->length : rs->length;
+            for (U64 i = 0; i < min_len; i++) {
+                if (ls->c_str[i] != rs->c_str[i])
+                    return static_cast<U8>(ls->c_str[i]) < static_cast<U8>(rs->c_str[i]) ? -1 : 1;
+            }
+            return ls->length < rs->length ? -1 : (ls->length > rs->length ? 1 : 0);
+        }
+
+        const UUID* lu = as_value<UUID>(lhs);
+        const UUID* ru = as_value<UUID>(rhs);
+        if (lu && ru) {
+            for (U64 i = 0; i < UUID::length; i++) {
+                if (lu->value[i] != ru->value[i])
+                    return lu->value[i] < ru->value[i] ? -1 : 1;
+            }
+            return 0;
+        }
+
+        comparable = false;
+        return 0;
+    }
+
+    static bool apply_operator(S64 cmp, Operator op) {
+        switch (op) {
+            case Operator::eq: return cmp == 0;
+            case Operator::ne: return cmp != 0;
+            case Operator::lt: return cmp < 0;
+            case Operator::le: return cmp <= 0;
+            case Operator::gt: return cmp > 0;
+            case Operator::ge: return cmp >= 0;
+            default: return false;
+        }
+    }
+
+    static bool evaluate_column_relation(const WhereClause::ColumnExpressionRelation& cer, const EvalContext& ctx) {
+        Evaluated lhs = lookup_column_value(cer.column.identifier, ctx);
+        Evaluated rhs = evaluate_term(cer.value, ctx);
+        bool comparable;
+        S64 cmp = compare_evaluated(lhs, rhs, comparable);
+        if (!comparable) return false;
+        return apply_operator(cmp, cer.operator_);
+    }
+
+    bool evaluate_where(TArrayView<const WhereClause::Relation> predicates, const EvalContext& ctx) {
+        for (U64 i = 0; i < predicates.length; i++) {
+            bool passes = visit(predicates[i].value, [&](const auto& value) -> bool {
+                using T = Decay<decltype(value)>;
+                if constexpr (SameAs<T, WhereClause::ColumnExpressionRelation>)
+                    return evaluate_column_relation(value, ctx);
+                assert_not_implemented("TupleExpressionRelation and TokenRelation in WHERE are not implemented");
+                return false;
+            });
+            if (!passes) return false;
+        }
+        return true;
+    }
+
+    // ========================================================================
+    // bind marker numbering
+    // ========================================================================
+    static U64 number_bind_markers_in_term(Term& term, U64 idx) {
+        visit(term.value, [&](auto& v) {
+            using T = Decay<decltype(v)>;
+            if constexpr (SameAs<T, BindMarker>) {
+                if (v.identifier.length == 0) v.identifier = to_str(idx++);
+            } else if constexpr (SameAs<T, ArithmeticOperation>) {
+                visit(v.value, [&](auto& arith_v) {
+                    using AT = Decay<decltype(arith_v)>;
+                    if constexpr (SameAs<AT, BinaryArithmeticOperation>) {
+                        idx = number_bind_markers_in_term(arith_v.lhs, idx);
+                        idx = number_bind_markers_in_term(arith_v.rhs, idx);
+                    } else if constexpr (SameAs<AT, UnaryMinusArithmeticOperation>) {
+                        idx = number_bind_markers_in_term(arith_v.operand, idx);
+                    }
+                });
+            } else if constexpr (SameAs<T, FunctionCall>) {
+                for (U64 i = 0; i < v.arguments.length; i++)
+                    idx = number_bind_markers_in_term(v.arguments[i], idx);
+            } else if constexpr (SameAs<T, TypeHint>) {
+                idx = number_bind_markers_in_term(v.operand, idx);
+            }
+        });
+        return idx;
+    }
+
+    void number_bind_markers(Statement& stmt) {
+        U64 idx = 0;
+        visit(stmt.value, [&](auto& s) {
+            using T = RemoveCVRef<decltype(s)>;
+            if constexpr (SameAs<T, Insert>) {
+                visit(s.insert_clause, [&](auto& clause) {
+                    using CT = RemoveCVRef<decltype(clause)>;
+                    if constexpr (SameAs<CT, Insert::NamesValues>) {
+                        for (U64 i = 0; i < clause.values.length; i++)
+                            idx = number_bind_markers_in_term(clause.values[i], idx);
+                    }
+                });
+            }
+            // @todo Update, Delete, Select WHERE clause
+        });
     }
 }
 

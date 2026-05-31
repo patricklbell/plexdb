@@ -10,6 +10,7 @@ import plexdb.pager.transaction;
 
 import cql.parsers;
 import cql.log;
+import cql.engine.column_value;
 import cql.engine.evaluator;
 import cql.engine.it;
 import cql.engine.key;
@@ -390,15 +391,19 @@ namespace cql::engine {
 
                 bool is_equality = false, is_begin_inclusive = true, is_end_inclusive = true;
                 Optional<Evaluated> pk_begin, pk_end;
+                DynamicArray<WhereClause::Relation> filter_predicates;
                 if (stmt.where) {
-                    assert_true_not_implemented(stmt.where->relations.length == 1, "having multiple where relations is not supported");
                     for (const auto& rel : stmt.where->relations) {
+                        bool is_pk_bound = false;
                         visit(rel.value, [&](const auto& value){
                             using T = Decay<decltype(value)>;
                             if constexpr (SameAs<T, WhereClause::ColumnExpressionRelation>) {
                                 const auto& cer = value;
-                                if (tbl->partition_key_col_indices.length > 0 &&
-                                    cer.column.identifier == tbl->cols[tbl->partition_key_col_indices[0]].name) {
+                                if (
+                                    tbl->partition_key_col_indices.length > 0 &&
+                                    cer.column.identifier == tbl->cols[tbl->partition_key_col_indices[0]].name
+                                ) {
+                                    is_pk_bound = true;
                                     switch (cer.operator_) {
                                         case Operator::eq:{
                                             pk_begin = evaluate(cer.value, ctx);
@@ -437,6 +442,8 @@ namespace cql::engine {
                                 static_assert(!SameAs<T,T>, "missing type case");
                             }
                         });
+                        if (!is_pk_bound)
+                            push_back(filter_predicates, rel);
                     }
                 }
 
@@ -475,6 +482,8 @@ namespace cql::engine {
                         },
                         .resolved_table = tbl,
                         .select_col_indices = move(select_col_indices),
+                        .filter_predicates = move(filter_predicates),
+                        .filter_ctx = ctx,
                     };
                 }
 
@@ -514,6 +523,8 @@ namespace cql::engine {
                     .rows = RowRange{.start = move(start_it), .stop = move(stop_it)},
                     .resolved_table = tbl,
                     .select_col_indices = move(select_col_indices),
+                    .filter_predicates = move(filter_predicates),
+                    .filter_ctx = ctx,
                 };
             } else if constexpr (SameAs<T, Insert>) { ZoneScopedN("engine::insert");
                 for (const auto& param : stmt.using_parameters) {
@@ -1064,16 +1075,6 @@ namespace cql::engine {
     coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Term>&& bound_values) {
         bind_values_to_statement(statement, bound_values);
         co_return co_await execute(engine, statement);
-    }
-
-    coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Constant>&& bound_values) {
-        number_bind_markers(statement);
-        EvalContext ctx{.positional_bindings = {bound_values.ptr, bound_values.length}};
-        pager::Transaction tx{engine.pager};
-        co_await tx.begin();
-        auto result = co_await execute_inside_transaction(engine, statement, move(ctx));
-        co_await tx.commit();
-        co_return result;
     }
 
     // ========================================================================

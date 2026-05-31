@@ -10,6 +10,7 @@ import plexdb.dynamic.containers;
 import plexdb.dynamic.tagged_union;
 import plexdb.coroutine;
 
+import cql.engine.column_value;
 import cql.engine.evaluator;
 import cql.engine.types;
 import cql.engine.statements;
@@ -567,7 +568,7 @@ export namespace cql::io {
     bool can_cast_write_constant_as_column_value(const Constant& constant, type::Basic dtype) {
         return visit(constant.value, [&](const auto& cv) -> bool {
             using T = Decay<decltype(cv)>;
-            return can_cast_write_typed_basic_as_column_value<T>(dtype);
+            return can_write_typed_basic_as_column_value<T>(dtype);
         });
     }
 
@@ -1031,16 +1032,6 @@ export namespace cql::io {
 }
 
 export namespace plexdb {
-    inline AutoString8 bytes_to_hex(const U8* data, U64 len) {
-        const char hex_chars[] = "0123456789abcdef";
-        AutoString8 result{len * 2};
-        for (U64 i = 0; i < len; i++) {
-            result.c_str[i*2]     = hex_chars[data[i] >> 4];
-            result.c_str[i*2 + 1] = hex_chars[data[i] & 0xf];
-        }
-        return result;
-    }
-
     AutoString8 to_str(const cql::ColumnValue& value, [[maybe_unused]] cql::type::Basic dtype) {
         return visit(value, [](auto& v) -> AutoString8 {
             using T = Decay<decltype(v)>;
@@ -1092,7 +1083,8 @@ export namespace plexdb {
                        to_str(static_cast<S64>(v.days)) + "d" +
                        to_str(v.nanoseconds) + "ns";
             }
-            return "@todo"_as;
+            assert_not_implemented("to_str for collection ColumnValue types is not implemented");
+            return ""_as;
         });
     }
 

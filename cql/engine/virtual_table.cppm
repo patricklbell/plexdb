@@ -4,6 +4,7 @@ import plexdb.base;
 import plexdb.os;
 import plexdb.dynamic.containers;
 
+import cql.engine.column_value;
 import cql.engine.io;
 import cql.engine.types;
 import cql.engine.statements;
