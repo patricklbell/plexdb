@@ -844,7 +844,7 @@ namespace cql::engine {
                     blob::BlobDynamicPaged row_blob;
                     co_await blob::load(row_blob, engine.pager, new_row_page);
                     co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
-                    co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{new_row_page, 0});
+                    co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{new_row_page, existing_entry.static_page});
                 } else {
                     // insert new row with only assigned columns + PK
                     DynamicArray<bool> col_present;

@@ -1184,6 +1184,120 @@ PAGER_TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cq
     os::file_delete(wal_path);
 }
 
+PAGER_TEST_CASE("Native protocol collection INSERT and SELECT", "[cql.native]") {
+    int port = get_unique_port();
+    os::File db_file{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db_file));
+
+    auto pager = create_test_pager(db_file, 4_kb);
+    pager::begin_transaction(pager);
+    co_await engine::create_database(pager);
+    co_await pager::commit_transaction(pager);
+    Engine engine;
+    co_await engine::init(engine, &pager);
+
+    run_server_test("test-client", [&](os::Notifier& interrupt) {
+        Socket client{socket_open()};
+        socket_set_timeout(client, 2000);
+        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
+        send_frame(client, create_startup());
+        CHECK(recv_frame(client).opcode == 0x02);
+
+        send_frame(client, create_query("CREATE KEYSPACE coll_ks;"));
+        CHECK(recv_frame(client).opcode == 0x08);
+        send_frame(client, create_query(
+            "CREATE TABLE coll_ks.t ("
+            "  id int PRIMARY KEY,"
+            "  tags list<text>,"
+            "  scores set<int>,"
+            "  meta map<text, int>"
+            ");"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        // INSERT collection literals via plain QUERY
+        send_frame(client, create_query(
+            "INSERT INTO coll_ks.t (id, tags, scores, meta)"
+            " VALUES (1, ['a', 'b'], {10, 20}, {'x': 1, 'y': 2});"));
+        CHECK(recv_frame(client).opcode == 0x08);
+
+        // SELECT and verify literal round-trip
+        send_frame(client, create_query("SELECT * FROM coll_ks.t WHERE id = 1;"));
+        auto resp = recv_frame(client);
+        CHECK(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        // 'a', 'b' appear as text in the response
+        CHECK(body_contains(resp, "a"));
+        CHECK(body_contains(resp, "b"));
+
+        // INSERT with bind parameters (list<text>)
+        {
+            Bytes b;
+            b.cql_long_string("INSERT INTO coll_ks.t (id, tags) VALUES (?, ?)");
+            b.u16(0x0001);
+            b.u8(0x01); // flags: values present
+            b.u16(2);   // 2 bind values
+
+            // id = 2 (int)
+            b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(2);
+
+            // tags = ['hello', 'world'] as list<text>
+            // wire: [S32: outer_len][S32: count][S32: len][bytes]...
+            int32_t inner = 4 + (4 + 5) + (4 + 5); // count(4) + 2 elems (len+data)
+            b.s32(inner);
+            b.s32(2); // count
+            b.s32(5); b.u8('h'); b.u8('e'); b.u8('l'); b.u8('l'); b.u8('o');
+            b.s32(5); b.u8('w'); b.u8('o'); b.u8('r'); b.u8('l'); b.u8('d');
+
+            b.prepend_header(0x07, 10);
+            send_frame(client, b);
+            CHECK(recv_frame(client).opcode == 0x08);
+        }
+
+        // SELECT back and verify bind-param list
+        send_frame(client, create_query("SELECT * FROM coll_ks.t WHERE id = 2;"));
+        resp = recv_frame(client);
+        CHECK(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK(body_contains(resp, "hello"));
+        CHECK(body_contains(resp, "world"));
+
+        // INSERT with bind parameters (map<text, int>)
+        {
+            Bytes b;
+            b.cql_long_string("INSERT INTO coll_ks.t (id, meta) VALUES (?, ?)");
+            b.u16(0x0001);
+            b.u8(0x01);
+            b.u16(2);
+
+            // id = 3
+            b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(3);
+
+            // meta = {'k': 99} as map<text, int>
+            // wire: [S32: outer_len][S32: count][key as [bytes]][val as [bytes]]
+            int32_t inner = 4 + (4 + 1) + (4 + 4); // count + key('k') + val(99)
+            b.s32(inner);
+            b.s32(1); // 1 pair
+            b.s32(1); b.u8('k');              // key 'k'
+            b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(99); // val 99
+
+            b.prepend_header(0x07, 11);
+            send_frame(client, b);
+            CHECK(recv_frame(client).opcode == 0x08);
+        }
+
+        send_frame(client, create_query("SELECT * FROM coll_ks.t WHERE id = 3;"));
+        resp = recv_frame(client);
+        CHECK(resp.opcode == 0x08);
+        CHECK(result_kind(resp) == 0x0002);
+        CHECK(body_contains(resp, "k"));
+
+        os::signal_notify_safe(interrupt);
+    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
+        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+    });
+    destroy_test_pager(pager);
+}
+
 PAGER_TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]") {
     os::Handle pid = os::process_get_handle();
     auto db_path  = fmt("/tmp/plexdb_cql::crash_%" PRIu64 "_db",  pid.u64[0]);
