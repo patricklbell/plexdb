@@ -57,10 +57,11 @@ jobs:
         run: |
           ARGS="-b build/cql/plexdb_cql_server -P 9042"
           ARGS="$ARGS -r ${{ inputs.scylla_ref || 'master' }}"
+          ARGS="$ARGS -m tools/cql_tests/mustpass.txt"
           if [ -n "${{ inputs.test_filter }}" ]; then
             ARGS="$ARGS -t '${{ inputs.test_filter }}'"
           fi
-          bash tools/cql_tests/run.sh $ARGS 2>&1 | tee "$RUNNER_TEMP/cql_test_output.txt" || true
+          bash tools/cql_tests/run.sh $ARGS 2>&1 | tee "$RUNNER_TEMP/cql_test_output.txt"
 
       - name: Generate test summary
         if: always()

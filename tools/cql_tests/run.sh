@@ -16,6 +16,8 @@
 #     -x           stop on first failure                             (pytest -x)
 #     -l           list tests only                                   (pytest --collect-only)
 #     -L <dir>     write per-session server log to <dir>/server.log
+#     -m <file>    fail if a listed test regresses                   (default: none)
+#     -o <file>    write passing test IDs to <file> (gen mustpass)   (default: none)
 #     -h           show this help
 #
 # Environment:
@@ -36,19 +38,23 @@ PYTEST_K=""
 PYTEST_EXTRA=""
 LIST_ONLY=false
 LOG_DIR=""
+MUSTPASS_FILE=""
+OUTPUT_MUSTPASS=""
 
-while getopts "b:p:P:r:t:xlL:h" opt; do
+while getopts "b:p:P:r:t:m:o:xlL:h" opt; do
     case "$opt" in
         b) BINARY="$OPTARG" ;;
         p) PLUGINS+=("$OPTARG") ;;
         P) PORT="$OPTARG" ;;
         r) SCYLLA_REF="$OPTARG" ;;
         t) PYTEST_K="$OPTARG" ;;
+        m) MUSTPASS_FILE="$OPTARG" ;;
+        o) OUTPUT_MUSTPASS="$OPTARG" ;;
         x) PYTEST_EXTRA="$PYTEST_EXTRA -x" ;;
         l) LIST_ONLY=true ;;
         L) LOG_DIR="$OPTARG" ;;
         h)
-            sed -n '2,25p' "$0" | sed 's/^# \?//'
+            sed -n '2,27p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         *) exit 1 ;;
@@ -190,14 +196,82 @@ for p in "${PLUGINS[@]}"; do
     PLUGIN_ARGS+=(--plugin "$p")
 done
 
-python3 -m pytest "$TESTS_DIR/cassandra_tests/" \
-    --host "$HOST" --port "$PORT" --binary "$BINARY" \
-    "${PLUGIN_ARGS[@]}" \
-    ${LOG_DIR:+--log-dir "$LOG_DIR"} \
-    --override-ini="pythonpath=$PARENT_OF_TESTS" \
-    --rootdir="$TESTS_DIR" \
-    --confcutdir="$TESTS_DIR" \
-    -c "$SCRIPT_DIR/pytest.ini" \
-    -v --tb=short \
-    ${PYTEST_K:+-k "$PYTEST_K"} \
-    $PYTEST_EXTRA
+run_pytest() {
+    python3 -m pytest "$TESTS_DIR/cassandra_tests/" \
+        --host "$HOST" --port "$PORT" --binary "$BINARY" \
+        "${PLUGIN_ARGS[@]}" \
+        ${LOG_DIR:+--log-dir "$LOG_DIR"} \
+        --override-ini="pythonpath=$PARENT_OF_TESTS" \
+        --rootdir="$TESTS_DIR" \
+        --confcutdir="$TESTS_DIR" \
+        -c "$SCRIPT_DIR/pytest.ini" \
+        -v --tb=short \
+        ${PYTEST_K:+-k "$PYTEST_K"} \
+        $PYTEST_EXTRA
+}
+
+if [ -n "$MUSTPASS_FILE" ] || [ -n "$OUTPUT_MUSTPASS" ]; then
+    MUSTPASS_TMP="$(mktemp /tmp/plexdb_cql_pytest_XXXXXX.txt)"
+    set +e
+    run_pytest 2>&1 | tee "$MUSTPASS_TMP"
+    set -e
+    python3 - "$MUSTPASS_TMP" "${OUTPUT_MUSTPASS}" "${MUSTPASS_FILE}" <<'PYEOF'
+import sys, re
+from datetime import datetime
+
+def strip_ansi(s):
+    return re.sub(r'\x1b\[[0-9;]*[mGKHF]', '', s)
+
+output_file = sys.argv[1]
+output_mustpass = sys.argv[2] if sys.argv[2] else None
+mustpass_file  = sys.argv[3] if sys.argv[3] else None
+
+results = {}
+with open(output_file) as f:
+    for line in f:
+        line = strip_ansi(line).rstrip()
+        m = re.match(
+            r'^(.+?)\s+(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS|XFAILED|XPASSED)'
+            r'(?:\s+\[[\s\d%]+\])?\s*$', line)
+        if m:
+            results[m.group(1).strip()] = m.group(2)
+
+exit_code = 0
+
+if output_mustpass:
+    passing = sorted(nid for nid, st in results.items() if st == 'PASSED')
+    with open(output_mustpass, 'w') as f:
+        f.write('# Mustpass list — tests that must pass to prevent regressions.\n')
+        f.write('# Generated: ' + datetime.now().strftime('%Y-%m-%d') + '\n')
+        f.write('# Regenerate: tools/cql_tests/run.sh -o tools/cql_tests/mustpass.txt\n#\n')
+        for nid in passing:
+            f.write(nid + '\n')
+    print(f'Wrote {len(passing)} passing tests to {output_mustpass}')
+
+if mustpass_file:
+    try:
+        with open(mustpass_file) as f:
+            mustpass = [l.strip() for l in f if l.strip() and not l.startswith('#')]
+    except FileNotFoundError:
+        print(f'Warning: mustpass file not found: {mustpass_file}', file=sys.stderr)
+        mustpass = []
+
+    regressions = [(nid, results[nid]) for nid in mustpass if results.get(nid) in ('FAILED', 'ERROR')]
+
+    if regressions:
+        print(f'\nMUSTPASS REGRESSIONS — {len(regressions)} test(s) that must pass have failed:')
+        for nid, st in regressions:
+            print(f'  {st}: {nid}')
+        exit_code = 1
+    else:
+        checked = sum(1 for nid in mustpass if nid in results)
+        print(f'\nMustpass OK ({checked}/{len(mustpass)} verified in this run)')
+
+sys.exit(exit_code)
+PYEOF
+    MUSTPASS_EXIT=$?
+    rm -f "$MUSTPASS_TMP"
+    exit $MUSTPASS_EXIT
+else
+    run_pytest
+fi

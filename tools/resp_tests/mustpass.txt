@@ -1,0 +1,47 @@
+# Mustpass list — tests that must pass to prevent regressions.
+# Generated: 2026-05-31
+# Regenerate: tools/resp_tests/run.sh -o tools/resp_tests/mustpass.txt
+#
+tools/resp_tests/redis_tests/tests/test_benchmark.py::test_redis_benchmark_supported_commands
+tools/resp_tests/redis_tests/tests/test_commands.py::TestBinarySave::test_22_info
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_bitpos_wrong_arguments
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_client_getname
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_client_kill_filter_invalid_params
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_client_no_evict
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_client_pause
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_client_unpause
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_command_docs
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_dbsize
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_debug_segfault
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_delete
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_empty_response_option
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_exists
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_exists_contains
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_failover
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_geoadd_invalid_params
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_geodist_invalid_units
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_geosearch_negative
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_hello_notI_implemented
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_hset_without_data
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_info
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_keys
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_latency_doctor_not_implemented
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_latency_graph_not_implemented
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_latency_histogram_not_implemented
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_memory_doctor
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_memory_help
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_mget
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_never_decode_option
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_ping
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_quit
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_readonly_invalid_cluster_state
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_scan
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_scan_iter
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_script_debug
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_shutdown
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_shutdown_with_params
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_xautoclaim_negative
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_xpending_range_negative
+tools/resp_tests/redis_tests/tests/test_commands.py::TestRedisCommands::test_zrange_errors
+tools/resp_tests/redis_tests/tests/test_commands.py::TestResponseCallbacks::test_case_insensitive_command_names
+tools/resp_tests/redis_tests/tests/test_commands.py::TestResponseCallbacks::test_response_callbacks
