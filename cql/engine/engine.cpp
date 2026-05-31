@@ -1018,6 +1018,64 @@ namespace cql::engine {
     // ========================================================================
     // bind variables
     // ========================================================================
+    static type::Type col_type_in_table(const schema::Table& tbl, String8 col_name) {
+        for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+            if (tbl.cols[ci].name == col_name)
+                return tbl.cols[ci].type;
+        }
+        return type::create_basic(type::Basic::text);
+    }
+
+    static void collect_bind_in_term(const Term& term, type::Type hint_type, DynamicArray<BindVariableSpec>& out) {
+        visit(term.value, [&](const auto& v) {
+            using V = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<V, BindMarker>) {
+                emplace_back(out, BindVariableSpec{.name = AutoString8(v.identifier), .type = hint_type});
+            } else if constexpr (SameAs<V, ListOrVectorLiteral>) {
+                for (U64 i = 0; i < v.elements.length; i++)
+                    collect_bind_in_term(v.elements[i], hint_type, out);
+            } else if constexpr (SameAs<V, SetLiteral>) {
+                for (U64 i = 0; i < v.keys.length; i++)
+                    collect_bind_in_term(v.keys[i], hint_type, out);
+            } else if constexpr (SameAs<V, MapLiteral>) {
+                for (U64 i = 0; i < v.key_values.length; i++) {
+                    collect_bind_in_term(v.key_values[i].first, hint_type, out);
+                    collect_bind_in_term(v.key_values[i].second, hint_type, out);
+                }
+            }
+        });
+    }
+
+    static void collect_bind_in_using_params(const DynamicArray<UpdateParameter>& params, DynamicArray<BindVariableSpec>& out) {
+        for (U64 i = 0; i < params.length; i++) {
+            if (type_matches_tag<BindMarker>(params[i].value)) {
+                auto kind = params[i].kind == UpdateParameter::Kind::TIMESTAMP
+                    ? type::Basic::bigint : type::Basic::int_;
+                emplace_back(out, BindVariableSpec{.name = {}, .type = type::create_basic(kind)});
+            }
+        }
+    }
+
+    static void collect_bind_in_where(const WhereClause& where, const schema::Table& tbl, DynamicArray<BindVariableSpec>& out) {
+        for (U64 i = 0; i < where.relations.length; i++) {
+            visit(where.relations[i].value, [&](const auto& rel) {
+                using R = RemoveCVRef<decltype(rel)>;
+                if constexpr (SameAs<R, WhereClause::ColumnExpressionRelation>) {
+                    type::Type t = col_type_in_table(tbl, String8(rel.column.identifier));
+                    collect_bind_in_term(rel.value, t, out);
+                } else if constexpr (SameAs<R, WhereClause::TupleExpressionRelation>) {
+                    for (U64 vi = 0; vi < rel.values.length; vi++) {
+                        String8 col = vi < rel.columns.length ? String8(rel.columns[vi].identifier) : String8{};
+                        type::Type t = col.length ? col_type_in_table(tbl, col) : type::create_basic(type::Basic::text);
+                        collect_bind_in_term(rel.values[vi], t, out);
+                    }
+                } else if constexpr (SameAs<R, WhereClause::TokenRelation>) {
+                    collect_bind_in_term(rel.value, type::create_basic(type::Basic::bigint), out);
+                }
+            });
+        }
+    }
+
     static void collect_bind_variables_insert(Engine& engine, const Insert& stmt, DynamicArray<BindVariableSpec>& out) {
         String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
         auto ks = schema::read_keyspace(engine.schema, ks_name).value;
@@ -1025,49 +1083,149 @@ namespace cql::engine {
         auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
         if (tbl == nullptr) return;
 
-        if (!type_matches_tag<Insert::NamesValues>(stmt.insert_clause)) return;
-        const auto& nv = get<Insert::NamesValues>(stmt.insert_clause);
-
-        for (U64 i = 0; i < nv.values.length; i++) {
-            if (type_matches_tag<BindMarker>(nv.values[i].value)) {
-                String8 col_name = nv.names[i].identifier;
-                type::Type col_type = type::create_basic(type::Basic::text);
-                for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                    if (tbl->cols[ci].name == col_name) {
-                        col_type = tbl->cols[ci].type;
-                        break;
-                    }
+        if (type_matches_tag<Insert::NamesValues>(stmt.insert_clause)) {
+            const auto& nv = get<Insert::NamesValues>(stmt.insert_clause);
+            for (U64 i = 0; i < nv.values.length; i++) {
+                if (type_matches_tag<BindMarker>(nv.values[i].value)) {
+                    String8 col_name = nv.names[i].identifier;
+                    emplace_back(out, BindVariableSpec{
+                        .name = AutoString8(col_name),
+                        .type = col_type_in_table(*tbl, col_name)
+                    });
                 }
-                emplace_back(out, BindVariableSpec{.name = AutoString8(col_name), .type = col_type});
             }
         }
+        collect_bind_in_using_params(stmt.using_parameters, out);
+    }
+
+    static void collect_bind_variables_update(Engine& engine, const Update& stmt, DynamicArray<BindVariableSpec>& out) {
+        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+        auto ks = schema::read_keyspace(engine.schema, ks_name).value;
+        if (ks == nullptr) return;
+        auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+        if (tbl == nullptr) return;
+
+        collect_bind_in_using_params(stmt.using_parameters, out);
+        for (U64 i = 0; i < stmt.assignments.length; i++) {
+            const auto& asgn = stmt.assignments[i];
+            if (type_matches_tag<BindMarker>(asgn.value.value)) {
+                type::Type t = col_type_in_table(*tbl, String8(asgn.target.column.identifier));
+                emplace_back(out, BindVariableSpec{.name = AutoString8(asgn.target.column.identifier), .type = t});
+            }
+        }
+        collect_bind_in_where(stmt.where, *tbl, out);
+    }
+
+    static void collect_bind_variables_delete(Engine& engine, const Delete& stmt, DynamicArray<BindVariableSpec>& out) {
+        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+        auto ks = schema::read_keyspace(engine.schema, ks_name).value;
+        if (ks == nullptr) return;
+        auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+        if (tbl == nullptr) return;
+
+        collect_bind_in_using_params(stmt.using_parameters, out);
+        collect_bind_in_where(stmt.where, *tbl, out);
+    }
+
+    static void collect_bind_variables_select(Engine& engine, const Select& stmt, DynamicArray<BindVariableSpec>& out) {
+        String8 ks_name = static_cast<bool>(stmt.from.keyspace_name) ? String8(*stmt.from.keyspace_name) : engine.current_keyspace;
+        auto ks = schema::read_keyspace(engine.schema, ks_name).value;
+        if (ks == nullptr) return;
+        auto tbl = schema::read_table(engine.schema, *ks, stmt.from.table_name).value;
+        if (tbl == nullptr) return;
+
+        if (static_cast<bool>(stmt.where))
+            collect_bind_in_where(*stmt.where, *tbl, out);
+
+        auto int_type = type::create_basic(type::Basic::int_);
+        if (type_matches_tag<BindMarker>(stmt.limit.value))
+            emplace_back(out, BindVariableSpec{.name = {}, .type = int_type});
+        if (type_matches_tag<BindMarker>(stmt.per_partition_limit.value))
+            emplace_back(out, BindVariableSpec{.name = {}, .type = int_type});
     }
 
     DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement) {
         DynamicArray<BindVariableSpec> result;
         visit(statement.value, [&](const auto& stmt) {
             using T = RemoveCVRef<decltype(stmt)>;
-            if constexpr (SameAs<T, Insert>) {
+            if constexpr (SameAs<T, Insert>)
                 collect_bind_variables_insert(engine, stmt, result);
-            }
+            else if constexpr (SameAs<T, Update>)
+                collect_bind_variables_update(engine, stmt, result);
+            else if constexpr (SameAs<T, Delete>)
+                collect_bind_variables_delete(engine, stmt, result);
+            else if constexpr (SameAs<T, Select>)
+                collect_bind_variables_select(engine, stmt, result);
         });
         return result;
     }
 
+    static void bind_in_term(Term& term, DynamicArray<Term>& bv, U64& idx) {
+        if (type_matches_tag<BindMarker>(term.value)) {
+            if (idx < bv.length) term = move(bv[idx++]);
+            return;
+        }
+        visit(term.value, [&](auto& v) {
+            using V = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<V, ListOrVectorLiteral>) {
+                for (U64 i = 0; i < v.elements.length; i++) bind_in_term(v.elements[i], bv, idx);
+            } else if constexpr (SameAs<V, SetLiteral>) {
+                for (U64 i = 0; i < v.keys.length; i++) bind_in_term(v.keys[i], bv, idx);
+            } else if constexpr (SameAs<V, MapLiteral>) {
+                for (U64 i = 0; i < v.key_values.length; i++) {
+                    bind_in_term(v.key_values[i].first, bv, idx);
+                    bind_in_term(v.key_values[i].second, bv, idx);
+                }
+            }
+        });
+    }
+
+    static void bind_in_where(WhereClause& where, DynamicArray<Term>& bv, U64& idx) {
+        for (U64 i = 0; i < where.relations.length; i++) {
+            visit(where.relations[i].value, [&](auto& rel) {
+                using R = RemoveCVRef<decltype(rel)>;
+                if constexpr (SameAs<R, WhereClause::ColumnExpressionRelation>) {
+                    bind_in_term(rel.value, bv, idx);
+                } else if constexpr (SameAs<R, WhereClause::TupleExpressionRelation>) {
+                    for (U64 vi = 0; vi < rel.values.length; vi++) bind_in_term(rel.values[vi], bv, idx);
+                } else if constexpr (SameAs<R, WhereClause::TokenRelation>) {
+                    bind_in_term(rel.value, bv, idx);
+                }
+            });
+        }
+    }
+
     static void bind_values_to_statement(Statement& stmt, DynamicArray<Term>& bound_values) {
         if (bound_values.length == 0) return;
+        U64 idx = 0;
         visit(stmt.value, [&](auto& s) {
             using T = RemoveCVRef<decltype(s)>;
             if constexpr (SameAs<T, Insert>) {
                 if (!type_matches_tag<Insert::NamesValues>(s.insert_clause)) return;
                 auto& nv = get<Insert::NamesValues>(s.insert_clause);
-                U64 bind_idx = 0;
-                for (U64 i = 0; i < nv.values.length && bind_idx < bound_values.length; i++) {
-                    if (type_matches_tag<BindMarker>(nv.values[i].value)) {
-                        nv.values[i] = move(bound_values[bind_idx]);
-                        bind_idx++;
-                    }
+                for (U64 i = 0; i < nv.values.length && idx < bound_values.length; i++) {
+                    if (type_matches_tag<BindMarker>(nv.values[i].value))
+                        nv.values[i] = move(bound_values[idx++]);
                 }
+                // advance past any USING TIMESTAMP/TTL bind markers
+                for (U64 i = 0; i < s.using_parameters.length; i++)
+                    if (type_matches_tag<BindMarker>(s.using_parameters[i].value)) idx++;
+            } else if constexpr (SameAs<T, Update>) {
+                for (U64 i = 0; i < s.using_parameters.length; i++)
+                    if (type_matches_tag<BindMarker>(s.using_parameters[i].value)) idx++;
+                for (U64 i = 0; i < s.assignments.length && idx < bound_values.length; i++) {
+                    if (type_matches_tag<BindMarker>(s.assignments[i].value.value))
+                        s.assignments[i].value = TermWithIdentifiers(move(bound_values[idx++]));
+                }
+                bind_in_where(s.where, bound_values, idx);
+            } else if constexpr (SameAs<T, Delete>) {
+                for (U64 i = 0; i < s.using_parameters.length; i++)
+                    if (type_matches_tag<BindMarker>(s.using_parameters[i].value)) idx++;
+                bind_in_where(s.where, bound_values, idx);
+            } else if constexpr (SameAs<T, Select>) {
+                if (static_cast<bool>(s.where)) bind_in_where(*s.where, bound_values, idx);
+                if (type_matches_tag<BindMarker>(s.limit.value)) idx++;
+                if (type_matches_tag<BindMarker>(s.per_partition_limit.value)) idx++;
             }
         });
     }

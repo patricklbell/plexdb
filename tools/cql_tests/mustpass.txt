@@ -6,6 +6,7 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testCollectionFlush
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testDropAndReaddCollection
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testNonPureFunctionCollection
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/timestamp_test.py::testInsertTimestampWithUnset
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAddList
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testChangeStrategyWithUnquotedAgrument
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testDowngradeToCompact
