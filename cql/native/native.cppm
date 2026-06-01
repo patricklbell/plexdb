@@ -605,11 +605,11 @@ export namespace cql::native {
         const OnReady auto& on_ready_callback, bool use_uring,
         aio::EventConsumer& file_io_consumer, aio::EventConsumer& signal_consumer, os::Poll& io_poll
     ) {
-        const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> { TracyFiberEnter("request");
+        const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> { ZoneScopedN("request");
             NegotiatedProtocol negotiated_protocol{};
             bool ok = co_await negotiate_connection(req, &negotiated_protocol);
             if (!ok) {
-                TracyFiberLeave; co_return;
+                co_return;
             }
 
             if (negotiated_protocol.version == 5) {
@@ -621,7 +621,7 @@ export namespace cql::native {
                 co_await post_startup_loop<4, false>(engine, req);
             }
 
-            TracyFiberLeave; co_return;
+            co_return;
         };
 
         {

@@ -3,11 +3,54 @@ module;
 #include <exception>
 
 #include <plexdb/macros/macros.h>
+#include <plexdb/support/tracy/tracy.hpp>
 
 export module plexdb.coroutine.base;
 
 import plexdb.base;
 import plexdb.coroutine.debug;
+
+// ============================================================================
+// Tracy fiber tracking
+// ============================================================================
+namespace plexdb::coroutine {
+    inline constexpr bool tracy_enabled =
+#ifdef PLEXDB_ENABLE_TRACY_PROFILER
+        true;
+#else
+        false;
+#endif
+
+    struct TracyFiber {
+        // "0x" + hex digits for pointer + NUL
+        static constexpr int k_len = 2 + static_cast<int>(sizeof(void*)) * 2 + 1;
+        char        name[k_len]          = {};
+        const char* continuation_name    = nullptr;
+    };
+    struct EmptyTracyFiber {};
+
+#ifdef PLEXDB_ENABLE_TRACY_PROFILER
+    namespace {
+        constexpr char k_hex_chars[] = "0123456789abcdef";
+    }
+
+    inline void write_hex_ptr(char* buf, const void* ptr) noexcept {
+        auto v = reinterpret_cast<uintptr_t>(ptr);
+        constexpr int n = static_cast<int>(sizeof(void*)) * 2;
+        buf[0] = '0'; buf[1] = 'x';
+        for (int i = n - 1; i >= 0; --i) {
+            buf[2 + i] = k_hex_chars[v & 0xf];
+            v >>= 4;
+        }
+        buf[2 + n] = '\0';
+    }
+
+    // Tracks the fiber name of the currently-executing coroutine on this thread.
+    // Updated at every fiber-switch point so Awaitable::await_resume can re-enter
+    // the correct fiber.
+    inline thread_local const char* g_current_tracy_fiber = nullptr;
+#endif
+}
 
 export namespace plexdb::coroutine {
     // ========================================================================
@@ -42,9 +85,20 @@ export namespace plexdb::coroutine {
             [[no_unique_address]]
             Conditional<debug::enabled, debug::Frame, debug::EmptyFrame> debug_frame;
 
+            [[no_unique_address]]
+            Conditional<tracy_enabled, TracyFiber, EmptyTracyFiber> tracy;
+
             Task get_return_object() noexcept {
                 debug::capture_frame_from_stacktrace(debug_frame);
-                return Task{std::coroutine_handle<promise_type>::from_promise(*this)};
+                auto h = std::coroutine_handle<promise_type>::from_promise(*this);
+                if constexpr (tracy_enabled) {
+                    write_hex_ptr(tracy.name, h.address());
+                    if constexpr (S == Start::Eager) {
+                        g_current_tracy_fiber = tracy.name;
+                        TracyFiberEnter(tracy.name);
+                    }
+                }
+                return Task{h};
             }
 
             auto initial_suspend() noexcept {
@@ -57,6 +111,15 @@ export namespace plexdb::coroutine {
                     bool await_ready() noexcept { return false; }
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
                         debug::pop_frame(h.promise().debug_frame);
+
+                        // Root tasks leave their fiber on completion; children share the parent's.
+                        if constexpr (tracy_enabled) {
+                            if (!h.promise().tracy.continuation_name && g_current_tracy_fiber) {
+                                g_current_tracy_fiber = nullptr;
+                                TracyFiberLeave;
+                            }
+                        }
+
                         return h.promise().continuation;
                     }
                     void await_resume() noexcept {}
@@ -80,6 +143,11 @@ export namespace plexdb::coroutine {
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
             debug::push_frame(handle.promise().debug_frame);
+
+            if constexpr (tracy_enabled) {
+                handle.promise().tracy.continuation_name = g_current_tracy_fiber;
+            }
+
             handle.promise().continuation = caller;
             return handle;
         }
@@ -95,7 +163,13 @@ export namespace plexdb::coroutine {
         // ====================================================================
         // manual api
         // ====================================================================
-        void resume() { handle.resume(); }
+        void resume() {
+            if constexpr (tracy_enabled) {
+                g_current_tracy_fiber = handle.promise().tracy.name;
+                TracyFiberEnter(handle.promise().tracy.name);
+            }
+            handle.resume();
+        }
         bool done() const { return handle.done(); }
         bool has_value() const { return handle.promise().result.has_value(); }
         T& value() & {
@@ -150,9 +224,22 @@ export namespace plexdb::coroutine {
             [[no_unique_address]]
             Conditional<debug::enabled, debug::Frame, debug::EmptyFrame> debug_frame;
 
+            [[no_unique_address]]
+            Conditional<tracy_enabled, TracyFiber, EmptyTracyFiber> tracy;
+
             Task get_return_object() noexcept {
                 debug::capture_frame_from_stacktrace(debug_frame);
-                return Task{std::coroutine_handle<promise_type>::from_promise(*this)};
+                auto h = std::coroutine_handle<promise_type>::from_promise(*this);
+                if constexpr (tracy_enabled) {
+                    write_hex_ptr(tracy.name, h.address());
+                    // Eager tasks start executing immediately during construction with no
+                    // prior Task::resume() call, so enter the fiber here instead.
+                    if constexpr (S == Start::Eager) {
+                        g_current_tracy_fiber = tracy.name;
+                        TracyFiberEnter(tracy.name);
+                    }
+                }
+                return Task{h};
             }
 
             auto initial_suspend() noexcept {
@@ -166,6 +253,15 @@ export namespace plexdb::coroutine {
                     bool await_ready() noexcept { return false; }
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
                         debug::pop_frame(h.promise().debug_frame);
+
+                        // Root tasks leave their fiber on completion; children share the parent's.
+                        if constexpr (tracy_enabled) {
+                            if (!h.promise().tracy.continuation_name && g_current_tracy_fiber) {
+                                g_current_tracy_fiber = nullptr;
+                                TracyFiberLeave;
+                            }
+                        }
+
                         return h.promise().continuation;
                     }
                     void await_resume() noexcept {}
@@ -189,6 +285,11 @@ export namespace plexdb::coroutine {
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
             debug::push_frame(handle.promise().debug_frame);
+
+            if constexpr (tracy_enabled) {
+                handle.promise().tracy.continuation_name = g_current_tracy_fiber;
+            }
+
             handle.promise().continuation = caller;
             return handle;
         }
@@ -203,7 +304,14 @@ export namespace plexdb::coroutine {
         // ====================================================================
         // manual api
         // ====================================================================
-        void resume() { handle.resume(); }
+        void resume() {
+            if constexpr (tracy_enabled) {
+                g_current_tracy_fiber = handle.promise().tracy.name;
+                TracyFiberEnter(handle.promise().tracy.name);
+            }
+
+            handle.resume();
+        }
         bool done() const { return handle.done(); }
 
         // ====================================================================
@@ -262,16 +370,36 @@ export namespace plexdb::coroutine {
 
         void await_suspend(std::coroutine_handle<> h) noexcept {
             debug::save_frame(_saved_frame);
+
+            if constexpr (tracy_enabled) {
+                _saved_tracy_fiber = g_current_tracy_fiber;
+                if (g_current_tracy_fiber) {
+                    g_current_tracy_fiber = nullptr;
+                    TracyFiberLeave;
+                }
+            }
+
             on_suspend(h);
         }
 
         decltype(auto) await_resume() noexcept {
             debug::restore_frame(_saved_frame);
+
+            if constexpr (tracy_enabled) {
+                if (_saved_tracy_fiber) {
+                    g_current_tracy_fiber = _saved_tracy_fiber;
+                    TracyFiberEnter(_saved_tracy_fiber);
+                }
+            }
+
             return on_resume();
         }
 
         [[no_unique_address]]
         Conditional<debug::enabled, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
+
+        [[no_unique_address]]
+        Conditional<tracy_enabled, const char*, EmptyTracyFiber> _saved_tracy_fiber{};
     };
 
     template<typename OnSuspend, typename OnResume>
