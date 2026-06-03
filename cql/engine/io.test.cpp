@@ -21,19 +21,26 @@ struct Buffer {
     DynamicArray<U8> data{};
     U64 cursor = 0;
 
-    auto writer() {
-        return [this](const U8* src, U64 size) {
-            for (U64 i = 0; i < size; i++) push_back(data, src[i]);
-        };
-    }
+    struct WriterCallable {
+        Buffer* self;
+        void operator()(const U8* src, U64 size) {
+            for (U64 i = 0; i < size; i++) push_back(self->data, src[i]);
+        }
+    } _wc{nullptr};
 
-    auto reader() {
-        return [this](U8* dst, U64 size) -> coroutine::Task<void> {
-            if (dst) for (U64 i = 0; i < size; i++) dst[i] = data[cursor + i];
-            cursor += size;
+    struct ReaderCallable {
+        Buffer* self;
+        coroutine::Task<void> operator()(U8* dst, U64 size) {
+            if (dst) for (U64 i = 0; i < size; i++) dst[i] = self->data[self->cursor + i];
+            self->cursor += size;
             co_return;
-        };
-    }
+        }
+    } _rc{nullptr};
+
+    Buffer() : _wc{this}, _rc{this} {}
+
+    Writer writer() { return to_writer(_wc); }
+    Reader reader() { return to_reader(_rc); }
 };
 
 IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
@@ -219,93 +226,93 @@ IO_TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
     SECTION("list<text>") {
         Buffer buf;
         type::Type t = type::create_list(type::Basic::text);
-        DynamicArray<AutoString8> arr{};
-        push_back(arr, AutoString8("alpha"));
-        push_back(arr, AutoString8("beta"));
-        push_back(arr, AutoString8("gamma"));
+        DynamicArray<NestedColumnValue> arr{};
+        push_back(arr, NestedColumnValue{ColumnValue{AutoString8("alpha")}});
+        push_back(arr, NestedColumnValue{ColumnValue{AutoString8("beta")}});
+        push_back(arr, NestedColumnValue{ColumnValue{AutoString8("gamma")}});
         ColumnValue in{move(arr)};
         write_column_value(buf.writer(), in, t);
         auto out = co_await read_column_value(buf.reader(), t);
-        REQUIRE(type_matches_tag<DynamicArray<AutoString8>>(out));
-        auto& got = get<DynamicArray<AutoString8>>(out);
+        REQUIRE(type_matches_tag<DynamicArray<NestedColumnValue>>(out));
+        auto& got = get<DynamicArray<NestedColumnValue>>(out);
         REQUIRE(got.length == 3);
-        REQUIRE(got[0] == "alpha");
-        REQUIRE(got[1] == "beta");
-        REQUIRE(got[2] == "gamma");
+        REQUIRE(get<AutoString8>(got[0].value) == "alpha");
+        REQUIRE(get<AutoString8>(got[1].value) == "beta");
+        REQUIRE(get<AutoString8>(got[2].value) == "gamma");
     }
 
     SECTION("list<int>") {
         Buffer buf;
         type::Type t = type::create_list(type::Basic::int_);
-        DynamicArray<S32> arr{};
-        push_back(arr, S32(1));
-        push_back(arr, S32(-99));
-        push_back(arr, S32(0));
+        DynamicArray<NestedColumnValue> arr{};
+        push_back(arr, NestedColumnValue{ColumnValue{S32(1)}});
+        push_back(arr, NestedColumnValue{ColumnValue{S32(-99)}});
+        push_back(arr, NestedColumnValue{ColumnValue{S32(0)}});
         ColumnValue in{move(arr)};
         write_column_value(buf.writer(), in, t);
         auto out = co_await read_column_value(buf.reader(), t);
-        REQUIRE(type_matches_tag<DynamicArray<S32>>(out));
-        auto& got = get<DynamicArray<S32>>(out);
+        REQUIRE(type_matches_tag<DynamicArray<NestedColumnValue>>(out));
+        auto& got = get<DynamicArray<NestedColumnValue>>(out);
         REQUIRE(got.length == 3);
-        REQUIRE(got[0] == 1);
-        REQUIRE(got[1] == -99);
-        REQUIRE(got[2] == 0);
+        REQUIRE(get<S32>(got[0].value) == 1);
+        REQUIRE(get<S32>(got[1].value) == -99);
+        REQUIRE(get<S32>(got[2].value) == 0);
     }
 
     SECTION("empty list") {
         Buffer buf;
         type::Type t = type::create_list(type::Basic::bigint);
-        DynamicArray<S64> arr{};
+        DynamicArray<NestedColumnValue> arr{};
         ColumnValue in{move(arr)};
         write_column_value(buf.writer(), in, t);
         auto out = co_await read_column_value(buf.reader(), t);
-        REQUIRE(type_matches_tag<DynamicArray<S64>>(out));
-        REQUIRE(get<DynamicArray<S64>>(out).length == 0);
+        REQUIRE(type_matches_tag<DynamicArray<NestedColumnValue>>(out));
+        REQUIRE(get<DynamicArray<NestedColumnValue>>(out).length == 0);
     }
 
     SECTION("vector<float>") {
         Buffer buf;
         type::Type t = type::create_vector(type::Basic::float_, 3);
-        DynamicArray<F32> arr{};
-        push_back(arr, F32(1.0f));
-        push_back(arr, F32(2.5f));
-        push_back(arr, F32(-0.5f));
+        DynamicArray<NestedColumnValue> arr{};
+        push_back(arr, NestedColumnValue{ColumnValue{F32(1.0f)}});
+        push_back(arr, NestedColumnValue{ColumnValue{F32(2.5f)}});
+        push_back(arr, NestedColumnValue{ColumnValue{F32(-0.5f)}});
         ColumnValue in{move(arr)};
         write_column_value(buf.writer(), in, t);
         auto out = co_await read_column_value(buf.reader(), t);
-        REQUIRE(type_matches_tag<DynamicArray<F32>>(out));
-        auto& got = get<DynamicArray<F32>>(out);
+        REQUIRE(type_matches_tag<DynamicArray<NestedColumnValue>>(out));
+        auto& got = get<DynamicArray<NestedColumnValue>>(out);
         REQUIRE(got.length == 3);
-        REQUIRE(got[0] == 1.0f);
-        REQUIRE(got[1] == 2.5f);
-        REQUIRE(got[2] == -0.5f);
+        REQUIRE(get<F32>(got[0].value) == 1.0f);
+        REQUIRE(get<F32>(got[1].value) == 2.5f);
+        REQUIRE(get<F32>(got[2].value) == -0.5f);
     }
 
     SECTION("set<bigint>") {
         Buffer buf;
         type::Type t = type::create_set(type::Basic::bigint);
-        DynamicSet<S64> s{};
-        insert(s, S64(100LL));
-        insert(s, S64(200LL));
-        insert(s, S64(300LL));
+        DynamicSet<NestedColumnValue> s{};
+        insert(s, NestedColumnValue{ColumnValue{S64(100LL)}});
+        insert(s, NestedColumnValue{ColumnValue{S64(200LL)}});
+        insert(s, NestedColumnValue{ColumnValue{S64(300LL)}});
         ColumnValue in{move(s)};
         write_column_value(buf.writer(), in, t);
         auto out = co_await read_column_value(buf.reader(), t);
-        REQUIRE(type_matches_tag<DynamicSet<S64>>(out));
-        REQUIRE(length(get<DynamicSet<S64>>(out)) == 3);
+        REQUIRE(type_matches_tag<DynamicSet<NestedColumnValue>>(out));
+        REQUIRE(length(get<DynamicSet<NestedColumnValue>>(out)) == 3);
     }
 
     SECTION("map<text,bigint>") {
         Buffer buf;
         type::Type t = type::create_map(type::Basic::text, type::Basic::bigint);
-        DynamicMap<AutoString8, S64> m{};
-        insert(m, AutoString8("key1"), S64(42LL));
-        insert(m, AutoString8("key2"), S64(-1LL));
+        DynamicMap<NestedColumnValue, NestedColumnValue> m{};
+        insert(m, NestedColumnValue{ColumnValue{AutoString8("key1")}}, NestedColumnValue{ColumnValue{S64(42LL)}});
+        insert(m, NestedColumnValue{ColumnValue{AutoString8("key2")}}, NestedColumnValue{ColumnValue{S64(-1LL)}});
         ColumnValue in{move(m)};
         write_column_value(buf.writer(), in, t);
         auto out = co_await read_column_value(buf.reader(), t);
-        REQUIRE(type_matches_tag<DynamicMap<AutoString8, S64>>(out));
-        REQUIRE(length(get<DynamicMap<AutoString8, S64>>(out)) == 2);
+        REQUIRE(type_matches_tag<DynamicMap<NestedColumnValue, NestedColumnValue>>(out));
+        REQUIRE(length(get<DynamicMap<NestedColumnValue, NestedColumnValue>>(out)) == 2);
     }
 }
 
