@@ -84,10 +84,10 @@ namespace cql {
         blob::BlobCursor& cursor = this->current_is_static()
             ? this->static_cursor : this->row_cursor;
 
-        auto r = [&cursor](U8* dst, U64 size) -> coroutine::Task<void> {
+        auto r_fn = [&cursor](U8* dst, U64 size) -> coroutine::Task<void> {
             co_await blob::read(cursor, dst, size);
         };
-        ColumnValue result = co_await io::read_column_value(r, this->table->cols[this->current_column_idx].type);
+        ColumnValue result = co_await io::read_column_value(io::to_reader(r_fn), this->table->cols[this->current_column_idx].type);
         this->current_value_consumed = true;
         co_return result;
     }
@@ -103,11 +103,11 @@ namespace cql {
         if (!this->current_is_null() && !this->current_value_consumed) {
             blob::BlobCursor& cursor = this->current_is_static()
                 ? this->static_cursor : this->row_cursor;
-            auto r = [&cursor](U8* dst, U64 size) -> coroutine::Task<void> {
+            auto r_fn = [&cursor](U8* dst, U64 size) -> coroutine::Task<void> {
                 if (dst != nullptr) co_await blob::read(cursor, dst, size);
                 else cursor.skip(size);
             };
-            co_await io::skip_column_value(r, this->table->cols[this->current_column_idx].type);
+            co_await io::skip_column_value(io::to_reader(r_fn), this->table->cols[this->current_column_idx].type);
         }
         this->current_value_consumed = false;
         this->current_column_idx++;
