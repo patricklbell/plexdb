@@ -1,5 +1,6 @@
 module cql.engine.system_schema;
 
+import cql.engine.column_value;
 import cql.engine.types;
 import cql.engine.evaluator;
 import cql.engine.statements;
@@ -25,22 +26,24 @@ namespace cql::engine {
         return {uuid};
     }
 
-    static DynamicMap<AutoString8, AutoString8> default_caching() {
-        return DynamicMap<AutoString8, AutoString8>{
-            Pair<AutoString8, AutoString8>{"keys"_as,               "ALL"_as},
-            Pair<AutoString8, AutoString8>{"rows_per_partition"_as, "NONE"_as},
-        };
+    static NestedColumnValue ncv(AutoString8 s) { return NestedColumnValue{ColumnValue{move(s)}}; }
+
+    static DynamicMap<NestedColumnValue, NestedColumnValue> default_caching() {
+        DynamicMap<NestedColumnValue, NestedColumnValue> m{};
+        insert(m, ncv("keys"_as),               ncv("ALL"_as));
+        insert(m, ncv("rows_per_partition"_as), ncv("NONE"_as));
+        return m;
     }
-    static DynamicMap<AutoString8, AutoString8> default_compaction() {
-        return DynamicMap<AutoString8, AutoString8>{
-            Pair<AutoString8, AutoString8>{"class"_as, "org.apache.cassandra.db.compaction.SizeTieredCompactionStrategy"_as},
-        };
+    static DynamicMap<NestedColumnValue, NestedColumnValue> default_compaction() {
+        DynamicMap<NestedColumnValue, NestedColumnValue> m{};
+        insert(m, ncv("class"_as), ncv("org.apache.cassandra.db.compaction.SizeTieredCompactionStrategy"_as));
+        return m;
     }
-    static DynamicMap<AutoString8, AutoString8> default_compression() {
-        return DynamicMap<AutoString8, AutoString8>{
-            Pair<AutoString8, AutoString8>{"chunk_length_in_kb"_as, "64"_as},
-            Pair<AutoString8, AutoString8>{"class"_as, "org.apache.cassandra.io.compress.LZ4Compressor"_as},
-        };
+    static DynamicMap<NestedColumnValue, NestedColumnValue> default_compression() {
+        DynamicMap<NestedColumnValue, NestedColumnValue> m{};
+        insert(m, ncv("chunk_length_in_kb"_as), ncv("64"_as));
+        insert(m, ncv("class"_as),              ncv("org.apache.cassandra.io.compress.LZ4Compressor"_as));
+        return m;
     }
 
     // ---- Built-in system virtual table definitions -------------------------
@@ -74,8 +77,9 @@ namespace cql::engine {
         {"release_version",         type::create_basic(type::Basic::text), "regular",       -1},
         {"rpc_address",             type::create_basic(type::Basic::inet), "regular",       -1},
         {"rpc_port",                type::create_basic(type::Basic::int_), "regular",       -1},
-        {"schema_version",          type::create_basic(type::Basic::uuid), "regular",       -1},
-        {"tokens",                  type::create_set(type::Basic::text),    "regular",    -1},
+        {"schema_version",          type::create_basic(type::Basic::uuid),                     "regular", -1},
+        {"tokens",                  type::create_set(type::Basic::text),                         "regular", -1},
+        {"extensions",              type::create_map(type::Basic::text, type::Basic::blob),      "regular", -1},
     };
     static const BuiltinCol sys_peers_cols[] = {
         {"peer",            type::create_basic(type::Basic::inet), "partition_key",  0},
@@ -127,6 +131,7 @@ namespace cql::engine {
         {"read_repair",                 type::create_basic(type::Basic::text),                  "regular",        -1},
         {"read_repair_chance",          type::create_basic(type::Basic::double_),               "regular",        -1},
         {"speculative_retry",           type::create_basic(type::Basic::text),                  "regular",        -1},
+        {"extensions",                  create_map(type::Basic::text, type::Basic::blob),       "regular",        -1},
     };
     static const BuiltinCol ss_columns_cols[] = {
         {"keyspace_name",    type::create_basic(type::Basic::text), "partition_key", 0},
@@ -158,6 +163,7 @@ namespace cql::engine {
         {"read_repair_chance",          type::create_basic(type::Basic::double_),               "regular",       -1},
         {"speculative_retry",           type::create_basic(type::Basic::text),                  "regular",       -1},
         {"where_clause",                type::create_basic(type::Basic::text),                  "regular",       -1},
+        {"extensions",                  create_map(type::Basic::text, type::Basic::blob),       "regular",       -1},
     };
     static const BuiltinCol ss_indexes_cols[] = {
         {"keyspace_name", type::create_basic(type::Basic::text),                  "partition_key", 0},
@@ -165,6 +171,7 @@ namespace cql::engine {
         {"index_name",    type::create_basic(type::Basic::text),                  "clustering",    1},
         {"kind",          type::create_basic(type::Basic::text),                  "regular",      -1},
         {"options",       create_map  (type::Basic::text, type::Basic::text), "regular",      -1},
+        {"extensions",    create_map(type::Basic::text, type::Basic::blob),   "regular",      -1},
     };
     static const BuiltinCol ss_triggers_cols[] = {
         {"keyspace_name", type::create_basic(type::Basic::text),                  "partition_key",  0},
@@ -234,13 +241,16 @@ namespace cql::engine {
         emplace_back(vr.columns, VirtualColumn{"durable_writes", type::create_basic(type::Basic::boolean)});
         emplace_back(vr.columns, VirtualColumn{"replication",    create_map  (type::Basic::text, type::Basic::text)});
 
-        for (auto ks_name : {"system", "system_schema"}) {
+        const char* builtin_keyspaces[] = {"system", "system_schema"};
+        for (auto ks_name : builtin_keyspaces) {
             VirtualRow row;
             emplace_back(row.values, AutoString8(ks_name));
             emplace_back(row.values, U8(1));
-            emplace_back(row.values, DynamicMap<AutoString8, AutoString8>{
-                Pair<AutoString8, AutoString8>{"class"_as, "org.apache.cassandra.locator.LocalStrategy"_as},
-            });
+            {
+                DynamicMap<NestedColumnValue, NestedColumnValue> rep{};
+                insert(rep, ncv("class"_as), ncv("org.apache.cassandra.locator.LocalStrategy"_as));
+                emplace_back(row.values, move(rep));
+            }
             emplace_back(vr.rows, move(row));
         }
 
@@ -249,10 +259,12 @@ namespace cql::engine {
             VirtualRow row;
             emplace_back(row.values, AutoString8(ks.name));
             emplace_back(row.values, U8(1));
-            emplace_back(row.values, DynamicMap<AutoString8, AutoString8>{
-                Pair<AutoString8, AutoString8>{"class"_as,              "SimpleStrategy"_as},
-                Pair<AutoString8, AutoString8>{"replication_factor"_as, "1"_as},
-            });
+            {
+                DynamicMap<NestedColumnValue, NestedColumnValue> rep{};
+                insert(rep, ncv("class"_as),              ncv("SimpleStrategy"_as));
+                insert(rep, ncv("replication_factor"_as), ncv("1"_as));
+                emplace_back(row.values, move(rep));
+            }
             emplace_back(vr.rows, move(row));
         }
 
@@ -283,6 +295,7 @@ namespace cql::engine {
         emplace_back(vr.columns, VirtualColumn{"read_repair",                 type::create_basic(type::Basic::text)});
         emplace_back(vr.columns, VirtualColumn{"read_repair_chance",          type::create_basic(type::Basic::double_)});
         emplace_back(vr.columns, VirtualColumn{"speculative_retry",           type::create_basic(type::Basic::text)});
+        emplace_back(vr.columns, VirtualColumn{"extensions",                  type::create_map(type::Basic::text, type::Basic::blob)});
 
         for (auto& tbl : builtin_tables) {
             VirtualRow row;
@@ -296,7 +309,7 @@ namespace cql::engine {
             emplace_back(row.values, F64(1.0));
             emplace_back(row.values, F64(0.0));
             emplace_back(row.values, S32(0));
-            emplace_back(row.values, DynamicSet<AutoString8>{"compound"_as});
+            { DynamicSet<NestedColumnValue> s{}; insert(s, ncv("compound"_as)); emplace_back(row.values, move(s)); }
             emplace_back(row.values, S32(864000));
             emplace_back(row.values, table_uuid(String8(tbl.ks), String8(tbl.tbl)));
             emplace_back(row.values, S32(2048));
@@ -305,6 +318,7 @@ namespace cql::engine {
             emplace_back(row.values, "BLOCKING"_as);
             emplace_back(row.values, F64(0.0));
             emplace_back(row.values, "99PERCENTILE"_as);
+            emplace_back(row.values, DynamicMap<NestedColumnValue, NestedColumnValue>{});
             emplace_back(vr.rows, move(row));
         }
 
@@ -323,7 +337,7 @@ namespace cql::engine {
                 emplace_back(row.values, F64(1.0));
                 emplace_back(row.values, F64(0.0));
                 emplace_back(row.values, S32(0));
-                emplace_back(row.values, DynamicSet<AutoString8>{"compound"_as});
+                { DynamicSet<NestedColumnValue> s{}; insert(s, ncv("compound"_as)); emplace_back(row.values, move(s)); }
                 emplace_back(row.values, S32(864000));
                 emplace_back(row.values, table_uuid(ks.name, tbl.name));
                 emplace_back(row.values, S32(2048));
@@ -332,6 +346,7 @@ namespace cql::engine {
                 emplace_back(row.values, "BLOCKING"_as);
                 emplace_back(row.values, F64(0.0));
                 emplace_back(row.values, "99PERCENTILE"_as);
+                emplace_back(row.values, DynamicMap<NestedColumnValue, NestedColumnValue>{});
                 emplace_back(vr.rows, move(row));
             }
         }
@@ -421,6 +436,7 @@ namespace cql::engine {
         emplace_back(vr.columns, VirtualColumn{"read_repair_chance",          type::create_basic(type::Basic::double_)});
         emplace_back(vr.columns, VirtualColumn{"speculative_retry",           type::create_basic(type::Basic::text)});
         emplace_back(vr.columns, VirtualColumn{"where_clause",                type::create_basic(type::Basic::text)});
+        emplace_back(vr.columns, VirtualColumn{"extensions",                  type::create_map(type::Basic::text, type::Basic::blob)});
 
         // @todo support materialized views
         (void)schema;
@@ -437,6 +453,7 @@ namespace cql::engine {
         emplace_back(vr.columns, VirtualColumn{"index_name",    type::create_basic(type::Basic::text)});
         emplace_back(vr.columns, VirtualColumn{"kind",          type::create_basic(type::Basic::text)});
         emplace_back(vr.columns, VirtualColumn{"options",       type::create_map(type::Basic::text, type::Basic::text)});
+        emplace_back(vr.columns, VirtualColumn{"extensions",    type::create_map(type::Basic::text, type::Basic::blob)});
 
         // @todo secondary indexes
         (void)schema;
@@ -550,7 +567,8 @@ namespace cql::engine {
         emplace_back(vr.columns, VirtualColumn{"rpc_address", type::create_basic(type::Basic::inet)});
         emplace_back(vr.columns, VirtualColumn{"rpc_port", type::create_basic(type::Basic::int_)});
         emplace_back(vr.columns, VirtualColumn{"schema_version", type::create_basic(type::Basic::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"tokens", type::create_set(type::Basic::text)});
+        emplace_back(vr.columns, VirtualColumn{"tokens",         type::create_set(type::Basic::text)});
+        emplace_back(vr.columns, VirtualColumn{"extensions",     type::create_map(type::Basic::text, type::Basic::blob)});
 
         auto create_loopback_ipv4 = []() {
             Blob b;
@@ -570,14 +588,15 @@ namespace cql::engine {
         emplace_back(row.values, UUID{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}});
         emplace_back(row.values, create_loopback_ipv4());  // listen_address
         emplace_back(row.values, S32(7000));
-        emplace_back(row.values, "4"_as);
+        emplace_back(row.values, "5"_as);
         emplace_back(row.values, "org.apache.cassandra.dht.Murmur3Partitioner"_as);
         emplace_back(row.values, "rack1"_as);
         emplace_back(row.values, "3.11.19"_as); // @note last version in 3.x, before system_virtual
         emplace_back(row.values, create_loopback_ipv4());  // rpc_address
         emplace_back(row.values, S32(9042));
         emplace_back(row.values, UUID{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}});
-        emplace_back(row.values, DynamicSet<AutoString8>{{"0"_as}});
+        { DynamicSet<NestedColumnValue> s{}; insert(s, ncv("0"_as)); emplace_back(row.values, move(s)); }
+        emplace_back(row.values, DynamicMap<NestedColumnValue, NestedColumnValue>{});
         emplace_back(vr.rows, move(row));
 
         return vr;

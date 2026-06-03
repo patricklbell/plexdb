@@ -302,11 +302,11 @@ export namespace plexdb {
             if constexpr (SameAs<T, cql::type::Basic>)
                 return AutoString8(to_str(v));
             else if constexpr (SameAs<T, cql::type::List>)
-                return "list["_as + to_str(v.element) + "]";
+                return "list<"_as + to_str(v.element) + ">";
             else if constexpr (SameAs<T, cql::type::Set>)
-                return "set["_as + to_str(v.key) + "]";
+                return "set<"_as + to_str(v.key) + ">";
             else if constexpr (SameAs<T, cql::type::Map>)
-                return "map["_as + to_str(v.key) + ", " + to_str(v.value) + "]";
+                return "map<"_as + to_str(v.key) + ", " + to_str(v.value) + ">";
             else {
                 static_assert(SameAs<T, cql::type::Vector>, "unhandled Type variant in to_str");
                 return "vector["_as + to_str(v.element) + "]";

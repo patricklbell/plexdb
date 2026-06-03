@@ -342,10 +342,17 @@ namespace cql::schema {
                     return {Error::InvalidOptions, "replication factor should be an integer"};
                 }
                 const auto& value_constant = get<Constant>(value_term.value);
-                if (!type_matches_tag<S64>(value_constant.value)) {
+                S64 value = 0;
+                if (type_matches_tag<S64>(value_constant.value)) {
+                    value = get<S64>(value_constant.value);
+                } else if (type_matches_tag<AutoString8>(value_constant.value)) {
+                    value = s64_from_str(get<AutoString8>(value_constant.value));
+                    if (value == 0) {
+                        return {Error::InvalidOptions, "replication factor should be an integer"};
+                    }
+                } else {
                     return {Error::InvalidOptions, "replication factor should be an integer"};
                 }
-                const auto& value = get<S64>(value_constant.value);
 
                 if (value <= 0) {
                     return {Error::InvalidOptions, "replication factor must be strictly positive"};
