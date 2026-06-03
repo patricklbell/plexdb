@@ -219,8 +219,8 @@ namespace type_codes {
             assert_true(dtype == type::Basic::duration, "Duration value does not match basic type");
             assert_not_implemented("CQL native protocol encoding for duration is not implemented");
             return 0;
-        } else if constexpr (SameAs<TT, NestedColumnValue>) {
-            assert_not_implemented("CQL native protocol encoding for nested collection value is not implemented");
+        } else if constexpr (IsDynamicArray<TT> || IsDynamicSet<TT> || IsDynamicMap<TT> || SameAs<TT, Null>) {
+            assert_not_implemented("CQL native protocol encoding for nested collection or null element is not implemented");
             return 0;
         } else {
             static_assert(!SameAs<TT,TT>, "missing basic value type");
@@ -369,8 +369,8 @@ namespace type_codes {
             assert_not_implemented("CQL native protocol encoding for decimal is not implemented");
         } else if constexpr (SameAs<TT, Duration>) {
             assert_not_implemented("CQL native protocol encoding for duration is not implemented");
-        } else if constexpr (SameAs<TT, NestedColumnValue>) {
-            assert_not_implemented("CQL native protocol encoding for nested collection value is not implemented");
+        } else if constexpr (IsDynamicArray<TT> || IsDynamicSet<TT> || IsDynamicMap<TT> || SameAs<TT, Null>) {
+            assert_not_implemented("CQL native protocol encoding for nested collection or null element is not implemented");
         } else {
             static_assert(!SameAs<TT, TT>, "unsupported static type");
         }
@@ -452,14 +452,15 @@ namespace type_codes {
 
     // Defined in native.cpp; explicitly instantiated for (5,true), (5,false), (4,false).
     template<U8 Version, bool Compressed>
-    coroutine::Task<void> frame_handler(Engine& engine, const tcp::Request& req, const U8* header, const U8* body, S32 body_length);
+    coroutine::Task<void> frame_handler(Engine& engine, const tcp::Request& req, const U8* header, const U8* body, S32 body_length, AutoString8& conn_keyspace);
 
-    extern template coroutine::Task<void> frame_handler<5u, true> (Engine&, const tcp::Request&, const U8*, const U8*, S32);
-    extern template coroutine::Task<void> frame_handler<5u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32);
-    extern template coroutine::Task<void> frame_handler<4u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    extern template coroutine::Task<void> frame_handler<5u, true> (Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
+    extern template coroutine::Task<void> frame_handler<5u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
+    extern template coroutine::Task<void> frame_handler<4u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
 
     template<U8 Version, bool Compressed>
     coroutine::Task<void> post_startup_loop(Engine& engine, const tcp::Request& req) {
+        AutoString8 conn_keyspace{""};
         if constexpr (Version >= 5) {
             DynamicArray<U8> read_buf{};
             DynamicArray<U8> envelope_buf{};
@@ -557,7 +558,7 @@ namespace type_codes {
                     S32 inner_body_len = read_be_s32(p + 5);
                     if (inner_body_len < 0) break;
                     if (p + V4_FRAME_HEADER_BYTE_COUNT + U64(inner_body_len) > end) break;
-                    co_await frame_handler<Version, Compressed>(engine, req, p, p + V4_FRAME_HEADER_BYTE_COUNT, inner_body_len);
+                    co_await frame_handler<Version, Compressed>(engine, req, p, p + V4_FRAME_HEADER_BYTE_COUNT, inner_body_len, conn_keyspace);
                     p += V4_FRAME_HEADER_BYTE_COUNT + inner_body_len;
                 }
             }
@@ -585,7 +586,7 @@ namespace type_codes {
                     if (frame.length < frame_byte_count) break;
                 }
 
-                co_await frame_handler<Version, Compressed>(engine, req, frame.ptr, &frame.ptr[V4_FRAME_HEADER_BYTE_COUNT], body_byte_count);
+                co_await frame_handler<Version, Compressed>(engine, req, frame.ptr, &frame.ptr[V4_FRAME_HEADER_BYTE_COUNT], body_byte_count, conn_keyspace);
 
                 if (frame.length > frame_byte_count) {
                     os::memory_copy(frame.ptr, &frame.ptr[frame_byte_count], frame.length - frame_byte_count);

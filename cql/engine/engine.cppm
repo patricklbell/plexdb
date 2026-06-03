@@ -116,10 +116,16 @@ export namespace cql::engine {
     coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Term>&& bound_values);
     coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values);
 
+    // Per-connection-keyspace overloads: use when multiple connections share an engine
+    coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement, AutoString8& current_keyspace);
+    coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Term>&& bound_values, AutoString8& current_keyspace);
+    coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values, AutoString8& current_keyspace);
+
     // ========================================================================
     // bind variables
     // ========================================================================
     DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement);
+    DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement, String8 current_keyspace);
 
     // ========================================================================
     // prepared statements
@@ -131,7 +137,7 @@ export namespace cql::engine {
         PreparedEntry* entry = nullptr;
     };
 
-    PrepareResult prepare(Engine& engine, String8 query);
+    PrepareResult prepare(Engine& engine, String8 query, String8 current_keyspace);
     PreparedEntry* try_get_prepared(Engine& engine, U64 prepared_id);
 }
 

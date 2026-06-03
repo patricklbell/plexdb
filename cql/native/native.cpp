@@ -129,7 +129,13 @@ namespace cql::native {
                 S64 v = S64(read_be_s32(val));
                 return Constant{.value = v};
             }
-            case type::Basic::blob: case type::Basic::decimal:
+            case type::Basic::blob:{
+                Blob b{};
+                resize(b.value, U64(len));
+                os::memory_copy(b.value.ptr, val, U64(len));
+                return Constant{.value = move(b)};
+            }
+            case type::Basic::decimal:
             case type::Basic::duration: case type::Basic::inet:
             case type::Basic::varint: case type::Basic::hex:{
                 return Constant{.value = AutoString8(val, U64(len))};
@@ -280,7 +286,8 @@ namespace cql::native {
                 (void)keyspace; // @todo pass to engine when per-query keyspace context is supported
             }
             if (flags & 0x0100u) {
-                assert_not_implemented("now_in_seconds is not supported (engine has no TTL support)");
+                log::native_info("now_in_seconds flag set in V5 frame but TTL is not implemented; skipping field");
+                if (p + 4 <= end) p += 4;
             }
         }
 
@@ -432,24 +439,24 @@ namespace cql::native {
                 U64 pair_count = length(v);
                 S32 body = 4;
                 for (auto& it : v) {
-                    body += 4 + basic_element_byte_size(get<type::Basic>(m.key.value), it.first);
-                    body += 4 + basic_element_byte_size(get<type::Basic>(m.value.value), it.second);
+                    visit(it.first.value,  [&](const auto& k)   { body += 4 + basic_element_byte_size(get<type::Basic>(m.key.value),   k); });
+                    visit(it.second.value, [&](const auto& val) { body += 4 + basic_element_byte_size(get<type::Basic>(m.value.value), val); });
                 }
                 append_be_s32(f, body);
                 append_be_s32(f, S32(pair_count));
                 for (auto& it : v) {
-                    append_cql_basic_element(f, get<type::Basic>(m.key.value), it.first);
-                    append_cql_basic_element(f, get<type::Basic>(m.value.value), it.second);
+                    visit(it.first.value,  [&](const auto& k)   { append_cql_basic_element(f, get<type::Basic>(m.key.value),   k); });
+                    visit(it.second.value, [&](const auto& val) { append_cql_basic_element(f, get<type::Basic>(m.value.value), val); });
                 }
             } else if constexpr (IsCqlDS<T>) {
                 assert_true(type_matches_tag<type::Set>(cdtype.value), "static value type requires ctype set, this should never happen");
                 const auto key_dtype = get<type::Basic>(get<type::Set>(cdtype.value).key.value);
                 U64 elem_count = length(v);
                 S32 body = 4;
-                for (auto& e : v) body += 4 + basic_element_byte_size(key_dtype, e);
+                for (auto& e : v) visit(e.value, [&](const auto& el) { body += 4 + basic_element_byte_size(key_dtype, el); });
                 append_be_s32(f, body);
                 append_be_s32(f, S32(elem_count));
-                for (auto& e : v) append_cql_basic_element(f, key_dtype, e);
+                for (auto& e : v) visit(e.value, [&](const auto& el) { append_cql_basic_element(f, key_dtype, el); });
             } else if constexpr (IsCqlDA<T>) {
                 bool is_vec = type_matches_tag<type::Vector>(cdtype.value);
                 assert_true(
@@ -460,11 +467,11 @@ namespace cql::native {
                 const auto elem_dtype = is_vec ? get<type::Basic>(get<type::Vector>(cdtype.value).element.value) : get<type::Basic>(get<type::List>(cdtype.value).element.value);
                 S32 body = 4;
                 for (U64 i = 0; i < elem_count; ++i)
-                    body += 4 + basic_element_byte_size(elem_dtype, v[i]);
+                    visit(v[i].value, [&](const auto& el) { body += 4 + basic_element_byte_size(elem_dtype, el); });
                 append_be_s32(f, body);
                 append_be_s32(f, S32(elem_count));
                 for (U64 i = 0; i < elem_count; ++i)
-                    append_cql_basic_element(f, elem_dtype, v[i]);
+                    visit(v[i].value, [&](const auto& el) { append_cql_basic_element(f, elem_dtype, el); });
             } else {
                 static_assert(!SameAs<T, T>, "missing implementation for read value");
             }
@@ -817,7 +824,8 @@ namespace cql::native {
         const tcp::Request& req,
         const U8* header,
         const U8* body,
-        S32 body_length
+        S32 body_length,
+        AutoString8& conn_keyspace
     ) { ZoneScopedN("frame_handler");
         S16 stream  = read_be_s16(header + 2);
         U8  op      = header[4];
@@ -867,10 +875,10 @@ namespace cql::native {
                     break;
                 }
 
-                auto bind_specs   = engine::collect_bind_variables(engine, *cql_opt);
+                auto bind_specs   = engine::collect_bind_variables(engine, *cql_opt, String8(conn_keyspace));
                 auto bound_values = read_query_parameter_values<Version>(p, body_end, bind_specs);
 
-                engine::ExecutionResult result = co_await engine::execute(engine, *cql_opt, move(bound_values));
+                engine::ExecutionResult result = co_await engine::execute(engine, *cql_opt, move(bound_values), conn_keyspace);
                 if (!co_await send_error_if_failed<Version, Compressed>(result, &req, stream))
                     co_await send_execution_result<Version, Compressed>(result, engine, &req, stream);
 
@@ -898,7 +906,7 @@ namespace cql::native {
                     }
                 }
 
-                auto result = engine::prepare(engine, query);
+                auto result = engine::prepare(engine, query, String8(conn_keyspace));
                 if (result.status != engine::ExecutionStatus::Success) {
                     Frame frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
                     String8 msg = result.message.length ? result.message : engine::to_str(result.status);
@@ -941,7 +949,7 @@ namespace cql::native {
 
                 auto bound_values = read_query_parameter_values<Version>(p, body_end, entry->bind_variables);
 
-                engine::ExecutionResult result = co_await engine::execute(engine, prepared_id, move(bound_values));
+                engine::ExecutionResult result = co_await engine::execute(engine, prepared_id, move(bound_values), conn_keyspace);
                 if (!co_await send_error_if_failed<Version, Compressed>(result, &req, stream))
                     co_await send_execution_result<Version, Compressed>(result, engine, &req, stream);
 
@@ -962,7 +970,7 @@ namespace cql::native {
         co_return;
     }
 
-    template coroutine::Task<void> frame_handler<5u, true> (Engine&, const tcp::Request&, const U8*, const U8*, S32);
-    template coroutine::Task<void> frame_handler<5u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32);
-    template coroutine::Task<void> frame_handler<4u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32);
+    template coroutine::Task<void> frame_handler<5u, true> (Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
+    template coroutine::Task<void> frame_handler<5u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
+    template coroutine::Task<void> frame_handler<4u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
 }

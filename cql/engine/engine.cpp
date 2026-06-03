@@ -253,8 +253,8 @@ namespace cql::engine {
         return valid;
     }
 
-    static coroutine::Task<ExecutionResult> execute_inside_transaction(Engine& engine, const Statement& statement, EvalContext ctx) {
-        co_return co_await visit(statement.value, [&engine, ctx](const auto& stmt) -> coroutine::Task<ExecutionResult> {
+    static coroutine::Task<ExecutionResult> execute_inside_transaction(Engine& engine, const Statement& statement, EvalContext ctx, AutoString8& current_keyspace) {
+        co_return co_await visit(statement.value, [&engine, ctx, &current_keyspace](const auto& stmt) -> coroutine::Task<ExecutionResult> {
             using T = RemoveCVRef<decltype(stmt)>;
 
             if constexpr (SameAs<T, CreateKeyspace>) {
@@ -273,7 +273,7 @@ namespace cql::engine {
 
                 co_return create_keyspace_created(stmt.name);
             } else if constexpr (SameAs<T, CreateTable>) {
-                String8 ks_name = static_cast<bool>(stmt.name.keyspace_name) ? String8(*stmt.name.keyspace_name) : engine.current_keyspace;
+                String8 ks_name = static_cast<bool>(stmt.name.keyspace_name) ? String8(*stmt.name.keyspace_name) : current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace CREATE TABLE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value;
@@ -294,15 +294,15 @@ namespace cql::engine {
                 co_return create_table_created(ks_name, stmt.name.table_name);
             } else if constexpr (SameAs<T, UseKeyspace>) {
                 if (is_system_keyspace(stmt.keyspace)) {
-                    engine.current_keyspace = stmt.keyspace;
-                    co_return create_use_keyspace(engine.current_keyspace);
+                    current_keyspace = stmt.keyspace;
+                    co_return create_use_keyspace(current_keyspace);
                 }
 
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace).value;
                 if (ks == nullptr) co_return create_keyspace_not_found(stmt.keyspace);
-                engine.current_keyspace = stmt.keyspace;
+                current_keyspace = stmt.keyspace;
 
-                co_return create_use_keyspace(engine.current_keyspace);
+                co_return create_use_keyspace(current_keyspace);
             } else if constexpr (SameAs<T, AlterKeyspace>) {
                 assert_true_not_implemented(!is_system_keyspace(stmt.keyspace), "system keyspace ALTER KEYSPACE is not implemented");
 
@@ -335,7 +335,7 @@ namespace cql::engine {
 
                 co_return create_schema_changed(stmt.keyspace);
             } else if constexpr (SameAs<T, DropTable>) {
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace DROP TABLE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value;
@@ -350,7 +350,7 @@ namespace cql::engine {
 
                 co_return create_schema_changed(ks_name, stmt.table.table_name);
             } else if constexpr (SameAs<T, TruncateTable>) {
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace TRUNCATE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value;
@@ -363,7 +363,7 @@ namespace cql::engine {
 
                 co_return create_void_success();
             } else if constexpr (SameAs<T, Select>) { ZoneScopedN("engine::select");
-                String8 ks_name = static_cast<bool>(stmt.from.keyspace_name) ? String8(*stmt.from.keyspace_name) : engine.current_keyspace;
+                String8 ks_name = static_cast<bool>(stmt.from.keyspace_name) ? String8(*stmt.from.keyspace_name) : current_keyspace;
 
                 auto system_vr = try_system_select(engine, ks_name, stmt.from.table_name);
                 if (system_vr) {
@@ -387,7 +387,10 @@ namespace cql::engine {
                 assert_true_not_implemented(!stmt.group_by, "GROUP BY is not implemented");
                 assert_true_not_implemented(!stmt.per_partition_limit.value, "PER PARTITION LIMIT is not implemented");
                 assert_true_not_implemented(!stmt.order_by, "ORDER BY is not implemented");
-                assert_true_not_implemented(!stmt.limit.value, "LIMIT is not implemented");
+
+                U64 limit_count = MAX_U64;
+                if (type_matches_tag<S64>(stmt.limit.value))
+                    limit_count = U64(get<S64>(stmt.limit.value));
 
                 bool is_equality = false, is_begin_inclusive = true, is_end_inclusive = true;
                 Optional<Evaluated> pk_begin, pk_end;
@@ -476,6 +479,7 @@ namespace cql::engine {
                         .kind = ResultKind::Rows,
                         .keyspace = ks_name,
                         .table = stmt.from.table_name,
+                        .row_limit_count = limit_count,
                         .rows = RowRange{
                             .start = move(start_it),
                             .stop  = move(stop_it),
@@ -520,6 +524,7 @@ namespace cql::engine {
                     .kind = ResultKind::Rows,
                     .keyspace = ks_name,
                     .table = stmt.from.table_name,
+                    .row_limit_count = limit_count,
                     .rows = RowRange{.start = move(start_it), .stop = move(stop_it)},
                     .resolved_table = tbl,
                     .select_col_indices = move(select_col_indices),
@@ -532,12 +537,12 @@ namespace cql::engine {
                         assert_true(engine.single_node, "INSERT USING TIMESTAMP not supported in non-single-node mode");
                         log::native_info("ignoring INSERT USING TIMESTAMP (single-node no-op)");
                     } else if (param.kind == UpdateParameter::Kind::TTL) {
-                        assert_not_implemented("INSERT USING TTL is not implemented");
+                        co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "INSERT USING TTL is not implemented"};
                     }
                 }
                 assert_true(static_cast<bool>(stmt.insert_clause), "missing insert clause, this should never happen");
 
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace INSERT is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value;
@@ -588,16 +593,13 @@ namespace cql::engine {
 
                         // collect regular (non-static) row bytes into buffer (sync)
                         DynamicArray<U8> row_buffer;
-                        auto write = create_buffer_writer(row_buffer);
-
-                        io::write_column_mask(
-                            write,
-                            [&](U64 col_idx) {
-                                return static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name))
-                                    && !is_static_col(col_idx);
-                            },
-                            tbl->cols.length
-                        );
+                        auto write_fn = create_buffer_writer(row_buffer);
+                        auto write = io::to_writer(write_fn);
+                        auto row_is_active = [&](U64 col_idx) {
+                            return static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name))
+                                && !is_static_col(col_idx);
+                        };
+                        io::write_column_mask(write, io::to_checker(row_is_active), tbl->cols.length);
                         for (U64 ci = 0; ci < tbl->cols.length; ci++) {
                             if (!is_static_col(ci)) {
                                 auto names_idx_opt = try_get_names_idx(tbl->cols[ci].name);
@@ -618,15 +620,13 @@ namespace cql::engine {
                             }
                         }
                         if (any_static_in_insert) {
-                            auto write_static = create_buffer_writer(static_buffer);
-                            io::write_column_mask(
-                                write_static,
-                                [&](U64 col_idx) {
-                                    return is_static_col(col_idx)
-                                        && static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name));
-                                },
-                                tbl->cols.length
-                            );
+                            auto write_static_fn = create_buffer_writer(static_buffer);
+                            auto write_static = io::to_writer(write_static_fn);
+                            auto static_is_active = [&](U64 col_idx) {
+                                return is_static_col(col_idx)
+                                    && static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name));
+                            };
+                            io::write_column_mask(write_static, io::to_checker(static_is_active), tbl->cols.length);
                             for (U64 ci = 0; ci < tbl->cols.length; ci++) {
                                 if (is_static_col(ci)) {
                                     auto names_idx_opt = try_get_names_idx(tbl->cols[ci].name);
@@ -720,12 +720,12 @@ namespace cql::engine {
                         assert_true(engine.single_node, "UPDATE USING TIMESTAMP not supported in non-single-node mode");
                         log::native_info("ignoring UPDATE USING TIMESTAMP (single-node no-op)");
                     } else if (param.kind == UpdateParameter::Kind::TTL) {
-                        assert_not_implemented("UPDATE USING TTL is not implemented");
+                        co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "UPDATE USING TTL is not implemented"};
                     }
                 }
                 assert_true_not_implemented(!stmt.if_, "UPDATE IF is not implemented");
 
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace UPDATE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value;
@@ -806,16 +806,16 @@ namespace cql::engine {
                                 if (io::can_cast_write_evaluated_as_column_value(eval, tbl->cols[idx].type)) {
                                     col_present[idx] = true;
                                     DynamicArray<U8> tmp_buffer;
-                                    auto w = create_buffer_writer(tmp_buffer);
-                                    io::cast_write_evaluated_as_column_value(w, eval, tbl->cols[idx].type);
+                                    auto w_fn = create_buffer_writer(tmp_buffer);
+                                    io::cast_write_evaluated_as_column_value(io::to_writer(w_fn), eval, tbl->cols[idx].type);
                                     U64 read_offset = 0;
-                                    auto r = [&tmp_buffer, &read_offset](U8* out_value, U64 size) -> coroutine::Task<void> {
+                                    auto r_fn = [&tmp_buffer, &read_offset](U8* out_value, U64 size) -> coroutine::Task<void> {
                                         if (out_value != nullptr)
                                             os::memory_copy(out_value, tmp_buffer.ptr + read_offset, size);
                                         read_offset += size;
                                         co_return;
                                     };
-                                    col_values[idx] = co_await io::read_column_value(r, tbl->cols[idx].type);
+                                    col_values[idx] = co_await io::read_column_value(io::to_reader(r_fn), tbl->cols[idx].type);
                                 }
                             }
                         } else if (type_matches_tag<ColumnValue>(eval.value)) {
@@ -831,8 +831,10 @@ namespace cql::engine {
 
                     // write updated row to new blob
                     DynamicArray<U8> row_buffer;
-                    auto write = create_buffer_writer(row_buffer);
-                    io::write_column_mask(write, [&col_present](U64 idx) { return idx < col_present.length && col_present[idx]; }, tbl->cols.length);
+                    auto write_fn = create_buffer_writer(row_buffer);
+                    auto write = io::to_writer(write_fn);
+                    auto updated_present = [&col_present](U64 idx) { return idx < col_present.length && col_present[idx]; };
+                    io::write_column_mask(write, io::to_checker(updated_present), tbl->cols.length);
                     for (U64 ci = 0; ci < tbl->cols.length; ci++) {
                         if (col_present[ci]) {
                             io::write_column_value(write, col_values[ci], tbl->cols[ci].type);
@@ -882,8 +884,10 @@ namespace cql::engine {
                     }
 
                     DynamicArray<U8> row_buffer;
-                    auto write = create_buffer_writer(row_buffer);
-                    io::write_column_mask(write, [&col_present](U64 idx) { return idx < col_present.length && col_present[idx]; }, tbl->cols.length);
+                    auto write_fn = create_buffer_writer(row_buffer);
+                    auto write = io::to_writer(write_fn);
+                    auto new_present = [&col_present](U64 idx) { return idx < col_present.length && col_present[idx]; };
+                    io::write_column_mask(write, io::to_checker(new_present), tbl->cols.length);
                     for (U64 ci = 0; ci < tbl->cols.length; ci++) {
                         if (col_present[ci]) {
                             io::cast_write_evaluated_as_column_value(write, assign_evals[ci], tbl->cols[ci].type);
@@ -904,13 +908,13 @@ namespace cql::engine {
                         assert_true(engine.single_node, "DELETE USING TIMESTAMP not supported in non-single-node mode");
                         log::native_info("ignoring DELETE USING TIMESTAMP (single-node no-op)");
                     } else if (param.kind == UpdateParameter::Kind::TTL) {
-                        assert_not_implemented("DELETE USING TTL is not implemented");
+                        co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "DELETE USING TTL is not implemented"};
                     }
                 }
                 assert_true_not_implemented(!stmt.if_, "DELETE IF is not implemented");
                 assert_true_not_implemented(stmt.selections.length == 0, "column-level DELETE is not implemented");
 
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace DELETE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value;
@@ -944,7 +948,7 @@ namespace cql::engine {
 
                 co_return create_void_success();
             } else if constexpr (SameAs<T, AlterTable>) {
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace ALTER TABLE is not implemented");
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value;
@@ -1010,7 +1014,15 @@ namespace cql::engine {
     coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement) {
         pager::Transaction tx{engine.pager};
         co_await tx.begin();
-        auto result = co_await execute_inside_transaction(engine, statement, EvalContext{});
+        auto result = co_await execute_inside_transaction(engine, statement, EvalContext{}, engine.current_keyspace);
+        co_await tx.commit();
+        co_return result;
+    }
+
+    coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement, AutoString8& current_keyspace) {
+        pager::Transaction tx{engine.pager};
+        co_await tx.begin();
+        auto result = co_await execute_inside_transaction(engine, statement, EvalContext{}, current_keyspace);
         co_await tx.commit();
         co_return result;
     }
@@ -1076,8 +1088,8 @@ namespace cql::engine {
         }
     }
 
-    static void collect_bind_variables_insert(Engine& engine, const Insert& stmt, DynamicArray<BindVariableSpec>& out) {
-        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+    static void collect_bind_variables_insert(Engine& engine, const Insert& stmt, DynamicArray<BindVariableSpec>& out, String8 current_keyspace) {
+        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
         auto ks = schema::read_keyspace(engine.schema, ks_name).value;
         if (ks == nullptr) return;
         auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
@@ -1098,8 +1110,8 @@ namespace cql::engine {
         collect_bind_in_using_params(stmt.using_parameters, out);
     }
 
-    static void collect_bind_variables_update(Engine& engine, const Update& stmt, DynamicArray<BindVariableSpec>& out) {
-        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+    static void collect_bind_variables_update(Engine& engine, const Update& stmt, DynamicArray<BindVariableSpec>& out, String8 current_keyspace) {
+        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
         auto ks = schema::read_keyspace(engine.schema, ks_name).value;
         if (ks == nullptr) return;
         auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
@@ -1116,8 +1128,8 @@ namespace cql::engine {
         collect_bind_in_where(stmt.where, *tbl, out);
     }
 
-    static void collect_bind_variables_delete(Engine& engine, const Delete& stmt, DynamicArray<BindVariableSpec>& out) {
-        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+    static void collect_bind_variables_delete(Engine& engine, const Delete& stmt, DynamicArray<BindVariableSpec>& out, String8 current_keyspace) {
+        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
         auto ks = schema::read_keyspace(engine.schema, ks_name).value;
         if (ks == nullptr) return;
         auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
@@ -1127,8 +1139,8 @@ namespace cql::engine {
         collect_bind_in_where(stmt.where, *tbl, out);
     }
 
-    static void collect_bind_variables_select(Engine& engine, const Select& stmt, DynamicArray<BindVariableSpec>& out) {
-        String8 ks_name = static_cast<bool>(stmt.from.keyspace_name) ? String8(*stmt.from.keyspace_name) : engine.current_keyspace;
+    static void collect_bind_variables_select(Engine& engine, const Select& stmt, DynamicArray<BindVariableSpec>& out, String8 current_keyspace) {
+        String8 ks_name = static_cast<bool>(stmt.from.keyspace_name) ? String8(*stmt.from.keyspace_name) : current_keyspace;
         auto ks = schema::read_keyspace(engine.schema, ks_name).value;
         if (ks == nullptr) return;
         auto tbl = schema::read_table(engine.schema, *ks, stmt.from.table_name).value;
@@ -1144,20 +1156,28 @@ namespace cql::engine {
             emplace_back(out, BindVariableSpec{.name = {}, .type = int_type});
     }
 
-    DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement) {
+    static DynamicArray<BindVariableSpec> collect_bind_variables_with_keyspace(Engine& engine, const Statement& statement, String8 current_keyspace) {
         DynamicArray<BindVariableSpec> result;
         visit(statement.value, [&](const auto& stmt) {
             using T = RemoveCVRef<decltype(stmt)>;
             if constexpr (SameAs<T, Insert>)
-                collect_bind_variables_insert(engine, stmt, result);
+                collect_bind_variables_insert(engine, stmt, result, current_keyspace);
             else if constexpr (SameAs<T, Update>)
-                collect_bind_variables_update(engine, stmt, result);
+                collect_bind_variables_update(engine, stmt, result, current_keyspace);
             else if constexpr (SameAs<T, Delete>)
-                collect_bind_variables_delete(engine, stmt, result);
+                collect_bind_variables_delete(engine, stmt, result, current_keyspace);
             else if constexpr (SameAs<T, Select>)
-                collect_bind_variables_select(engine, stmt, result);
+                collect_bind_variables_select(engine, stmt, result, current_keyspace);
         });
         return result;
+    }
+
+    DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement) {
+        return collect_bind_variables_with_keyspace(engine, statement, String8(engine.current_keyspace));
+    }
+
+    DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement, String8 current_keyspace) {
+        return collect_bind_variables_with_keyspace(engine, statement, current_keyspace);
     }
 
     static void bind_in_term(Term& term, DynamicArray<Term>& bv, U64& idx) {
@@ -1224,7 +1244,18 @@ namespace cql::engine {
                 bind_in_where(s.where, bound_values, idx);
             } else if constexpr (SameAs<T, Select>) {
                 if (static_cast<bool>(s.where)) bind_in_where(*s.where, bound_values, idx);
-                if (type_matches_tag<BindMarker>(s.limit.value)) idx++;
+                if (type_matches_tag<BindMarker>(s.limit.value)) {
+                    if (idx < bound_values.length) {
+                        const auto& bv = bound_values[idx++];
+                        if (type_matches_tag<Constant>(bv.value)) {
+                            const auto& c = get<Constant>(bv.value);
+                            if (type_matches_tag<S64>(c.value))
+                                s.limit.value = get<S64>(c.value);
+                        }
+                    } else {
+                        idx++;
+                    }
+                }
                 if (type_matches_tag<BindMarker>(s.per_partition_limit.value)) idx++;
             }
         });
@@ -1235,10 +1266,15 @@ namespace cql::engine {
         co_return co_await execute(engine, statement);
     }
 
+    coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Term>&& bound_values, AutoString8& current_keyspace) {
+        bind_values_to_statement(statement, bound_values);
+        co_return co_await execute(engine, statement, current_keyspace);
+    }
+
     // ========================================================================
     // prepared statements
     // ========================================================================
-    PrepareResult prepare(Engine& engine, String8 query) { ZoneScopedN("engine::prepare");
+    PrepareResult prepare(Engine& engine, String8 query, String8 current_keyspace) { ZoneScopedN("engine::prepare");
         U64 query_hash = hash(query);
 
         auto* existing = find(engine.prepared_cache, query_hash);
@@ -1253,12 +1289,12 @@ namespace cql::engine {
 
         auto& entry = insert(engine.prepared_cache, query_hash);
         entry.query_string = AutoString8(query);
-        entry.bind_variables = collect_bind_variables(engine, *cql_opt);
+        entry.bind_variables = collect_bind_variables_with_keyspace(engine, *cql_opt, current_keyspace);
 
-        visit(cql_opt->value, [&](const auto& stmt) {
+        visit(cql_opt->value, [&, current_keyspace](const auto& stmt) {
             using T = RemoveCVRef<decltype(stmt)>;
             if constexpr (SameAs<T, Insert>) {
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : engine.current_keyspace;
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
                 entry.keyspace = AutoString8(ks_name);
                 entry.table = AutoString8(stmt.table.table_name);
 
@@ -1295,5 +1331,19 @@ namespace cql::engine {
         }
 
         co_return co_await execute(engine, *cql_opt, move(bound_values));
+    }
+
+    coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values, AutoString8& current_keyspace) {
+        auto* entry = find(engine.prepared_cache, prepared_id);
+        if (entry == nullptr) {
+            co_return ExecutionResult{ .status = ExecutionStatus::Invalid, .message = "Prepared statement not found" };
+        }
+
+        auto cql_opt = parsers::parse(String8(entry->query_string));
+        if (!cql_opt) {
+            co_return ExecutionResult{ .status = ExecutionStatus::ServerError, .message = "Failed to re-parse prepared query" };
+        }
+
+        co_return co_await execute(engine, *cql_opt, move(bound_values), current_keyspace);
     }
 }
