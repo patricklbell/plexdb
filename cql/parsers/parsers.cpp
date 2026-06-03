@@ -849,9 +849,11 @@ namespace cql::parsers {
         // @note no ambiguity so we can define a map literal directly
         struct option_map_literal {
             static constexpr auto rule = [] {
-                return dsl::curly_bracketed(dsl::p<ws> + dsl::p<map_literal_inner> + dsl::p<ws>);
+                auto content = dsl::peek_not(dsl::lit_c<'}'>) >> dsl::p<map_literal_inner>;
+                return dsl::lit_c<'{'> >> dsl::p<ws> + dsl::opt(content) + dsl::p<ws> + dsl::lit_c<'}'>;
             }();
             static constexpr auto value = lexy::callback<MapLiteral>(
+                [](lexy::nullopt) -> MapLiteral { return MapLiteral{}; },
                 [](DynamicArray<Pair<Term, Term>>&& entries) -> MapLiteral { return {.key_values = move(entries)}; }
             );
         };
@@ -997,12 +999,16 @@ namespace cql::parsers {
             }();
             static constexpr auto value = lexy::construct<CreateTable::PrimaryKey>;
         };
+        struct col_leading_comma_opt : lexy::transparent_production {
+            static constexpr auto rule = dsl::opt(dsl::lit_c<','> >> dsl::p<ws>);
+            static constexpr auto value = lexy::noop;
+        };
         struct col_or_pk_el {
-            static constexpr auto rule = dsl::p<primary_key_clause> | dsl::else_ >> dsl::p<column_definition_rule>;
+            static constexpr auto rule = dsl::p<col_leading_comma_opt> + (dsl::p<primary_key_clause> | dsl::else_ >> dsl::p<column_definition_rule>);
             static constexpr auto value = lexy::forward<TaggedUnion<ColumnDefinition, CreateTable::PrimaryKey>>;
         };
         struct col_or_pk_list {
-            static constexpr auto rule = dsl::list(dsl::p<col_or_pk_el>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>));
+            static constexpr auto rule = dsl::list(dsl::p<col_or_pk_el> + dsl::p<ws>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>));
             static constexpr auto value = as_dyn_arr<TaggedUnion<ColumnDefinition, CreateTable::PrimaryKey>>;
         };
         struct column_def_list {
@@ -1030,7 +1036,11 @@ namespace cql::parsers {
 
         using TableOption = decltype(CreateTable::TableOptions::value)::Element;
         struct compact_storage_option {
-            static constexpr auto rule = kw_compact >> dsl::p<ws> + kw_storage;
+            static constexpr auto rule = [] {
+                // Peek "compact" only when followed by non-identifier char (not "compaction" etc.)
+                auto branch = dsl::peek(kw_compact + dsl::peek_not(dsl::ascii::alpha_digit_underscore));
+                return branch >> kw_compact + dsl::p<ws> + kw_storage;
+            }();
             static constexpr auto value = lexy::callback<TableOption>(
                 []() -> TableOption { return TableOption{CreateTable::CompactStorage{}}; }
             );
@@ -1079,7 +1089,7 @@ namespace cql::parsers {
             static constexpr auto value = lexy::forward<TableOption>;
         };
         struct table_options_list {
-            static constexpr auto rule = dsl::list(dsl::p<table_option_el>, dsl::sep(kw_and >> dsl::p<ws>));
+            static constexpr auto rule = dsl::list(dsl::p<table_option_el> + dsl::p<ws>, dsl::sep(kw_and >> dsl::p<ws>));
             static constexpr auto value = as_dyn_arr<TableOption>;
         };
         struct table_with_options {
