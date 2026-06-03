@@ -1,1 +1,0 @@
-Legacy `cassandra-driver` requires `uv sync --no-build-isolation-package cassandra-driver`

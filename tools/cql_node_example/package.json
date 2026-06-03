@@ -1,5 +1,0 @@
-{
-  "dependencies": {
-    "cassandra-driver": "^4.8.0"
-  }
-}
