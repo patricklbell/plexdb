@@ -1,6 +1,8 @@
 module;
 #include <source_location>
+#if PLEXDB_DEBUG
 #include <stacktrace>
+#endif
 #include <plexdb/macros/macros.h>
 
 export module plexdb.coroutine.debug;
@@ -14,7 +16,9 @@ export namespace plexdb::coroutine::debug {
     // Forms a singly-linked list from the innermost running frame to the root.
     struct Frame {
         const char*  function = nullptr;
-        std::string  function_owned;  // owns function name when captured from stacktrace
+#if PLEXDB_DEBUG
+        AutoString8  function_owned;
+#endif
         const char*  file     = nullptr;
         U64          line     = 0;
         Frame*       parent   = nullptr;
@@ -41,14 +45,17 @@ export namespace plexdb::coroutine::debug {
     // and stores the first user frame's description.
     inline void capture_frame_from_stacktrace(Frame& frame) {
         if constexpr (!enabled) return;
+#if PLEXDB_DEBUG
         for (const auto& entry : std::stacktrace::current()) {
-            auto desc = entry.description();
-            if (!desc.empty() && desc.find("plexdb::coroutine") == std::string::npos) {
-                frame.function_owned = std::move(desc);
-                frame.function = frame.function_owned.c_str();
+            auto desc_std = entry.description();
+            String8 desc{desc_std.c_str(), desc_std.size()};
+            if (desc.length > 0 && !contains(desc, "plexdb::coroutine")) {
+                frame.function_owned = AutoString8{desc};
+                frame.function = frame.function_owned.c_str;
                 break;
             }
         }
+#endif
     }
     inline void capture_frame_from_stacktrace(EmptyFrame&) {}
 
@@ -56,7 +63,7 @@ export namespace plexdb::coroutine::debug {
     // are correctly pruned in the discarded branch of if constexpr in base.cppm.
     template<typename F>
     inline void push_frame(F& frame) {
-        if constexpr (!std::is_same_v<F, EmptyFrame>) {
+        if constexpr (!SameAs<F, EmptyFrame>) {
             frame.parent = g_current_frame;
             g_current_frame = &frame;
         }
@@ -64,21 +71,21 @@ export namespace plexdb::coroutine::debug {
 
     template<typename F>
     inline void pop_frame(const F& frame) {
-        if constexpr (!std::is_same_v<F, EmptyFrame>) {
+        if constexpr (!SameAs<F, EmptyFrame>) {
             g_current_frame = frame.parent;
         }
     }
 
     template<typename L>
     inline void save_frame(L& link) {
-        if constexpr (!std::is_same_v<L, EmptyFrame>) {
+        if constexpr (!SameAs<L, EmptyFrame>) {
             link.ptr = g_current_frame;
         }
     }
 
     template<typename L>
     inline void restore_frame(const L& link) {
-        if constexpr (!std::is_same_v<L, EmptyFrame>) {
+        if constexpr (!SameAs<L, EmptyFrame>) {
             g_current_frame = link.ptr;
         }
     }

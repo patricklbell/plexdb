@@ -59,6 +59,18 @@ namespace plexdb {
         return {};
     }
 
+    bool contains(String8 haystack, String8 needle) {
+        if (needle.length > haystack.length) return false;
+        for (U64 i = 0; i <= haystack.length - needle.length; i++) {
+            bool match = true;
+            for (U64 j = 0; j < needle.length; j++) {
+                if (haystack.data[i + j] != needle.data[j]) { match = false; break; }
+            }
+            if (match) return true;
+        }
+        return false;
+    }
+
     AutoString8::AutoString8()
         : c_str(nullptr), length(0) {}
     AutoString8::AutoString8(U64 length)
