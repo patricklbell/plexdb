@@ -56,14 +56,3 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug
           ninja -C build
         working-directory: plugins/log
-
-      - name: Install cql_node_example dependencies
-        run: npm install
-        working-directory: tools/cql_node_example
-
-      - name: Install cql_py_example dependencies
-        run: |
-          curl -Ls https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          uv sync --no-build-isolation-package cassandra-driver
-        working-directory: tools/cql_py_example

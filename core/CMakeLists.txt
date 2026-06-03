@@ -52,6 +52,7 @@ target_sources(plexdb_core
             arena/arena.cppm
             base/base.cppm
             base/containers.cppm
+            base/functor.cppm
             base/math.cppm
             base/string.cppm
             base/types.cppm

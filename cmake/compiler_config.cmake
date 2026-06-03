@@ -16,6 +16,8 @@ if(NOT TARGET plexdb::compiler_config)
         $<$<CXX_COMPILER_ID:Clang>:-Werror>
         $<$<CXX_COMPILER_ID:Clang>:-Wdangling>
         $<$<CXX_COMPILER_ID:Clang>:-fno-rtti>
+        $<$<CXX_COMPILER_ID:Clang>:-fmodules-reduced-bmi>
+        $<$<AND:$<CXX_COMPILER_ID:Clang>,$<BOOL:${PLEXDB_FTIME_TRACE}>>:-ftime-trace>
     )
 
   if(PLEXDB_DISABLE_EXCEPTIONS)
