@@ -7,6 +7,7 @@ import plexdb.dynamic.containers;
 import plexdb.tagged_union;
 import plexdb.dynamic.tagged_union;
 
+import cql.engine.column_value;
 import cql.engine.evaluator;
 import cql.engine.io;
 import cql.engine.statements;
@@ -21,19 +22,26 @@ namespace {
         DynamicArray<U8> data{};
         U64 cursor = 0;
 
-        auto writer() {
-            return [this](const U8* src, U64 size) {
-                for (U64 i = 0; i < size; i++) push_back(data, src[i]);
-            };
-        }
+        struct WriterCallable {
+            Buffer* self;
+            void operator()(const U8* src, U64 size) {
+                for (U64 i = 0; i < size; i++) push_back(self->data, src[i]);
+            }
+        } _wc{nullptr};
 
-        auto reader() {
-            return [this](U8* dst, U64 size) -> coroutine::Task<void> {
-                for (U64 i = 0; i < size; i++) dst[i] = data[cursor + i];
-                cursor += size;
+        struct ReaderCallable {
+            Buffer* self;
+            coroutine::Task<void> operator()(U8* dst, U64 size) {
+                for (U64 i = 0; i < size; i++) dst[i] = self->data[self->cursor + i];
+                self->cursor += size;
                 co_return;
-            };
-        }
+            }
+        } _rc{nullptr};
+
+        Buffer() : _wc{this}, _rc{this} {}
+
+        Writer writer() { return to_writer(_wc); }
+        Reader reader() { return to_reader(_rc); }
     };
 
     Term constant_s64(S64 value) {
@@ -226,10 +234,10 @@ IO_TEST_CASE("evaluator - nested expression evaluation in collection writes", "[
     cast_write_evaluated_as_column_value(buf.writer(), evaluated, type::create_list(type::Basic::bigint), ctx);
 
     auto out = co_await read_column_value(buf.reader(), type::create_list(type::Basic::bigint));
-    REQUIRE(type_matches_tag<DynamicArray<S64>>(out));
-    auto& arr = get<DynamicArray<S64>>(out);
+    REQUIRE(type_matches_tag<DynamicArray<NestedColumnValue>>(out));
+    auto& arr = get<DynamicArray<NestedColumnValue>>(out);
     REQUIRE(arr.length == 3);
-    REQUIRE(arr[0] == 3);
-    REQUIRE(arr[1] == 4);
-    REQUIRE(arr[2] == 0);
+    REQUIRE(get<S64>(arr[0].value) == 3);
+    REQUIRE(get<S64>(arr[1].value) == 4);
+    REQUIRE(get<S64>(arr[2].value) == 0);
 }
