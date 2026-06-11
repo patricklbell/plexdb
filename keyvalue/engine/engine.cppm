@@ -12,7 +12,6 @@ import plexdb.btree;
 import plexdb.btree.types;
 import plexdb.blob;
 import plexdb.pager;
-import plexdb.pager.transaction;
 import plexdb.coroutine;
 import plexdb.tagged_union;
 

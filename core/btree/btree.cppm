@@ -89,13 +89,13 @@ export namespace plexdb::btree {
     // ========================================================================
     template<typename T, BTree BT>
         requires TriviallyCopyable<T>
-    coroutine::Task<void> tinsert(BT& t, BTreeKeyType<BT> key, const T& value) {
+    coroutine::Task<void> tinsert(BT& t, BTreeKeyType<BT> key, T value) {
         co_await insert(t, key, {reinterpret_cast<const U8*>(&value), sizeof(T)});
     }
 
     template<typename T, BTree BT>
         requires TriviallyCopyable<T>
-    coroutine::Task<bool> tupdate(BT& t, BTreeKeyType<BT> key, const T& value) {
+    coroutine::Task<bool> tupdate(BT& t, BTreeKeyType<BT> key, T value) {
         co_return co_await update(t, key, {reinterpret_cast<const U8*>(&value), sizeof(T)});
     }
 

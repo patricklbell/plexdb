@@ -29,7 +29,8 @@ PAGER_TEST_CASE("static blob - update", "[plexdb.blob.paged]") {
         data[i] = 0;
 
     auto pager = create_test_pager(pfile, page_size);
-    pager::begin_transaction(pager);
+    pager::Transaction tx{&pager};
+    co_await tx.begin();
     U64 root_page = co_await create_paged_static(pager, blob_size);
     BlobStaticPaged b; co_await blob::load(b, &pager, root_page, blob_size);
 
@@ -65,7 +66,7 @@ PAGER_TEST_CASE("static blob - update", "[plexdb.blob.paged]") {
                 REQUIRE(read_back[i] == 0);
         }
     }
-    co_await pager::commit_transaction(pager);
+    co_await tx.commit();
     destroy_test_pager(pager);
 }
 
@@ -82,7 +83,8 @@ PAGER_TEST_CASE("static blob - get", "[plexdb.blob.paged]") {
         data[i] = i + 1;
 
     auto pager = create_test_pager(pfile, page_size);
-    pager::begin_transaction(pager);
+    pager::Transaction tx{&pager};
+    co_await tx.begin();
     U64 root_page = co_await create_paged_static(pager, blob_size);
     BlobStaticPaged b; co_await blob::load(b, &pager, root_page, blob_size);
 
@@ -104,7 +106,7 @@ PAGER_TEST_CASE("static blob - get", "[plexdb.blob.paged]") {
             REQUIRE(read_back[i] == data[offset + i]);
         }
     }
-    co_await pager::commit_transaction(pager);
+    co_await tx.commit();
     destroy_test_pager(pager);
 }
 
@@ -117,7 +119,8 @@ PAGER_TEST_CASE("static blob - remove", "[plexdb.blob.paged]") {
     auto pager = create_test_pager(pfile, page_size);
     U64 initial_page_count = pager.header.page_count;
 
-    pager::begin_transaction(pager);
+    pager::Transaction tx{&pager};
+    co_await tx.begin();
     U64 root_page = co_await create_paged_static(pager, blob_size);
     BlobStaticPaged b; co_await blob::load(b, &pager, root_page, blob_size);
 
@@ -129,7 +132,7 @@ PAGER_TEST_CASE("static blob - remove", "[plexdb.blob.paged]") {
 
         REQUIRE(pager.header.page_count == initial_page_count);
     }
-    co_await pager::commit_transaction(pager);
+    co_await tx.commit();
     destroy_test_pager(pager);
 }
 
@@ -142,7 +145,8 @@ PAGER_TEST_CASE("dynamic blob - basic operations", "[plexdb.blob.paged]") {
     U8* data = arena::push_array<U8>(*scratch.arena, 1024);
 
     auto pager = create_test_pager(pfile, page_size);
-    pager::begin_transaction(pager);
+    pager::Transaction tx{&pager};
+    co_await tx.begin();
     U64 root_page = co_await create_paged_dynamic(pager, initial_size);
     BlobDynamicPaged b; co_await blob::load(b, &pager, root_page);
 
@@ -183,7 +187,7 @@ PAGER_TEST_CASE("dynamic blob - basic operations", "[plexdb.blob.paged]") {
                 REQUIRE(read_back[i] == 0);
         }
     }
-    co_await pager::commit_transaction(pager);
+    co_await tx.commit();
     destroy_test_pager(pager);
 }
 
@@ -196,7 +200,8 @@ PAGER_TEST_CASE("dynamic blob - resize up", "[plexdb.blob.paged]") {
     U8* data = arena::push_array<U8>(*scratch.arena, 1024);
 
     auto pager = create_test_pager(pfile, page_size);
-    pager::begin_transaction(pager);
+    pager::Transaction tx{&pager};
+    co_await tx.begin();
     U64 root_page = co_await create_paged_dynamic(pager, initial_size);
     BlobDynamicPaged b; co_await blob::load(b, &pager, root_page);
 
@@ -280,7 +285,7 @@ PAGER_TEST_CASE("dynamic blob - resize up", "[plexdb.blob.paged]") {
         REQUIRE(b.size_bytes == size_for_four_headers);
         REQUIRE(b.header_pages.length == 4);
     }
-    co_await pager::commit_transaction(pager);
+    co_await tx.commit();
     destroy_test_pager(pager);
 }
 
@@ -293,7 +298,8 @@ PAGER_TEST_CASE("dynamic blob - resize down", "[plexdb.blob.paged]") {
     U8* data = arena::push_array<U8>(*scratch.arena, 1024);
 
     auto pager = create_test_pager(pfile, page_size);
-    pager::begin_transaction(pager);
+    pager::Transaction tx{&pager};
+    co_await tx.begin();
     U64 root_page = co_await create_paged_dynamic(pager, initial_size);
     BlobDynamicPaged b; co_await blob::load(b, &pager, root_page);
 
@@ -352,7 +358,7 @@ PAGER_TEST_CASE("dynamic blob - resize down", "[plexdb.blob.paged]") {
         co_await get(b, read_back, new_size);
         REQUIRE(TArrayView(read_back, new_size) == TArrayView(data, new_size));
     }
-    co_await pager::commit_transaction(pager);
+    co_await tx.commit();
     destroy_test_pager(pager);
 }
 
@@ -363,7 +369,8 @@ PAGER_TEST_CASE("dynamic blob - resize edge cases", "[plexdb.blob.paged]") {
 
     threads::Scope scratch = threads::scratch();
     auto pager = create_test_pager(pfile, page_size);
-    pager::begin_transaction(pager);
+    pager::Transaction tx{&pager};
+    co_await tx.begin();
     U64 root_page = co_await create_paged_dynamic(pager, initial_size);
     BlobDynamicPaged b; co_await blob::load(b, &pager, root_page);
 
@@ -405,7 +412,7 @@ PAGER_TEST_CASE("dynamic blob - resize edge cases", "[plexdb.blob.paged]") {
         co_await get(b, read_back, initial_size);
         REQUIRE(TArrayView(read_back, initial_size) == TArrayView(data, initial_size));
     }
-    co_await pager::commit_transaction(pager);
+    co_await tx.commit();
     destroy_test_pager(pager);
 }
 
@@ -418,7 +425,8 @@ PAGER_TEST_CASE("dynamic blob - remove", "[plexdb.blob.paged]") {
     auto pager = create_test_pager(pfile, page_size);
     U64 initial_page_count = pager.header.page_count;
 
-    pager::begin_transaction(pager);
+    pager::Transaction tx{&pager};
+    co_await tx.begin();
     U64 root_page = co_await create_paged_dynamic(pager, blob_size);
     BlobDynamicPaged b; co_await blob::load(b, &pager, root_page);
 
@@ -430,6 +438,6 @@ PAGER_TEST_CASE("dynamic blob - remove", "[plexdb.blob.paged]") {
 
         REQUIRE(pager.header.page_count == initial_page_count);
     }
-    co_await pager::commit_transaction(pager);
+    co_await tx.commit();
     destroy_test_pager(pager);
 }

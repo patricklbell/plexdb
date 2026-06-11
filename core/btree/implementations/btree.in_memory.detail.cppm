@@ -3,7 +3,6 @@ export module plexdb.btree.in_memory.detail;
 import plexdb.base;
 import plexdb.os;
 import plexdb.coroutine;
-import plexdb.pager.transaction;
 
 import plexdb.btree.types;
 import plexdb.btree.policy;

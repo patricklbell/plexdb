@@ -208,6 +208,9 @@ namespace cql::repl {
                         }
                     }
 
+                    if (result.deferred_tx.started_transaction)
+                        co_await result.deferred_tx.commit();
+
                     write_result(ostream, result, row_count);
                 };
 

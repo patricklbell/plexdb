@@ -610,7 +610,7 @@ namespace cql::schema {
 
     coroutine::Task<Result<void>> delete_table(Schema& schema, Keyspace& ks, String8 name) {
         auto tbl_res = read_table_impl(schema, ks, name);
-        if (tbl_res.error != Error::None) {
+        if (tbl_res.error == Error::None) {
             const auto& tbl = tbl_res.value;
             tbl->tombstone = true;
 

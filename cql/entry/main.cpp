@@ -9,7 +9,6 @@ import plexdb.os;
 import plexdb.os.uring;
 import plexdb.tagged_union;
 import plexdb.pager;
-import plexdb.pager.transaction;
 import plexdb.argparse;
 import plexdb.threads;
 import plexdb.arena;
@@ -90,6 +89,7 @@ int main(int argc, char* argv[]) {
         bool db_create = os::file_get_stats(db_file).byte_count == 0;
 
         Engine engine;
+        engine.port = port;
         Pager pager;
 
         auto initialize_database = [&]() -> coroutine::Task<> {
@@ -148,8 +148,19 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
+// @todo
+#if PLEXDB_OS_LINUX
+#include <stdio.h>
+#include <unistd.h>
+#endif
+
 static void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-    println("Assert failed \"", msg, "\" at ", function_name, " in ", file_name, ":", to_str(line_number));
+    // Write to stderr (unbuffered) so the message is visible even when the
+    // process is about to crash via PLEXDB_TRAP.
+    char buf[512];
+    int n = snprintf(buf, sizeof(buf), "Assert failed \"%s\" at %s in %s:%u\n",
+                     msg, function_name, file_name, line_number);
+    if (n > 0) write(2, buf, static_cast<size_t>(n) < sizeof(buf) ? static_cast<size_t>(n) : sizeof(buf) - 1);
 
     #if PLEXDB_DEBUG
         PLEXDB_TRAP;

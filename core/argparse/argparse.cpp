@@ -1,22 +1,29 @@
 module;
 #include <string.h>
-#include <stdio.h>
 #include <plexdb/macros/macros.h>
 
 module plexdb.argparse;
 
 namespace plexdb::argparse {
+    namespace {
+        void str_copy(char* dst, U64 dst_size, const char* src) {
+            String8 view{dst, dst_size - 1};
+            fmt_raw(view, "%s", src);
+            dst[view.length] = '\0';
+        }
+    }
+
     Parser create_parser(const char* prog_name, const char* description) {
         Parser p{};
-        snprintf(p.prog_name,   MAX_NAME_LEN, "%s", prog_name);
-        snprintf(p.description, MAX_DESC_LEN, "%s", description);
+        str_copy(p.prog_name,   MAX_NAME_LEN, prog_name);
+        str_copy(p.description, MAX_DESC_LEN, description);
         return p;
     }
 
     U64 add_positional(Parser& parser, const char* name, const char* description) {
         PositionalDef def{};
-        snprintf(def.name,        MAX_NAME_LEN, "%s", name);
-        snprintf(def.description, MAX_DESC_LEN, "%s", description);
+        str_copy(def.name,        MAX_NAME_LEN, name);
+        str_copy(def.description, MAX_DESC_LEN, description);
         def.optional = false;
         push_back(parser.positionals, def);
         return parser.positionals.cap - 1;
@@ -24,8 +31,8 @@ namespace plexdb::argparse {
 
     U64 add_optional_positional(Parser& parser, const char* name, const char* description) {
         PositionalDef def{};
-        snprintf(def.name,        MAX_NAME_LEN, "%s", name);
-        snprintf(def.description, MAX_DESC_LEN, "%s", description);
+        str_copy(def.name,        MAX_NAME_LEN, name);
+        str_copy(def.description, MAX_DESC_LEN, description);
         def.optional = true;
         push_back(parser.positionals, def);
         return parser.positionals.cap - 1;
@@ -33,19 +40,19 @@ namespace plexdb::argparse {
 
     U64 add_flag(Parser& parser, const char* long_name, const char* short_name, const char* description) {
         FlagDef def{};
-        snprintf(def.long_name,   MAX_NAME_LEN, "%s", long_name);
-        snprintf(def.short_name,  8,            "%s", short_name);
-        snprintf(def.description, MAX_DESC_LEN, "%s", description);
+        str_copy(def.long_name,   MAX_NAME_LEN, long_name);
+        str_copy(def.short_name,  8,            short_name);
+        str_copy(def.description, MAX_DESC_LEN, description);
         push_back(parser.flags, def);
         return parser.flags.cap - 1;
     }
 
     U64 add_option(Parser& parser, const char* long_name, const char* short_name, const char* description, const char* default_value) {
         OptionDef def{};
-        snprintf(def.long_name,     MAX_NAME_LEN,  "%s", long_name);
-        snprintf(def.short_name,    8,             "%s", short_name);
-        snprintf(def.description,   MAX_DESC_LEN,  "%s", description);
-        snprintf(def.default_value, MAX_VALUE_LEN, "%s", default_value);
+        str_copy(def.long_name,     MAX_NAME_LEN,  long_name);
+        str_copy(def.short_name,    8,             short_name);
+        str_copy(def.description,   MAX_DESC_LEN,  description);
+        str_copy(def.default_value, MAX_VALUE_LEN, default_value);
         push_back(parser.options, def);
         return parser.options.cap - 1;
     }
@@ -55,7 +62,7 @@ namespace plexdb::argparse {
         result.ok = true;
 
         for (U64 oi = 0; oi < parser.options.cap; oi++)
-            snprintf(result.option_values[oi], MAX_VALUE_LEN, "%s", parser.options[oi].default_value);
+            str_copy(result.option_values[oi], MAX_VALUE_LEN, parser.options[oi].default_value);
 
         for (int i = 1; i < argc; i++) {
             const char* arg = argv[i];
@@ -73,11 +80,13 @@ namespace plexdb::argparse {
                         (opt.short_name[0] != '\0' && strcmp(arg, opt.short_name) == 0))
                     {
                         if (i + 1 >= argc) {
-                            snprintf(result.error, MAX_DESC_LEN, "%s requires a value", arg);
+                            String8 view{result.error, MAX_DESC_LEN - 1};
+                            fmt_raw(view, "%s requires a value", arg);
+                            result.error[view.length] = '\0';
                             result.ok = false;
                             return result;
                         }
-                        snprintf(result.option_values[oi], MAX_VALUE_LEN, "%s", argv[++i]);
+                        str_copy(result.option_values[oi], MAX_VALUE_LEN, argv[++i]);
                         found = true;
                         break;
                     }
@@ -95,24 +104,30 @@ namespace plexdb::argparse {
                     }
                 }
                 if (!found) {
-                    snprintf(result.error, MAX_DESC_LEN, "unknown option: %s", arg);
+                    String8 view{result.error, MAX_DESC_LEN - 1};
+                    fmt_raw(view, "unknown option: %s", arg);
+                    result.error[view.length] = '\0';
                     result.ok = false;
                     return result;
                 }
             } else {
                 if (result.positional_count >= parser.positionals.cap) {
-                    snprintf(result.error, MAX_DESC_LEN, "unexpected argument: %s", arg);
+                    String8 view{result.error, MAX_DESC_LEN - 1};
+                    fmt_raw(view, "unexpected argument: %s", arg);
+                    result.error[view.length] = '\0';
                     result.ok = false;
                     return result;
                 }
-                snprintf(result.positional_values[result.positional_count], MAX_VALUE_LEN, "%s", arg);
+                str_copy(result.positional_values[result.positional_count], MAX_VALUE_LEN, arg);
                 result.positional_count++;
             }
         }
 
         for (U64 i = result.positional_count; i < parser.positionals.cap; i++) {
             if (!parser.positionals[i].optional) {
-                snprintf(result.error, MAX_DESC_LEN, "missing required argument <%s>", parser.positionals[i].name);
+                String8 view{result.error, MAX_DESC_LEN - 1};
+                fmt_raw(view, "missing required argument <%s>", parser.positionals[i].name);
+                result.error[view.length] = '\0';
                 result.ok = false;
                 break;
             }
@@ -123,63 +138,60 @@ namespace plexdb::argparse {
 
     void print_help(const Parser& parser) {
 #if PLEXDB_OS_WINDOWS
-        printf("Usage: %s", parser.prog_name);
+        print(fmt("Usage: %s", parser.prog_name));
 #else
-        printf("usage: %s", parser.prog_name);
+        print(fmt("usage: %s", parser.prog_name));
 #endif
         for (U64 i = 0; i < parser.positionals.cap; i++) {
             if (parser.positionals[i].optional)
-                printf(" [<%s>]", parser.positionals[i].name);
+                print(fmt(" [<%s>]", parser.positionals[i].name));
             else
-                printf(" <%s>", parser.positionals[i].name);
+                print(fmt(" <%s>", parser.positionals[i].name));
         }
         for (U64 i = 0; i < parser.options.cap; i++) {
-            printf(" [--%s <%s>]", parser.options[i].long_name + 2, parser.options[i].long_name + 2);
+            print(fmt(" [--%s <%s>]", parser.options[i].long_name + 2, parser.options[i].long_name + 2));
         }
         for (U64 i = 0; i < parser.flags.cap; i++) {
-            printf(" [%s]", parser.flags[i].long_name);
+            print(fmt(" [%s]", parser.flags[i].long_name));
         }
-        printf(" [-h]\n");
+        print(" [-h]\n");
 
         if (parser.description[0] != '\0') {
-            printf("\n%s\n", parser.description);
+            print(fmt("\n%s\n", parser.description));
         }
 
         if (parser.positionals.cap > 0) {
-            printf("\nArguments:\n");
+            print("\nArguments:\n");
             for (U64 i = 0; i < parser.positionals.cap; i++) {
-                char display[MAX_NAME_LEN + 4];
-                if (parser.positionals[i].optional)
-                    snprintf(display, sizeof(display), "[<%s>]", parser.positionals[i].name);
-                else
-                    snprintf(display, sizeof(display), "<%s>", parser.positionals[i].name);
-                printf("  %-20s  %s\n", display, parser.positionals[i].description);
+                auto display = parser.positionals[i].optional
+                    ? fmt("[<%s>]", parser.positionals[i].name)
+                    : fmt("<%s>",   parser.positionals[i].name);
+                print(fmt("  %-20s  %s\n", display.c_str, parser.positionals[i].description));
             }
         }
 
         if (parser.options.cap > 0 || parser.flags.cap > 0) {
-            printf("\nOptions:\n");
+            print("\nOptions:\n");
             for (U64 i = 0; i < parser.options.cap; i++) {
                 const OptionDef& opt = parser.options[i];
-                char name_val[MAX_NAME_LEN + 8];
-                snprintf(name_val, sizeof(name_val), "%s <%s>", opt.long_name, opt.long_name + 2);
+                auto name_val = fmt("%s <%s>", opt.long_name, opt.long_name + 2);
                 if (opt.short_name[0] != '\0') {
-                    printf("  %s, %-20s  %s (default: %s)\n", opt.short_name, name_val, opt.description, opt.default_value);
+                    print(fmt("  %s, %-20s  %s (default: %s)\n", opt.short_name, name_val.c_str, opt.description, opt.default_value));
                 } else {
-                    printf("  %-24s  %s (default: %s)\n", name_val, opt.description, opt.default_value);
+                    print(fmt("  %-24s  %s (default: %s)\n", name_val.c_str, opt.description, opt.default_value));
                 }
             }
             for (U64 i = 0; i < parser.flags.cap; i++) {
                 const FlagDef& flag = parser.flags[i];
                 if (flag.short_name[0] != '\0') {
-                    printf("  %s, %-20s  %s\n", flag.short_name, flag.long_name, flag.description);
+                    print(fmt("  %s, %-20s  %s\n", flag.short_name, flag.long_name, flag.description));
                 } else {
-                    printf("  %-24s  %s\n", flag.long_name, flag.description);
+                    print(fmt("  %-24s  %s\n", flag.long_name, flag.description));
                 }
             }
         }
 
-        printf("\n  -h, %-20s  Show this help message\n", "--help");
+        print(fmt("\n  -h, %-20s  Show this help message\n", "--help"));
     }
 
     String8 get_positional(const ParseResult& result, U64 index) {

@@ -179,9 +179,12 @@ PAGER_TEST_CASE("Native protocol STARTUP handshake", "[cql.native]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -210,9 +213,12 @@ PAGER_TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[cql.native]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -244,9 +250,12 @@ PAGER_TEST_CASE("Native protocol CQL DDL and DML operations", "[cql.native]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -317,9 +326,12 @@ PAGER_TEST_CASE("Native protocol error responses", "[cql.native]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -356,9 +368,12 @@ PAGER_TEST_CASE("Native protocol data persists across restarts", "[cql.native]")
     {
         U64 page_size = 4_kb;
         auto pager = create_test_pager(db_file, page_size);
-        pager::begin_transaction(pager);
-        co_await engine::create_database(pager);
-        co_await pager::commit_transaction(pager);
+        {
+            pager::Transaction tx{&pager};
+            co_await tx.begin();
+            co_await engine::create_database(pager);
+            co_await tx.commit();
+        }
         Engine engine;
         co_await engine::init(engine, &pager);
 
@@ -420,9 +435,12 @@ PAGER_TEST_CASE("Native protocol system.local virtual view", "[cql.native]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -477,9 +495,12 @@ PAGER_TEST_CASE("Native protocol system_schema virtual views", "[cql.native]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -566,9 +587,12 @@ PAGER_TEST_CASE("Native protocol collection serialization", "[cql.native]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -608,9 +632,12 @@ PAGER_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -889,9 +916,12 @@ PAGER_TEST_CASE("Native protocol QUERY with bind values", "[cql.native]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -978,9 +1008,12 @@ PAGER_TEST_CASE("Native protocol UPDATE modifies existing row", "[cql.native]") 
     REQUIRE(!os::is_zero_handle(db_file));
 
     auto pager = create_test_pager(db_file, 4_kb);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -1022,9 +1055,12 @@ PAGER_TEST_CASE("Native protocol DELETE removes a row by primary key", "[cql.nat
     REQUIRE(!os::is_zero_handle(db_file));
 
     auto pager = create_test_pager(db_file, 4_kb);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -1068,9 +1104,12 @@ PAGER_TEST_CASE("Native protocol TRUNCATE clears all rows", "[cql.native]") {
     REQUIRE(!os::is_zero_handle(db_file));
 
     auto pager = create_test_pager(db_file, 4_kb);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -1122,9 +1161,12 @@ PAGER_TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cq
         os::Handle db  = os::file_open(db_path);
         os::Handle wal = os::file_open(wal_path);
         auto pager = create_test_pager(db, wal, 4_kb);
-        pager::begin_transaction(pager);
-        co_await engine::create_database(pager);
-        co_await pager::commit_transaction(pager);
+        {
+            pager::Transaction tx{&pager};
+            co_await tx.begin();
+            co_await engine::create_database(pager);
+            co_await tx.commit();
+        }
         Engine eng;
         co_await engine::init(eng, &pager);
 
@@ -1190,9 +1232,12 @@ PAGER_TEST_CASE("Native protocol collection INSERT and SELECT", "[cql.native]") 
     REQUIRE(!os::is_zero_handle(db_file));
 
     auto pager = create_test_pager(db_file, 4_kb);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -1323,9 +1368,12 @@ PAGER_TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]")
         os::Handle db  = os::file_open(db_path);
         os::Handle wal = os::file_open(wal_path);
         auto pager = create_test_pager(db, wal, 4_kb);
-        pager::begin_transaction(pager);
-        co_await engine::create_database(pager);
-        co_await pager::commit_transaction(pager);
+        {
+            pager::Transaction tx{&pager};
+            co_await tx.begin();
+            co_await engine::create_database(pager);
+            co_await tx.commit();
+        }
         Engine eng;
         co_await engine::init(eng, &pager);
 
@@ -1427,9 +1475,12 @@ PAGER_TEST_CASE("Static columns: value shared across clustering rows", "[cql.nat
     REQUIRE(!os::is_zero_handle(db_file));
 
     auto pager = create_test_pager(db_file, 4_kb);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -1484,9 +1535,12 @@ PAGER_TEST_CASE("Static columns: overwrite replaces value partition-wide", "[cql
     REQUIRE(!os::is_zero_handle(db_file));
 
     auto pager = create_test_pager(db_file, 4_kb);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 
@@ -1545,9 +1599,12 @@ PAGER_TEST_CASE("Static columns: persist across reopen", "[cql.native]") {
 
     {
         auto pager = create_test_pager(db_file, wal_file, 4_kb);
-        pager::begin_transaction(pager);
-        co_await engine::create_database(pager);
-        co_await pager::commit_transaction(pager);
+        {
+            pager::Transaction tx{&pager};
+            co_await tx.begin();
+            co_await engine::create_database(pager);
+            co_await tx.commit();
+        }
         Engine engine;
         co_await engine::init(engine, &pager);
 
@@ -1611,9 +1668,12 @@ PAGER_TEST_CASE("Static columns: rejected on table without clustering key", "[cq
     REQUIRE(!os::is_zero_handle(db_file));
 
     auto pager = create_test_pager(db_file, 4_kb);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine engine;
     co_await engine::init(engine, &pager);
 

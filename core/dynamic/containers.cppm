@@ -377,7 +377,7 @@ export namespace plexdb {
     void rehash(DynamicMap<K,V>& map, U64 new_slot_count) {
         assert_true(new_slot_count != 0, "zero rehash not allowed");
 
-        DynamicArray<DynamicArray<Pair<K,V>>> old_slots = map.slots;
+        DynamicArray<DynamicArray<Pair<K,V>>> old_slots = move(map.slots);
 
         DynamicArray<DynamicArray<Pair<K,V>>> new_slots;
         resize(new_slots, new_slot_count);
@@ -388,9 +388,8 @@ export namespace plexdb {
         for (U64 i = 0; i < old_slots.length; i++) {
             DynamicArray<Pair<K,V>>& bucket = old_slots[i];
             for (U64 j = 0; j < bucket.length; j++) {
-                const Pair<K,V>& p = bucket[j];
-                U64 new_idx = hash(p.first) % new_slot_count;
-                push_back(new_slots[new_idx], Pair<K,V>(p.first, p.second));
+                U64 new_idx = hash(bucket[j].first) % new_slot_count;
+                push_back(new_slots[new_idx], plexdb::move(bucket[j]));
             }
         }
 
@@ -476,7 +475,7 @@ export namespace plexdb {
     V& insert(DynamicMap<K,V>& map, KArgs&& key, VArgs&& value) {
         U64 slot_idx, pair_idx;
         if (find_slot_and_pair(map, key, slot_idx, pair_idx)) {
-            map.slots[slot_idx][pair_idx].second = value;
+            map.slots[slot_idx][pair_idx].second = forward<VArgs>(value);
             return map.slots[slot_idx][pair_idx].second;
         }
 
@@ -738,6 +737,33 @@ export namespace plexdb {
             clear(set.slots[i]);
         }
     }
+
+    // ========================================================================
+    // unique_ptr
+    // ========================================================================
+    template<typename T>
+    struct UniquePtr {
+        T* ptr = nullptr;
+
+        UniquePtr() = default;
+        explicit UniquePtr(T* p) : ptr(p) {}
+        UniquePtr(UniquePtr&& other) noexcept : ptr(other.ptr) { other.ptr = nullptr; }
+        UniquePtr& operator=(UniquePtr&& other) noexcept {
+            if (this != &other) {
+                if (ptr) { ptr->~T(); os::deallocate(ptr); }
+                ptr = other.ptr;
+                other.ptr = nullptr;
+            }
+            return *this;
+        }
+        UniquePtr(const UniquePtr&)            = delete;
+        UniquePtr& operator=(const UniquePtr&) = delete;
+        ~UniquePtr() { if (ptr) { ptr->~T(); os::deallocate(ptr); } }
+
+        T& operator*()  const noexcept { return *ptr; }
+        T* operator->() const noexcept { return ptr; }
+        explicit operator bool() const noexcept { return ptr != nullptr; }
+    };
 
     // ========================================================================
     // types

@@ -93,7 +93,6 @@ target_sources(plexdb_core
             os/uring.cppm
             pager/pager.cppm
             pager/pager.types.cppm
-            pager/pager.transaction.cppm
             pager/pager.wal.cppm
             plugin/plugin.cppm
             shard/shard.cppm
@@ -123,7 +122,6 @@ target_sources(plexdb_core
         os/time.cpp
         os/uring.cpp
         pager/pager.cpp
-        pager/pager.transaction.cpp
         pager/pager.wal.cpp
         plugin/plugin.cpp
         tcp/tcp.types.cpp

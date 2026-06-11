@@ -123,8 +123,9 @@ TEST_CASE("stat registration fires stat_meta", "[plexdb.plugin]") {
     Producer p{"test_meta"};
     Stat s{&p, "requests_per_sec"};
 
+    auto meta_before = tc.meta_count;
     stat(s, 42);
-    CHECK(tc.meta_count == 1);
+    CHECK(tc.meta_count == meta_before + 1);
     CHECK(tc.last_meta_producer == p.id);
     CHECK(tc.last_meta_stat_id == s.id);
     CHECK(String8(tc.last_meta_name) == "requests_per_sec");

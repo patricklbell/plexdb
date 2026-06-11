@@ -83,6 +83,7 @@ namespace plexdb::wal {
 
     coroutine::Task<U64> append_frame(Wal& wal, aio::FileIOContext& ctx, U64 page_idx, const U8* data) {
         assert_true(!os::is_zero_handle(wal.file), "wal::append_frame requires valid file handle");
+        assert_true(wal.header.frame_count < MAX_U64, "wal::append_frame: frame_count would overflow");
 
         U64 frame_idx = wal.header.frame_count;
         U64 offset = frame_offset(wal, frame_idx);

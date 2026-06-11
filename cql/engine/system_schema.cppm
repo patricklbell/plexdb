@@ -22,7 +22,7 @@ export namespace cql::engine {
     VirtualRows create_schema_functions(schema::Schema& schema);
     VirtualRows create_schema_aggregates(schema::Schema& schema);
 
-    VirtualRows create_system_local();
+    VirtualRows create_system_local(U16 port);
     VirtualRows create_system_peers();
     VirtualRows create_system_peers_v2();
 }

@@ -1,3 +1,5 @@
+module;
+#include <coroutine>
 export module plexdb.pager;
 
 import plexdb.pager.wal;
@@ -5,41 +7,32 @@ import plexdb.pager.types;
 
 import plexdb.base;
 import plexdb.os;
-import plexdb.arena;
 import plexdb.aio;
 import plexdb.coroutine;
 
 export namespace plexdb::pager {
-    struct PageCache {
-        static constexpr U64 EMPTY = 0;  // @note page 0 is always invalid
-        struct Slot {
-            U64 key;
-            U8* data;
-            bool dirty;
-        };
-        Slot* slots      = nullptr;  // @note arena-allocated; invalidated when arena is cleared
-        U64   slot_count = 0;
-        U64   count      = 0;
+    struct PageCacheEntry {
+        UniquePtr<U8> data;
+        bool          dirty = false;
     };
 
     struct Pager {
         aio::FileIOContext* file_io_ctx = nullptr;
 
         static constexpr U64 alignment = sizeof(U64);
-        os::Handle file = os::zero_handle();
-        U64 base_offset = 0;
+        os::Handle file        = os::zero_handle();
+        U64        base_offset = 0;
 
-        Header header = {};
+        Header header       = {};
         Header saved_header = {};
         bool header_in_write_set = false;
         bool transaction_active  = false;
+        Deque<std::coroutine_handle<>> tx_waiters;
 
-        // Checkpoint every N committed transactions; 0 checkpoints after every commit.
-        U64 checkpoint_interval     = 0;
-        U64 wal_transaction_count   = 0;
+        U64 checkpoint_interval   = 0;
+        U64 wal_transaction_count = 0;
 
-        Arena page_cache_arena;
-        PageCache page_cache;
+        DynamicMap<U64, PageCacheEntry> page_cache;
 
         // @note optional
         Wal wal;
@@ -68,10 +61,6 @@ export namespace plexdb::pager {
     // flush pending writes and mark pager as closed
     coroutine::Task<> destroy(Pager& pager);
 
-    // transaction lifecycle
-    void              begin_transaction(Pager& pager);
-    coroutine::Task<> commit_transaction(Pager& pager);
-    void              rollback_transaction(Pager& pager);
     coroutine::Task<> checkpoint(Pager& pager);
 
     // @note require an active transaction
@@ -82,6 +71,27 @@ export namespace plexdb::pager {
 
     coroutine::Task<U64>        new_page(Pager& pager);
     coroutine::Task<>           delete_page(Pager& pager, U64 idx);
+
+    // ========================================================================
+    // Transaction RAII
+    // ========================================================================
+    struct Transaction {
+        bool   started_transaction = false;
+        Pager* p                   = nullptr;
+
+        Transaction();
+        explicit Transaction(Pager* in_pager);
+        Transaction(Transaction&&);
+        Transaction& operator=(Transaction&&);
+        ~Transaction();
+
+        Transaction(const Transaction&)            = delete;
+        Transaction& operator=(const Transaction&) = delete;
+
+        coroutine::Task<> begin();
+        coroutine::Task<> commit();
+        void              rollback();  // synchronous; used by destructor and explicit rollback callers
+    };
 }
 
 export namespace plexdb {

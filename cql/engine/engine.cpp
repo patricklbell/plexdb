@@ -6,7 +6,6 @@ module cql.engine;
 
 import plexdb.os;
 import plexdb.dynamic.tagged_union;
-import plexdb.pager.transaction;
 
 import cql.parsers;
 import cql.log;
@@ -21,9 +20,10 @@ namespace cql::engine {
 
         U64 schema_page = in_pager->header.root_page;
         assert_true(schema_page != MAX_U64, "root page is empty, database is corrupted");
-        pager::begin_transaction(*in_pager);
+        pager::Transaction tx{in_pager};
+        co_await tx.begin();
         co_await schema::load(engine.schema, in_pager, schema_page);
-        co_await pager::commit_transaction(*in_pager);
+        co_await tx.commit();
     }
 
     coroutine::Task<void> create_database(Pager& pager) {
@@ -43,7 +43,7 @@ namespace cql::engine {
     // @todo in cassandra the schema is stored in the database directly, this is probably a good idea in future
     Optional<VirtualRows> try_system_select(Engine& engine, String8 keyspace, String8 table) {
         if (keyspace == "system") {
-            if (table == "local")     return create_system_local();
+            if (table == "local")     return create_system_local(engine.port);
             if (table == "peers")     return create_system_peers();
             if (table == "peers_v2")  return create_system_peers_v2();
         }
@@ -76,7 +76,7 @@ namespace cql::engine {
         return {
             .status = ExecutionStatus::AlreadyExists,
             .message = "Keyspace already exists",
-            .keyspace = keyspace_name,
+            .keyspace = AutoString8(keyspace_name),
         };
     }
     static ExecutionResult create_keyspace_created(const String8& keyspace_name) {
@@ -84,33 +84,33 @@ namespace cql::engine {
             .status = ExecutionStatus::Success,
             .kind = ResultKind::SchemaChange,
             .message = "CREATED",
-            .keyspace = keyspace_name,
+            .keyspace = AutoString8(keyspace_name),
         };
     }
     static ExecutionResult create_keyspace_not_found(const String8& keyspace_name) {
         return {
             .status = ExecutionStatus::Invalid,
             .message = "Keyspace does not exist",
-            .keyspace = keyspace_name,
+            .keyspace = AutoString8(keyspace_name),
         };
     }
     static ExecutionResult create_use_keyspace(const String8& keyspace_name) {
-        return {.status = ExecutionStatus::Success, .kind = ResultKind::UseKeyspace, .keyspace = keyspace_name};
+        return {.status = ExecutionStatus::Success, .kind = ResultKind::UseKeyspace, .keyspace = AutoString8(keyspace_name)};
     }
     static ExecutionResult create_table_already_exists(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::AlreadyExists,
             .message = "Table already exists",
-            .keyspace = keyspace_name,
-            .table = table_name,
+            .keyspace = AutoString8(keyspace_name),
+            .table = AutoString8(table_name),
         };
     }
     static ExecutionResult create_table_not_found(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::Invalid,
             .message = "Table does not exist",
-            .keyspace = keyspace_name,
-            .table = table_name,
+            .keyspace = AutoString8(keyspace_name),
+            .table = AutoString8(table_name),
         };
     }
     static ExecutionResult create_table_created(const String8& keyspace_name, const String8& table_name) {
@@ -118,79 +118,79 @@ namespace cql::engine {
             .status = ExecutionStatus::Success,
             .kind = ResultKind::SchemaChange,
             .message = "CREATED",
-            .keyspace = keyspace_name,
-            .table = table_name,
+            .keyspace = AutoString8(keyspace_name),
+            .table = AutoString8(table_name),
         };
     }
     static ExecutionResult create_schema_changed(const String8& keyspace_name) {
         return {
             .status = ExecutionStatus::Success,
             .kind = ResultKind::SchemaChange,
-            .keyspace = keyspace_name,
+            .keyspace = AutoString8(keyspace_name),
         };
     }
     static ExecutionResult create_schema_changed(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::Success,
             .kind = ResultKind::SchemaChange,
-            .keyspace = keyspace_name,
-            .table = table_name,
+            .keyspace = AutoString8(keyspace_name),
+            .table = AutoString8(table_name),
         };
     }
     static ExecutionResult create_insert_column_does_not_match_value_count(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::Invalid,
             .message = "Column count does not match value count",
-            .keyspace = keyspace_name,
-            .table = table_name,
+            .keyspace = AutoString8(keyspace_name),
+            .table = AutoString8(table_name),
         };
     }
     static ExecutionResult create_insert_into_deleted_column(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::Invalid,
             .message = "Cannot insert into deleted column",
-            .keyspace = keyspace_name,
-            .table = table_name,
+            .keyspace = AutoString8(keyspace_name),
+            .table = AutoString8(table_name),
         };
     }
     [[maybe_unused]] static ExecutionResult create_insert_into_unknown_column(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::Invalid,
             .message = "Too many values or unknown column",
-            .keyspace = keyspace_name,
-            .table = table_name,
+            .keyspace = AutoString8(keyspace_name),
+            .table = AutoString8(table_name),
         };
     }
     static ExecutionResult create_insert_incompatible_literal(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::Invalid,
             .message = "Incompatible literal for column type",
-            .keyspace = keyspace_name,
-            .table = table_name,
+            .keyspace = AutoString8(keyspace_name),
+            .table = AutoString8(table_name),
         };
     }
     static ExecutionResult create_insert_missing_pk(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::Invalid,
             .message = "Insert is missing a value for a primary key",
-            .keyspace = keyspace_name,
-            .table = table_name,
+            .keyspace = AutoString8(keyspace_name),
+            .table = AutoString8(table_name),
         };
     }
     static ExecutionResult create_insert_missing_ck(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::Invalid,
             .message = "Insert is missing a value for a clustering key",
-            .keyspace = keyspace_name,
-            .table = table_name,
+            .keyspace = AutoString8(keyspace_name),
+            .table = AutoString8(table_name),
         };
     }
     static ExecutionResult create_where_invalid_type(const String8& keyspace_name, const String8& table_name) {
         return {
             .status = ExecutionStatus::Invalid,
             .message = "Invalid type",
-            .keyspace = keyspace_name,
-            .table = table_name,
+            .keyspace = AutoString8(keyspace_name),
+            .table = AutoString8(table_name),
         };
     }
 
@@ -370,8 +370,8 @@ namespace cql::engine {
                     co_return ExecutionResult{
                         .status = ExecutionStatus::Success,
                         .kind = ResultKind::VirtualRows,
-                        .keyspace = ks_name,
-                        .table = stmt.from.table_name,
+                        .keyspace = AutoString8(ks_name),
+                        .table = AutoString8(stmt.from.table_name),
                         .virtual_rows = move(system_vr),
                     };
                 }
@@ -474,11 +474,13 @@ namespace cql::engine {
                     DynamicArray<U8> pk_bytes = key::serialize_partition_single(*tbl, *pk_begin);
                     auto start_it = co_await create_table_eq_it(engine.pager, tbl, pk_bytes);
                     auto stop_it  = create_table_end_it(engine.pager, tbl);
+                    if (start_it != stop_it)
+                        stop_it = co_await create_table_le_it(engine.pager, tbl, pk_bytes);
                     co_return ExecutionResult{
                         .status = ExecutionStatus::Success,
                         .kind = ResultKind::Rows,
-                        .keyspace = ks_name,
-                        .table = stmt.from.table_name,
+                        .keyspace = AutoString8(ks_name),
+                        .table = AutoString8(stmt.from.table_name),
                         .row_limit_count = limit_count,
                         .rows = RowRange{
                             .start = move(start_it),
@@ -522,8 +524,8 @@ namespace cql::engine {
                 co_return ExecutionResult{
                     .status = ExecutionStatus::Success,
                     .kind = ResultKind::Rows,
-                    .keyspace = ks_name,
-                    .table = stmt.from.table_name,
+                    .keyspace = AutoString8(ks_name),
+                    .table = AutoString8(stmt.from.table_name),
                     .row_limit_count = limit_count,
                     .rows = RowRange{.start = move(start_it), .stop = move(stop_it)},
                     .resolved_table = tbl,
@@ -1015,7 +1017,11 @@ namespace cql::engine {
         pager::Transaction tx{engine.pager};
         co_await tx.begin();
         auto result = co_await execute_inside_transaction(engine, statement, EvalContext{}, engine.current_keyspace);
-        co_await tx.commit();
+        if (result.kind == ResultKind::Rows && result.status == ExecutionStatus::Success) {
+            result.deferred_tx = move(tx);
+        } else {
+            co_await tx.commit();
+        }
         co_return result;
     }
 
@@ -1023,7 +1029,11 @@ namespace cql::engine {
         pager::Transaction tx{engine.pager};
         co_await tx.begin();
         auto result = co_await execute_inside_transaction(engine, statement, EvalContext{}, current_keyspace);
-        co_await tx.commit();
+        if (result.kind == ResultKind::Rows && result.status == ExecutionStatus::Success) {
+            result.deferred_tx = move(tx);
+        } else {
+            co_await tx.commit();
+        }
         co_return result;
     }
 

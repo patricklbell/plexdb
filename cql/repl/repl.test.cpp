@@ -81,9 +81,12 @@ PAGER_TEST_CASE("REPL create keyspace and table", "[cql.repl]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine eng;
     co_await engine::init(eng, &pager);
 
@@ -102,9 +105,12 @@ PAGER_TEST_CASE("REPL insert and select", "[cql.repl]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine eng;
     co_await engine::init(eng, &pager);
 
@@ -126,9 +132,12 @@ PAGER_TEST_CASE("REPL reports parse error gracefully", "[cql.repl]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine eng;
     co_await engine::init(eng, &pager);
 
@@ -143,9 +152,12 @@ PAGER_TEST_CASE("REPL displays column headers on SELECT", "[cql.repl]") {
 
     U64 page_size = 4_kb;
     auto pager = create_test_pager(db_file, page_size);
-    pager::begin_transaction(pager);
-    co_await engine::create_database(pager);
-    co_await pager::commit_transaction(pager);
+    {
+        pager::Transaction tx{&pager};
+        co_await tx.begin();
+        co_await engine::create_database(pager);
+        co_await tx.commit();
+    }
     Engine eng;
     co_await engine::init(eng, &pager);
 

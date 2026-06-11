@@ -10,36 +10,33 @@ import plexdb.btree.policy;
 export namespace plexdb::btree {
     template<KeyPolicy KP, ValuePolicy VP>
     struct IteratorImpl {
-        U8*         leaf_buf  = nullptr;  // owned copy of current leaf page; null = end
-        const Node* leaf      = nullptr;  // points into leaf_buf
-        NodeRef     ref       = 0;
-        CountType   idx       = 0;
-        SizeType    node_size = 0;
+        UniquePtr<U8> leaf_buf{};         // owned copy of current leaf page; null = end
+        const Node*   leaf      = nullptr;  // points into leaf_buf.ptr
+        NodeRef       ref       = 0;
+        CountType     idx       = 0;
+        SizeType      node_size = 0;
         [[no_unique_address]] KP kp{};
         [[no_unique_address]] VP vp{};
 
         IteratorImpl() = default;
 
         IteratorImpl(IteratorImpl&& o) noexcept
-            : leaf_buf(o.leaf_buf), leaf(o.leaf), ref(o.ref), idx(o.idx),
+            : leaf_buf(plexdb::move(o.leaf_buf)), leaf(o.leaf), ref(o.ref), idx(o.idx),
               node_size(o.node_size), kp(o.kp), vp(o.vp) {
-            o.leaf_buf = nullptr;
-            o.leaf     = nullptr;
+            o.leaf = nullptr;
         }
 
         IteratorImpl& operator=(IteratorImpl&& o) noexcept {
             if (this != &o) {
-                os::deallocate(leaf_buf);
-                leaf_buf  = o.leaf_buf;  leaf = o.leaf;
-                ref       = o.ref;       idx  = o.idx;
-                node_size = o.node_size; kp   = o.kp; vp = o.vp;
-                o.leaf_buf = nullptr;
-                o.leaf     = nullptr;
+                leaf_buf  = plexdb::move(o.leaf_buf); leaf = o.leaf;
+                ref       = o.ref;                    idx  = o.idx;
+                node_size = o.node_size; kp = o.kp;  vp   = o.vp;
+                o.leaf    = nullptr;
             }
             return *this;
         }
 
-        ~IteratorImpl() { os::deallocate(leaf_buf); }
+        ~IteratorImpl() = default;
 
         IteratorImpl(const IteratorImpl&) = delete;
         IteratorImpl& operator=(const IteratorImpl&) = delete;

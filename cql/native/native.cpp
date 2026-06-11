@@ -5,7 +5,6 @@ module;
 module cql.native;
 
 import plexdb.pager;
-import plexdb.pager.transaction;
 
 import cql.engine.evaluator;
 
@@ -686,11 +685,14 @@ namespace cql::native {
                 assert_true(tbl != nullptr, "table not found for rows result");
                 Frame frame{.body = {}, .req = req, .op = op_codes::RESULT, .stream = stream};
                 co_await append_result_rows(frame, result, tbl);
+                if (result.deferred_tx.started_transaction)
+                    co_await result.deferred_tx.commit();
                 co_await send_native_frame<Version, Compressed>(frame);
                 {
-                    pager::begin_transaction(*engine.pager);
+                    pager::Transaction tx{engine.pager};
+                    co_await tx.begin();
                     U64 tbl_size = co_await btree::size(tbl->btree);
-                    co_await pager::commit_transaction(*engine.pager);
+                    co_await tx.commit();
                     cql::log::db_response_returned_rows(tbl_size);
                 }
             }break;

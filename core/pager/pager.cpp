@@ -10,62 +10,28 @@ module plexdb.pager;
 import plexdb.base;
 import plexdb.os;
 import plexdb.plugin;
+import plexdb.aio;
 import plexdb.threads;
 import plexdb.arena;
-import plexdb.aio;
 
 namespace plexdb::pager {
-    static plugin::Producer pager_producer{"plexdb::pager"};
+    // Forward declarations of internal helpers used before their definitions.
+    static void rollback_transaction(Pager& pager);
 
-    static U64 page_cache_hash(U64 key) {
-        key ^= key >> 33;
-        key *= 0xff51afd7ed558ccdULL;
-        key ^= key >> 33;
-        return key;
-    }
+    // ========================================================================
+    // plugin instrumentation
+    // ========================================================================
+    static plugin::Producer pager_producer{"otlp.db.pager"};
 
-    static PageCache::Slot* page_cache_find(PageCache& cache, U64 key) {
-        if (!cache.slots) return nullptr;
-        U64 h = page_cache_hash(key) & (cache.slot_count - 1);
-        for (U64 i = 0; i < cache.slot_count; i++) {
-            U64 idx = (h + i) & (cache.slot_count - 1);
-            if (cache.slots[idx].key == PageCache::EMPTY) return nullptr;
-            if (cache.slots[idx].key == key) return &cache.slots[idx];
-        }
-        return nullptr;
-    }
+    static plugin::Stat stat_tx_committed   {&pager_producer, "transaction.committed",   plugin::StatType::Counter};
+    static plugin::Stat stat_tx_rolled_back {&pager_producer, "transaction.rolled_back", plugin::StatType::Counter};
+    static plugin::Stat stat_checkpoint     {&pager_producer, "checkpoint.executed",     plugin::StatType::Counter};
+    static plugin::Stat stat_cache_hit      {&pager_producer, "cache.hit",               plugin::StatType::Counter};
+    static plugin::Stat stat_cache_miss     {&pager_producer, "cache.miss",              plugin::StatType::Counter};
 
-    static void page_cache_grow(PageCache& cache, Arena& arena) {
-        U64 new_count = cache.slot_count == 0 ? 16 : cache.slot_count * 2;
-        auto* new_slots = arena::push_array<PageCache::Slot>(arena, new_count); // zero-init = EMPTY
-        for (U64 i = 0; i < cache.slot_count; i++) {
-            if (cache.slots[i].key != PageCache::EMPTY) {
-                U64 h = page_cache_hash(cache.slots[i].key) & (new_count - 1);
-                while (new_slots[h].key != PageCache::EMPTY)
-                    h = (h + 1) & (new_count - 1);
-                new_slots[h] = cache.slots[i];
-            }
-        }
-        cache.slots = new_slots;
-        cache.slot_count = new_count;
-    }
-
-    static PageCache::Slot& page_cache_insert(PageCache& cache, Arena& arena, U64 key, U8* data, bool dirty) {
-        if (!cache.slots || cache.count * 2 >= cache.slot_count)
-            page_cache_grow(cache, arena);
-        U64 h = page_cache_hash(key) & (cache.slot_count - 1);
-        while (cache.slots[h].key != PageCache::EMPTY)
-            h = (h + 1) & (cache.slot_count - 1);
-        cache.slots[h] = {key, data, dirty};
-        cache.count++;
-        return cache.slots[h];
-    }
-
-    static void page_cache_reset(PageCache& cache) {
-        cache = {};
-    }
-
-
+    // ========================================================================
+    // internal helpers
+    // ========================================================================
     static coroutine::Task<> read_header(Pager& pager) {
         co_await aio::file_read(
             *pager.file_io_ctx,
@@ -99,16 +65,15 @@ namespace plexdb::pager {
     // Flush dirty pages directly to the main file (no-WAL fallback used in destroy).
     static coroutine::Task<> flush_direct(Pager& pager) {
         aio::FileIOContext& ctx = *pager.file_io_ctx;
-        for (U64 i = 0; i < pager.page_cache.slot_count; i++) {
-            auto& slot = pager.page_cache.slots[i];
-            if (slot.key == PageCache::EMPTY || !slot.dirty) continue;
-            U64 idx = slot.key;
+        for (auto& pair : pager.page_cache) {
+            if (!pair.second.dirty) continue;
+            U64 idx = pair.first;
             if (idx < pager.header.page_count) {
                 U64 offset = pager.base_offset + pager.header.page_size * idx;
                 co_await aio::file_write(
                     ctx, pager.file,
                     Rng1U64{.start=offset, .end=offset + pager.header.page_size},
-                    slot.data
+                    pair.second.data.ptr
                 );
             }
         }
@@ -122,8 +87,7 @@ namespace plexdb::pager {
         }
         os::file_resize_zero(pager.file, pager.base_offset + pager.header.page_count * pager.header.page_size);
         co_await aio::file_sync(ctx, pager.file);
-        page_cache_reset(pager.page_cache);
-        arena::clear(pager.page_cache_arena);
+        clear(pager.page_cache);
     }
 
     static coroutine::Task<> maybe_recover_wal(Pager& pager) {
@@ -131,18 +95,16 @@ namespace plexdb::pager {
         if (!co_await wal::try_load(pager.wal, *pager.file_io_ctx, pager.header.page_size)) co_return;
         if (pager.wal.header.frame_count == 0) co_return;
 
+        assert_true(pager.wal.header.magic == wal::MAGIC, "maybe_recover_wal: WAL header has invalid magic");
+
         U64 page_size = pager.wal.header.page_size;
         {
-            threads::Scope scratch = threads::scratch();
-            U8* buf = arena::push_array<U8>(*scratch.arena, max(page_size, static_cast<U64>(sizeof(Header))));
+            U64 buf_size = max(page_size, static_cast<U64>(sizeof(Header)));
+            threads::Scope sc = threads::scratch();
+            U8* buf = arena::push_array_no_zero<U8>(*sc.arena, buf_size);
             for (U64 i = 0; i < pager.wal.header.frame_count; i++) {
-                U64 offset = sizeof(wal::Header) + i * (sizeof(wal::Frame) + page_size);
-
                 wal::Frame frame{};
-                co_await aio::file_read(*pager.file_io_ctx, pager.wal.file, Rng1U64{.start=offset, .end=offset+sizeof(wal::Frame)}, &frame);
-
-                U64 data_size = frame.page_idx == MAX_U64 ? sizeof(Header) : page_size;
-                co_await aio::file_read(*pager.file_io_ctx, pager.wal.file, Rng1U64{.start=offset + sizeof(wal::Frame), .end=offset + sizeof(wal::Frame) + data_size}, buf);
+                co_await wal::read_frame(pager.wal, *pager.file_io_ctx, i, frame, buf);
 
                 if (frame.page_idx == MAX_U64) {
                     co_await aio::file_write(*pager.file_io_ctx, pager.file, Rng1U64{.start=pager.base_offset, .end=pager.base_offset + sizeof(Header)}, buf);
@@ -218,15 +180,14 @@ namespace plexdb::pager {
         saved_header(other.saved_header),
         header_in_write_set(other.header_in_write_set),
         transaction_active(other.transaction_active),
+        tx_waiters(move(other.tx_waiters)),
         checkpoint_interval(other.checkpoint_interval),
         wal_transaction_count(other.wal_transaction_count),
-        page_cache_arena(move(other.page_cache_arena)),
-        page_cache(other.page_cache),
+        page_cache(move(other.page_cache)),
         wal(move(other.wal))
     {
         other.file = os::zero_handle();
         other.file_io_ctx = nullptr;
-        other.page_cache = {};
         other.transaction_active = false;
     }
 
@@ -248,43 +209,65 @@ namespace plexdb::pager {
         saved_header = other.saved_header;
         header_in_write_set = other.header_in_write_set;
         transaction_active = other.transaction_active;
+        tx_waiters = move(other.tx_waiters);
         checkpoint_interval = other.checkpoint_interval;
         wal_transaction_count = other.wal_transaction_count;
-        page_cache_arena = move(other.page_cache_arena);
-        page_cache = other.page_cache;
+        page_cache = move(other.page_cache);
         wal = move(other.wal);
 
         other.file = os::zero_handle();
         other.file_io_ctx = nullptr;
-        other.page_cache = {};
         other.transaction_active = false;
 
         return *this;
     }
 
-    void begin_transaction(Pager& pager) {
-        assert_true(!pager.transaction_active, "transaction already active");
+    // ========================================================================
+    // internal transaction helpers
+    // ========================================================================
+
+    static void finish_transaction(Pager& pager) {
+        pager.transaction_active = false;
+        if (pager.tx_waiters.length > 0) {
+            auto h = *front(pager.tx_waiters);
+            pop_front(pager.tx_waiters);
+            h.resume();
+        }
+    }
+
+    static coroutine::Task<> begin_transaction(Pager& pager) {
+        if (pager.transaction_active) {
+            // Block scope ensures node outlives ~Awaitable (reverse construction order).
+            Deque<std::coroutine_handle<>>::Node node{};
+            co_await coroutine::Awaitable{
+                [p = &pager, n = &node](std::coroutine_handle<> h) { n->value = h; push_back(p->tx_waiters, n); },
+                []() {},
+                [p = &pager, n = &node]() { remove(p->tx_waiters, n); }
+            };
+        }
         pager.saved_header = pager.header;
         pager.transaction_active = true;
     }
 
-    coroutine::Task<> commit_transaction(Pager& pager) {
+    static coroutine::Task<> commit_transaction(Pager& pager) {
         assert_true(pager.transaction_active, "no active transaction");
 
         if (!pager.wal) {
             co_await flush_direct(pager);
-            pager.transaction_active = false;
+            finish_transaction(pager);
+            plugin::stat(stat_tx_committed, 1);
+            plugin::message(pager_producer, plugin::Level::Debug,
+                fmt("pager: transaction committed, page_count=%" PRIu64, pager.header.page_count));
             co_return;
         }
 
         aio::FileIOContext& ctx = *pager.file_io_ctx;
 
-        for (U64 i = 0; i < pager.page_cache.slot_count; i++) {
-            auto& slot = pager.page_cache.slots[i];
-            if (slot.key == PageCache::EMPTY || !slot.dirty) continue;
-            U64 idx = slot.key;
+        for (auto& pair : pager.page_cache) {
+            if (!pair.second.dirty) continue;
+            U64 idx = pair.first;
             if (idx < pager.header.page_count) {
-                U64 frame_idx = co_await wal::append_frame(pager.wal, ctx, idx, slot.data);
+                U64 frame_idx = co_await wal::append_frame(pager.wal, ctx, idx, pair.second.data.ptr);
                 insert(pager.wal.wal_index, idx, frame_idx);
             }
         }
@@ -302,24 +285,78 @@ namespace plexdb::pager {
             }
         }
 
-        page_cache_reset(pager.page_cache);
-        arena::clear(pager.page_cache_arena);
-        pager.transaction_active = false;
+        clear(pager.page_cache);
+        finish_transaction(pager);
+        plugin::stat(stat_tx_committed, 1);
+        plugin::message(pager_producer, plugin::Level::Debug,
+            fmt("pager: transaction committed, page_count=%" PRIu64, pager.header.page_count));
     }
 
-    void rollback_transaction(Pager& pager) {
+    static void rollback_transaction(Pager& pager) {
         plugin::message(pager_producer, plugin::Level::Error, "pager: transaction rolled back");
+        plugin::stat(stat_tx_rolled_back, 1);
         pager.header = pager.saved_header;
         pager.header_in_write_set = false;
-        page_cache_reset(pager.page_cache);
-        arena::clear(pager.page_cache_arena);
-        if (pager.wal) {
-            pager.wal.header.frame_count = 0;
-            clear(pager.wal.wal_index);
-        }
-        pager.transaction_active = false;
+        clear(pager.page_cache);
+        // WAL contains only committed-transaction data; dirty pages from this
+        // rolled-back transaction live only in the page cache (already cleared above).
+        // Do NOT reset the WAL — that would destroy previously committed frames.
+        finish_transaction(pager);
     }
 
+    // ========================================================================
+    // RAII Transaction
+    // ========================================================================
+    Transaction::Transaction(): p(nullptr) {}
+
+    Transaction::Transaction(Pager* in_pager): p(in_pager) {
+        assert_true(in_pager != nullptr, "cannot create a Transaction from a nullptr");
+    }
+
+    Transaction::Transaction(Transaction&& other)
+        : started_transaction(other.started_transaction), p(other.p) {
+        other.started_transaction = false;
+        other.p = nullptr;
+    }
+
+    Transaction& Transaction::operator=(Transaction&& other) {
+        this->started_transaction = other.started_transaction;
+        this->p = other.p;
+        other.started_transaction = false;
+        other.p = nullptr;
+        return *this;
+    }
+
+    Transaction::~Transaction() {
+        if (started_transaction && p && p->transaction_active) {
+            plugin::message(pager_producer, plugin::Level::Error, "pager: Transaction destroyed with active transaction — rolling back");
+            rollback();
+        }
+    }
+
+    coroutine::Task<> Transaction::begin() {
+        assert_true(p != nullptr, "Transaction::begin called with null pager");
+        assert_true(!started_transaction, "Transaction::begin called on already-started transaction (double-begin)");
+        co_await begin_transaction(*p);
+        started_transaction = true;
+        plugin::message(pager_producer, plugin::Level::Debug,
+            fmt("pager: transaction begun, page_count=%" PRIu64, p->header.page_count));
+    }
+
+    coroutine::Task<> Transaction::commit() {
+        assert_true(started_transaction, "Transaction::commit called before begin");
+        co_await commit_transaction(*p);
+        started_transaction = false;
+    }
+
+    void Transaction::rollback() {
+        rollback_transaction(*p);
+        started_transaction = false;
+    }
+
+    // ========================================================================
+    // checkpoint
+    // ========================================================================
     coroutine::Task<> checkpoint(Pager& pager) { ZoneScopedN("pager::checkpoint");
         assert_true(pager.wal, "checkpoint requires WAL");
         assert_true(pager.file_io_ctx != nullptr, "checkpoint requires file_io_ctx");
@@ -327,8 +364,9 @@ namespace plexdb::pager {
         aio::FileIOContext& ctx = *pager.file_io_ctx;
         U64 page_size = pager.wal.header.page_size;
 
-        threads::Scope scratch = threads::scratch();
-        U8* buf = arena::push_array<U8>(*scratch.arena, max(page_size, static_cast<U64>(sizeof(Header))));
+        threads::Scope sc = threads::scratch();
+        U64 buf_size = max(page_size, static_cast<U64>(sizeof(Header)));
+        U8* buf = arena::push_array_no_zero<U8>(*sc.arena, buf_size);
 
         for (auto& pair : pager.wal.wal_index) {
             U64 page_idx  = pair.first;
@@ -340,13 +378,13 @@ namespace plexdb::pager {
                     &pager.header
                 );
             } else {
-                auto* slot = page_cache_find(pager.page_cache, page_idx);
-                if (slot) {
+                auto* entry = find(pager.page_cache, page_idx);
+                if (entry) {
                     U64 db_start = pager.base_offset + page_size * page_idx;
                     co_await aio::file_write(
                         ctx, pager.file,
                         Rng1U64{.start=db_start, .end=db_start + page_size},
-                        slot->data
+                        entry->data.ptr
                     );
                 } else {
                     wal::Frame frame{};
@@ -366,8 +404,12 @@ namespace plexdb::pager {
         co_await wal::reset(pager.wal, ctx);
         clear(pager.wal.wal_index);
         pager.wal_transaction_count = 0;
+        plugin::stat(stat_checkpoint, 1);
     }
 
+    // ========================================================================
+    // page operations
+    // ========================================================================
     coroutine::Task<> set_root(Pager& pager, U64 page) {
         assert_true(pager.transaction_active, "no transaction active");
         pager.header.root_page = page;
@@ -377,13 +419,17 @@ namespace plexdb::pager {
 
     coroutine::Task<const U8*> rpage(Pager& pager, U64 idx) {
         assert_true(pager.transaction_active, "rpage requires an active transaction");
+        assert_true(idx > 0, "page index must be > 0");
         assert_true(idx < pager.header.page_count && idx > 0, "page out of range");
         assert_true(pager.file_io_ctx != nullptr, "rpage requires file_io_ctx");
 
-        if (auto* slot = page_cache_find(pager.page_cache, idx))
-            co_return slot->data;
+        if (auto* entry = find(pager.page_cache, idx)) {
+            plugin::stat(stat_cache_hit, 1);
+            co_return entry->data.ptr;
+        }
 
-        U8* data = arena::push_array_no_zero<U8>(pager.page_cache_arena, pager.header.page_size);
+        plugin::stat(stat_cache_miss, 1);
+        U8* data = os::allocate_zero(pager.header.page_size);
         bool loaded = false;
         if (pager.wal) {
             if (U64* frame_idx_ptr = find(pager.wal.wal_index, idx)) {
@@ -400,21 +446,24 @@ namespace plexdb::pager {
                 data
             );
         }
-        page_cache_insert(pager.page_cache, pager.page_cache_arena, idx, data, false);
+        insert(pager.page_cache, idx, PageCacheEntry{UniquePtr<U8>{data}, false});
         co_return data;
     }
 
     coroutine::Task<U8*> rwpage(Pager& pager, U64 idx) {
         assert_true(pager.transaction_active, "no transaction active");
+        assert_true(idx > 0, "page index must be > 0");
         assert_true(idx < pager.header.page_count && idx > 0, "page out of range");
         assert_true(pager.file_io_ctx != nullptr, "rwpage requires file_io_ctx");
 
-        if (auto* slot = page_cache_find(pager.page_cache, idx)) {
-            slot->dirty = true;
-            co_return slot->data;
+        if (auto* entry = find(pager.page_cache, idx)) {
+            plugin::stat(stat_cache_hit, 1);
+            entry->dirty = true;
+            co_return entry->data.ptr;
         }
 
-        U8* data = arena::push_array_no_zero<U8>(pager.page_cache_arena, pager.header.page_size);
+        plugin::stat(stat_cache_miss, 1);
+        U8* data = os::allocate_zero(pager.header.page_size);
         bool loaded = false;
         if (pager.wal) {
             if (U64* frame_idx_ptr = find(pager.wal.wal_index, idx)) {
@@ -431,7 +480,7 @@ namespace plexdb::pager {
                 data
             );
         }
-        page_cache_insert(pager.page_cache, pager.page_cache_arena, idx, data, true);
+        insert(pager.page_cache, idx, PageCacheEntry{UniquePtr<U8>{data}, true});
         co_return data;
     }
 
@@ -461,7 +510,20 @@ namespace plexdb::pager {
         co_return reinterpret_cast<U64*>(co_await rwpage(pager, idx));
     }
 
+    // Guarantee that page `idx` has a zeroed, dirty cache entry so rwpage returns clean state.
+    // Called from new_page to defend against stale WAL/file content on reused pages.
+    static void ensure_page_zeroed(Pager& pager, U64 idx) {
+        if (auto* entry = find(pager.page_cache, idx)) {
+            os::memory_zero(entry->data.ptr, pager.header.page_size);
+            entry->dirty = true;
+        } else {
+            U8* data = static_cast<U8*>(os::allocate_zero(pager.header.page_size));
+            insert(pager.page_cache, idx, PageCacheEntry{UniquePtr<U8>{data}, true});
+        }
+    }
+
     coroutine::Task<U64> new_page(Pager& pager) { ZoneScopedN("pager::new_page");
+        assert_true(pager.transaction_active, "new_page requires an active transaction");
         const U64 ENTRIES_PER_BITSET = get_bitset_entry_count(pager);
         const U64 BITSET_PAGE_STRIDE = ENTRIES_PER_BITSET*get_pages_per_entry() + 1;
         auto& h = pager.header;
@@ -480,6 +542,7 @@ namespace plexdb::pager {
                         pager.header_in_write_set = true;
                         os::file_resize_zero(pager.file, pager.base_offset + h.page_count*h.page_size);
                     }
+                    ensure_page_zeroed(pager, free_page);
                     co_return free_page;
                 }
             }
@@ -495,10 +558,12 @@ namespace plexdb::pager {
         U64* bitset = co_await rwbitset(pager, bitset_page);
         bitset[0] |= 1_u64;
 
+        ensure_page_zeroed(pager, free_page);
         co_return free_page;
     }
 
     coroutine::Task<> delete_page(Pager& pager, U64 idx) { ZoneScopedN("pager::delete_page");
+        assert_true(pager.transaction_active, "delete_page requires an active transaction");
         assert_true(idx < pager.header.page_count && idx > 0, "page out of range");
         const U64 PAGES_PER_BITSET = get_bitset_entry_count(pager)*get_pages_per_entry() + 1;
         auto& h = pager.header;
@@ -512,6 +577,18 @@ namespace plexdb::pager {
         U64 bit_idx    = bitset_idx % get_pages_per_entry();
         assert_true(bitset[entry_idx] & 1_u64 << bit_idx, "trying to delete page marked as deleted");
         bitset[entry_idx] &= ~(1_u64 << bit_idx);
+
+        // Zero the page so future allocations of the same page index (in the same or a later
+        // transaction) always start with clean state instead of stale node data (e.g. non-zero
+        // key_count). Mark dirty so the zeroed content is committed to the WAL, ensuring cross-
+        // transaction reuse also sees zeroed data (not old file contents).
+        if (auto* entry = find(pager.page_cache, idx)) {
+            os::memory_zero(entry->data.ptr, pager.header.page_size);
+            entry->dirty = true;
+        } else {
+            U8* data = static_cast<U8*>(os::allocate_zero(pager.header.page_size));
+            insert(pager.page_cache, idx, PageCacheEntry{UniquePtr<U8>{data}, true});
+        }
 
         if (idx != h.page_count - 1)
             co_return;

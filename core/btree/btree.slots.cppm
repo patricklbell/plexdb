@@ -2,6 +2,8 @@ export module plexdb.btree.slots;
 
 import plexdb.base;
 import plexdb.os;
+import plexdb.arena;
+import plexdb.threads;
 
 import plexdb.btree.policy;
 import plexdb.btree.types;
@@ -17,6 +19,9 @@ export namespace plexdb::btree {
     template<> struct SlotEntry<false, true>  { U16 val_off; U16 val_len; };
     template<> struct SlotEntry<true,  false> { U16 key_off; U16 key_len; };
     template<> struct SlotEntry<true,  true>  { U16 key_off; U16 key_len; U16 val_off; U16 val_len; };
+
+    using InternalSlotEntry = SlotEntry<true, false>;
+    using LeafSlotEntry     = SlotEntry<true, true>;
 
     // ========================================================================
     // FixedLeafSlots — both key and value are fixed-stride
@@ -202,20 +207,24 @@ export namespace plexdb::btree {
 
     template<bool VK>
     void compact(SlottedLeafPage<VK>& p) noexcept {
+        // Stage all data in a separate buffer first. Without staging, packing a
+        // slot's data to a higher address (upward move) overwrites another slot's
+        // source data before it can be read, producing corrupted/duplicate keys.
+        threads::Scope sc = threads::scratch();
+        U8* staging = arena::push_array_no_zero<U8>(*sc.arena, p.page_size);
         U16 write_pos = p.page_size;
         for (CountType i = 0; i < p.count; i++) {
             auto& e = p.slots()[i];
             write_pos -= e.val_len;
-            if (p.base + write_pos != p.base + e.val_off)
-                os::memory_move(p.base + write_pos, p.base + e.val_off, e.val_len);
+            os::memory_copy(staging + write_pos, p.base + e.val_off, e.val_len);
             e.val_off = write_pos;
             if constexpr (VK) {
                 write_pos -= e.key_len;
-                if (p.base + write_pos != p.base + e.key_off)
-                    os::memory_move(p.base + write_pos, p.base + e.key_off, e.key_len);
+                os::memory_copy(staging + write_pos, p.base + e.key_off, e.key_len);
                 e.key_off = write_pos;
             }
         }
+        os::memory_copy(p.base + write_pos, staging + write_pos, p.page_size - write_pos);
         p.data_low = write_pos;
     }
 
@@ -290,16 +299,18 @@ export namespace plexdb::btree {
         for (CountType i = 0; i < n; i++) {
             const auto& se = src_slots[from + i];
             auto& de = dst_slots[i];
+            // Write val first (higher address), then key (lower address),
+            // matching insert() layout so that remove() works correctly.
+            dst.data_low -= se.val_len;
+            os::memory_copy(dst.base + dst.data_low, src.base + se.val_off, se.val_len);
+            de.val_off = dst.data_low;
+            de.val_len = se.val_len;
             if constexpr (VK) {
                 dst.data_low -= se.key_len;
                 os::memory_copy(dst.base + dst.data_low, src.base + se.key_off, se.key_len);
                 de.key_off = dst.data_low;
                 de.key_len = se.key_len;
             }
-            dst.data_low -= se.val_len;
-            os::memory_copy(dst.base + dst.data_low, src.base + se.val_off, se.val_len);
-            de.val_off = dst.data_low;
-            de.val_len = se.val_len;
         }
         dst.slot_end += n * sizeof(SlotEntry<VK, true>);
         dst.count = n;
@@ -364,14 +375,19 @@ export namespace plexdb::btree {
     template<bool VK>
     void compact(SlottedInternalPage<VK>& p) noexcept {
         if constexpr (!VK) return;
-        U16 write_pos = p.usable_capacity();
+        U16 usable = p.usable_capacity();
+
+        // @todo investigate algorithm which does not require scratch
+        threads::Scope sc = threads::scratch();
+        U8* staging = arena::push_array_no_zero<U8>(*sc.arena, usable);
+        U16 write_pos = usable;
         for (CountType i = 0; i < p.count; i++) {
             auto& e = p.slots()[i];
             write_pos -= e.key_len;
-            if (p.base + write_pos != p.base + e.key_off)
-                os::memory_move(p.base + write_pos, p.base + e.key_off, e.key_len);
+            os::memory_copy(staging + write_pos, p.base + e.key_off, e.key_len);
             e.key_off = write_pos;
         }
+        os::memory_copy(p.base + write_pos, staging + write_pos, usable - write_pos);
         p.data_low = write_pos;
     }
 

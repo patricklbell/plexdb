@@ -8,6 +8,7 @@ export import cql.engine.schema;
 export import cql.engine.system_schema;
 export import cql.engine.virtual_table;
 export import cql.engine.it;
+import plexdb.pager;
 
 import cql.engine.statements;
 import cql.engine.io;
@@ -18,7 +19,6 @@ import plexdb.coroutine;
 import plexdb.os;
 import plexdb.tagged_union;
 import plexdb.dynamic.tagged_union;
-import plexdb.pager;
 import plexdb.blob;
 import plexdb.btree;
 import plexdb.aio;
@@ -54,6 +54,7 @@ export namespace cql::engine {
         AutoString8 current_keyspace{""};
         MapFixedSentinel<U64, PreparedEntry, MAX_PREPARED_STATEMENTS> prepared_cache;
         bool single_node = true;
+        U16 port = 9042;
     };
 
     coroutine::Task<> init(Engine& engine, Pager* in_pager);
@@ -98,8 +99,8 @@ export namespace cql::engine {
         ExecutionStatus status = ExecutionStatus::Success;
         ResultKind kind = ResultKind::Void;
         String8 message = "";
-        String8 keyspace = "";
-        String8 table = "";
+        AutoString8 keyspace = {};
+        AutoString8 table = {};
 
         U64 row_limit_count = MAX_U64;
         Optional<RowRange> rows = {};
@@ -110,6 +111,13 @@ export namespace cql::engine {
 
         DynamicArray<cql::WhereClause::Relation> filter_predicates = {};
         cql::EvalContext filter_ctx = {};
+
+        // For SELECT results: holds the open execute-transaction so that row iteration
+        // (which uses the own_tx borrowing pattern) always sees a stable active transaction
+        // that cannot be committed by another connection mid-iteration.
+        // The caller must co_await deferred_tx.commit() after consuming all rows.
+        // If not explicitly committed, the destructor rolls back (borrowing is safe for reads).
+        pager::Transaction deferred_tx = {};
     };
 
     coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement);

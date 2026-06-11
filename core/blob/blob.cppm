@@ -13,7 +13,6 @@ import plexdb.base;
 import plexdb.os;
 import plexdb.coroutine;
 import plexdb.pager;
-import plexdb.pager.transaction;
 
 export namespace plexdb::blob {
     // ========================================================================

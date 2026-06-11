@@ -6,7 +6,6 @@ export module plexdb.btree.paged.detail;
 import plexdb.base;
 import plexdb.os;
 import plexdb.coroutine;
-import plexdb.pager.transaction;
 import plexdb.pager;
 
 import plexdb.btree.types;

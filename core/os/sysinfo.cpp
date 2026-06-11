@@ -212,8 +212,7 @@ namespace plexdb::os {
                         if (strncmp(entry->d_name, "loop", 4) == 0) continue;
                         if (strncmp(entry->d_name, "nvme", 4) == 0) continue;
 
-                        char rotational_path[512];
-                        snprintf(rotational_path, sizeof(rotational_path), "/sys/block/%s/queue/rotational", entry->d_name);
+                        auto rotational_path = fmt("/sys/block/%s/queue/rotational", entry->d_name);
                         if (read_sysfs_u64(rotational_path, 1) == 1) {
                             closedir(sys_block);
                             return ROTATIONAL_QUEUE_DEPTH;

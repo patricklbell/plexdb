@@ -27,7 +27,19 @@ namespace plexdb::coroutine {
         char        name[k_len]          = {};
         const char* continuation_name    = nullptr;
     };
-    struct EmptyTracyFiber {};
+
+    // Stub used when tracy_enabled=false. Must expose the same member names and
+    // conversions as TracyFiber / const char* so that if constexpr(tracy_enabled)
+    // branches are syntactically valid.
+    struct EmptyTracyFiber {
+        char        name[1]           = {};
+        const char* continuation_name = nullptr;
+        EmptyTracyFiber() = default;
+        EmptyTracyFiber(const char*) noexcept {}
+        EmptyTracyFiber& operator=(const char*) noexcept { return *this; }
+        operator const char*() const noexcept { return nullptr; }
+        explicit operator bool() const noexcept { return false; }
+    };
 
 #ifdef PLEXDB_ENABLE_TRACY_PROFILER
     namespace {
@@ -44,12 +56,13 @@ namespace plexdb::coroutine {
         }
         buf[2 + n] = '\0';
     }
-
-    // Tracks the fiber name of the currently-executing coroutine on this thread.
-    // Updated at every fiber-switch point so Awaitable::await_resume can re-enter
-    // the correct fiber.
-    inline thread_local const char* g_current_tracy_fiber = nullptr;
+#else
+    inline void write_hex_ptr(char*, const void*) noexcept {}
 #endif
+
+    // Always declared so if constexpr(tracy_enabled) branches are well-formed.
+    // In non-tracy builds the variable is never written or read at runtime.
+    inline thread_local const char* g_current_tracy_fiber = nullptr;
 }
 
 export namespace plexdb::coroutine {
@@ -339,32 +352,34 @@ export namespace plexdb::coroutine {
     };
 
     // ========================================================================
-    // Awaitable<OnSuspend, OnResume>
     //   Generic bridge between a coroutine and an external async event source
     //   (e.g. io_uring, timers, inter-thread signals).
     //
     //   OnSuspend: void(std::coroutine_handle<>)
-    //     Called when the coroutine suspends at co_await. Store the handle and
-    //     submit the async operation. The event loop resumes the coroutine by
-    //     calling handle.resume() when the completion arrives.
+    //     Called when the coroutine suspends. Register the handle and submit
+    //     the async operation.
     //
     //   OnResume: Result()
-    //     Called to extract the result after the coroutine is woken. May be
-    //     void for fire-and-forget operations.
+    //     Called to extract the result after the coroutine is woken.
     //
-    //   Example (io_uring read inside a Task coroutine):
-    //     int n = co_await Awaitable{
-    //         [&](std::coroutine_handle<> h) {
-    //             pending_reads[fd] = h;
-    //             sqe_push_read(ring, fd, buf_idx);
-    //         },
-    //         [&]() -> int { return bytes_read; }
-    //     };
+    //   OnDelete: void() — must be TriviallyCopyable (no reference captures)
+    //     Called in ~Awaitable only if the coroutine was destroyed while
+    //     suspended (i.e. await_resume was never called). Use to undo
+    //     whatever on_suspend registered. Capture pointers, not references —
+    //     the TriviallyCopyable constraint enforces this at compile time.
     // ========================================================================
-    template<typename OnSuspend, typename OnResume>
+    struct NoOp { void operator()() const noexcept {} };
+
+    template<typename OnSuspend, typename OnResume, typename OnDelete = NoOp>
+        requires TriviallyCopyable<OnDelete>
     struct [[nodiscard]] Awaitable {
         OnSuspend on_suspend;
         OnResume  on_resume;
+        OnDelete  on_delete;
+        bool      _resumed = false;
+
+        Awaitable(OnSuspend s, OnResume r)              : on_suspend(move(s)), on_resume(move(r))               {}
+        Awaitable(OnSuspend s, OnResume r, OnDelete d)  : on_suspend(move(s)), on_resume(move(r)), on_delete(move(d)) {}
 
         bool await_ready() noexcept { return false; }
 
@@ -383,6 +398,8 @@ export namespace plexdb::coroutine {
         }
 
         decltype(auto) await_resume() noexcept {
+            _resumed = true;
+
             debug::restore_frame(_saved_frame);
 
             if constexpr (tracy_enabled) {
@@ -395,6 +412,8 @@ export namespace plexdb::coroutine {
             return on_resume();
         }
 
+        ~Awaitable() { if (!_resumed) on_delete(); }
+
         [[no_unique_address]]
         Conditional<debug::enabled, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
 
@@ -403,7 +422,10 @@ export namespace plexdb::coroutine {
     };
 
     template<typename OnSuspend, typename OnResume>
-    Awaitable(OnSuspend, OnResume) -> Awaitable<OnSuspend, OnResume>;
+    Awaitable(OnSuspend, OnResume) -> Awaitable<OnSuspend, OnResume, NoOp>;
+
+    template<typename OnSuspend, typename OnResume, typename OnDelete>
+    Awaitable(OnSuspend, OnResume, OnDelete) -> Awaitable<OnSuspend, OnResume, OnDelete>;
 
     // ========================================================================
     // generator

@@ -32,7 +32,7 @@ export namespace plexdb::btree {
             CountType ll = static_cast<CountType>(left->key_count - 1);
             auto lk = key_at(left_page, ll);
             auto lv = value_at(left_page, ll);
-            insert(node_page, 0, lk, lv);
+            assert_true(insert(node_page, 0, lk, lv), "move_from_left: insert (leaf) failed — target leaf unexpectedly full");
             node->key_count = node_page.count;
             internal_set_sep(parent, ns, kp, static_cast<CountType>(node_idx - 1), lk);
             remove(left_page, ll);
@@ -56,7 +56,7 @@ export namespace plexdb::btree {
                 auto sep = key_at(parent_page, static_cast<CountType>(node_idx - 1));
                 auto lk  = key_at(left_page, ll);
                 NodeRef lc = child_at(left_page, left->key_count);
-                insert_key(node_page, 0, sep);
+                assert_true(insert_key(node_page, 0, sep), "move_from_left: insert_key failed — target internal node unexpectedly full");
                 insert_child(node_page, 0, lc);
                 node->key_count = node_page.count;
                 replace_key(parent_page, static_cast<CountType>(node_idx - 1), lk);
@@ -74,7 +74,7 @@ export namespace plexdb::btree {
             auto node_page  = leaf_page(node,  ns, kp, vp);
             auto rk = key_at(right_page, 0);
             auto rv = value_at(right_page, 0);
-            insert(node_page, node_page.count, rk, rv);
+            assert_true(insert(node_page, node_page.count, rk, rv), "move_from_right: insert (leaf) failed — target leaf unexpectedly full");
             node->key_count = node_page.count;
             remove(right_page, 0);
             right->key_count = right_page.count;
@@ -98,7 +98,7 @@ export namespace plexdb::btree {
                 auto sep = key_at(parent_page, node_idx);
                 auto rk  = key_at(right_page, 0);
                 NodeRef rc = child_at(right_page, 0);
-                insert_key(node_page, node_page.count, sep);
+                assert_true(insert_key(node_page, node_page.count, sep), "move_from_right: insert_key failed — target internal node unexpectedly full");
                 insert_child(node_page, node_page.count, rc);
                 node->key_count = node_page.count;
                 replace_key(parent_page, node_idx, rk);
@@ -135,13 +135,14 @@ export namespace plexdb::btree {
                 auto b_page      = internal_page(b,      ns, kp);
                 auto parent_page = internal_page(parent, ns, kp);
                 auto ps = key_at(parent_page, a_idx);
-                insert_key(a_page, a_page.count, ps);
+                assert_true(insert_key(a_page, a_page.count, ps), "merge: insert_key (separator) failed — merged node unexpectedly full");
                 insert_child(a_page, a_page.count, child_at(b_page, 0));
                 for (CountType i = 0; i < b->key_count; i++) {
-                    insert_key(a_page, a_page.count, key_at(b_page, i));
+                    assert_true(insert_key(a_page, a_page.count, key_at(b_page, i)), "merge: insert_key (b key) failed — merged node unexpectedly full");
                     insert_child(a_page, a_page.count, child_at(b_page, static_cast<CountType>(i + 1)));
                 }
                 a->key_count = a_page.count;
+                assert_true(a->key_count >= 1, "merge: merged internal node has 0 keys — at least separator must be present");
                 remove(parent_page, a_idx);
                 parent->key_count = parent_page.count;
             } else {
@@ -149,7 +150,7 @@ export namespace plexdb::btree {
                 auto b_page      = leaf_page(b,      ns, kp, vp);
                 auto parent_page = internal_page(parent, ns, kp);
                 for (CountType i = 0; i < b->key_count; i++)
-                    insert(a_page, a_page.count, key_at(b_page, i), value_at(b_page, i));
+                    assert_true(insert(a_page, a_page.count, key_at(b_page, i), value_at(b_page, i)), "merge: insert (leaf) failed — merged leaf unexpectedly full");
                 a->key_count = a_page.count;
                 remove(parent_page, a_idx);
                 parent->key_count = parent_page.count;
@@ -192,11 +193,16 @@ export namespace plexdb::btree {
             sep_key_bytes = leaf_get_key_bytes(left, ns, kp, vp, m);
             leaf_copy_suffix(left, right, ns, kp, vp, m);
             left->key_count = m;
+            assert_true(left->key_count >= 1, "split_child: leaf left half has 0 keys after split");
         } else {
             CountType m = split_index_internal(left, ns, kp);
+            assert_true(m >= 2, "split_child: split_index_internal returned < 2, would leave internal left half empty");
+            assert_true(m < left->key_count, "split_child: split_index_internal returned left->key_count, would leave right half empty");
             sep_key_bytes = internal_get_key_bytes(left, ns, kp, static_cast<CountType>(m - 1));
             internal_copy_suffix(left, right, ns, kp, m);
             left->key_count = static_cast<CountType>(m - 1);
+            assert_true(left->key_count >= 1, "split_child: internal left half has 0 keys after split");
+            assert_true(right->key_count >= 1, "split_child: internal right half has 0 keys after copy");
         }
 
         co_await insert_child_to_right(t, ns, parent, child_idx, sep_key_bytes, right_ref, right);
@@ -234,7 +240,7 @@ export namespace plexdb::btree {
                 // Re-read parent to find correct child after split
                 const Node* n2 = co_await read_node(t, n_ref);
                 auto sep = internal_get_key(n2, ns, kp, child_idx);
-                bool go_right = compare_key(kp, key, sep) == Ordering::Greater;
+                bool go_right = compare_key(kp, key, sep) != Ordering::Less;
                 if (go_right) child_idx = static_cast<CountType>(child_idx + 1);
                 child_ref = internal_children(n2, ns, kp)[child_idx];
             }
@@ -249,27 +255,29 @@ export namespace plexdb::btree {
         auto kp = key_policy(t);
         auto vp = value_policy(t);
 
-        const auto& h = *(co_await read_header(t));
         U32 ns = node_size(t);
         U16 key_bytes = stored_key_size(kp, key);
         U16 val_bytes = static_cast<U16>(value.length);
 
-        bool is_root_leaf = h.depth == 0;
         {
-            const Node* root = co_await read_node(t, h.root);
+            const auto& h0 = *(co_await read_header(t));
+            bool is_root_leaf = h0.depth == 0;
+            const Node* root = co_await read_node(t, h0.root);
             bool root_full = is_root_leaf
                 ? is_leaf_full(root, ns, kp, vp, key_bytes, val_bytes)
                 : is_internal_full(root, ns, kp, key_bytes);
             if (root_full) {
                 NodeRef new_root_ref = co_await create_internal(t);
                 Node* new_root = co_await update_node(t, new_root_ref);
-                internal_children(new_root, ns, kp)[0] = h.root;
+                internal_children(new_root, ns, kp)[0] = h0.root;
                 co_await split_child(t, ns, kp, vp, new_root, 0, is_root_leaf);
                 auto& hw = *(co_await update_header(t));
                 hw.root = new_root_ref;
                 hw.depth++;
             }
         }
+        // @note re-read header after potential root split so insert_recursive uses the updated root/depth.
+        const auto& h = *(co_await read_header(t));
         co_return co_await insert_recursive(t, h, ns, kp, vp, h.root, 0, key, value);
     }
 
@@ -337,6 +345,7 @@ export namespace plexdb::btree {
         NodeRef node_ref = h.root;
         for (CountType depth = 0; depth < h.depth; depth++) {
             const Node* node = co_await read_node(t, node_ref);
+            assert_true(node->key_count >= 1, "remove_impl: internal node has key_count=0 — btree is corrupt");
             CountType idx = internal_bsearch_gt(node, ns, kp, key);
             push_front(stack_arena, stack, RemoveStackItem{node_ref, idx});
             node_ref = internal_children(node, ns, kp)[idx];
@@ -499,9 +508,9 @@ export namespace plexdb::btree {
 
         Impl it{};
         it.node_size = ns;
-        it.leaf_buf  = reinterpret_cast<U8*>(os::allocate(ns));
-        os::memory_copy(it.leaf_buf, n, ns);
-        it.leaf = reinterpret_cast<const Node*>(it.leaf_buf);
+        it.leaf_buf  = UniquePtr<U8>{os::allocate(ns)};
+        os::memory_copy(it.leaf_buf.ptr, n, ns);
+        it.leaf = reinterpret_cast<const Node*>(it.leaf_buf.ptr);
         it.ref  = n_ref;
         it.idx  = 0_u16;
         it.kp   = kp;
@@ -520,13 +529,12 @@ export namespace plexdb::btree {
             if (it.leaf->next != 0) {
                 NodeRef next_ref = it.leaf->next;
                 const Node* next_node = co_await read_node(t, next_ref);
-                os::memory_copy(it.leaf_buf, next_node, it.node_size);
-                it.leaf = reinterpret_cast<const Node*>(it.leaf_buf);
+                os::memory_copy(it.leaf_buf.ptr, next_node, it.node_size);
+                it.leaf = reinterpret_cast<const Node*>(it.leaf_buf.ptr);
                 it.ref  = next_ref;
                 it.idx  = 0_u16;
             } else {
-                os::deallocate(it.leaf_buf);
-                it.leaf_buf = nullptr;
+                it.leaf_buf = {};
                 it.leaf     = nullptr;
                 it.ref      = 0;
                 it.idx      = 0;
@@ -556,9 +564,9 @@ export namespace plexdb::btree {
         auto mk_it = [&](const Node* src, NodeRef ref, CountType i) {
             Impl it{};
             it.node_size = ns;
-            it.leaf_buf  = reinterpret_cast<U8*>(os::allocate(ns));
-            os::memory_copy(it.leaf_buf, src, ns);
-            it.leaf = reinterpret_cast<const Node*>(it.leaf_buf);
+            it.leaf_buf  = UniquePtr<U8>{os::allocate(ns)};
+            os::memory_copy(it.leaf_buf.ptr, src, ns);
+            it.leaf = reinterpret_cast<const Node*>(it.leaf_buf.ptr);
             it.ref = ref; it.idx = i; it.kp = kp; it.vp = vp;
             return it;
         };

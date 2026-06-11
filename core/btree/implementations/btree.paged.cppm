@@ -7,7 +7,6 @@ import plexdb.base;
 import plexdb.os;
 import plexdb.coroutine;
 import plexdb.pager;
-import plexdb.pager.transaction;
 
 import plexdb.btree.types;
 import plexdb.btree.policy;

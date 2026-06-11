@@ -43,7 +43,7 @@ export namespace plexdb::coroutine::debug {
     // Called from get_return_object() to auto-populate the frame name.
     // Walks std::stacktrace::current(), skips plexdb::coroutine infrastructure,
     // and stores the first user frame's description.
-    inline void capture_frame_from_stacktrace(Frame& frame) {
+    inline void capture_frame_from_stacktrace([[maybe_unused]] Frame& frame) {
         if constexpr (!enabled) return;
 #if PLEXDB_DEBUG
         for (const auto& entry : std::stacktrace::current()) {

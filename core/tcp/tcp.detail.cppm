@@ -82,7 +82,7 @@ export namespace plexdb::tcp {
         MapFixedSentinel<os::Handle, Op, 2_u64*MAX_CONCURRENT_CONNECTIONS> waiting_op;
         DynamicArray<BufferInfo> buffer_infos;
         uring::BufferPool<MAX_CONCURRENT_CONNECTIONS> buffer_pool;
-        U8* socket_buffers;
+        UniquePtr<U8> socket_buffers{};
         AcquireBufferFunctor acquire_fn;
         ReleaseBufferFunctor release_fn;
         ReadToBufferFunctor  read_fn;
@@ -101,14 +101,12 @@ export namespace plexdb::tcp {
             , waiting_op(move(o.waiting_op))
             , buffer_infos(move(o.buffer_infos))
             , buffer_pool(move(o.buffer_pool))
-            , socket_buffers(o.socket_buffers)
+            , socket_buffers(plexdb::move(o.socket_buffers))
             , acquire_fn(move(o.acquire_fn))
             , release_fn(move(o.release_fn))
             , read_fn(move(o.read_fn))
             , write_fn(move(o.write_fn))
-        {
-            o.socket_buffers = nullptr;
-        }
+        {}
 
         ~SocketListenerState() {
             for (auto& it : client_to_connection) {
@@ -126,7 +124,6 @@ export namespace plexdb::tcp {
                 }
                 conn.task.reset();
             }
-            if (socket_buffers) os::deallocate(socket_buffers);
         }
     };
 
@@ -300,7 +297,7 @@ export namespace plexdb::tcp {
             in_s->buffer_infos[idx].client = conn->client;
             PLEXDB_DEBUG_X(in_s->buffer_infos[idx].buffer_idx = idx;)
             co_return RWBuffer{
-                .view   = TArrayView<U8,U32>(in_s->socket_buffers + U64(idx) * BUFFER_SIZE, 0),
+                .view   = TArrayView<U8,U32>(in_s->socket_buffers.ptr + U64(idx) * BUFFER_SIZE, 0),
                 .length = BUFFER_SIZE,
                 .idx    = idx,
             };

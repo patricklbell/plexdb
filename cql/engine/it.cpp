@@ -8,7 +8,6 @@ import plexdb.base;
 import plexdb.coroutine;
 import plexdb.os;
 import plexdb.pager;
-import plexdb.pager.transaction;
 import plexdb.btree;
 import plexdb.btree.types;
 import plexdb.blob;
@@ -134,8 +133,9 @@ namespace cql {
     }
 
     coroutine::Task<void> RowIterator::advance() {
+        bool own_tx = !this->pager->transaction_active;
         pager::Transaction tx{this->pager};
-        co_await tx.begin();
+        if (own_tx) co_await tx.begin();
         if (!schema::has_clustering_keys(*table)) {
             co_await this->partition_it.advance();
         } else {
@@ -154,7 +154,7 @@ namespace cql {
                 }
             }
         }
-        co_await tx.commit();
+        if (own_tx) co_await tx.commit();
     }
 
     static coroutine::Task<void> create_clustering(RowIterator& it, Pager* pager, schema::Table* table) {
@@ -180,53 +180,89 @@ namespace cql {
 
     coroutine::Task<RowIterator> create_table_begin_it(Pager* pager, schema::Table* table) {
         RowIterator it;
-        it.pager        = pager;
-        it.table        = table;
-        it.partition_it = co_await btree::begin<schema::PartitionEntry>(table->btree);
-        co_await create_clustering(it, pager, table);
+        it.pager = pager;
+        it.table = table;
+        {
+            bool own_tx = !pager->transaction_active;
+            pager::Transaction tx{pager};
+            if (own_tx) co_await tx.begin();
+            it.partition_it = co_await btree::begin<schema::PartitionEntry>(table->btree);
+            co_await create_clustering(it, pager, table);
+            if (own_tx) co_await tx.commit();
+        }
         co_return it;
     }
 
     coroutine::Task<RowIterator> create_table_eq_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
         RowIterator it;
-        it.pager        = pager;
-        it.table        = table;
-        it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::RequireEquality>(table->btree, pk_key);
-        co_await create_clustering(it, pager, table);
+        it.pager = pager;
+        it.table = table;
+        {
+            bool own_tx = !pager->transaction_active;
+            pager::Transaction tx{pager};
+            if (own_tx) co_await tx.begin();
+            it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::RequireEquality>(table->btree, pk_key);
+            co_await create_clustering(it, pager, table);
+            if (own_tx) co_await tx.commit();
+        }
         co_return it;
     }
 
     coroutine::Task<RowIterator> create_table_lt_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
         RowIterator it;
-        it.pager        = pager;
-        it.table        = table;
-        it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_key);
+        it.pager = pager;
+        it.table = table;
+        {
+            bool own_tx = !pager->transaction_active;
+            pager::Transaction tx{pager};
+            if (own_tx) co_await tx.begin();
+            it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_key);
+            if (own_tx) co_await tx.commit();
+        }
         co_return it;
     }
 
     coroutine::Task<RowIterator> create_table_le_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
         RowIterator it;
-        it.pager        = pager;
-        it.table        = table;
-        it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreater>(table->btree, pk_key);
+        it.pager = pager;
+        it.table = table;
+        {
+            bool own_tx = !pager->transaction_active;
+            pager::Transaction tx{pager};
+            if (own_tx) co_await tx.begin();
+            it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreater>(table->btree, pk_key);
+            if (own_tx) co_await tx.commit();
+        }
         co_return it;
     }
 
     coroutine::Task<RowIterator> create_table_gt_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
         RowIterator it;
-        it.pager        = pager;
-        it.table        = table;
-        it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreater>(table->btree, pk_key);
-        co_await create_clustering(it, pager, table);
+        it.pager = pager;
+        it.table = table;
+        {
+            bool own_tx = !pager->transaction_active;
+            pager::Transaction tx{pager};
+            if (own_tx) co_await tx.begin();
+            it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreater>(table->btree, pk_key);
+            co_await create_clustering(it, pager, table);
+            if (own_tx) co_await tx.commit();
+        }
         co_return it;
     }
 
     coroutine::Task<RowIterator> create_table_ge_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key) {
         RowIterator it;
-        it.pager        = pager;
-        it.table        = table;
-        it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_key);
-        co_await create_clustering(it, pager, table);
+        it.pager = pager;
+        it.table = table;
+        {
+            bool own_tx = !pager->transaction_active;
+            pager::Transaction tx{pager};
+            if (own_tx) co_await tx.begin();
+            it.partition_it = co_await btree::find_it<schema::PartitionEntry, btree::SearchStrategy::FirstGreaterEqual>(table->btree, pk_key);
+            co_await create_clustering(it, pager, table);
+            if (own_tx) co_await tx.commit();
+        }
         co_return it;
     }
 }

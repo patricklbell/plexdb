@@ -334,7 +334,8 @@ export namespace plexdb::btree {
     void internal_insert_entry(Node* node, U32 ns, KP kp, CountType idx,
                                TArrayView<const U8, U16> key_bytes, NodeRef right_child) noexcept {
         auto page = internal_page(node, ns, kp);
-        insert_key(page, idx, key_bytes);
+        bool ok = insert_key(page, idx, key_bytes);
+        assert_true(ok, "internal_insert_entry: insert_key failed — internal node unexpectedly full");
         insert_child(page, idx + 1, right_child);
         if constexpr (KP::is_fixed_size) node->key_count++;
         else node->key_count = page.count;
@@ -458,7 +459,8 @@ export namespace plexdb::btree {
                     return false;
                 }
             }
-            insert(page, idx, key, val_bytes);
+            bool ok = insert(page, idx, key, val_bytes);
+            assert_true(ok, "leaf_upsert: insert into leaf failed — leaf was unexpectedly full");
             node->key_count = page.count;
             return true;
         }
@@ -524,8 +526,16 @@ export namespace plexdb::btree {
         if constexpr (KP::is_fixed_size) {
             return page.count >= page.capacity;
         } else {
-            U16 needed = static_cast<U16>(sizeof(SlotEntry<true,false>) + next_key_bytes + sizeof(NodeRef));
-            return free_bytes(page) < needed;
+            // @perf O(n): sums key lengths to compute compacted free space; insert_key
+            // compacts on demand so fragmented free_space() underestimates actual space.
+            const auto* slots = page.slots();
+            U16 total_key_bytes = 0;
+            for (CountType i = 0; i < page.count; i++) {
+                total_key_bytes += slots[i].key_len;
+            }
+            U16 compacted_free = static_cast<U16>(page.usable_capacity() - total_key_bytes - page.slot_end);
+            U16 needed = static_cast<U16>(sizeof(InternalSlotEntry) + next_key_bytes);
+            return compacted_free < needed;
         }
     }
 
@@ -537,14 +547,15 @@ export namespace plexdb::btree {
         if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
             return static_cast<CountType>((node->key_count + 1) / 2);
         } else {
+            // @perf O(n): scans all entries to find byte-balanced split point
             auto page = leaf_page(node, node_size, kp, vp);
             U16 half = static_cast<U16>(used_bytes(page) / 2);
             U16 acc = 0;
             for (CountType i = 0; i < page.count; i++) {
-                // leaf_page for varlen KP always returns SlottedLeafPage<true,true>
                 acc += static_cast<U16>(key_at(page, i).length + value_at(page, i).length
-                                        + sizeof(SlotEntry<true, true>));
-                if (acc >= half) return static_cast<CountType>(i + 1);
+                                        + sizeof(LeafSlotEntry));
+                if (acc >= half)
+                    return static_cast<CountType>(i + 1);
             }
             return static_cast<CountType>(page.count / 2);
         }
@@ -555,15 +566,30 @@ export namespace plexdb::btree {
         if constexpr (KP::is_fixed_size) {
             return static_cast<CountType>((node->key_count + 1) / 2);
         } else {
+            // @perf O(n): two passes over slots to compute actual used bytes and split point
             auto page = internal_page(node, node_size, kp);
-            U16 half = static_cast<U16>(used_bytes(page) / 2);
-            U16 acc = 0;
+            const auto* slots = page.slots();
+            U16 total_key_bytes = 0;
             for (CountType i = 0; i < page.count; i++) {
-                acc += static_cast<U16>(key_at(page, i).length
-                                        + sizeof(SlotEntry<true,false>) + sizeof(NodeRef));
-                if (acc >= half) return static_cast<CountType>(i + 1);
+                total_key_bytes += slots[i].key_len;
             }
-            return static_cast<CountType>(page.count / 2);
+            U16 actual_used = static_cast<U16>(page.slot_end + total_key_bytes);
+            U16 half = static_cast<U16>(actual_used / 2);
+            U16 acc = 0;
+            CountType ret = 0;
+            for (CountType i = 0; i < page.count; i++) {
+                acc += static_cast<U16>(slots[i].key_len + sizeof(InternalSlotEntry));
+                if (acc >= half) {
+                    ret = static_cast<CountType>(i + 1);
+                    break;
+                }
+            }
+            if (ret == 0)
+                ret = static_cast<CountType>(page.count / 2);
+            // Safety: never leave right half empty
+            if (ret >= page.count)
+                ret = static_cast<CountType>(page.count - 1);
+            return ret;
         }
     }
 }

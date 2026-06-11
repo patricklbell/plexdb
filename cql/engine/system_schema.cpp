@@ -545,7 +545,7 @@ namespace cql::engine {
         return vr;
     }
 
-    VirtualRows create_system_local() {
+    VirtualRows create_system_local(U16 port) {
         VirtualRows vr;
         vr.keyspace = "system";
         vr.table = "local";
@@ -581,19 +581,19 @@ namespace cql::engine {
         emplace_back(row.values, "local"_as);
         emplace_back(row.values, "COMPLETED"_as);
         emplace_back(row.values, create_loopback_ipv4());  // broadcast_address
-        emplace_back(row.values, S32(7000));
+        emplace_back(row.values, S32(port));
         emplace_back(row.values, "cql"_as);
         emplace_back(row.values, "3.4.7"_as);
         emplace_back(row.values, "datacenter1"_as);
         emplace_back(row.values, UUID{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}});
         emplace_back(row.values, create_loopback_ipv4());  // listen_address
-        emplace_back(row.values, S32(7000));
+        emplace_back(row.values, S32(port));
         emplace_back(row.values, "5"_as);
         emplace_back(row.values, "org.apache.cassandra.dht.Murmur3Partitioner"_as);
         emplace_back(row.values, "rack1"_as);
         emplace_back(row.values, "3.11.19"_as); // @note last version in 3.x, before system_virtual
         emplace_back(row.values, create_loopback_ipv4());  // rpc_address
-        emplace_back(row.values, S32(9042));
+        emplace_back(row.values, S32(port));
         emplace_back(row.values, UUID{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}});
         { DynamicSet<NestedColumnValue> s{}; insert(s, ncv("0"_as)); emplace_back(row.values, move(s)); }
         emplace_back(row.values, DynamicMap<NestedColumnValue, NestedColumnValue>{});
