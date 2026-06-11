@@ -10,6 +10,9 @@
 - Use `@todo` for future work, `@note` for important assumptions, `@profile` for performance notes, `@padding` for struct padding.
 - Never reference specific tasks, fixes, callers, or changes in comments. No "added for X", "changed to Y", "round-trip:", "old/new path:", or any annotation that will rot as the code evolves.
 
+## Coroutines
+- Coroutine parameters: the C++20 coroutine frame copies reference parameters as references (not their referents). A `const T&` parameter whose referent is a temporary will dangle after the first suspension point. Pass by value for any parameter whose address is captured or reinterpreted inside the coroutine body (e.g. as a byte span), or whenever the coroutine may outlive the call site.
+
 ## Dev environment
 - C++20 modules with CMake. Static libraries: `plexdb` (core) and `cql` (CQL object store).
 - Module interface units (`.cppm`): export types and declare functions only — no function bodies except for templates (which must be defined in the interface for instantiation). Remember to add corresponding `.cpp` implementation units to CMakeLists.txt.
