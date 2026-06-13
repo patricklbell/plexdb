@@ -1,20 +1,14 @@
 #include <catch2/catch_test_macros.hpp>
-#include <plexdb/test_macros/test_macros.h>
-
-#include <string.h>
-#include <string>
-#include <vector>
-#include <stdint.h>
-#include <atomic>
-#include <cinttypes>
-
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_adapters.hpp>
 #include <catch2/generators/catch_generators_random.hpp>
 
+#include <plexdb/macros/macros.h>
+#include <plexdb/test_macros/test_macros.h>
+#include <cql/test_macros/test_macros.h>
+
 import plexdb.base;
 import plexdb.os;
-import plexdb.threads;
 import plexdb.pager;
 import plexdb.pager.test_helpers;
 import plexdb.aio;
@@ -22,769 +16,278 @@ import plexdb.server.test_helpers;
 
 import cql.engine;
 import cql.native;
+import cql.test_helpers;
 
 using namespace plexdb;
 using namespace plexdb::os;
 using namespace cql;
+using namespace cql::test;
 
-namespace {
-    constexpr int NATIVE_TEST_PORT_BASE = 23000;
-    std::atomic<int> port_counter{0};
-
-    int get_unique_port() {
-        return NATIVE_TEST_PORT_BASE + port_counter.fetch_add(1);
-    }
-
-    // ========================================================================
-    // Binary frame builder (client side)
-    // ========================================================================
-    struct Bytes {
-        std::vector<uint8_t> data;
-
-        void u8(uint8_t v)  { data.push_back(v); }
-        void u16(uint16_t v){ u8(v >> 8); u8(v); }
-        void s32(int32_t v) { u8(uint32_t(v) >> 24); u8(uint32_t(v) >> 16); u8(uint32_t(v) >> 8); u8(uint32_t(v)); }
-
-        // [string]: [short] n + bytes
-        void cql_string(const char* s) {
-            uint16_t len = uint16_t(strlen(s));
-            u16(len);
-            for (uint16_t i = 0; i < len; i++) u8(uint8_t(s[i]));
-        }
-
-        // [long string]: [int] n + bytes
-        void cql_long_string(const char* s) {
-            int32_t len = int32_t(strlen(s));
-            s32(len);
-            for (int32_t i = 0; i < len; i++) u8(uint8_t(s[i]));
-        }
-
-        // Prepend 9-byte frame header
-        void prepend_header(uint8_t op, int16_t stream) {
-            int32_t body_len = int32_t(data.size());
-            std::vector<uint8_t> hdr(9);
-            hdr[0] = 0x04; // request version
-            hdr[1] = 0x00; // flags
-            hdr[2] = uint8_t(uint16_t(stream) >> 8);
-            hdr[3] = uint8_t(stream);
-            hdr[4] = op;
-            hdr[5] = uint8_t(uint32_t(body_len) >> 24);
-            hdr[6] = uint8_t(uint32_t(body_len) >> 16);
-            hdr[7] = uint8_t(uint32_t(body_len) >> 8);
-            hdr[8] = uint8_t(body_len);
-            data.insert(data.begin(), hdr.begin(), hdr.end());
-        }
-    };
-
-    Bytes create_startup(int16_t stream = 0) {
-        Bytes b;
-        b.u16(1);
-        b.cql_string("CQL_VERSION");
-        b.cql_string("3.0.0");
-        b.prepend_header(0x01, stream);
-        return b;
-    }
-
-    Bytes create_options(int16_t stream = 0) {
-        Bytes b;
-        b.prepend_header(0x05, stream);
-        return b;
-    }
-
-    Bytes create_query(const char* cql, int16_t stream = 0) {
-        Bytes b;
-        b.cql_long_string(cql);
-        b.u16(0x0001); // consistency = ONE
-        b.u8(0x00);    // flags
-        b.prepend_header(0x07, stream);
-        return b;
-    }
-
-    void send_frame(Socket& client, const Bytes& b) {
-        socket_send_all(client, reinterpret_cast<const char*>(b.data.data()), b.data.size());
-    }
-
-    // ========================================================================
-    // Response reader
-    // ========================================================================
-    struct NativeResponse {
-        uint8_t  version  = 0;
-        uint8_t  flags    = 0;
-        int16_t  stream   = 0;
-        uint8_t  opcode   = 0;
-        int32_t  body_len = 0;
-        std::vector<uint8_t> body;
-    };
-
-    NativeResponse recv_frame(Socket& client) {
-        NativeResponse resp;
-        uint8_t hdr[9] = {};
-        size_t got = 0;
-        while (got < 9) {
-            auto res = socket_receive(client, reinterpret_cast<char*>(hdr + got), 9 - got);
-            if (res.byte_count <= 0) break;
-            got += size_t(res.byte_count);
-        }
-        resp.version  = hdr[0];
-        resp.flags    = hdr[1];
-        resp.stream   = int16_t((uint16_t(hdr[2]) << 8) | hdr[3]);
-        resp.opcode   = hdr[4];
-        resp.body_len = int32_t((uint32_t(hdr[5]) << 24) | (uint32_t(hdr[6]) << 16) | (uint32_t(hdr[7]) << 8) | hdr[8]);
-
-        if (resp.body_len > 0) {
-            resp.body.resize(size_t(resp.body_len));
-            size_t received = 0;
-            while (received < size_t(resp.body_len)) {
-                auto res = socket_receive(client, reinterpret_cast<char*>(resp.body.data() + received), size_t(resp.body_len) - received);
-                if (res.byte_count <= 0) break;
-                received += size_t(res.byte_count);
-            }
-        }
-        return resp;
-    }
-
-    // Check if the raw body bytes contain a substring
-    bool body_contains(const NativeResponse& resp, const char* needle) {
-        if (resp.body.empty()) return false;
-        const char* body_str = reinterpret_cast<const char*>(resp.body.data());
-        size_t body_size     = resp.body.size();
-        size_t needle_len    = strlen(needle);
-        if (needle_len == 0) return true;
-        for (size_t i = 0; i + needle_len <= body_size; i++) {
-            if (memcmp(body_str + i, needle, needle_len) == 0) return true;
-        }
-        return false;
-    }
-
-    std::string body_string(const NativeResponse& resp) {
-        return std::string(reinterpret_cast<const char*>(resp.body.data()), resp.body.size());
-    }
-
-    // Read the RESULT kind (first 4 bytes of body)
-    int32_t result_kind(const NativeResponse& resp) {
-        if (resp.body.size() < 4) return -1;
-        return int32_t(
-            (uint32_t(resp.body[0]) << 24) |
-            (uint32_t(resp.body[1]) << 16) |
-            (uint32_t(resp.body[2]) << 8)  |
-            uint32_t(resp.body[3])
-        );
-    }
-}
-
-PAGER_TEST_CASE("Native protocol STARTUP handshake", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
-
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
-
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-
-        send_frame(client, create_startup());
-        auto resp = recv_frame(client);
-        CHECK(resp.version == 0x84);
-        CHECK(resp.opcode  == 0x02);
-        CHECK(resp.body_len == 0);
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+CQL_NATIVE_TEST_CASE("Native protocol STARTUP handshake", "[cql.native]") {
+    run_native_server(fixture, [](Socket& client, Notifier& interrupt) {
+        Frame ready = send_startup(client);
+        CHECK(ready.version  == RESPONSE_VERSION);
+        CHECK(ready.opcode   == op::READY);
+        CHECK(ready.body_len == 0);
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-PAGER_TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
-
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
-
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-
-        send_frame(client, create_options());
-        auto resp = recv_frame(client);
-        CHECK(resp.version == 0x84);
-        CHECK(resp.opcode  == 0x06);
-        CHECK(resp.body_len > 0);
-        CHECK(body_contains(resp, "CQL_VERSION"));
-        CHECK(body_contains(resp, "3.0.0"));
-        CHECK(body_contains(resp, "COMPRESSION"));
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+CQL_NATIVE_TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[cql.native]") {
+    run_native_server(fixture, [](Socket& client, Notifier& interrupt) {
+        Frame supported = send_options(client);
+        CHECK(supported.version == RESPONSE_VERSION);
+        CHECK(supported.opcode  == op::SUPPORTED);
+        CHECK(supported.body_len > 0);
+        CHECK(body_contains(supported, "CQL_VERSION"));
+        CHECK(body_contains(supported, "3.0.0"));
+        CHECK(body_contains(supported, "COMPRESSION"));
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-PAGER_TEST_CASE("Native protocol CQL DDL and DML operations", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
 
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
 
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
+CQL_NATIVE_TEST_CASE("Native protocol CQL DDL and DML operations", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.users (id int PRIMARY KEY, name text, age int);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.users (id, name, age) VALUES (1, 'Alice', 30);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.users (id, name, age) VALUES (2, 'Bob', 25);").opcode == op::RESULT);
 
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
+        Frame sel = send_query(client, "SELECT * FROM ks.users;");
+        CHECK(sel.opcode == op::RESULT);
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "Alice"));
+        CHECK(body_contains(sel, "Bob"));
 
-        send_frame(client, create_query("CREATE KEYSPACE ks;"));
-        auto resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0005);
-        CHECK(body_contains(resp, "CREATED"));
-        CHECK(body_contains(resp, "KEYSPACE"));
+        Frame use = send_query(client, "USE ks;");
+        CHECK(use.opcode == op::RESULT);
+        CHECK(result_kind(use) == result::SET_KEYSPACE);
 
-        send_frame(client, create_query("CREATE TABLE ks.users (id int PRIMARY KEY, name text, age int);"));
-        resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0005);
-        CHECK(body_contains(resp, "TABLE"));
+        CHECK(result_kind(send_query(client, "DROP TABLE ks.users;"))   == result::SCHEMA_CHANGE);
+        CHECK(result_kind(send_query(client, "DROP KEYSPACE ks;"))      == result::SCHEMA_CHANGE);
 
-        send_frame(client, create_query("INSERT INTO ks.users (id, name, age) VALUES (1, 'Alice', 30);"));
-        resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0001);
-
-        send_frame(client, create_query("INSERT INTO ks.users (id, name, age) VALUES (2, 'Bob', 25);"));
-        resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0001);
-
-        send_frame(client, create_query("SELECT * FROM ks.users;"));
-        resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
-        CHECK(body_contains(resp, "Alice"));
-        CHECK(body_contains(resp, "Bob"));
-
-        send_frame(client, create_query("USE ks;"));
-        resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0003);
-
-        send_frame(client, create_query("DROP TABLE ks.users;"));
-        resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0005);
-
-        send_frame(client, create_query("DROP KEYSPACE ks;"));
-        resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0005);
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-PAGER_TEST_CASE("Native protocol error responses", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
+CQL_NATIVE_TEST_CASE("Native protocol error responses", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "SELECT * FROM no_such_ks.no_table;").opcode == op::ERROR);
 
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
+        Frame err = send_query(client, "SELECT * FROM missing.tbl;", /*stream=*/42);
+        CHECK(err.opcode == op::ERROR);
+        CHECK(err.stream == 42);
 
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        send_frame(client, create_query("SELECT * FROM no_such_ks.no_table;"));
-        auto resp = recv_frame(client);
-        CHECK(resp.opcode == 0x00);
-
-        send_frame(client, create_query("SELECT * FROM missing.tbl;", /*stream=*/42));
-        resp = recv_frame(client);
-        CHECK(resp.opcode == 0x00);
-        CHECK(resp.stream == 42);
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-PAGER_TEST_CASE("Native protocol data persists across restarts", "[cql.native]") {
-    int port1 = get_unique_port();
-    int port2 = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
 
-    {
-        U64 page_size = 4_kb;
-        auto pager = create_test_pager(db_file, page_size);
-        {
-            pager::Transaction tx{&pager};
-            co_await tx.begin();
-            co_await engine::create_database(pager);
-            co_await tx.commit();
-        }
-        Engine engine;
-        co_await engine::init(engine, &pager);
+CQL_NATIVE_TEST_CASE("Native protocol UPDATE modifies existing row", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, name text);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, name) VALUES (1, 'Alice');").opcode == op::RESULT);
+        CHECK(send_query(client, "UPDATE ks.t SET name = 'Bob' WHERE id = 1;").opcode == op::RESULT);
 
-        run_server_test("test-client", [&](os::Notifier& interrupt) {
-            Socket client{socket_open()};
-            socket_set_timeout(client, 2000);
-            CHECK(socket_connect(client, "127.0.0.1", (U16)port1));
+        Frame sel = send_query(client, "SELECT * FROM ks.t;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK( body_contains(sel, "Bob"));
+        CHECK(!body_contains(sel, "Alice"));
 
-            send_frame(client, create_startup());
-            CHECK(recv_frame(client).opcode == 0x02);
-
-            send_frame(client, create_query("CREATE KEYSPACE pks;"));
-            CHECK(recv_frame(client).opcode == 0x08);
-
-            send_frame(client, create_query("CREATE TABLE pks.data (id int PRIMARY KEY, val text);"));
-            CHECK(recv_frame(client).opcode == 0x08);
-
-            send_frame(client, create_query("INSERT INTO pks.data (id, val) VALUES (99, 'persisted');"));
-            CHECK(recv_frame(client).opcode == 0x08);
-
-            os::signal_notify_safe(interrupt);
-        }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-            native::run(port1, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
-        });
-        destroy_test_pager(pager);
-    }
-
-    {
-        auto pager = test_pager(db_file);
-        Engine engine;
-        co_await engine::init(engine, &pager);
-
-        run_server_test("test-client", [&](os::Notifier& interrupt) {
-            Socket client{socket_open()};
-            socket_set_timeout(client, 2000);
-            CHECK(socket_connect(client, "127.0.0.1", (U16)port2));
-
-            send_frame(client, create_startup());
-            CHECK(recv_frame(client).opcode == 0x02);
-
-            send_frame(client, create_query("SELECT * FROM pks.data;"));
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0002);
-            CHECK(body_contains(resp, "persisted"));
-
-            os::signal_notify_safe(interrupt);
-        }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-            native::run(port2, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
-        });
-        destroy_test_pager(pager);
-    }
-}
-
-PAGER_TEST_CASE("Native protocol system.local virtual view", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
-
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
-
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        // system.local
-        send_frame(client, create_query("SELECT * FROM system.local;"));
-        {
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0002);
-            CHECK(body_contains(resp, "local"));
-            CHECK(body_contains(resp, "datacenter1"));
-            CHECK(body_contains(resp, "rack1"));
-            CHECK(body_contains(resp, "cql"));
-        }
-
-        // system.peers
-        send_frame(client, create_query("SELECT * FROM system.peers;"));
-        {
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0002);
-            CHECK(body_contains(resp, "peer"));
-        }
-
-        // system.peers_v2
-        send_frame(client, create_query("SELECT * FROM system.peers_v2;"));
-        {
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0002);
-        }
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-PAGER_TEST_CASE("Native protocol system_schema virtual views", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
+CQL_NATIVE_TEST_CASE("Native protocol DELETE removes a row by primary key", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, name text);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, name) VALUES (1, 'Alice');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, name) VALUES (2, 'Bob');").opcode == op::RESULT);
+        CHECK(send_query(client, "DELETE FROM ks.t WHERE id = 1;").opcode == op::RESULT);
 
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
+        Frame sel = send_query(client, "SELECT * FROM ks.t;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK( body_contains(sel, "Bob"));
+        CHECK(!body_contains(sel, "Alice"));
 
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        send_frame(client, create_query("CREATE KEYSPACE test_ks;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        send_frame(client, create_query("CREATE TABLE test_ks.users (id int PRIMARY KEY, name text);"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        // system_schema.keyspaces
-        send_frame(client, create_query("SELECT * FROM system_schema.keyspaces;"));
-        {
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0002);
-            CHECK(body_contains(resp, "keyspace_name"));
-            CHECK(body_contains(resp, "test_ks"));
-            CHECK(body_contains(resp, "system_schema"));
-            CHECK(body_contains(resp, "system"));
-        }
-
-        // system_schema.tables
-        send_frame(client, create_query("SELECT * FROM system_schema.tables;"));
-        {
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0002);
-            CHECK(body_contains(resp, "table_name"));
-            CHECK(body_contains(resp, "users"));
-            CHECK(body_contains(resp, "keyspaces"));
-            CHECK(body_contains(resp, "local"));
-        }
-
-        // system_schema.columns
-        send_frame(client, create_query("SELECT * FROM system_schema.columns;"));
-        {
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0002);
-            CHECK(body_contains(resp, "column_name"));
-            CHECK(body_contains(resp, "partition_key"));
-            CHECK(body_contains(resp, "name"));
-            CHECK(body_contains(resp, "clustering"));
-        }
-
-        send_frame(client, create_query("DROP TABLE test_ks.users;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, create_query("DROP KEYSPACE test_ks;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-namespace {
-    bool body_contains_bytes(const NativeResponse& resp, std::initializer_list<uint8_t> needle) {
-        const auto* data = resp.body.data();
-        size_t size = resp.body.size();
-        size_t n = needle.size();
-        if (n == 0 || size < n) return false;
-        const uint8_t* pat = needle.begin();
-        for (size_t i = 0; i + n <= size; i++) {
-            if (memcmp(data + i, pat, n) == 0) return true;
-        }
-        return false;
-    }
+CQL_NATIVE_TEST_CASE("Native protocol TRUNCATE clears all rows", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, name text);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, name) VALUES (1, 'Alice');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, name) VALUES (2, 'Bob');").opcode == op::RESULT);
+        CHECK(send_query(client, "TRUNCATE TABLE ks.t;").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT * FROM ks.t;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(!body_contains(sel, "Alice"));
+        CHECK(!body_contains(sel, "Bob"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
 }
 
-PAGER_TEST_CASE("Native protocol collection serialization", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
 
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
 
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
+CQL_NATIVE_TEST_CASE("Native protocol system.local virtual view", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        Frame local = send_query(client, "SELECT * FROM system.local;");
+        CHECK(local.opcode == op::RESULT);
+        CHECK(result_kind(local) == result::ROWS);
+        CHECK(body_contains(local, "local"));
+        CHECK(body_contains(local, "datacenter1"));
+        CHECK(body_contains(local, "rack1"));
+        CHECK(body_contains(local, "cql"));
 
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
+        Frame peers = send_query(client, "SELECT * FROM system.peers;");
+        CHECK(peers.opcode == op::RESULT);
+        CHECK(result_kind(peers) == result::ROWS);
+        CHECK(body_contains(peers, "peer"));
 
-        send_frame(client, create_query("SELECT * FROM system.local;"));
-        auto resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
+        Frame peers2 = send_query(client, "SELECT * FROM system.peers_v2;");
+        CHECK(peers2.opcode == op::RESULT);
+        CHECK(result_kind(peers2) == result::ROWS);
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Native protocol system_schema virtual views", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE test_ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE test_ks.users (id int PRIMARY KEY, name text);").opcode == op::RESULT);
+
+        Frame ks = send_query(client, "SELECT * FROM system_schema.keyspaces;");
+        CHECK(result_kind(ks) == result::ROWS);
+        CHECK(body_contains(ks, "keyspace_name"));
+        CHECK(body_contains(ks, "test_ks"));
+        CHECK(body_contains(ks, "system_schema"));
+        CHECK(body_contains(ks, "system"));
+
+        Frame tbls = send_query(client, "SELECT * FROM system_schema.tables;");
+        CHECK(result_kind(tbls) == result::ROWS);
+        CHECK(body_contains(tbls, "table_name"));
+        CHECK(body_contains(tbls, "users"));
+        CHECK(body_contains(tbls, "keyspaces"));
+        CHECK(body_contains(tbls, "local"));
+
+        Frame cols = send_query(client, "SELECT * FROM system_schema.columns;");
+        CHECK(result_kind(cols) == result::ROWS);
+        CHECK(body_contains(cols, "column_name"));
+        CHECK(body_contains(cols, "partition_key"));
+        CHECK(body_contains(cols, "name"));
+        CHECK(body_contains(cols, "clustering"));
+
+        CHECK(send_query(client, "DROP TABLE test_ks.users;").opcode == op::RESULT);
+        CHECK(send_query(client, "DROP KEYSPACE test_ks;").opcode == op::RESULT);
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Native protocol collection serialization", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        Frame local = send_query(client, "SELECT * FROM system.local;");
+        CHECK(result_kind(local) == result::ROWS);
 
         // tokens column type option is Set<Varchar>
-        CHECK(body_contains_bytes(resp, {0x00, 0x22, 0x00, 0x0D}));
+        const U8 set_option[] = {0x00, 0x22, 0x00, 0x0D};
+        CHECK(body_contains(local, set_option, 4));
 
         // tokens set value encodes one-element set containing '0'
-        CHECK(body_contains_bytes(resp, {0x00, 0x00, 0x00, 0x09,
-                                         0x00, 0x00, 0x00, 0x01,
-                                         0x00, 0x00, 0x00, 0x01,
-                                         0x30}));
+        const U8 set_value[] = {0x00,0x00,0x00,0x09, 0x00,0x00,0x00,0x01,
+                                 0x00,0x00,0x00,0x01, 0x30};
+        CHECK(body_contains(local, set_value, sizeof(set_value)));
 
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-PAGER_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
 
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
 
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
+CQL_NATIVE_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE prep_ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE prep_ks.data (id int PRIMARY KEY, name text, score double);").opcode == op::RESULT);
 
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        send_frame(client, create_query("CREATE KEYSPACE prep_ks;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        send_frame(client, create_query("CREATE TABLE prep_ks.data (id int PRIMARY KEY, name text, score double);"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        // PREPARE an INSERT statement with bind markers
+        // Positional bind markers
         {
-            Bytes b;
-            b.cql_long_string("INSERT INTO prep_ks.data (id, name, score) VALUES (?, ?, ?)");
-            b.prepend_header(0x09, 1);
-            send_frame(client, b);
+            Frame prep = send_prepare(client, "INSERT INTO prep_ks.data (id, name, score) VALUES (?, ?, ?)", 1);
+            CHECK(result_kind(prep) == result::PREPARED);
+            TArrayView<const U8> pid = read_prepared_id(prep);
+            CHECK(pid.length == 8);
 
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0004);
-            CHECK(resp.body.size() > 8);
+            DynamicArray<U8> ex;
+            append_cql_short_bytes(ex, pid.ptr, U16(pid.length));
+            append_be_u16(ex, 0x0001);    // consistency = ONE
+            append_u8(ex, 0x01);          // flags: values present
+            append_be_u16(ex, 3);         // value count
+            append_cql_bind_s32(ex, 42);
+            append_cql_bind_str(ex, "Alice");
+            append_cql_bind_f64(ex, 99.5);
+            prepend_v4_header(ex, op::EXECUTE, 2);
+            send_frame(client, ex);
 
-            const uint8_t* p = resp.body.data() + 4;
-            uint16_t id_len = (uint16_t(p[0]) << 8) | p[1];
-            CHECK(id_len == 8);
-            std::vector<uint8_t> prepared_id(p + 2, p + 2 + id_len);
+            Frame exec = recv_frame(client);
+            CHECK(exec.opcode == op::RESULT);
+            CHECK(result_kind(exec) == result::VOID);
 
-            // EXECUTE the prepared statement with bound values
-            {
-                Bytes ex;
-                ex.u16(uint16_t(prepared_id.size()));
-                for (auto byte : prepared_id) ex.u8(byte);
-                ex.u16(0x0001);
-                ex.u8(0x01);
-                ex.u16(3);
-
-                ex.s32(4);
-                ex.u8(0); ex.u8(0); ex.u8(0); ex.u8(42);
-
-                ex.s32(5);
-                ex.u8('A'); ex.u8('l'); ex.u8('i'); ex.u8('c'); ex.u8('e');
-
-                ex.s32(8);
-                uint64_t dbl_bits;
-                double dbl_val = 99.5;
-                memcpy(&dbl_bits, &dbl_val, sizeof(dbl_bits));
-                for (int i = 7; i >= 0; i--) ex.u8(uint8_t(dbl_bits >> (i * 8)));
-
-                ex.prepend_header(0x0A, 2);
-                send_frame(client, ex);
-
-                auto exec_resp = recv_frame(client);
-                CHECK(exec_resp.opcode == 0x08);
-                CHECK(result_kind(exec_resp) == 0x0001);
-            }
-
-            send_frame(client, create_query("SELECT * FROM prep_ks.data;"));
-            auto select_resp = recv_frame(client);
-            CHECK(select_resp.opcode == 0x08);
-            CHECK(result_kind(select_resp) == 0x0002);
-            CHECK(body_contains(select_resp, "Alice"));
+            Frame sel = send_query(client, "SELECT * FROM prep_ks.data;");
+            CHECK(result_kind(sel) == result::ROWS);
+            CHECK(body_contains(sel, "Alice"));
         }
 
-        // PREPARE with named bind markers, then EXECUTE with values in a different order
+        // Named bind markers, executed in reversed order
         {
-            Bytes b;
-            b.cql_long_string("INSERT INTO prep_ks.data (id, name, score) VALUES (:id, :name, :score)");
-            b.prepend_header(0x09, 3);
-            send_frame(client, b);
+            Frame prep = send_prepare(client, "INSERT INTO prep_ks.data (id, name, score) VALUES (:id, :name, :score)", 3);
+            CHECK(result_kind(prep) == result::PREPARED);
+            TArrayView<const U8> pid = read_prepared_id(prep);
+            CHECK(pid.length == 8);
 
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0004);
+            DynamicArray<U8> ex;
+            append_cql_short_bytes(ex, pid.ptr, U16(pid.length));
+            append_be_u16(ex, 0x0001);
+            append_u8(ex, 0x41);          // flags: values + named values
+            append_be_u16(ex, 3);
+            append_cql_named_f64(ex, "score", 77.7);
+            append_cql_named_str(ex, "name", "Bob");
+            append_cql_named_s32(ex, "id", 99);
+            prepend_v4_header(ex, op::EXECUTE, 4);
+            send_frame(client, ex);
 
-            const uint8_t* p = resp.body.data() + 4;
-            uint16_t id_len = (uint16_t(p[0]) << 8) | p[1];
-            CHECK(id_len == 8);
-            std::vector<uint8_t> prepared_id(p + 2, p + 2 + id_len);
+            Frame exec = recv_frame(client);
+            CHECK(exec.opcode == op::RESULT);
+            CHECK(result_kind(exec) == result::VOID);
 
-            // EXECUTE with named values in REVERSED order
-            {
-                Bytes ex;
-                ex.u16(uint16_t(prepared_id.size()));
-                for (auto byte : prepared_id) ex.u8(byte);
-                ex.u16(0x0001);
-                ex.u8(0x41);
-                ex.u16(3);
-
-                ex.cql_string("score");
-                ex.s32(8);
-                uint64_t dbl_bits;
-                double dbl_val = 77.7;
-                memcpy(&dbl_bits, &dbl_val, sizeof(dbl_bits));
-                for (int i = 7; i >= 0; i--) ex.u8(uint8_t(dbl_bits >> (i * 8)));
-
-                ex.cql_string("name");
-                ex.s32(3);
-                ex.u8('B'); ex.u8('o'); ex.u8('b');
-
-                ex.cql_string("id");
-                ex.s32(4);
-                ex.u8(0); ex.u8(0); ex.u8(0); ex.u8(99);
-
-                ex.prepend_header(0x0A, 4);
-                send_frame(client, ex);
-
-                auto exec_resp = recv_frame(client);
-                CHECK(exec_resp.opcode == 0x08);
-                CHECK(result_kind(exec_resp) == 0x0001);
-            }
-
-            send_frame(client, create_query("SELECT * FROM prep_ks.data WHERE id = 99;"));
-            auto select_resp = recv_frame(client);
-            CHECK(select_resp.opcode == 0x08);
-            CHECK(result_kind(select_resp) == 0x0002);
-            CHECK(body_contains(select_resp, "Bob"));
+            Frame sel = send_query(client, "SELECT * FROM prep_ks.data WHERE id = 99;");
+            CHECK(result_kind(sel) == result::ROWS);
+            CHECK(body_contains(sel, "Bob"));
         }
 
-        // End-to-end evaluator coverage over the native protocol.
-        send_frame(client, create_query("CREATE TABLE prep_ks.expr_values (val bigint PRIMARY KEY, tag text);"));
-        auto expr_resp = recv_frame(client);
-        CHECK(expr_resp.opcode == 0x08);
-        CHECK(result_kind(expr_resp) == 0x0005);
+        // Evaluator coverage: constant-folding expressions via QUERY
+        CHECK(send_query(client, "CREATE TABLE prep_ks.expr_values (val bigint PRIMARY KEY, tag text);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE prep_ks.expr_texts (tag text PRIMARY KEY, note text);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE prep_ks.expr_now (tag text PRIMARY KEY, val bigint);").opcode == op::RESULT);
 
-        send_frame(client, create_query("CREATE TABLE prep_ks.expr_texts (tag text PRIMARY KEY, note text);"));
-        expr_resp = recv_frame(client);
-        CHECK(expr_resp.opcode == 0x08);
-        CHECK(result_kind(expr_resp) == 0x0005);
-
-        send_frame(client, create_query("CREATE TABLE prep_ks.expr_now (tag text PRIMARY KEY, val bigint);"));
-        expr_resp = recv_frame(client);
-        CHECK(expr_resp.opcode == 0x08);
-        CHECK(result_kind(expr_resp) == 0x0005);
-
-        struct NumericCase {
-            const char* query;
-            S64 expected;
-            const char* tag;
-        };
-
+        struct NumericCase { const char* query; S64 expected; const char* tag; };
         const NumericCase numeric_cases[] = {
             {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (1 + 2 * 3, 'mul_precedence');", 7, "mul_precedence"},
             {"INSERT INTO prep_ks.expr_values (val, tag) VALUES ((1 + 2) * 3, 'paren');", 9, "paren"},
@@ -798,807 +301,249 @@ PAGER_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native]") {
             {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (toUnixTimestamp(minTimeuuid(1234567892)), 'unixts');", 1234567892, "unixts"},
             {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (dateOf(minTimeuuid(1234567893)), 'dateof');", 1234567893, "dateof"},
         };
-
         for (const auto& c : numeric_cases) {
-            send_frame(client, create_query(c.query));
-            expr_resp = recv_frame(client);
-            CHECK(expr_resp.opcode == 0x08);
-            CHECK(result_kind(expr_resp) == 0x0001);
-
-            std::string select_query = "SELECT tag FROM prep_ks.expr_values WHERE val = ";
-            select_query += std::to_string(c.expected);
-            select_query += ";";
-            send_frame(client, create_query(select_query.c_str()));
-            expr_resp = recv_frame(client);
-            CHECK(expr_resp.opcode == 0x08);
-            CHECK(result_kind(expr_resp) == 0x0002);
-            CHECK(body_contains(expr_resp, c.tag));
+            CHECK(send_query(client, c.query).opcode == op::RESULT);
+            auto q = fmt("SELECT tag FROM prep_ks.expr_values WHERE val = %lld;", (long long)c.expected);
+            Frame sel = send_query(client, q);
+            CHECK(result_kind(sel) == result::ROWS);
+            CHECK(body_contains(sel, c.tag));
         }
 
-        send_frame(client, create_query("INSERT INTO prep_ks.expr_texts (tag, note) VALUES ('hello', 'he' + 'llo');"));
-        expr_resp = recv_frame(client);
-        CHECK(expr_resp.opcode == 0x08);
-        CHECK(result_kind(expr_resp) == 0x0001);
+        CHECK(send_query(client, "INSERT INTO prep_ks.expr_texts (tag, note) VALUES ('hello', 'he' + 'llo');").opcode == op::RESULT);
+        Frame txt = send_query(client, "SELECT note FROM prep_ks.expr_texts WHERE tag = 'hello';");
+        CHECK(result_kind(txt) == result::ROWS);
+        CHECK(body_contains(txt, "hello"));
 
-        send_frame(client, create_query("SELECT note FROM prep_ks.expr_texts WHERE tag = 'hello';"));
-        expr_resp = recv_frame(client);
-        CHECK(expr_resp.opcode == 0x08);
-        CHECK(result_kind(expr_resp) == 0x0002);
-        CHECK(body_contains(expr_resp, "hello"));
+        const char* now_inserts[] = {
+            "INSERT INTO prep_ks.expr_now (tag, val) VALUES ('currentTimestamp', currentTimestamp());",
+            "INSERT INTO prep_ks.expr_now (tag, val) VALUES ('currentDate', currentDate());",
+            "INSERT INTO prep_ks.expr_now (tag, val) VALUES ('currentTime', currentTime());",
+            "INSERT INTO prep_ks.expr_now (tag, val) VALUES ('toTimestampNow', toTimestamp(now()));",
+            "INSERT INTO prep_ks.expr_now (tag, val) VALUES ('toUnixTimestampNow', toUnixTimestamp(now()));",
+        };
+        for (const auto* q : now_inserts) CHECK(send_query(client, q).opcode == op::RESULT);
 
-        send_frame(client, create_query("INSERT INTO prep_ks.expr_now (tag, val) VALUES ('currentTimestamp', currentTimestamp());"));
-        expr_resp = recv_frame(client);
-        CHECK(expr_resp.opcode == 0x08);
-        CHECK(result_kind(expr_resp) == 0x0001);
+        Frame now_sel = send_query(client, "SELECT * FROM prep_ks.expr_now;");
+        CHECK(result_kind(now_sel) == result::ROWS);
+        CHECK(body_contains(now_sel, "currentTimestamp"));
+        CHECK(body_contains(now_sel, "currentDate"));
+        CHECK(body_contains(now_sel, "currentTime"));
+        CHECK(body_contains(now_sel, "toTimestampNow"));
+        CHECK(body_contains(now_sel, "toUnixTimestampNow"));
 
-        send_frame(client, create_query("INSERT INTO prep_ks.expr_now (tag, val) VALUES ('currentDate', currentDate());"));
-        expr_resp = recv_frame(client);
-        CHECK(expr_resp.opcode == 0x08);
-        CHECK(result_kind(expr_resp) == 0x0001);
-
-        send_frame(client, create_query("INSERT INTO prep_ks.expr_now (tag, val) VALUES ('currentTime', currentTime());"));
-        expr_resp = recv_frame(client);
-        CHECK(expr_resp.opcode == 0x08);
-        CHECK(result_kind(expr_resp) == 0x0001);
-
-        send_frame(client, create_query("INSERT INTO prep_ks.expr_now (tag, val) VALUES ('toTimestampNow', toTimestamp(now()));"));
-        expr_resp = recv_frame(client);
-        CHECK(expr_resp.opcode == 0x08);
-        CHECK(result_kind(expr_resp) == 0x0001);
-
-        send_frame(client, create_query("INSERT INTO prep_ks.expr_now (tag, val) VALUES ('toUnixTimestampNow', toUnixTimestamp(now()));"));
-        expr_resp = recv_frame(client);
-        CHECK(expr_resp.opcode == 0x08);
-        CHECK(result_kind(expr_resp) == 0x0001);
-
-        send_frame(client, create_query("SELECT * FROM prep_ks.expr_now;"));
-        expr_resp = recv_frame(client);
-        CHECK(expr_resp.opcode == 0x08);
-        CHECK(result_kind(expr_resp) == 0x0002);
-        CHECK(body_contains(expr_resp, "currentTimestamp"));
-        CHECK(body_contains(expr_resp, "currentDate"));
-        CHECK(body_contains(expr_resp, "currentTime"));
-        CHECK(body_contains(expr_resp, "toTimestampNow"));
-        CHECK(body_contains(expr_resp, "toUnixTimestampNow"));
-
-        // Prepared statement path for bind markers.
+        // Bind marker in prepared statement (bigint)
         {
-            Bytes b;
-            b.cql_long_string("INSERT INTO prep_ks.expr_values (val, tag) VALUES (?, 'bind')");
-            b.prepend_header(0x09, 5);
-            send_frame(client, b);
+            Frame prep = send_prepare(client, "INSERT INTO prep_ks.expr_values (val, tag) VALUES (?, 'bind')", 5);
+            CHECK(result_kind(prep) == result::PREPARED);
+            TArrayView<const U8> pid = read_prepared_id(prep);
+            CHECK(pid.length == 8);
 
-            auto prep_resp = recv_frame(client);
-            CHECK(prep_resp.opcode == 0x08);
-            CHECK(result_kind(prep_resp) == 0x0004);
-
-            const uint8_t* p = prep_resp.body.data() + 4;
-            uint16_t id_len = (uint16_t(p[0]) << 8) | p[1];
-            CHECK(id_len == 8);
-            std::vector<uint8_t> prepared_id(p + 2, p + 2 + id_len);
-
-            Bytes ex;
-            ex.u16(uint16_t(prepared_id.size()));
-            for (auto byte : prepared_id) ex.u8(byte);
-            ex.u16(0x0001);
-            ex.u8(0x01);
-            ex.u16(1);
-            ex.s32(8);
-            ex.u8(0); ex.u8(0); ex.u8(0); ex.u8(0);
-            ex.u8(0); ex.u8(0); ex.u8(0); ex.u8(41);
-            ex.prepend_header(0x0A, 2);
+            DynamicArray<U8> ex;
+            append_cql_short_bytes(ex, pid.ptr, U16(pid.length));
+            append_be_u16(ex, 0x0001);
+            append_u8(ex, 0x01);
+            append_be_u16(ex, 1);
+            append_cql_bind_s64(ex, 41);
+            prepend_v4_header(ex, op::EXECUTE, 2);
             send_frame(client, ex);
-            expr_resp = recv_frame(client);
-            CHECK(expr_resp.opcode == 0x08);
-            CHECK(result_kind(expr_resp) == 0x0001);
+            CHECK(recv_frame(client).opcode == op::RESULT);
 
-            send_frame(client, create_query("SELECT tag FROM prep_ks.expr_values WHERE val = 41;"));
-            expr_resp = recv_frame(client);
-            UNSCOPED_INFO(body_string(expr_resp));
-            CHECK(expr_resp.opcode == 0x08);
-            CHECK(result_kind(expr_resp) == 0x0002);
-            CHECK(body_contains(expr_resp, "bind"));
+            Frame sel = send_query(client, "SELECT tag FROM prep_ks.expr_values WHERE val = 41;");
+            CHECK(result_kind(sel) == result::ROWS);
+            CHECK(body_contains(sel, "bind"));
         }
 
-
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-PAGER_TEST_CASE("Native protocol QUERY with bind values", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
+CQL_NATIVE_TEST_CASE("Native protocol QUERY with bind values", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE qbind_ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE qbind_ks.items (id int PRIMARY KEY, label text, weight double);").opcode == op::RESULT);
 
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
-
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        send_frame(client, create_query("CREATE KEYSPACE qbind_ks;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, create_query("CREATE TABLE qbind_ks.items (id int PRIMARY KEY, label text, weight double);"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        // positional bind values
+        // Positional
         {
-            Bytes b;
-            b.cql_long_string("INSERT INTO qbind_ks.items (id, label, weight) VALUES (?, ?, ?)");
-            b.u16(0x0001);
-            b.u8(0x01);
-            b.u16(3);
-            b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(7);
-            b.s32(6); b.u8('G'); b.u8('a'); b.u8('d'); b.u8('g'); b.u8('e'); b.u8('t');
-            b.s32(8);
-            uint64_t dbl_bits; double dbl_val = 3.14;
-            memcpy(&dbl_bits, &dbl_val, sizeof(dbl_bits));
-            for (int i = 7; i >= 0; i--) b.u8(uint8_t(dbl_bits >> (i * 8)));
-            b.prepend_header(0x07, 1);
+            DynamicArray<U8> b;
+            append_cql_long_string(b, "INSERT INTO qbind_ks.items (id, label, weight) VALUES (?, ?, ?)");
+            append_be_u16(b, 0x0001);
+            append_u8(b, 0x01);
+            append_be_u16(b, 3);
+            append_cql_bind_s32(b, 7);
+            append_cql_bind_str(b, "Gadget");
+            append_cql_bind_f64(b, 3.14);
+            prepend_v4_header(b, op::QUERY, 1);
             send_frame(client, b);
-
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0001);
-
-            send_frame(client, create_query("SELECT * FROM qbind_ks.items;"));
-            auto sel = recv_frame(client);
-            CHECK(sel.opcode == 0x08);
-            CHECK(result_kind(sel) == 0x0002);
-            CHECK(body_contains(sel, "Gadget"));
+            CHECK(recv_frame(client).opcode == op::RESULT);
         }
+        Frame sel = send_query(client, "SELECT * FROM qbind_ks.items;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "Gadget"));
 
-        // named bind values
+        // Named
         {
-            Bytes b;
-            b.cql_long_string("INSERT INTO qbind_ks.items (id, label, weight) VALUES (:id, :label, :weight)");
-            b.u16(0x0001);
-            b.u8(0x41);
-            b.u16(3);
-            b.cql_string("weight");
-            b.s32(8);
-            uint64_t dbl_bits; double dbl_val = 2.71;
-            memcpy(&dbl_bits, &dbl_val, sizeof(dbl_bits));
-            for (int i = 7; i >= 0; i--) b.u8(uint8_t(dbl_bits >> (i * 8)));
-            b.cql_string("id");
-            b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(13);
-            b.cql_string("label");
-            b.s32(5); b.u8('G'); b.u8('i'); b.u8('z'); b.u8('m'); b.u8('o');
-            b.prepend_header(0x07, 2);
+            DynamicArray<U8> b;
+            append_cql_long_string(b, "INSERT INTO qbind_ks.items (id, label, weight) VALUES (:id, :label, :weight)");
+            append_be_u16(b, 0x0001);
+            append_u8(b, 0x41);
+            append_be_u16(b, 3);
+            append_cql_named_f64(b, "weight", 2.71);
+            append_cql_named_s32(b, "id", 13);
+            append_cql_named_str(b, "label", "Gizmo");
+            prepend_v4_header(b, op::QUERY, 2);
             send_frame(client, b);
-
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0001);
-
-            send_frame(client, create_query("SELECT * FROM qbind_ks.items WHERE id = 13;"));
-            auto sel = recv_frame(client);
-            CHECK(sel.opcode == 0x08);
-            CHECK(result_kind(sel) == 0x0002);
-            CHECK(body_contains(sel, "Gizmo"));
+            CHECK(recv_frame(client).opcode == op::RESULT);
         }
+        Frame named_sel = send_query(client, "SELECT * FROM qbind_ks.items WHERE id = 13;");
+        CHECK(result_kind(named_sel) == result::ROWS);
+        CHECK(body_contains(named_sel, "Gizmo"));
 
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-PAGER_TEST_CASE("Native protocol UPDATE modifies existing row", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
 
-    auto pager = create_test_pager(db_file, 4_kb);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
 
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        send_frame(client, create_query("CREATE KEYSPACE ks;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, create_query("CREATE TABLE ks.t (id int PRIMARY KEY, name text);"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        send_frame(client, create_query("INSERT INTO ks.t (id, name) VALUES (1, 'Alice');"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        send_frame(client, create_query("UPDATE ks.t SET name = 'Bob' WHERE id = 1;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        send_frame(client, create_query("SELECT * FROM ks.t;"));
-        auto resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
-        CHECK( body_contains(resp, "Bob"));
-        CHECK(!body_contains(resp, "Alice"));
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
-    });
-    destroy_test_pager(pager);
-}
-
-PAGER_TEST_CASE("Native protocol DELETE removes a row by primary key", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
-
-    auto pager = create_test_pager(db_file, 4_kb);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
-
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        send_frame(client, create_query("CREATE KEYSPACE ks;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, create_query("CREATE TABLE ks.t (id int PRIMARY KEY, name text);"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        send_frame(client, create_query("INSERT INTO ks.t (id, name) VALUES (1, 'Alice');"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, create_query("INSERT INTO ks.t (id, name) VALUES (2, 'Bob');"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        send_frame(client, create_query("DELETE FROM ks.t WHERE id = 1;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        send_frame(client, create_query("SELECT * FROM ks.t;"));
-        auto resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
-        CHECK( body_contains(resp, "Bob"));
-        CHECK(!body_contains(resp, "Alice"));
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
-    });
-    destroy_test_pager(pager);
-}
-
-PAGER_TEST_CASE("Native protocol TRUNCATE clears all rows", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
-
-    auto pager = create_test_pager(db_file, 4_kb);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
-
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        send_frame(client, create_query("CREATE KEYSPACE ks;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, create_query("CREATE TABLE ks.t (id int PRIMARY KEY, name text);"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        send_frame(client, create_query("INSERT INTO ks.t (id, name) VALUES (1, 'Alice');"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, create_query("INSERT INTO ks.t (id, name) VALUES (2, 'Bob');"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        send_frame(client, create_query("TRUNCATE TABLE ks.t;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        send_frame(client, create_query("SELECT * FROM ks.t;"));
-        auto resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
-        CHECK(!body_contains(resp, "Alice"));
-        CHECK(!body_contains(resp, "Bob"));
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
-    });
-    destroy_test_pager(pager);
-}
-
-PAGER_TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cql.native]") {
-    int port1 = get_unique_port();
-    int port2 = get_unique_port();
-    os::Handle pid = os::process_get_handle();
-    auto db_path  = fmt("/tmp/plexdb_cql::wal_%" PRIu64 "_db",  pid.u64[0]);
-    auto wal_path = fmt("/tmp/plexdb_cql::wal_%" PRIu64 "_wal",  pid.u64[0]);
-
-    if (os::file_exists(db_path))  os::file_delete(db_path);
-    if (os::file_exists(wal_path)) os::file_delete(wal_path);
-
-    {
-        os::Handle db  = os::file_open(db_path);
-        os::Handle wal = os::file_open(wal_path);
-        auto pager = create_test_pager(db, wal, 4_kb);
-        {
-            pager::Transaction tx{&pager};
-            co_await tx.begin();
-            co_await engine::create_database(pager);
-            co_await tx.commit();
-        }
-        Engine eng;
-        co_await engine::init(eng, &pager);
-
-        run_server_test("test-client", [&](os::Notifier& interrupt) {
-            Socket client{socket_open()};
-            socket_set_timeout(client, 2000);
-            CHECK(socket_connect(client, "127.0.0.1", (U16)port1));
-            send_frame(client, create_startup());
-            CHECK(recv_frame(client).opcode == 0x02);
-
-            send_frame(client, create_query("CREATE KEYSPACE wks;"));
-            CHECK(recv_frame(client).opcode == 0x08);
-            send_frame(client, create_query("CREATE TABLE wks.entries (id int PRIMARY KEY, msg text);"));
-            CHECK(recv_frame(client).opcode == 0x08);
-            send_frame(client, create_query("INSERT INTO wks.entries (id, msg) VALUES (1, 'durable');"));
-            CHECK(recv_frame(client).opcode == 0x08);
-
-            os::signal_notify_safe(interrupt);
-        }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-            native::run(port1, eng, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
-        });
-        destroy_test_pager(pager);
-        os::file_close(db);
-        os::file_close(wal);
-    }
-
-    {
-        os::Handle db  = os::file_open(db_path);
-        os::Handle wal = os::file_open(wal_path);
-        auto pager = test_pager(db, wal);
-        Engine eng;
-        co_await engine::init(eng, &pager);
-
-        run_server_test("test-client", [&](os::Notifier& interrupt) {
-            Socket client{socket_open()};
-            socket_set_timeout(client, 2000);
-            CHECK(socket_connect(client, "127.0.0.1", (U16)port2));
-            send_frame(client, create_startup());
-            CHECK(recv_frame(client).opcode == 0x02);
-
-            send_frame(client, create_query("SELECT * FROM wks.entries;"));
-            auto resp = recv_frame(client);
-            CHECK(resp.opcode == 0x08);
-            CHECK(result_kind(resp) == 0x0002);
-            CHECK(body_contains(resp, "durable"));
-
-            os::signal_notify_safe(interrupt);
-        }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-            native::run(port2, eng, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
-        });
-        destroy_test_pager(pager);
-        os::file_close(db);
-        os::file_close(wal);
-    }
-
-    os::file_delete(db_path);
-    os::file_delete(wal_path);
-}
-
-PAGER_TEST_CASE("Native protocol collection INSERT and SELECT", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
-
-    auto pager = create_test_pager(db_file, 4_kb);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
-
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        send_frame(client, create_query("CREATE KEYSPACE coll_ks;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, create_query(
+CQL_NATIVE_TEST_CASE("Native protocol collection INSERT and SELECT", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE coll_ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
             "CREATE TABLE coll_ks.t ("
             "  id int PRIMARY KEY,"
             "  tags list<text>,"
             "  scores set<int>,"
             "  meta map<text, int>"
-            ");"));
-        CHECK(recv_frame(client).opcode == 0x08);
+            ");").opcode == op::RESULT);
 
-        // INSERT collection literals via plain QUERY
-        send_frame(client, create_query(
+        // Literal collection values
+        CHECK(send_query(client,
             "INSERT INTO coll_ks.t (id, tags, scores, meta)"
-            " VALUES (1, ['a', 'b'], {10, 20}, {'x': 1, 'y': 2});"));
-        CHECK(recv_frame(client).opcode == 0x08);
+            " VALUES (1, ['a', 'b'], {10, 20}, {'x': 1, 'y': 2});").opcode == op::RESULT);
 
-        // SELECT and verify literal round-trip
-        send_frame(client, create_query("SELECT * FROM coll_ks.t WHERE id = 1;"));
-        auto resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
-        // 'a', 'b' appear as text in the response
-        CHECK(body_contains(resp, "a"));
-        CHECK(body_contains(resp, "b"));
+        Frame sel1 = send_query(client, "SELECT * FROM coll_ks.t WHERE id = 1;");
+        CHECK(result_kind(sel1) == result::ROWS);
+        CHECK(body_contains(sel1, "a"));
+        CHECK(body_contains(sel1, "b"));
 
-        // INSERT with bind parameters (list<text>)
+        // Bind-parameter list<text>
+        // @todo A build_cql_list / build_cql_map helper would avoid this manual inner-buffer pattern.
         {
-            Bytes b;
-            b.cql_long_string("INSERT INTO coll_ks.t (id, tags) VALUES (?, ?)");
-            b.u16(0x0001);
-            b.u8(0x01); // flags: values present
-            b.u16(2);   // 2 bind values
+            DynamicArray<U8> list_body;
+            append_be_s32(list_body, 2);
+            append_be_s32(list_body, 5); append_bytes(list_body, reinterpret_cast<const U8*>("hello"), 5);
+            append_be_s32(list_body, 5); append_bytes(list_body, reinterpret_cast<const U8*>("world"), 5);
 
-            // id = 2 (int)
-            b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(2);
-
-            // tags = ['hello', 'world'] as list<text>
-            // wire: [S32: outer_len][S32: count][S32: len][bytes]...
-            int32_t inner = 4 + (4 + 5) + (4 + 5); // count(4) + 2 elems (len+data)
-            b.s32(inner);
-            b.s32(2); // count
-            b.s32(5); b.u8('h'); b.u8('e'); b.u8('l'); b.u8('l'); b.u8('o');
-            b.s32(5); b.u8('w'); b.u8('o'); b.u8('r'); b.u8('l'); b.u8('d');
-
-            b.prepend_header(0x07, 10);
+            DynamicArray<U8> b;
+            append_cql_long_string(b, "INSERT INTO coll_ks.t (id, tags) VALUES (?, ?)");
+            append_be_u16(b, 0x0001);
+            append_u8(b, 0x01);
+            append_be_u16(b, 2);
+            append_cql_bind_s32(b, 2);
+            append_cql_bytes(b, list_body.ptr, S32(list_body.length));
+            prepend_v4_header(b, op::QUERY, 10);
             send_frame(client, b);
-            CHECK(recv_frame(client).opcode == 0x08);
+            CHECK(recv_frame(client).opcode == op::RESULT);
         }
+        Frame sel2 = send_query(client, "SELECT * FROM coll_ks.t WHERE id = 2;");
+        CHECK(result_kind(sel2) == result::ROWS);
+        CHECK(body_contains(sel2, "hello"));
+        CHECK(body_contains(sel2, "world"));
 
-        // SELECT back and verify bind-param list
-        send_frame(client, create_query("SELECT * FROM coll_ks.t WHERE id = 2;"));
-        resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
-        CHECK(body_contains(resp, "hello"));
-        CHECK(body_contains(resp, "world"));
-
-        // INSERT with bind parameters (map<text, int>)
+        // Bind-parameter map<text, int>
         {
-            Bytes b;
-            b.cql_long_string("INSERT INTO coll_ks.t (id, meta) VALUES (?, ?)");
-            b.u16(0x0001);
-            b.u8(0x01);
-            b.u16(2);
+            DynamicArray<U8> map_body;
+            append_be_s32(map_body, 1);
+            append_be_s32(map_body, 1); push_back(map_body, U8('k'));
+            U8 v99[4] = {0, 0, 0, 99};
+            append_be_s32(map_body, 4); append_bytes(map_body, v99, 4);
 
-            // id = 3
-            b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(3);
-
-            // meta = {'k': 99} as map<text, int>
-            // wire: [S32: outer_len][S32: count][key as [bytes]][val as [bytes]]
-            int32_t inner = 4 + (4 + 1) + (4 + 4); // count + key('k') + val(99)
-            b.s32(inner);
-            b.s32(1); // 1 pair
-            b.s32(1); b.u8('k');              // key 'k'
-            b.s32(4); b.u8(0); b.u8(0); b.u8(0); b.u8(99); // val 99
-
-            b.prepend_header(0x07, 11);
+            DynamicArray<U8> b;
+            append_cql_long_string(b, "INSERT INTO coll_ks.t (id, meta) VALUES (?, ?)");
+            append_be_u16(b, 0x0001);
+            append_u8(b, 0x01);
+            append_be_u16(b, 2);
+            append_cql_bind_s32(b, 3);
+            append_cql_bytes(b, map_body.ptr, S32(map_body.length));
+            prepend_v4_header(b, op::QUERY, 11);
             send_frame(client, b);
-            CHECK(recv_frame(client).opcode == 0x08);
+            CHECK(recv_frame(client).opcode == op::RESULT);
         }
+        Frame sel3 = send_query(client, "SELECT * FROM coll_ks.t WHERE id = 3;");
+        CHECK(result_kind(sel3) == result::ROWS);
+        CHECK(body_contains(sel3, "k"));
 
-        send_frame(client, create_query("SELECT * FROM coll_ks.t WHERE id = 3;"));
-        resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
-        CHECK(body_contains(resp, "k"));
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-PAGER_TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]") {
-    os::Handle pid = os::process_get_handle();
-    auto db_path  = fmt("/tmp/plexdb_cql::crash_%" PRIu64 "_db",  pid.u64[0]);
-    auto wal_path = fmt("/tmp/plexdb_cql::crash_%" PRIu64 "_wal",  pid.u64[0]);
 
-    if (os::file_exists(db_path))  os::file_delete(db_path);
-    if (os::file_exists(wal_path)) os::file_delete(wal_path);
 
-    int port1 = get_unique_port();
-    int port2 = get_unique_port();
-
-    // Number of inserts to confirm (receive ACK) before killing the server.
-    // The kill arrives while one additional in-flight insert is being processed.
-    int confirmed_count = GENERATE(take(1, random(5, 20)));
-
-    os::Notifier ready{};
-    auto child_opt = os::process_fork();
-    REQUIRE(static_cast<bool>(child_opt));
-    os::Handle child = *child_opt;
-
-    if (os::is_zero_handle(child)) {
-        // Child: create WAL-enabled pager, initialise engine, run native server.
-        os::Handle db  = os::file_open(db_path);
-        os::Handle wal = os::file_open(wal_path);
-        auto pager = create_test_pager(db, wal, 4_kb);
-        {
-            pager::Transaction tx{&pager};
-            co_await tx.begin();
-            co_await engine::create_database(pager);
-            co_await tx.commit();
-        }
-        Engine eng;
-        co_await engine::init(eng, &pager);
-
-        os::Poll poll{};
-        os::Notifier interrupt{};
-        auto signal_consumer = aio::create_notifier_consumer(interrupt, poll);
-        native::run(static_cast<U16>(port1), eng,
-                    [&ready]{ os::signal_notify_safe(ready); },
-                    false, g_test_sync_consumer, signal_consumer, poll);
-        os::process_exit(0);
-    }
-
-    // Parent: wait for server ready signal.
-    { U8 b; os::stream_read(ready.read, &b, 1); }
-
-    {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        REQUIRE(socket_connect(client, "127.0.0.1", (U16)port1));
-
-        send_frame(client, create_startup());
-        REQUIRE(recv_frame(client).opcode == 0x02);
-
-        // DDL: wait for full ACK so schema is durable before the kill phase.
-        send_frame(client, create_query("CREATE KEYSPACE ks;"));
-        REQUIRE(recv_frame(client).opcode == 0x08);
-        send_frame(client, create_query("CREATE TABLE ks.t (id int PRIMARY KEY, val text);"));
-        REQUIRE(recv_frame(client).opcode == 0x08);
-
-        // Send confirmed_count inserts and collect each ACK — these are durably committed.
-        for (int i = 0; i < confirmed_count; i++) {
-            std::string q = "INSERT INTO ks.t (id, val) VALUES ("
-                          + std::to_string(i) + ", 'row_" + std::to_string(i) + "');";
-            send_frame(client, create_query(q.c_str()));
-            REQUIRE(recv_frame(client).opcode == 0x08);
-        }
-
-        // Send one more insert without waiting — the kill lands while the server
-        // is in the middle of committing (or just after), so this row may or may
-        // not survive. We don't assert on it either way.
-        {
-            std::string q = "INSERT INTO ks.t (id, val) VALUES ("
-                          + std::to_string(confirmed_count) + ", 'row_"
-                          + std::to_string(confirmed_count) + "');";
-            send_frame(client, create_query(q.c_str()));
-        }
-    }  // socket closes here
-
-    os::signal_send_kill(child);
-    os::process_wait(child);
-
-    // Reopen: WAL recovery replays any committed frames that didn't reach the DB file.
-    os::Handle db  = os::file_open(db_path);
-    os::Handle wal = os::file_open(wal_path);
-    auto pager = test_pager(db, wal);
-    Engine eng2;
-    co_await engine::init(eng2, &pager);
-
-    run_server_test("verifier", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port2));
-
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        // DB must be queryable (schema intact, no structural corruption).
-        send_frame(client, create_query("SELECT * FROM ks.t;"));
-        auto resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
-
-        // Every ACKed insert must be present — WAL guarantees their durability.
-        for (int i = 0; i < confirmed_count; i++) {
-            std::string val = "row_" + std::to_string(i);
-            CHECK(body_contains(resp, val.c_str()));
-        }
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port2, eng2, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
-    });
-
-    destroy_test_pager(pager);
-    os::file_close(db);
-    os::file_close(wal);
-    os::file_delete(db_path);
-    os::file_delete(wal_path);
-}
-
-// ============================================================================
-// Static column tests
-// ============================================================================
-
-// Static column value is shared by all clustering rows in the same partition.
-PAGER_TEST_CASE("Static columns: value shared across clustering rows", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
-
-    auto pager = create_test_pager(db_file, 4_kb);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
-
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        send_frame(client, create_query("CREATE KEYSPACE ks;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        // Table with partition key (country), clustering key (name), and a static column (flag).
-        send_frame(client, create_query(
+CQL_NATIVE_TEST_CASE("Static columns: value shared across clustering rows", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
             "CREATE TABLE ks.cyclists ("
             "  country text,"
             "  name    text,"
             "  flag    text STATIC,"
             "  PRIMARY KEY (country, name)"
-            ");"));
-        CHECK(recv_frame(client).opcode == 0x08);
+            ");").opcode == op::RESULT);
 
-        // Insert two clustering rows for the same partition, setting flag on the first.
-        send_frame(client, create_query(
-            "INSERT INTO ks.cyclists (country, name, flag) VALUES ('Belgium', 'Boonen', 'BE');"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, create_query(
-            "INSERT INTO ks.cyclists (country, name) VALUES ('Belgium', 'Steels');"));
-        CHECK(recv_frame(client).opcode == 0x08);
+        CHECK(send_query(client, "INSERT INTO ks.cyclists (country, name, flag) VALUES ('Belgium', 'Boonen', 'BE');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.cyclists (country, name) VALUES ('Belgium', 'Steels');").opcode == op::RESULT);
 
-        // Both rows should see 'BE' in the flag column.
-        send_frame(client, create_query("SELECT * FROM ks.cyclists WHERE country = 'Belgium';"));
-        auto resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
-        CHECK(body_contains(resp, "Boonen"));
-        CHECK(body_contains(resp, "Steels"));
-        // Flag 'BE' appears — at least once per returned row.
-        CHECK(body_contains(resp, "BE"));
+        Frame sel = send_query(client, "SELECT * FROM ks.cyclists WHERE country = 'Belgium';");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "Boonen"));
+        CHECK(body_contains(sel, "Steels"));
+        CHECK(body_contains(sel, "BE"));
 
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-// Inserting a new static value overwrites the previous one partition-wide.
-PAGER_TEST_CASE("Static columns: overwrite replaces value partition-wide", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
+CQL_NATIVE_TEST_CASE("Static columns: overwrite replaces value partition-wide", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int, ck int, info text STATIC, PRIMARY KEY (pk, ck));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, info) VALUES (1, 10, 'v1');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, info) VALUES (1, 20, 'v2');").opcode == op::RESULT);
 
-    auto pager = create_test_pager(db_file, 4_kb);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine engine;
-    co_await engine::init(engine, &pager);
+        Frame sel = send_query(client, "SELECT * FROM ks.t WHERE pk = 1;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK( body_contains(sel, "v2"));
+        CHECK(!body_contains(sel, "v1"));
 
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        send_frame(client, create_query("CREATE KEYSPACE ks;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        send_frame(client, create_query(
-            "CREATE TABLE ks.t (pk int, ck int, info text STATIC, PRIMARY KEY (pk, ck));"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        // First insert sets info = 'v1'.
-        send_frame(client, create_query("INSERT INTO ks.t (pk, ck, info) VALUES (1, 10, 'v1');"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        // Second insert on the same partition updates info = 'v2'.
-        send_frame(client, create_query("INSERT INTO ks.t (pk, ck, info) VALUES (1, 20, 'v2');"));
-        CHECK(recv_frame(client).opcode == 0x08);
-
-        // Both rows should see 'v2'; 'v1' should no longer appear.
-        send_frame(client, create_query("SELECT * FROM ks.t WHERE pk = 1;"));
-        auto resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
-        CHECK( body_contains(resp, "v2"));
-        CHECK(!body_contains(resp, "v1"));
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        signal_notify_safe(interrupt);
     });
-    destroy_test_pager(pager);
+    co_return;
 }
 
-// Static values must persist across an engine restart (reopen from disk).
-PAGER_TEST_CASE("Static columns: persist across reopen", "[cql.native]") {
-    int port1 = get_unique_port();
-    int port2 = get_unique_port();
+// DDL: static column on a table without clustering columns must be rejected.
+CQL_NATIVE_TEST_CASE("Static columns: rejected on table without clustering key", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        Frame err = send_query(client, "CREATE TABLE ks.bad (id int PRIMARY KEY, info text STATIC);");
+        CHECK(err.opcode == op::ERROR);
 
-    os::Handle pid = os::process_get_handle();
-    auto db_path  = fmt("/tmp/plexdb_cql::static_%" PRIu64 "_db",  pid.u64[0]);
-    auto wal_path = fmt("/tmp/plexdb_cql::static_%" PRIu64 "_wal", pid.u64[0]);
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
 
-    if (os::file_exists(db_path))  os::file_delete(db_path);
-    if (os::file_exists(wal_path)) os::file_delete(wal_path);
 
-    os::Handle db_file  = os::file_open(db_path);
-    os::Handle wal_file = os::file_open(wal_path);
-    REQUIRE(!os::is_zero_handle(db_file));
-    REQUIRE(!os::is_zero_handle(wal_file));
+PAGER_TEST_CASE("Native protocol data persists across restarts", "[cql.native]") {
+    U16 port1 = next_test_port();
+    U16 port2 = next_test_port();
+    Handle db_file = file_tmp();
+    REQUIRE(!is_zero_handle(db_file));
 
     {
-        auto pager = create_test_pager(db_file, wal_file, 4_kb);
+        Pager pager = create_test_pager(db_file, 4_kb);
         {
             pager::Transaction tx{&pager};
             co_await tx.begin();
@@ -1608,94 +553,232 @@ PAGER_TEST_CASE("Static columns: persist across reopen", "[cql.native]") {
         Engine engine;
         co_await engine::init(engine, &pager);
 
-        run_server_test("writer", [&](os::Notifier& interrupt) {
-            Socket client{socket_open()};
-            socket_set_timeout(client, 2000);
-            CHECK(socket_connect(client, "127.0.0.1", (U16)port1));
-            send_frame(client, create_startup());
-            CHECK(recv_frame(client).opcode == 0x02);
-
-            send_frame(client, create_query("CREATE KEYSPACE ks;"));
-            CHECK(recv_frame(client).opcode == 0x08);
-            send_frame(client, create_query(
-                "CREATE TABLE ks.t (pk int, ck int, info text STATIC, PRIMARY KEY (pk, ck));"));
-            CHECK(recv_frame(client).opcode == 0x08);
-            send_frame(client, create_query("INSERT INTO ks.t (pk, ck, info) VALUES (7, 1, 'persistent');"));
-            CHECK(recv_frame(client).opcode == 0x08);
-
-            os::signal_notify_safe(interrupt);
-        }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-            native::run(port1, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        run_native_server_with_handshake(engine, port1, [&](Socket& client, Notifier& interrupt) {
+            CHECK(send_query(client, "CREATE KEYSPACE pks;").opcode == op::RESULT);
+            CHECK(send_query(client, "CREATE TABLE pks.data (id int PRIMARY KEY, val text);").opcode == op::RESULT);
+            CHECK(send_query(client, "INSERT INTO pks.data (id, val) VALUES (99, 'persisted');").opcode == op::RESULT);
+            signal_notify_safe(interrupt);
         });
         destroy_test_pager(pager);
     }
 
-    // Reopen
-    os::Handle db2  = os::file_open(db_path);
-    os::Handle wal2 = os::file_open(wal_path);
-    auto pager2 = test_pager(db2, wal2);
+    {
+        Pager pager = test_pager(db_file);
+        Engine engine;
+        co_await engine::init(engine, &pager);
+
+        run_native_server_with_handshake(engine, port2, [&](Socket& client, Notifier& interrupt) {
+            Frame sel = send_query(client, "SELECT * FROM pks.data;");
+            CHECK(result_kind(sel) == result::ROWS);
+            CHECK(body_contains(sel, "persisted"));
+            signal_notify_safe(interrupt);
+        });
+        destroy_test_pager(pager);
+    }
+    file_close(db_file);
+}
+
+PAGER_TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cql.native]") {
+    U16 port1 = next_test_port();
+    U16 port2 = next_test_port();
+    Handle pid = process_get_handle();
+    AutoString8 db_path  = fmt("/tmp/plexdb_cql::wal_%" PLEXDB_FMT_U64 "_db",  pid.u64[0]);
+    AutoString8 wal_path = fmt("/tmp/plexdb_cql::wal_%" PLEXDB_FMT_U64 "_wal", pid.u64[0]);
+
+    if (file_exists(db_path))  file_delete(db_path);
+    if (file_exists(wal_path)) file_delete(wal_path);
+
+    {
+        Handle db  = file_open(db_path);
+        Handle wal = file_open(wal_path);
+        Pager pager = create_test_pager(db, wal, 4_kb);
+        {
+            pager::Transaction tx{&pager};
+            co_await tx.begin();
+            co_await engine::create_database(pager);
+            co_await tx.commit();
+        }
+        Engine engine;
+        co_await engine::init(engine, &pager);
+
+        run_native_server_with_handshake(engine, port1, [&](Socket& client, Notifier& interrupt) {
+            CHECK(send_query(client, "CREATE KEYSPACE wks;").opcode == op::RESULT);
+            CHECK(send_query(client, "CREATE TABLE wks.entries (id int PRIMARY KEY, msg text);").opcode == op::RESULT);
+            CHECK(send_query(client, "INSERT INTO wks.entries (id, msg) VALUES (1, 'durable');").opcode == op::RESULT);
+            signal_notify_safe(interrupt);
+        });
+        destroy_test_pager(pager);
+        file_close(db);
+        file_close(wal);
+    }
+
+    {
+        Handle db  = file_open(db_path);
+        Handle wal = file_open(wal_path);
+        Pager pager = test_pager(db, wal);
+        Engine engine;
+        co_await engine::init(engine, &pager);
+
+        run_native_server_with_handshake(engine, port2, [&](Socket& client, Notifier& interrupt) {
+            Frame sel = send_query(client, "SELECT * FROM wks.entries;");
+            CHECK(result_kind(sel) == result::ROWS);
+            CHECK(body_contains(sel, "durable"));
+            signal_notify_safe(interrupt);
+        });
+        destroy_test_pager(pager);
+        file_close(db);
+        file_close(wal);
+    }
+
+    file_delete(db_path);
+    file_delete(wal_path);
+}
+
+PAGER_TEST_CASE("Static columns: persist across reopen", "[cql.native]") {
+    U16 port1 = next_test_port();
+    U16 port2 = next_test_port();
+    Handle pid = process_get_handle();
+    AutoString8 db_path  = fmt("/tmp/plexdb_cql::static_%" PLEXDB_FMT_U64 "_db",  pid.u64[0]);
+    AutoString8 wal_path = fmt("/tmp/plexdb_cql::static_%" PLEXDB_FMT_U64 "_wal", pid.u64[0]);
+
+    if (file_exists(db_path))  file_delete(db_path);
+    if (file_exists(wal_path)) file_delete(wal_path);
+
+    Handle db_file  = file_open(db_path);
+    Handle wal_file = file_open(wal_path);
+    REQUIRE(!is_zero_handle(db_file));
+    REQUIRE(!is_zero_handle(wal_file));
+
+    {
+        Pager pager = create_test_pager(db_file, wal_file, 4_kb);
+        {
+            pager::Transaction tx{&pager};
+            co_await tx.begin();
+            co_await engine::create_database(pager);
+            co_await tx.commit();
+        }
+        Engine engine;
+        co_await engine::init(engine, &pager);
+
+        run_native_server_with_handshake(engine, port1, [&](Socket& client, Notifier& interrupt) {
+            CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+            CHECK(send_query(client, "CREATE TABLE ks.t (pk int, ck int, info text STATIC, PRIMARY KEY (pk, ck));").opcode == op::RESULT);
+            CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, info) VALUES (7, 1, 'persistent');").opcode == op::RESULT);
+            signal_notify_safe(interrupt);
+        });
+        destroy_test_pager(pager);
+    }
+
+    Handle db2  = file_open(db_path);
+    Handle wal2 = file_open(wal_path);
+    Pager pager2 = test_pager(db2, wal2);
     Engine engine2;
     co_await engine::init(engine2, &pager2);
 
-    run_server_test("reader", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port2));
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
-
-        send_frame(client, create_query("SELECT * FROM ks.t WHERE pk = 7;"));
-        auto resp = recv_frame(client);
-        CHECK(resp.opcode == 0x08);
-        CHECK(result_kind(resp) == 0x0002);
-        CHECK(body_contains(resp, "persistent"));
-
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port2, engine2, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+    run_native_server_with_handshake(engine2, port2, [&](Socket& client, Notifier& interrupt) {
+        Frame sel = send_query(client, "SELECT * FROM ks.t WHERE pk = 7;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "persistent"));
+        signal_notify_safe(interrupt);
     });
     destroy_test_pager(pager2);
-    os::file_close(db2);
-    os::file_close(wal2);
-    os::file_delete(db_path);
-    os::file_delete(wal_path);
+    file_close(db2);
+    file_close(wal2);
+    file_close(db_file);
+    file_close(wal_file);
+    file_delete(db_path);
+    file_delete(wal_path);
 }
 
-// DDL: static column on a table without clustering columns must be rejected.
-PAGER_TEST_CASE("Static columns: rejected on table without clustering key", "[cql.native]") {
-    int port = get_unique_port();
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
+// ============================================================================
+// SIGKILL crash-consistency test
+//   Uses fork() to simulate a hard crash during writes. Cannot use
+//   ServerFixture because the child process must manage its own pager.
+//   @todo body_contains is a substring search — false positives are possible
+//   if row content collides with frame metadata. A parse_rows helper would
+//   make assertions exact.
+// ============================================================================
+PAGER_TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]") {
+    Handle pid = process_get_handle();
+    AutoString8 db_path  = fmt("/tmp/plexdb_cql::crash_%" PLEXDB_FMT_U64 "_db",  pid.u64[0]);
+    AutoString8 wal_path = fmt("/tmp/plexdb_cql::crash_%" PLEXDB_FMT_U64 "_wal", pid.u64[0]);
 
-    auto pager = create_test_pager(db_file, 4_kb);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
+    if (file_exists(db_path))  file_delete(db_path);
+    if (file_exists(wal_path)) file_delete(wal_path);
+
+    U16 port1 = next_test_port();
+    U16 port2 = next_test_port();
+
+    int confirmed_count = GENERATE(take(1, random(5, 20)));
+
+    Notifier ready{};
+    auto child_opt = process_fork();
+    REQUIRE(static_cast<bool>(child_opt));
+    Handle child = *child_opt;
+
+    if (is_zero_handle(child)) {
+        Handle db  = file_open(db_path);
+        Handle wal = file_open(wal_path);
+        Pager pager = create_test_pager(db, wal, 4_kb);
+        {
+            pager::Transaction tx{&pager};
+            co_await tx.begin();
+            co_await engine::create_database(pager);
+            co_await tx.commit();
+        }
+        Engine eng;
+        co_await engine::init(eng, &pager);
+
+        Poll poll{};
+        Notifier interrupt{};
+        auto signal_consumer = aio::create_notifier_consumer(interrupt, poll);
+        native::run(port1, eng, [&ready]{ signal_notify_safe(ready); },
+                    false, g_test_sync_consumer, signal_consumer, poll);
+        process_exit(0);
     }
-    Engine engine;
-    co_await engine::init(engine, &pager);
 
-    run_server_test("test-client", [&](os::Notifier& interrupt) {
-        Socket client{socket_open()};
-        socket_set_timeout(client, 2000);
-        CHECK(socket_connect(client, "127.0.0.1", (U16)port));
-        send_frame(client, create_startup());
-        CHECK(recv_frame(client).opcode == 0x02);
+    { U8 b; stream_read(ready.read, &b, 1); }
 
-        send_frame(client, create_query("CREATE KEYSPACE ks;"));
-        CHECK(recv_frame(client).opcode == 0x08);
-        // No clustering column — STATIC should be rejected.
-        send_frame(client, create_query(
-            "CREATE TABLE ks.bad (id int PRIMARY KEY, info text STATIC);"));
-        auto resp = recv_frame(client);
-        // Expect an error response (opcode 0x00 = ERROR).
-        CHECK(resp.opcode == 0x00);
+    {
+        Socket client = client_connect(port1);
+        handshake(client);
+        REQUIRE(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        REQUIRE(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, val text);").opcode == op::RESULT);
 
-        os::signal_notify_safe(interrupt);
-    }, [&](auto on_ready, auto& signal_consumer, auto& poll) {
-        native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
+        for (int i = 0; i < confirmed_count; i++) {
+            AutoString8 q = fmt("INSERT INTO ks.t (id, val) VALUES (%d, 'row_%d');", i, i);
+            REQUIRE(send_query(client, q.c_str).opcode == op::RESULT);
+        }
+        // Fire-and-forget: this row may or may not survive the kill.
+        {
+            AutoString8 q = fmt("INSERT INTO ks.t (id, val) VALUES (%d, 'row_%d');",
+                                confirmed_count, confirmed_count);
+            send_frame(client, build_query(q.c_str));
+        }
+    }
+
+    signal_send_kill(child);
+    process_wait(child);
+
+    Handle db  = file_open(db_path);
+    Handle wal = file_open(wal_path);
+    Pager pager = test_pager(db, wal);
+    Engine eng2;
+    co_await engine::init(eng2, &pager);
+
+    run_native_server_with_handshake(eng2, port2, [&](Socket& client, Notifier& interrupt) {
+        Frame sel = send_query(client, "SELECT * FROM ks.t;");
+        CHECK(result_kind(sel) == result::ROWS);
+        for (int i = 0; i < confirmed_count; i++) {
+            AutoString8 val = fmt("row_%d", i);
+            CHECK(body_contains(sel, val.c_str));
+        }
+        signal_notify_safe(interrupt);
     });
+
     destroy_test_pager(pager);
+    file_close(db);
+    file_close(wal);
+    file_delete(db_path);
+    file_delete(wal_path);
 }

@@ -229,5 +229,13 @@
 // OffsetOf
 #include <cstddef>
 
-// fixed type format specifier
+// fixed type format specifiers
 #include <inttypes.h>
+#define PLEXDB_FMT_U8  PRIu8
+#define PLEXDB_FMT_S8  PRId8
+#define PLEXDB_FMT_U16 PRIu16
+#define PLEXDB_FMT_S16 PRId16
+#define PLEXDB_FMT_U32 PRIu32
+#define PLEXDB_FMT_S32 PRId32
+#define PLEXDB_FMT_U64 PRIu64
+#define PLEXDB_FMT_S64 PRId64

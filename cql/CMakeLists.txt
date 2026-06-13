@@ -16,6 +16,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/options.cmake)
 
 option(CQL_ENABLE_SERVER "Build cql server" ON)
 
+add_subdirectory(test_macros)
+
 # =============================================================================
 # Third party dependencies
 # =============================================================================
@@ -155,6 +157,7 @@ if(PLEXDB_ENABLE_TESTS)
           plexdb::core::macros
           plexdb::core::plugin_abi
           plexdb::core::test_macros
+          cql::test_macros
           stdc++exp # std::stacktrace may require linking experimental c++ library
           plexdb::cql
           Catch2::Catch2WithMain

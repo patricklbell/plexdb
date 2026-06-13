@@ -1,21 +1,14 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <plexdb/macros/macros.h>
-#include <plexdb/test_macros/test_macros.h>
+#include <cql/test_macros/test_macros.h>
 
 #if !PLEXDB_OS_LINUX
     #error "Process piping in REPL test not implemented for OS"
 #endif
 
-#include <sys/wait.h>
-#include <unistd.h>
-#include <string>
-
 import plexdb.base;
 import plexdb.os;
-import plexdb.pager;
-import plexdb.pager.test_helpers;
-import plexdb.aio;
 
 import cql.engine;
 import cql.repl;
@@ -25,152 +18,84 @@ using namespace plexdb::os;
 using namespace cql;
 
 namespace {
-    static Handle fd_to_handle(int fd) { return Handle{.u32={static_cast<U32>(fd)}}; }
+    // @note uses process_fork() to avoid fd issues with Catch2
+    AutoString8 run_repl_batch(Engine& eng, const char* input) {
+        auto [in_read,  in_write]  = stream_pipe();
+        auto [out_read, out_write] = stream_pipe();
+        if (is_zero_handle(in_read) || is_zero_handle(out_read)) abort();
 
-    // @note uses fork() to avoid fd issues with Catch2
-    std::string run_repl_batch(Engine& eng, const char* input) {
-        int in_fds[2], out_fds[2];
-        assert(pipe(in_fds) == 0);
-        assert(pipe(out_fds) == 0);
+        stream_write(in_write, String8(input));
+        stream_close(in_write);
 
-        Handle in_read   = fd_to_handle(in_fds[0]);
-        Handle in_write  = fd_to_handle(in_fds[1]);
-        Handle out_read  = fd_to_handle(out_fds[0]);
-        Handle out_write = fd_to_handle(out_fds[1]);
+        Optional<Handle> child_opt = process_fork();
+        if (!child_opt) abort();
+        Handle child = *child_opt;
 
-        U64 input_len = 0;
-        while (input[input_len] != '\0') input_len++;
-        os::stream_write(in_write, input, input_len);
-        os::stream_close(in_write);
-
-        pid_t pid = fork();
-        assert(pid >= 0);
-
-        if (pid == 0) {
-            os::stream_close(out_read);
+        if (is_zero_handle(child)) {
+            stream_close(out_read);
             repl::run(in_read, out_write, eng);
-            os::stream_close(in_read);
-            os::stream_close(out_write);
-            _exit(0);
+            stream_close(in_read);
+            stream_close(out_write);
+            process_exit(0);
         }
 
-        os::stream_close(in_read);
-        os::stream_close(out_write);
+        stream_close(in_read);
+        stream_close(out_write);
 
-        std::string out;
-        char buf[256];
+        AutoString8 out;
+        U8 buf[256];
         while (true) {
-            U64 n = os::stream_read(out_read, buf, sizeof(buf));
+            U64 n = stream_read(out_read, buf, sizeof(buf));
             if (n == 0) break;
-            out.append(buf, static_cast<size_t>(n));
+            out += String8(reinterpret_cast<const char*>(buf), n);
         }
-        os::stream_close(out_read);
+        stream_close(out_read);
 
-        waitpid(pid, nullptr, 0);
+        process_wait(child);
         return out;
-    }
-
-    bool contains(const std::string& haystack, const char* needle) {
-        return haystack.find(needle) != std::string::npos;
     }
 }
 
-PAGER_TEST_CASE("REPL create keyspace and table", "[cql.repl]") {
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
-
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine eng;
-    co_await engine::init(eng, &pager);
-
+CQL_NATIVE_TEST_CASE("REPL create keyspace and table", "[cql.repl]") {
     const char* input =
         "CREATE KEYSPACE test_ks;\n"
         "CREATE TABLE test_ks.items (id int PRIMARY KEY, name text);\n";
 
-    std::string out = run_repl_batch(eng, input);
-    destroy_test_pager(pager);
-    REQUIRE(contains(out, "SUCCESS"));
+    AutoString8 out = run_repl_batch(fixture.engine, input);
+    REQUIRE(contains(String8(out), "SUCCESS"));
+    co_return;
 }
 
-PAGER_TEST_CASE("REPL insert and select", "[cql.repl]") {
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
-
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine eng;
-    co_await engine::init(eng, &pager);
-
+CQL_NATIVE_TEST_CASE("REPL insert and select", "[cql.repl]") {
     const char* input =
         "CREATE KEYSPACE ks;\n"
         "CREATE TABLE ks.t (id int PRIMARY KEY, val text);\n"
         "INSERT INTO ks.t (id, val) VALUES (1, 'hello');\n"
         "SELECT * FROM ks.t;\n";
 
-    std::string out = run_repl_batch(eng, input);
-    destroy_test_pager(pager);
-    REQUIRE(contains(out, "hello"));
-    REQUIRE(contains(out, "1 rows"));
+    AutoString8 out = run_repl_batch(fixture.engine, input);
+    REQUIRE(contains(String8(out), "hello"));
+    REQUIRE(contains(String8(out), "1 rows"));
+    co_return;
 }
 
-PAGER_TEST_CASE("REPL reports parse error gracefully", "[cql.repl]") {
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
-
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine eng;
-    co_await engine::init(eng, &pager);
-
-    std::string out = run_repl_batch(eng, "NOT VALID CQL;\n");
-    destroy_test_pager(pager);
-    REQUIRE(contains(out, "ERROR"));
+CQL_NATIVE_TEST_CASE("REPL reports parse error gracefully", "[cql.repl]") {
+    AutoString8 out = run_repl_batch(fixture.engine, "NOT VALID CQL;\n");
+    REQUIRE(contains(String8(out), "ERROR"));
+    co_return;
 }
 
-PAGER_TEST_CASE("REPL displays column headers on SELECT", "[cql.repl]") {
-    os::File db_file{os::file_tmp()};
-    REQUIRE(!os::is_zero_handle(db_file));
-
-    U64 page_size = 4_kb;
-    auto pager = create_test_pager(db_file, page_size);
-    {
-        pager::Transaction tx{&pager};
-        co_await tx.begin();
-        co_await engine::create_database(pager);
-        co_await tx.commit();
-    }
-    Engine eng;
-    co_await engine::init(eng, &pager);
-
+CQL_NATIVE_TEST_CASE("REPL displays column headers on SELECT", "[cql.repl]") {
     const char* input =
         "CREATE KEYSPACE ks;\n"
         "CREATE TABLE ks.t (id int PRIMARY KEY, score int);\n"
         "INSERT INTO ks.t (id, score) VALUES (42, 100);\n"
         "SELECT * FROM ks.t;\n";
 
-    std::string out = run_repl_batch(eng, input);
-    destroy_test_pager(pager);
-    REQUIRE(contains(out, "id"));
-    REQUIRE(contains(out, "score"));
-    REQUIRE(contains(out, "42"));
-    REQUIRE(contains(out, "100"));
+    AutoString8 out = run_repl_batch(fixture.engine, input);
+    REQUIRE(contains(String8(out), "id"));
+    REQUIRE(contains(String8(out), "score"));
+    REQUIRE(contains(String8(out), "42"));
+    REQUIRE(contains(String8(out), "100"));
+    co_return;
 }

@@ -444,6 +444,12 @@ namespace plexdb::os {
         return fd_to_handle(STDOUT_FILENO);
     }
 
+    Pair<Handle, Handle> stream_pipe() {
+        int fds[2];
+        if (::pipe(fds) != 0) return {zero_handle(), zero_handle()};
+        return {fd_to_handle(fds[0]), fd_to_handle(fds[1])};
+    }
+
     void stream_write(Handle h, const void* data, U64 length) {
         int fd = handle_to_fd(h);
         U64 written = 0;
