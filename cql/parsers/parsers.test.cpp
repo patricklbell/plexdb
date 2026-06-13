@@ -1067,3 +1067,428 @@ TEST_CASE("CQL string escape", "[cql.cql]") {
     auto& str_val = get<AutoString8>(get<Constant>(nv.values[1].value).value);
     REQUIRE(str_val == "it's");
 }
+
+TEST_CASE("Conformance: CREATE INDEX", "[cql.conformance.parser]") {
+    SECTION("anonymous index on column") {
+        auto r = parse("CREATE INDEX ON ks.tbl(categories);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateIndex>(r->value);
+        REQUIRE(!s.custom);
+        REQUIRE(!s.if_not_exists);
+        REQUIRE(!s.index_name);
+        REQUIRE(s.table.table_name == "tbl");
+    }
+    SECTION("named index on column") {
+        auto r = parse("CREATE INDEX v_idx_1 ON ks.tbl(v);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateIndex>(r->value);
+        REQUIRE(!s.custom);
+        REQUIRE(s.index_name.has_value());
+        REQUIRE(*s.index_name == "v_idx_1");
+        REQUIRE(s.table.table_name == "tbl");
+    }
+    SECTION("custom index") {
+        auto r = parse("CREATE CUSTOM INDEX ON ks.tbl(col);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateIndex>(r->value);
+        REQUIRE(s.custom);
+    }
+    SECTION("if not exists") {
+        auto r = parse("CREATE INDEX IF NOT EXISTS ON ks.tbl(col);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateIndex>(r->value);
+        REQUIRE(s.if_not_exists);
+        REQUIRE(!s.index_name);
+    }
+    SECTION("named index if not exists") {
+        auto r = parse("CREATE INDEX IF NOT EXISTS idx_name ON ks.tbl(col);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateIndex>(r->value);
+        REQUIRE(s.if_not_exists);
+        REQUIRE(s.index_name.has_value());
+        REQUIRE(*s.index_name == "idx_name");
+    }
+    SECTION("function column specifier keys()") {
+        auto r = parse("CREATE INDEX ON ks.tbl(keys(categories));");
+        REQUIRE(r.has_value());
+        REQUIRE(type_matches_tag<CreateIndex>(r->value));
+    }
+    SECTION("unqualified table name") {
+        auto r = parse("CREATE INDEX ON tbl(col);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateIndex>(r->value);
+        REQUIRE(!s.table.keyspace_name);
+        REQUIRE(s.table.table_name == "tbl");
+    }
+}
+
+TEST_CASE("Conformance: CREATE TYPE", "[cql.conformance.parser]") {
+    SECTION("single field") {
+        auto r = parse("CREATE TYPE ks.my_type(v1 int);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateType>(r->value);
+        REQUIRE(s.name.table_name == "my_type");
+        REQUIRE(*s.name.keyspace_name == "ks");
+        REQUIRE(!s.if_not_exists);
+        REQUIRE(s.fields.length == 1);
+        REQUIRE(s.fields[0].name.identifier == "v1");
+        REQUIRE(s.fields[0].type == type::create_basic(type::Basic::int_));
+    }
+    SECTION("multiple fields") {
+        auto r = parse("CREATE TYPE ks.address(street text, city text, zip int);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateType>(r->value);
+        REQUIRE(s.fields.length == 3);
+        REQUIRE(s.fields[0].name.identifier == "street");
+        REQUIRE(s.fields[1].name.identifier == "city");
+        REQUIRE(s.fields[2].name.identifier == "zip");
+    }
+    SECTION("if not exists") {
+        auto r = parse("CREATE TYPE IF NOT EXISTS ks.my_type(a int, b text);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateType>(r->value);
+        REQUIRE(s.if_not_exists);
+        REQUIRE(s.fields.length == 2);
+    }
+    SECTION("alter_test shape single int field") {
+        auto r = parse("CREATE TYPE ks.t1(v1 int);");
+        REQUIRE(r.has_value());
+        REQUIRE(type_matches_tag<CreateType>(r->value));
+    }
+    SECTION("DROP TYPE IF EXISTS") {
+        auto r = parse("DROP TYPE IF EXISTS ks.type_does_not_exist;");
+        REQUIRE(r.has_value());
+        REQUIRE(type_matches_tag<DropType>(r->value));
+    }
+}
+
+TEST_CASE("Conformance: ALTER TABLE DROP with USING TIMESTAMP", "[cql.conformance.parser]") {
+    SECTION("single column DROP with USING TIMESTAMP") {
+        auto r = parse("ALTER TABLE ks.tbl DROP todrop USING TIMESTAMP 20000;");
+        REQUIRE(r.has_value());
+        auto& s = get<AlterTable>(r->value);
+        auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
+        REQUIRE(instr.columns.length == 1);
+        REQUIRE(instr.columns[0].identifier == "todrop");
+    }
+    SECTION("parenthesized multi-column DROP with USING TIMESTAMP") {
+        auto r = parse("ALTER TABLE ks.tbl DROP (todrop1, todrop2) USING TIMESTAMP 20000;");
+        REQUIRE(r.has_value());
+        auto& s = get<AlterTable>(r->value);
+        auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
+        REQUIRE(instr.columns.length == 2);
+        REQUIRE(instr.columns[0].identifier == "todrop1");
+        REQUIRE(instr.columns[1].identifier == "todrop2");
+    }
+    SECTION("DROP without USING TIMESTAMP") {
+        auto r = parse("ALTER TABLE ks.tbl DROP myCollection;");
+        REQUIRE(r.has_value());
+        auto& s = get<AlterTable>(r->value);
+        auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
+        REQUIRE(instr.columns.length == 1);
+    }
+    SECTION("multiple columns DROP without parens") {
+        auto r = parse("ALTER TABLE ks.tbl DROP col1, col2;");
+        REQUIRE(r.has_value());
+        auto& s = get<AlterTable>(r->value);
+        auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
+        REQUIRE(instr.columns.length == 2);
+    }
+    SECTION("ALTER TABLE ADD with list<text>") {
+        auto r = parse("ALTER TABLE ks.tbl ADD myCollection list<text>;");
+        REQUIRE(r.has_value());
+        auto& s = get<AlterTable>(r->value);
+        REQUIRE(type_matches_tag<AlterTable::AddColumnInstruction>(s.alter_table_instruction));
+        auto& instr = get<AlterTable::AddColumnInstruction>(s.alter_table_instruction);
+        REQUIRE(instr.column_definitions.length == 1);
+    }
+    SECTION("ALTER TABLE ADD with map<text, text>") {
+        auto r = parse("ALTER TABLE ks.tbl ADD myCollection map<text, text>;");
+        REQUIRE(r.has_value());
+        REQUIRE(type_matches_tag<AlterTable::AddColumnInstruction>(
+            get<AlterTable>(r->value).alter_table_instruction));
+    }
+}
+
+TEST_CASE("Conformance: collection literals in INSERT VALUES", "[cql.conformance.parser]") {
+    SECTION("list literal in VALUES") {
+        auto r = parse("INSERT INTO tbl (k, l, c) VALUES (3, [0, 1, 2], 4);");
+        REQUIRE(r.has_value());
+        auto& s = get<Insert>(r->value);
+        auto& nv = get<Insert::NamesValues>(s.insert_clause);
+        REQUIRE(nv.values.length == 3);
+        REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[1].value));
+    }
+    SECTION("list, map and set literals in VALUES") {
+        auto r = parse("INSERT INTO tbl (a, b, c, d, e, f) VALUES (1, 1, 1, [1, 2], {1: 2}, {1, 2});");
+        REQUIRE(r.has_value());
+        auto& s = get<Insert>(r->value);
+        auto& nv = get<Insert::NamesValues>(s.insert_clause);
+        REQUIRE(nv.values.length == 6);
+        REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[3].value));
+        REQUIRE(type_matches_tag<MapLiteral>(nv.values[4].value));
+        REQUIRE(type_matches_tag<SetLiteral>(nv.values[5].value));
+    }
+    SECTION("set literal with single element") {
+        auto r = parse("INSERT INTO tbl (k, s) VALUES (1, {1});");
+        REQUIRE(r.has_value());
+        auto& s = get<Insert>(r->value);
+        auto& nv = get<Insert::NamesValues>(s.insert_clause);
+        REQUIRE(nv.values.length == 2);
+        REQUIRE(type_matches_tag<SetLiteral>(nv.values[1].value));
+    }
+    SECTION("list with function call element") {
+        auto r = parse("INSERT INTO tbl (k, v) VALUES (0, [now()]);");
+        REQUIRE(r.has_value());
+        auto& s = get<Insert>(r->value);
+        auto& nv = get<Insert::NamesValues>(s.insert_clause);
+        REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[1].value));
+    }
+    SECTION("list literal in positional VALUES") {
+        auto r = parse("INSERT INTO tbl VALUES (1, [1, 2, 3]);");
+        REQUIRE(r.has_value());
+        auto& s = get<Insert>(r->value);
+        auto& nv = get<Insert::NamesValues>(s.insert_clause);
+        REQUIRE(nv.values.length == 2);
+        REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[1].value));
+    }
+}
+
+TEST_CASE("Conformance: USING TTL AND TIMESTAMP combined", "[cql.conformance.parser]") {
+    SECTION("INSERT USING TTL then TIMESTAMP literal") {
+        auto r = parse("INSERT INTO ks.tbl (id, name) VALUES (1, 'a') USING TTL 1000 AND TIMESTAMP 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Insert>(r->value);
+        REQUIRE(s.using_parameters.length == 2);
+        bool has_ttl = false, has_ts = false;
+        for (U64 i = 0; i < s.using_parameters.length; ++i) {
+            if (s.using_parameters[i].kind == UpdateParameter::Kind::TTL)       has_ttl = true;
+            if (s.using_parameters[i].kind == UpdateParameter::Kind::TIMESTAMP)  has_ts  = true;
+        }
+        REQUIRE(has_ttl);
+        REQUIRE(has_ts);
+    }
+    SECTION("INSERT USING TIMESTAMP then TTL bind markers") {
+        auto r = parse("INSERT INTO ks.tbl (k, c, i) VALUES (?, ?, ?) USING TIMESTAMP ? AND TTL ?;");
+        REQUIRE(r.has_value());
+        auto& s = get<Insert>(r->value);
+        REQUIRE(s.using_parameters.length == 2);
+    }
+    SECTION("UPDATE USING TIMESTAMP then TTL bind markers") {
+        auto r = parse("UPDATE ks.tbl USING TIMESTAMP ? AND TTL ? SET i = 1 WHERE k = 1;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(s.using_parameters.length == 2);
+    }
+    SECTION("INSERT USING TTL only") {
+        auto r = parse("INSERT INTO ks.tbl (k, v) VALUES (1, 1) USING TTL 300;");
+        REQUIRE(r.has_value());
+        auto& s = get<Insert>(r->value);
+        REQUIRE(s.using_parameters.length == 1);
+        REQUIRE(s.using_parameters[0].kind == UpdateParameter::Kind::TTL);
+    }
+    SECTION("INSERT USING TIMESTAMP only") {
+        auto r = parse("INSERT INTO ks.tbl (k, v) VALUES (1, 1) USING TIMESTAMP 12345;");
+        REQUIRE(r.has_value());
+        auto& s = get<Insert>(r->value);
+        REQUIRE(s.using_parameters.length == 1);
+        REQUIRE(s.using_parameters[0].kind == UpdateParameter::Kind::TIMESTAMP);
+    }
+}
+
+TEST_CASE("Conformance: SELECT with distinct/json as column names", "[cql.conformance.parser]") {
+    SECTION("both distinct and json as column names") {
+        auto r = parse("SELECT distinct, json FROM tbl;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(!s.transform.has_value());
+        REQUIRE(s.select.clauses.length == 2);
+    }
+    // "SELECT distinct distinct" = SELECT DISTINCT <col named distinct>; first keyword is the transform.
+    SECTION("SELECT DISTINCT with column named distinct") {
+        auto r = parse("SELECT distinct distinct FROM tbl;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.transform.has_value());
+        REQUIRE(*s.transform == Select::Transform::UNIQUE);
+        REQUIRE(s.select.clauses.length == 1);
+    }
+    SECTION("SELECT JSON transform still works") {
+        auto r = parse("SELECT JSON * FROM tbl;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.transform.has_value());
+        REQUIRE(*s.transform == Select::Transform::JSON);
+    }
+    SECTION("SELECT DISTINCT transform still works") {
+        auto r = parse("SELECT DISTINCT * FROM tbl;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.transform.has_value());
+        REQUIRE(*s.transform == Select::Transform::UNIQUE);
+    }
+}
+
+TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]") {
+    SECTION("two-element tuple column") {
+        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, duration>);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.column_definitions.length == 2);
+        auto& col = s.column_definitions[1];
+        REQUIRE(col.name.identifier == "t");
+        REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
+        auto& tup = get<type::Tuple>(col.type.value);
+        REQUIRE(tup.elements.length == 2);
+        REQUIRE(tup.frozen == false);
+        REQUIRE(type_matches_tag<type::Basic>(tup.elements[0].value));
+        REQUIRE(get<type::Basic>(tup.elements[0].value) == type::Basic::int_);
+        REQUIRE(type_matches_tag<type::Basic>(tup.elements[1].value));
+        REQUIRE(get<type::Basic>(tup.elements[1].value) == type::Basic::duration);
+    }
+    SECTION("frozen tuple as PRIMARY KEY column") {
+        auto r = parse("CREATE TABLE ks.tbl (t frozen<tuple<int, duration>> PRIMARY KEY, v int);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.column_definitions.length == 2);
+        auto& col = s.column_definitions[0];
+        REQUIRE(col.name.identifier == "t");
+        REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
+        auto& tup = get<type::Tuple>(col.type.value);
+        REQUIRE(tup.elements.length == 2);
+        REQUIRE(tup.frozen == true);
+    }
+    SECTION("single-element tuple") {
+        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<text>);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        auto& col = s.column_definitions[1];
+        REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
+        REQUIRE(get<type::Tuple>(col.type.value).elements.length == 1);
+    }
+    SECTION("three-element tuple") {
+        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, text, boolean>);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        auto& col = s.column_definitions[1];
+        REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
+        REQUIRE(get<type::Tuple>(col.type.value).elements.length == 3);
+    }
+    SECTION("tuple with collection element") {
+        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, list<text>>);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        auto& col = s.column_definitions[1];
+        REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
+        auto& tup = get<type::Tuple>(col.type.value);
+        REQUIRE(tup.elements.length == 2);
+        REQUIRE(type_matches_tag<type::List>(tup.elements[1].value));
+    }
+    SECTION("CREATE TYPE with tuple field") {
+        auto r = parse("CREATE TYPE ks.my_type (a tuple<int, text>);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateType>(r->value);
+        REQUIRE(s.fields.length == 1);
+        REQUIRE(type_matches_tag<type::Tuple>(s.fields[0].type.value));
+        REQUIRE(get<type::Tuple>(s.fields[0].type.value).elements.length == 2);
+    }
+    SECTION("frozen<map<text, list<tuple<int, duration>>>> nested type") {
+        auto r = parse("CREATE TABLE ks.tbl (pk int, m frozen<map<text, list<tuple<int, duration>>>>, v int, PRIMARY KEY (pk, m));");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        auto& col = s.column_definitions[1];
+        REQUIRE(type_matches_tag<type::Map>(col.type.value));
+        auto& m = get<type::Map>(col.type.value);
+        REQUIRE(m.frozen == true);
+        REQUIRE(type_matches_tag<type::Basic>(m.key.value));
+        REQUIRE(get<type::Basic>(m.key.value) == type::Basic::text);
+        REQUIRE(type_matches_tag<type::List>(m.value.value));
+        auto& l = get<type::List>(m.value.value);
+        REQUIRE(type_matches_tag<type::Tuple>(l.element.value));
+        REQUIRE(get<type::Tuple>(l.element.value).elements.length == 2);
+    }
+    SECTION("frozen<set<tuple<int, text, double>>> nested type") {
+        auto r = parse("CREATE TABLE ks.tbl (k int PRIMARY KEY, s frozen<set<tuple<int, text, double>>>);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        auto& col = s.column_definitions[1];
+        REQUIRE(type_matches_tag<type::Set>(col.type.value));
+        auto& st = get<type::Set>(col.type.value);
+        REQUIRE(st.frozen == true);
+        REQUIRE(type_matches_tag<type::Tuple>(st.key.value));
+        REQUIRE(get<type::Tuple>(st.key.value).elements.length == 3);
+    }
+    SECTION("map<text, frozen<map<text, set<int>>>> nested type") {
+        auto r = parse("CREATE TABLE ks.tbl (k int PRIMARY KEY, m map<text, frozen<map<text, set<int>>>>);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        auto& col = s.column_definitions[1];
+        REQUIRE(type_matches_tag<type::Map>(col.type.value));
+        auto& outer = get<type::Map>(col.type.value);
+        REQUIRE(type_matches_tag<type::Basic>(outer.key.value));
+        REQUIRE(type_matches_tag<type::Map>(outer.value.value));
+        REQUIRE(get<type::Map>(outer.value.value).frozen == true);
+    }
+}
+
+TEST_CASE("check_specific_errors", "[cql.cql]") {
+    SECTION("USE with positional bind marker") {
+        auto err = check_specific_errors("USE ?");
+        REQUIRE(err.has_value());
+        REQUIRE(String8(*err) == String8{"Bind variables cannot be used for keyspace names"});
+    }
+    SECTION("USE with named bind marker") {
+        auto err = check_specific_errors("USE :name");
+        REQUIRE(err.has_value());
+    }
+    SECTION("USE with leading whitespace") {
+        auto err = check_specific_errors("  USE ?");
+        REQUIRE(err.has_value());
+    }
+    SECTION("USE case-insensitive") {
+        auto err = check_specific_errors("use ?");
+        REQUIRE(err.has_value());
+    }
+    SECTION("valid USE returns empty") {
+        auto err = check_specific_errors("USE my_keyspace");
+        REQUIRE(!err.has_value());
+    }
+    SECTION("non-USE query returns empty") {
+        auto err = check_specific_errors("SELECT * FROM t WHERE k = ?");
+        REQUIRE(!err.has_value());
+    }
+}
+
+TEST_CASE("CREATE TABLE trailing comma", "[cql.cql]") {
+    SECTION("trailing comma after last column") {
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v int,);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.column_definitions.length == 2);
+    }
+    SECTION("trailing comma after standalone PRIMARY KEY clause") {
+        auto r = parse("CREATE TABLE ks.t (k int, c int, PRIMARY KEY (k),);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.column_definitions.length == 2);
+        REQUIRE(s.primary_key.has_value());
+    }
+}
+
+TEST_CASE("ALTER TYPE", "[cql.cql]") {
+    SECTION("ADD field") {
+        auto r = parse("ALTER TYPE ks.mytype ADD v2 int;");
+        REQUIRE(r.has_value());
+        REQUIRE(type_matches_tag<AlterType>(r->value));
+        auto& s = get<AlterType>(r->value);
+        REQUIRE(type_matches_tag<AlterType::AddFieldInstruction>(s.instruction));
+        REQUIRE(get<AlterType::AddFieldInstruction>(s.instruction).fields.length == 1);
+    }
+    SECTION("RENAME field") {
+        auto r = parse("ALTER TYPE ks.mytype RENAME v1 TO v1_renamed;");
+        REQUIRE(r.has_value());
+        REQUIRE(type_matches_tag<AlterType>(r->value));
+        auto& s = get<AlterType>(r->value);
+        REQUIRE(type_matches_tag<AlterType::RenameFieldInstruction>(s.instruction));
+    }
+}
