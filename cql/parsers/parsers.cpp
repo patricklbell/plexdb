@@ -121,6 +121,7 @@ namespace cql::parsers {
         constexpr auto kw_frozen = LEXY_LIT_CI("frozen");
         constexpr auto kw_list = LEXY_LIT_CI("list");
         constexpr auto kw_map = LEXY_LIT_CI("map");
+        constexpr auto kw_tuple = LEXY_LIT_CI("tuple");
         constexpr auto kw_logged = LEXY_LIT_CI("logged");
         constexpr auto kw_unset = LEXY_LIT_CI("unset");
         constexpr auto kw_default = LEXY_LIT_CI("default");
@@ -130,6 +131,10 @@ namespace cql::parsers {
         constexpr auto kw_token = LEXY_LIT_CI("token");
         constexpr auto kw_mask = LEXY_LIT_CI("mask");
         constexpr auto kw_masked = LEXY_LIT_CI("masked");
+        constexpr auto kw_index = LEXY_LIT_CI("index");
+        constexpr auto kw_type = LEXY_LIT_CI("type");
+        constexpr auto kw_on = LEXY_LIT_CI("on");
+        constexpr auto kw_custom = LEXY_LIT_CI("custom");
 
         struct ws {
             static constexpr auto rule = dsl::whitespace(dsl::ascii::space / dsl::ascii::newline);
@@ -353,26 +358,40 @@ namespace cql::parsers {
         };
 
         struct collection_type {
+            struct element_type {
+                static constexpr auto rule = dsl::p<frozen_type> | dsl::p<basic_type> | dsl::else_ >> dsl::recurse<collection_type>;
+                static constexpr auto value = lexy::forward<type::Type>;
+            };
             struct list_type {
-                static constexpr auto rule = kw_list >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
+                static constexpr auto rule = kw_list >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> + dsl::lit_c<'>'>;
                 static constexpr auto value = lexy::callback<type::Type>(
                     [](type::Type el) { return type::create_list(move(el)); }
                 );
             };
             struct set_type {
-                static constexpr auto rule = kw_set >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
+                static constexpr auto rule = kw_set >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> + dsl::lit_c<'>'>;
                 static constexpr auto value = lexy::callback<type::Type>(
                     [](type::Type key) { return type::create_set(move(key)); }
                 );
             };
             struct map_type {
-                static constexpr auto rule = kw_map >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> +
-                    dsl::lit_c<','> + dsl::p<ws> + (dsl::p<frozen_type> | dsl::p<basic_type>) + dsl::p<ws> + dsl::lit_c<'>'>;
+                static constexpr auto rule = kw_map >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> +
+                    dsl::lit_c<','> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> + dsl::lit_c<'>'>;
                 static constexpr auto value = lexy::callback<type::Type>(
                     [](type::Type key, type::Type val) { return type::create_map(move(key), move(val)); }
                 );
             };
-            static constexpr auto rule = dsl::p<list_type> | dsl::p<set_type> | dsl::p<map_type>;
+            struct tuple_type {
+                struct element_list {
+                    static constexpr auto rule = dsl::list(dsl::p<element_type> + dsl::p<ws>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>));
+                    static constexpr auto value = as_dyn_arr<type::Type>;
+                };
+                static constexpr auto rule = kw_tuple >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + dsl::p<element_list> + dsl::lit_c<'>'>;
+                static constexpr auto value = lexy::callback<type::Type>(
+                    [](DynamicArray<type::Type>&& elements) { return type::create_tuple(move(elements)); }
+                );
+            };
+            static constexpr auto rule = dsl::p<list_type> | dsl::p<set_type> | dsl::p<map_type> | dsl::p<tuple_type>;
             static constexpr auto value = lexy::forward<type::Type>;
         };
 
@@ -833,7 +852,11 @@ namespace cql::parsers {
             );
         };
         struct using_params_list {
-            static constexpr auto rule = dsl::list(dsl::p<using_timestamp_param> | dsl::p<using_ttl_param>, dsl::sep(kw_and >> dsl::p<ws>));
+            // Items include trailing ws so the AND separator can match without leading-space lookahead.
+            static constexpr auto rule = dsl::list(
+                (dsl::p<using_timestamp_param> | dsl::p<using_ttl_param>) + dsl::p<ws>,
+                dsl::sep(kw_and >> dsl::p<ws>)
+            );
             static constexpr auto value = as_dyn_arr<UpdateParameter>;
         };
         struct using_clause {
@@ -1008,7 +1031,10 @@ namespace cql::parsers {
             static constexpr auto value = lexy::forward<TaggedUnion<ColumnDefinition, CreateTable::PrimaryKey>>;
         };
         struct col_or_pk_list {
-            static constexpr auto rule = dsl::list(dsl::p<col_or_pk_el> + dsl::p<ws>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>));
+            static constexpr auto rule = dsl::list(
+                dsl::peek_not(dsl::lit_c<')'>) >> dsl::p<col_or_pk_el> + dsl::p<ws>,
+                dsl::trailing_sep(dsl::lit_c<','> >> dsl::p<ws>)
+            );
             static constexpr auto value = as_dyn_arr<TaggedUnion<ColumnDefinition, CreateTable::PrimaryKey>>;
         };
         struct column_def_list {
@@ -1137,10 +1163,18 @@ namespace cql::parsers {
                 }
             );
         };
+        struct drop_column_list {
+            static constexpr auto rule =
+                dsl::parenthesized(dsl::p<ws> + dsl::p<column_name_list> + dsl::p<ws>) |
+                dsl::else_ >> dsl::p<column_name_list>;
+            static constexpr auto value = lexy::forward<DynamicArray<ColumnName>>;
+        };
         struct alter_table_drop {
-            static constexpr auto rule = kw_drop >> dsl::p<ws> + dsl::p<if_exists> + dsl::p<ws> + dsl::p<column_name_list>;
+            // Optional USING TIMESTAMP n at the end (parsed and discarded — engine ignores it).
+            static constexpr auto rule = kw_drop >> dsl::p<ws> + dsl::p<if_exists> + dsl::p<ws> +
+                dsl::p<drop_column_list> + dsl::p<ws> + dsl::p<using_clause>;
             static constexpr auto value = lexy::callback<AlterTable>(
-                [](bool if_exists, DynamicArray<ColumnName>&& cols) -> AlterTable {
+                [](bool if_exists, DynamicArray<ColumnName>&& cols, DynamicArray<UpdateParameter>&&) -> AlterTable {
                     return {.if_exists = {}, .table = {}, .alter_table_instruction = AlterTable::DropColumnInstruction{.if_exists = if_exists, .columns = move(cols)}};
                 }
             );
@@ -1223,6 +1257,120 @@ namespace cql::parsers {
             static constexpr auto value = lexy::callback<TruncateTable>(
                 [](lexy::nullopt, TableName&& tbl) -> TruncateTable { return {.table = move(tbl)}; },
                 [](TableName&& tbl) -> TruncateTable { return {.table = move(tbl)}; }
+            );
+        };
+
+        struct create_index_stmt {
+            struct opt_custom_kw : lexy::transparent_production {
+                static constexpr auto rule = dsl::opt(dsl::peek(kw_custom) >> kw_custom + dsl::p<ws>);
+                static constexpr auto value = lexy::callback<bool>(
+                    [](lexy::nullopt) { return false; },
+                    []() { return true; }
+                );
+            };
+            // Only consume an identifier as the index name when the token after it is ON.
+            struct opt_index_name : lexy::transparent_production {
+                static constexpr auto rule = dsl::opt(
+                    dsl::peek(dsl::p<identifier> + dsl::p<ws> + kw_on) >> dsl::p<identifier>
+                );
+                static constexpr auto value = lexy::callback<Optional<AutoString8>>(
+                    [](lexy::nullopt) -> Optional<AutoString8> { return {}; },
+                    [](AutoString8&& name) -> Optional<AutoString8> { return move(name); }
+                );
+            };
+            // Index column specifier: identifier or func(identifier) — parsed and discarded.
+            struct index_col_spec : lexy::transparent_production {
+                static constexpr auto rule = [] {
+                    auto fn_form = dsl::peek(dsl::p<identifier> + dsl::p<ws> + dsl::lit_c<'('>) >>
+                                   dsl::p<identifier> + dsl::p<ws> + dsl::lit_c<'('> + dsl::p<ws> + dsl::p<identifier> + dsl::p<ws> + dsl::lit_c<')'>;
+                    return fn_form | dsl::else_ >> dsl::p<identifier>;
+                }();
+                static constexpr auto value = lexy::noop;
+            };
+
+            static constexpr auto rule = [] {
+                auto key_no_custom = kw_create + dsl::p<ws> + kw_index;
+                auto key_custom    = kw_create + dsl::p<ws> + kw_custom + dsl::p<ws> + kw_index;
+                auto cols = dsl::parenthesized(dsl::p<ws> + dsl::p<index_col_spec> + dsl::p<ws>);
+                return (dsl::peek(key_custom) | dsl::peek(key_no_custom)) >>
+                    kw_create + dsl::p<ws> + dsl::p<opt_custom_kw> + kw_index + dsl::p<ws> +
+                    dsl::p<if_not_exists> + dsl::p<ws> +
+                    dsl::p<opt_index_name> + dsl::p<ws> +
+                    kw_on + dsl::p<ws> +
+                    dsl::p<table_name> + dsl::p<ws> +
+                    cols;
+            }();
+            static constexpr auto value = lexy::callback<CreateIndex>(
+                [](bool custom, bool if_not_exists, Optional<AutoString8>&& index_name, TableName&& table) -> CreateIndex {
+                    return {.custom = custom, .if_not_exists = if_not_exists, .index_name = move(index_name), .table = move(table)};
+                }
+            );
+        };
+
+        struct create_type_stmt {
+            static constexpr auto rule = [] {
+                auto key = kw_create + dsl::p<ws> + kw_type;
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                    dsl::p<if_not_exists> + dsl::p<ws> +
+                    dsl::p<table_name> + dsl::p<ws> +
+                    dsl::parenthesized(dsl::p<ws> + dsl::p<column_definition_list> + dsl::p<ws>);
+            }();
+            static constexpr auto value = lexy::callback<CreateType>(
+                [](bool if_not_exists, TableName&& name, DynamicArray<ColumnDefinition>&& fields) -> CreateType {
+                    return {.if_not_exists = if_not_exists, .name = move(name), .fields = move(fields)};
+                }
+            );
+        };
+
+        struct drop_type_stmt {
+            static constexpr auto rule = [] {
+                auto key = kw_drop + dsl::p<ws> + kw_type;
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                    dsl::p<if_exists> + dsl::p<ws> +
+                    dsl::p<table_name>;
+            }();
+            static constexpr auto value = lexy::construct<DropType>;
+        };
+
+        struct alter_type_add {
+            static constexpr auto rule = kw_add >> dsl::p<ws> + dsl::p<column_definition_list>;
+            static constexpr auto value = lexy::callback<AlterType::AddFieldInstruction>(
+                [](DynamicArray<ColumnDefinition>&& fields) -> AlterType::AddFieldInstruction {
+                    return {.fields = move(fields)};
+                }
+            );
+        };
+        struct alter_type_rename_pair {
+            static constexpr auto rule = dsl::p<column_name> + dsl::p<ws> + kw_to + dsl::p<ws> + dsl::p<column_name>;
+            static constexpr auto value = lexy::construct<Pair<ColumnName, ColumnName>>;
+        };
+        struct alter_type_rename_list {
+            static constexpr auto rule = dsl::list(dsl::p<alter_type_rename_pair>, dsl::sep(kw_and >> dsl::p<ws>));
+            static constexpr auto value = as_dyn_arr<Pair<ColumnName, ColumnName>>;
+        };
+        struct alter_type_rename {
+            static constexpr auto rule = kw_rename >> dsl::p<ws> + dsl::p<alter_type_rename_list>;
+            static constexpr auto value = lexy::callback<AlterType::RenameFieldInstruction>(
+                [](DynamicArray<Pair<ColumnName, ColumnName>>&& pairs) -> AlterType::RenameFieldInstruction {
+                    return {.old_to_new_fields = move(pairs)};
+                }
+            );
+        };
+        struct alter_type_stmt {
+            static constexpr auto rule = [] {
+                auto key = kw_alter + dsl::p<ws> + kw_type;
+                auto instruction = dsl::p<alter_type_add> | dsl::else_ >> dsl::p<alter_type_rename>;
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                    dsl::p<table_name> + dsl::p<ws> +
+                    instruction;
+            }();
+            static constexpr auto value = lexy::callback<AlterType>(
+                [](TableName&& name, AlterType::AddFieldInstruction&& ins) -> AlterType {
+                    return {.name = move(name), .instruction = move(ins)};
+                },
+                [](TableName&& name, AlterType::RenameFieldInstruction&& ins) -> AlterType {
+                    return {.name = move(name), .instruction = move(ins)};
+                }
             );
         };
 
@@ -1509,7 +1657,11 @@ namespace cql::parsers {
                 static constexpr auto rule = kw_distinct;
                 static constexpr auto value = lexy::constant(Select::Transform::UNIQUE);
             };
-            static constexpr auto rule = dsl::opt(dsl::p<json> | dsl::p<distinct>);
+            // @note json/distinct are column names, not transforms, when immediately followed by ','
+            static constexpr auto rule = dsl::opt(
+                dsl::peek(kw_json     + dsl::peek_not(dsl::lit_c<','>)) >> dsl::p<json> |
+                dsl::peek(kw_distinct + dsl::peek_not(dsl::lit_c<','>)) >> dsl::p<distinct>
+            );
             static constexpr auto value = lexy::callback<Optional<Select::Transform>>(
                 [](lexy::nullopt) -> Optional<Select::Transform> { return {}; },
                 [](Select::Transform t) -> Optional<Select::Transform> { return t; }
@@ -1568,6 +1720,10 @@ namespace cql::parsers {
                           | dsl::p<alter_keyspace_stmt>
                           | dsl::p<drop_keyspace_stmt>
                           | dsl::p<create_table_stmt>
+                          | dsl::p<create_index_stmt>
+                          | dsl::p<create_type_stmt>
+                          | dsl::p<alter_type_stmt>
+                          | dsl::p<drop_type_stmt>
                           | dsl::p<alter_table_stmt>
                           | dsl::p<drop_table_stmt>
                           | dsl::p<truncate_stmt>
@@ -1588,6 +1744,10 @@ namespace cql::parsers {
                 [](AlterTable&&     s) -> Statement { return {.value = move(s)}; },
                 [](DropTable&&      s) -> Statement { return {.value = move(s)}; },
                 [](TruncateTable&&  s) -> Statement { return {.value = move(s)}; },
+                [](CreateIndex&&    s) -> Statement { return {.value = move(s)}; },
+                [](CreateType&&     s) -> Statement { return {.value = move(s)}; },
+                [](AlterType&&      s) -> Statement { return {.value = move(s)}; },
+                [](DropType&&       s) -> Statement { return {.value = move(s)}; },
                 [](Select&&         s) -> Statement { return {.value = move(s)}; },
                 [](Insert&&         s) -> Statement { return {.value = move(s)}; },
                 [](Update&&         s) -> Statement { return {.value = move(s)}; },
@@ -1600,6 +1760,26 @@ namespace cql::parsers {
             static constexpr auto rule = dsl::until(dsl::lit_c<';'>);
             static constexpr auto value = lexy::noop;
         };
+    }
+
+    Optional<String8> check_specific_errors(String8 query) {
+        const char* p   = query.data;
+        const char* end = query.data + query.length;
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
+
+        auto ci_eq3 = [](const char* s, char a, char b, char c) {
+            auto lc = [](char x) { return (x >= 'A' && x <= 'Z') ? char(x | 0x20) : x; };
+            return lc(s[0]) == a && lc(s[1]) == b && lc(s[2]) == c;
+        };
+
+        if (p + 3 <= end && ci_eq3(p, 'u', 's', 'e') &&
+            (p + 3 == end || p[3] == ' ' || p[3] == '\t' || p[3] == '\n' || p[3] == '\r')) {
+            p += 3;
+            while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
+            if (p < end && (*p == '?' || *p == ':'))
+                return String8{"Bind variables cannot be used for keyspace names"};
+        }
+        return {};
     }
 
     Optional<Statement> parse(String8 bytes, void(*error_fn)(const String8& error)) { ZoneScopedN("parsers::parse");
