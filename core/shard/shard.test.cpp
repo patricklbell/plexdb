@@ -31,8 +31,9 @@ TEST_CASE("spsc queue basic push/pop", "[plexdb.shard.spsc]") {
     }
 
     SECTION("fill to capacity") {
-        for (U64 i = 0; i < 4; i++)
+        for (U64 i = 0; i < 4; i++) {
             REQUIRE(try_push(q, i));
+        }
         REQUIRE(!try_push(q, 99_u64));
         REQUIRE(size(q) == 4);
 
@@ -45,15 +46,18 @@ TEST_CASE("spsc queue basic push/pop", "[plexdb.shard.spsc]") {
     }
 
     SECTION("wraparound") {
-        for (U64 i = 0; i < 4; i++)
+        for (U64 i = 0; i < 4; i++) {
             REQUIRE(try_push(q, i));
-        
-        U64 val;
-        for (U64 i = 0; i < 4; i++)
-            REQUIRE(try_pop(q, val));
+        }
 
-        for (U64 i = 10; i < 14; i++)
+        U64 val;
+        for (U64 i = 0; i < 4; i++) {
+            REQUIRE(try_pop(q, val));
+        }
+
+        for (U64 i = 10; i < 14; i++) {
             REQUIRE(try_push(q, i));
+        }
 
         for (U64 i = 10; i < 14; i++) {
             REQUIRE(try_pop(q, val));
@@ -65,8 +69,9 @@ TEST_CASE("spsc queue basic push/pop", "[plexdb.shard.spsc]") {
 TEST_CASE("spsc queue FIFO ordering", "[plexdb.shard.spsc]") {
     SpscQueue<U64, 16> q;
 
-    for (U64 i = 0; i < 16; i++)
+    for (U64 i = 0; i < 16; i++) {
         REQUIRE(try_push(q, i * 7));
+    }
 
     for (U64 i = 0; i < 16; i++) {
         U64 val;
@@ -76,13 +81,14 @@ TEST_CASE("spsc queue FIFO ordering", "[plexdb.shard.spsc]") {
 }
 
 TEST_CASE("spsc queue concurrent producer/consumer", "[plexdb.shard.spsc]") {
-    constexpr U64 ITERATIONS = 100000;
+    constexpr U64        ITERATIONS = 100000;
     SpscQueue<U64, 1024> q;
-    std::atomic<bool> done{false};
+    std::atomic<bool>    done{false};
 
     std::thread producer([&q, &done]() {
         for (U64 i = 0; i < ITERATIONS; i++) {
-            while (!try_push(q, i)) {}
+            while (!try_push(q, i)) {
+            }
         }
         done.store(true, std::memory_order_release);
     });
@@ -109,7 +115,7 @@ TEST_CASE("spsc queue with struct type", "[plexdb.shard.spsc]") {
     };
 
     SpscQueue<Msg, 8> q;
-    REQUIRE(try_push(q, Msg{.source=1, .id=42, .payload=0xDEAD}));
+    REQUIRE(try_push(q, Msg{.source = 1, .id = 42, .payload = 0xDEAD}));
 
     Msg out;
     REQUIRE(try_pop(q, out));
@@ -122,19 +128,19 @@ TEST_CASE("spsc queue with struct type", "[plexdb.shard.spsc]") {
 // Token mapping
 // ============================================================================
 TEST_CASE("token_of deterministic", "[plexdb.shard.token]") {
-    U8 key[] = "hello";
-    U64 t1 = token_of(key, 5);
-    U64 t2 = token_of(key, 5);
+    U8  key[] = "hello";
+    U64 t1    = token_of(key, 5);
+    U64 t2    = token_of(key, 5);
     REQUIRE(t1 == t2);
 
-    U8 key2[] = "world";
-    U64 t3 = token_of(key2, 5);
+    U8  key2[] = "world";
+    U64 t3     = token_of(key2, 5);
     REQUIRE(t1 != t3);
 }
 
 TEST_CASE("owning_shard uniform distribution", "[plexdb.shard.token]") {
     constexpr U32 SHARD_COUNT = 8;
-    constexpr U64 SAMPLES = 10000;
+    constexpr U64 SAMPLES     = 10000;
 
     U64 counts[SHARD_COUNT] = {};
     for (U64 i = 0; i < SAMPLES; i++) {
@@ -160,13 +166,13 @@ TEST_CASE("owning_shard edge cases", "[plexdb.shard.token]") {
     SECTION("boundary tokens") {
         REQUIRE(owning_shard(0, 4) == 0);
         U64 max_token = ~0_u64;
-        U32 shard = owning_shard(max_token, 4);
+        U32 shard     = owning_shard(max_token, 4);
         REQUIRE(shard == 3);
     }
 }
 
 TEST_CASE("shard_for_key combines hash and mapping", "[plexdb.shard.token]") {
-    U8 key[] = "test_key";
+    U8  key[] = "test_key";
     U32 shard = shard_for_key(key, sizeof(key) - 1, 16);
     REQUIRE(shard < 16);
 

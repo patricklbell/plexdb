@@ -15,7 +15,7 @@ export namespace plexdb::argparse {
         bool optional;
     };
 
-    constexpr U64 MAX_OPTIONS     = 16;
+    constexpr U64 MAX_OPTIONS = 16;
 
     struct FlagDef {
         char long_name[MAX_NAME_LEN];
@@ -31,11 +31,11 @@ export namespace plexdb::argparse {
     };
 
     struct Parser {
-        char prog_name[MAX_NAME_LEN];
-        char description[MAX_DESC_LEN];
+        char                                       prog_name[MAX_NAME_LEN];
+        char                                       description[MAX_DESC_LEN];
         CappedArray<PositionalDef, MAX_POSITIONAL> positionals;
-        CappedArray<FlagDef, MAX_FLAGS>   flags;
-        CappedArray<OptionDef, MAX_OPTIONS> options;
+        CappedArray<FlagDef, MAX_FLAGS>            flags;
+        CappedArray<OptionDef, MAX_OPTIONS>        options;
     };
 
     struct ParseResult {

@@ -1,11 +1,11 @@
 module;
 #include <plexdb/macros/macros.h>
 #if PLEXDB_OS_LINUX
-    #include <pthread.h>
-    #include <semaphore.h>
-    #include <sched.h>
-    #include <time.h>
-    #include <stdlib.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <sched.h>
+#include <time.h>
+#include <stdlib.h>
 #endif
 
 module plexdb.os.thread;
@@ -17,9 +17,9 @@ namespace plexdb::os {
     // thread
     // ========================================================================
     struct ThreadEntity {
-        pthread_t pthread;
+        pthread_t      pthread;
         ThreadFunction fn;
-        void* arg;
+        void*          arg;
     };
 
     static void* thread_entry(void* raw) {
@@ -30,8 +30,8 @@ namespace plexdb::os {
 
     Handle thread_launch(ThreadFunction fn, void* arg) {
         auto* entity = static_cast<ThreadEntity*>(malloc(sizeof(ThreadEntity)));
-        entity->fn = fn;
-        entity->arg = arg;
+        entity->fn   = fn;
+        entity->arg  = arg;
         pthread_create(&entity->pthread, nullptr, thread_entry, entity);
         Handle h;
         h.u64[0] = reinterpret_cast<U64>(entity);
@@ -56,7 +56,7 @@ namespace plexdb::os {
     }
 
     void thread_set_affinity(Handle handle, U32 core_id) {
-        auto* entity = reinterpret_cast<ThreadEntity*>(handle.u64[0]);
+        auto*     entity = reinterpret_cast<ThreadEntity*>(handle.u64[0]);
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
         CPU_SET(core_id, &cpuset);
@@ -102,7 +102,7 @@ namespace plexdb::os {
     // ========================================================================
     void sleep_ms(U32 ms) {
         struct timespec ts;
-        ts.tv_sec = ms / 1000;
+        ts.tv_sec  = ms / 1000;
         ts.tv_nsec = (ms % 1000) * 1000000L;
         nanosleep(&ts, nullptr);
     }

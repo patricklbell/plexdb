@@ -57,7 +57,7 @@ TEST_CASE("CQL DROP KEYSPACE", "[cql.cql]") {
 
 TEST_CASE("CQL CREATE KEYSPACE statements", "[cql.parser]") {
     SECTION("Basic CREATE KEYSPACE") {
-        auto query = "CREATE KEYSPACE my_keyspace WITH replication = 'SimpleStrategy';";
+        auto query  = "CREATE KEYSPACE my_keyspace WITH replication = 'SimpleStrategy';";
         auto result = parse(query);
     }
 }
@@ -73,7 +73,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
     }
 
     SECTION("CREATE KEYSPACE IF NOT EXISTS") {
-        auto query = "CREATE KEYSPACE IF NOT EXISTS test_ks WITH replication = 'NetworkTopologyStrategy';";
+        auto query  = "CREATE KEYSPACE IF NOT EXISTS test_ks WITH replication = 'NetworkTopologyStrategy';";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -90,7 +90,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
     }
 
     SECTION("CREATE KEYSPACE with multiple options") {
-        auto query = "CREATE KEYSPACE prod WITH replication = 'SimpleStrategy' AND durable_writes = 'true';";
+        auto query  = "CREATE KEYSPACE prod WITH replication = 'SimpleStrategy' AND durable_writes = 'true';";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -110,7 +110,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
     }
 
     SECTION("CREATE KEYSPACE with three options") {
-        auto query = "CREATE KEYSPACE multi_opt WITH replication = 'NetworkTopologyStrategy' AND durable_writes = 'true' AND strategy_class = 'SimpleStrategy';";
+        auto query  = "CREATE KEYSPACE multi_opt WITH replication = 'NetworkTopologyStrategy' AND durable_writes = 'true' AND strategy_class = 'SimpleStrategy';";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -124,7 +124,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
     }
 
     SECTION("CREATE KEYSPACE case insensitive") {
-        auto query = "create keyspace TestKS with replication = 'test';";
+        auto query  = "create keyspace TestKS with replication = 'test';";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -135,7 +135,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
     }
 
     SECTION("CREATE KEYSPACE with underscore in name") {
-        auto query = "CREATE KEYSPACE my_test_keyspace WITH replication = 'SimpleStrategy';";
+        auto query  = "CREATE KEYSPACE my_test_keyspace WITH replication = 'SimpleStrategy';";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -144,7 +144,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
     }
 
     SECTION("CREATE KEYSPACE with mixed case IF NOT EXISTS") {
-        auto query = "CREATE KEYSPACE If Not Exists mixed_case WITH replication = 'test';";
+        auto query  = "CREATE KEYSPACE If Not Exists mixed_case WITH replication = 'test';";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -155,7 +155,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
 
     SECTION("CREATE KEYSPACE with quoted option value") {
         // @note CQL uses '' to escape single quotes inside strings, not backslash
-        auto query = "CREATE KEYSPACE ks WITH replication = '{''class'': ''SimpleStrategy''}';";
+        auto query  = "CREATE KEYSPACE ks WITH replication = '{''class'': ''SimpleStrategy''}';";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -166,7 +166,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
 
 TEST_CASE("CQL CREATE TABLE statements", "[cql.parser]") {
     SECTION("Basic CREATE TABLE with single column") {
-        auto query = "CREATE TABLE ks.users (id int PRIMARY KEY);";
+        auto query  = "CREATE TABLE ks.users (id int PRIMARY KEY);";
         auto result = parse(query);
     }
 
@@ -205,7 +205,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     }
 
     SECTION("CREATE TABLE with multiple columns") {
-        auto query = "CREATE TABLE ks.users (id int PRIMARY KEY, name text, age int);";
+        auto query  = "CREATE TABLE ks.users (id int PRIMARY KEY, name text, age int);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -229,7 +229,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     }
 
     SECTION("CREATE TABLE IF NOT EXISTS") {
-        auto query = "CREATE TABLE IF NOT EXISTS ks.products (sku int PRIMARY KEY, name text, price int);";
+        auto query  = "CREATE TABLE IF NOT EXISTS ks.products (sku int PRIMARY KEY, name text, price int);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -242,7 +242,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     }
 
     SECTION("CREATE TABLE with various data types") {
-        auto query = "CREATE TABLE ks.data (id int PRIMARY KEY, name text, count bigint, created timestamp, active boolean);";
+        auto query  = "CREATE TABLE ks.data (id int PRIMARY KEY, name text, count bigint, created timestamp, active boolean);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -256,7 +256,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     }
 
     SECTION("CREATE TABLE with FLOAT and DOUBLE types") {
-        auto query = "CREATE TABLE prod.metrics (id int PRIMARY KEY, temperature float, precision_value double);";
+        auto query  = "CREATE TABLE prod.metrics (id int PRIMARY KEY, temperature float, precision_value double);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -267,7 +267,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     }
 
     SECTION("CREATE TABLE with UUID type") {
-        auto query = "CREATE TABLE ks.sessions (session_id uuid PRIMARY KEY, user_id int);";
+        auto query  = "CREATE TABLE ks.sessions (session_id uuid PRIMARY KEY, user_id int);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -278,7 +278,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     }
 
     SECTION("CREATE TABLE case insensitive") {
-        auto query = "create table ks.TestTable (Id INT primary key, Name TEXT);";
+        auto query  = "create table ks.TestTable (Id INT primary key, Name TEXT);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -289,7 +289,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     }
 
     SECTION("CREATE TABLE with non-primary key as last column") {
-        auto query = "CREATE TABLE ks.test (id int PRIMARY KEY, data text);";
+        auto query  = "CREATE TABLE ks.test (id int PRIMARY KEY, data text);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -299,7 +299,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     }
 
     SECTION("CREATE TABLE with primary key in middle") {
-        auto query = "CREATE TABLE ks.test (name text, id int PRIMARY KEY, email text);";
+        auto query  = "CREATE TABLE ks.test (name text, id int PRIMARY KEY, email text);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -311,7 +311,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     }
 
     SECTION("CREATE TABLE with many columns") {
-        auto query = "CREATE TABLE ks.large (c1 int PRIMARY KEY, c2 text, c3 bigint, c4 timestamp, c5 boolean, c6 float, c7 double);";
+        auto query  = "CREATE TABLE ks.large (c1 int PRIMARY KEY, c2 text, c3 bigint, c4 timestamp, c5 boolean, c6 float, c7 double);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -320,7 +320,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     }
 
     SECTION("CREATE TABLE with underscore column names") {
-        auto query = "CREATE TABLE ks.test (user_id int PRIMARY KEY, first_name text, last_name text);";
+        auto query  = "CREATE TABLE ks.test (user_id int PRIMARY KEY, first_name text, last_name text);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -333,7 +333,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 
 TEST_CASE("CQL INSERT INTO statements", "[cql.parser]") {
     SECTION("INSERT INTO with integer values") {
-        auto query = "INSERT INTO ks.users VALUES (1, 2, 3);";
+        auto query  = "INSERT INTO ks.users VALUES (1, 2, 3);";
         auto result = parse(query);
     }
 
@@ -354,7 +354,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO with string values") {
-        auto query = "INSERT INTO my_ks.table VALUES ('text1', 'text2');";
+        auto query  = "INSERT INTO my_ks.table VALUES ('text1', 'text2');";
         auto result = parse(query);
     }
 
@@ -366,7 +366,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO with mixed values") {
-        auto query = "INSERT INTO app.users VALUES (123, 'John Doe', 'john@example.com');";
+        auto query  = "INSERT INTO app.users VALUES (123, 'John Doe', 'john@example.com');";
         auto result = parse(query);
     }
 
@@ -378,7 +378,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO with single value") {
-        auto query = "INSERT INTO test.data VALUES (42);";
+        auto query  = "INSERT INTO test.data VALUES (42);";
         auto result = parse(query);
     }
 
@@ -390,12 +390,12 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
     SECTION("INSERT INTO with negative integers") {
         // @note negation is represented as UnaryMinusArithmeticOperation, not a folded Constant
-        auto query = "INSERT INTO ks.data VALUES (-100, -50, -1);";
+        auto query  = "INSERT INTO ks.data VALUES (-100, -50, -1);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
-        const auto& nv = get<Insert::NamesValues>(ins.insert_clause);
+        const auto& nv  = get<Insert::NamesValues>(ins.insert_clause);
         REQUIRE(nv.values.length == 3);
         auto check_neg = [](const Term& t, S64 expected) {
             const auto& arith = get<ArithmeticOperation>(t.value);
@@ -414,18 +414,18 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
         UNSCOPED_INFO(g_parse_errors);
         REQUIRE(result.has_value());
-        const auto& ins = get<Insert>(result->value);
+        const auto& ins  = get<Insert>(result->value);
         const auto& expr = get<ArithmeticOperation>(get<Insert::NamesValues>(ins.insert_clause).values[0].value);
-        const auto& top = get<BinaryArithmeticOperation>(expr.value);
+        const auto& top  = get<BinaryArithmeticOperation>(expr.value);
         REQUIRE(top.op == ArithmeticOperator::minus);
 
-        const auto& left = get<ArithmeticOperation>(top.lhs.value);
+        const auto& left     = get<ArithmeticOperation>(top.lhs.value);
         const auto& left_bin = get<BinaryArithmeticOperation>(left.value);
         REQUIRE(left_bin.op == ArithmeticOperator::plus);
         REQUIRE(get<S64>(get<Constant>(left_bin.lhs.value).value) == 1);
 
         const auto& times_expr = get<ArithmeticOperation>(left_bin.rhs.value);
-        const auto& times_bin = get<BinaryArithmeticOperation>(times_expr.value);
+        const auto& times_bin  = get<BinaryArithmeticOperation>(times_expr.value);
         REQUIRE(times_bin.op == ArithmeticOperator::times);
         REQUIRE(get<S64>(get<Constant>(times_bin.lhs.value).value) == 2);
         REQUIRE(get<S64>(get<Constant>(times_bin.rhs.value).value) == 3);
@@ -439,8 +439,8 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
         UNSCOPED_INFO(g_parse_errors);
         REQUIRE(result.has_value());
-        const auto& ins = get<Insert>(result->value);
-        const auto& expr = get<ArithmeticOperation>(get<Insert::NamesValues>(ins.insert_clause).values[0].value);
+        const auto& ins     = get<Insert>(result->value);
+        const auto& expr    = get<ArithmeticOperation>(get<Insert::NamesValues>(ins.insert_clause).values[0].value);
         const auto& mod_bin = get<BinaryArithmeticOperation>(expr.value);
         REQUIRE(mod_bin.op == ArithmeticOperator::mod);
         REQUIRE(get<S64>(get<Constant>(mod_bin.lhs.value).value) == 20);
@@ -472,7 +472,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO with large integer") {
-        auto query = "INSERT INTO ks.data VALUES (9223372036854775807);";
+        auto query  = "INSERT INTO ks.data VALUES (9223372036854775807);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -482,7 +482,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO case insensitive") {
-        auto query = "insert into ks.tbl values (1, 'test');";
+        auto query  = "insert into ks.tbl values (1, 'test');";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -490,7 +490,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO with empty string") {
-        auto query = "INSERT INTO ks.tbl VALUES ('');";
+        auto query  = "INSERT INTO ks.tbl VALUES ('');";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -500,7 +500,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO with string containing spaces") {
-        auto query = "INSERT INTO ks.tbl VALUES ('hello world', 'foo bar baz');";
+        auto query  = "INSERT INTO ks.tbl VALUES ('hello world', 'foo bar baz');";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -512,7 +512,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
     SECTION("INSERT INTO with escaped quotes") {
         // @note CQL uses '' to escape single quotes inside strings, not backslash
-        auto query = "INSERT INTO ks.tbl VALUES ('''quoted''');";
+        auto query  = "INSERT INTO ks.tbl VALUES ('''quoted''');";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -522,7 +522,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO with zero value") {
-        auto query = "INSERT INTO ks.tbl VALUES (0);";
+        auto query  = "INSERT INTO ks.tbl VALUES (0);";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -531,7 +531,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO with multiple string values") {
-        auto query = "INSERT INTO app.messages VALUES ('msg1', 'msg2', 'msg3', 'msg4', 'msg5');";
+        auto query  = "INSERT INTO app.messages VALUES ('msg1', 'msg2', 'msg3', 'msg4', 'msg5');";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -545,7 +545,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
 TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
     SECTION("Basic SELECT FROM") {
-        auto query = "SELECT * FROM ks.users;";
+        auto query  = "SELECT * FROM ks.users;";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -557,7 +557,7 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
     }
 
     SECTION("SELECT FROM case insensitive") {
-        auto query = "select * from TestTable;";
+        auto query  = "select * from TestTable;";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -569,7 +569,7 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
     }
 
     SECTION("SELECT FROM with underscores") {
-        auto query = "SELECT * FROM my_table;";
+        auto query  = "SELECT * FROM my_table;";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -579,7 +579,7 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
     }
 
     SECTION("SELECT FROM with mixed case keywords") {
-        auto query = "SeLeCt * FrOm ks.tbl;";
+        auto query  = "SeLeCt * FrOm ks.tbl;";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -587,7 +587,7 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
     }
 
     SECTION("SELECT FROM with extra whitespace") {
-        auto query = "SELECT   *   FROM   ks.users  ;";
+        auto query  = "SELECT   *   FROM   ks.users  ;";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -597,7 +597,7 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
     }
 
     SECTION("SELECT FROM with leading/trailing whitespace") {
-        auto query = "  SELECT * FROM ks.users;  ";
+        auto query  = "  SELECT * FROM ks.users;  ";
         auto result = parse(query);
 
         REQUIRE(result.has_value());
@@ -609,13 +609,13 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
 
 TEST_CASE("CQL Invalid syntax handling", "[cql.parser]") {
     SECTION("Invalid keyword") {
-        auto query = "INVALID STATEMENT;";
+        auto query  = "INVALID STATEMENT;";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing table name in CREATE TABLE") {
-        auto query = "CREATE TABLE;";
+        auto query  = "CREATE TABLE;";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
@@ -625,61 +625,61 @@ TEST_CASE("CQL Invalid syntax handling", "[cql.parser]") {
     }
 
     SECTION("Missing parentheses in CREATE TABLE") {
-        auto query = "CREATE TABLE ks.users id int PRIMARY KEY;";
+        auto query  = "CREATE TABLE ks.users id int PRIMARY KEY;";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing WITH in CREATE KEYSPACE") {
-        auto query = "CREATE KEYSPACE ks replication = 'test';";
+        auto query  = "CREATE KEYSPACE ks replication = 'test';";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Empty query") {
-        auto query = "";
+        auto query  = "";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Only whitespace") {
-        auto query = "   \n\t  ";
+        auto query  = "   \n\t  ";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Unclosed string in INSERT") {
-        auto query = "INSERT INTO ks.tbl VALUES ('unclosed);";
+        auto query  = "INSERT INTO ks.tbl VALUES ('unclosed);";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing comma between columns") {
-        auto query = "CREATE TABLE ks.test (id int PRIMARY KEY name text);";
+        auto query  = "CREATE TABLE ks.test (id int PRIMARY KEY name text);";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing comma between values") {
-        auto query = "INSERT INTO ks.tbl VALUES (1 2 3);";
+        auto query  = "INSERT INTO ks.tbl VALUES (1 2 3);";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Invalid data type") {
-        auto query = "CREATE TABLE ks.test (id invalidtype PRIMARY KEY);";
+        auto query  = "CREATE TABLE ks.test (id invalidtype PRIMARY KEY);";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing closing parenthesis in INSERT") {
-        auto query = "INSERT INTO ks.tbl VALUES (1, 2, 3;";
+        auto query  = "INSERT INTO ks.tbl VALUES (1, 2, 3;";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing closing parenthesis in CREATE TABLE") {
-        auto query = "CREATE TABLE ks.test (id int PRIMARY KEY;";
+        auto query  = "CREATE TABLE ks.test (id int PRIMARY KEY;";
         auto result = parse(query);
         REQUIRE_FALSE(result.has_value());
     }
@@ -1000,7 +1000,7 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[cql.parser]") 
     SECTION("Map with multiple entries") {
         auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 3};");
         REQUIRE(result.has_value());
-        const auto& ks = get<CreateKeyspace>(result->value);
+        const auto&                  ks  = get<CreateKeyspace>(result->value);
         [[maybe_unused]] const auto& map = get<MapLiteral>(ks.options.identifier_values[0].second);
         // @todo
     }
@@ -1008,7 +1008,7 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[cql.parser]") 
     SECTION("NetworkTopologyStrategy with datacenter configs") {
         auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3, 'dc2': 2};");
         REQUIRE(result.has_value());
-        const auto& ks = get<CreateKeyspace>(result->value);
+        const auto&                  ks  = get<CreateKeyspace>(result->value);
         [[maybe_unused]] const auto& map = get<MapLiteral>(ks.options.identifier_values[0].second);
         // @todo
     }
@@ -1062,8 +1062,8 @@ TEST_CASE("CQL quoted identifiers", "[cql.cql]") {
 TEST_CASE("CQL string escape", "[cql.cql]") {
     auto result = parse("INSERT INTO tbl (id, name) VALUES (1, 'it''s');");
     REQUIRE(result.has_value());
-    auto& stmt = get<Insert>(result->value);
-    auto& nv = get<Insert::NamesValues>(stmt.insert_clause);
+    auto& stmt    = get<Insert>(result->value);
+    auto& nv      = get<Insert::NamesValues>(stmt.insert_clause);
     auto& str_val = get<AutoString8>(get<Constant>(nv.values[1].value).value);
     REQUIRE(str_val == "it's");
 }
@@ -1166,7 +1166,7 @@ TEST_CASE("Conformance: ALTER TABLE DROP with USING TIMESTAMP", "[cql.conformanc
     SECTION("single column DROP with USING TIMESTAMP") {
         auto r = parse("ALTER TABLE ks.tbl DROP todrop USING TIMESTAMP 20000;");
         REQUIRE(r.has_value());
-        auto& s = get<AlterTable>(r->value);
+        auto& s     = get<AlterTable>(r->value);
         auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
         REQUIRE(instr.columns.length == 1);
         REQUIRE(instr.columns[0].identifier == "todrop");
@@ -1174,7 +1174,7 @@ TEST_CASE("Conformance: ALTER TABLE DROP with USING TIMESTAMP", "[cql.conformanc
     SECTION("parenthesized multi-column DROP with USING TIMESTAMP") {
         auto r = parse("ALTER TABLE ks.tbl DROP (todrop1, todrop2) USING TIMESTAMP 20000;");
         REQUIRE(r.has_value());
-        auto& s = get<AlterTable>(r->value);
+        auto& s     = get<AlterTable>(r->value);
         auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
         REQUIRE(instr.columns.length == 2);
         REQUIRE(instr.columns[0].identifier == "todrop1");
@@ -1183,14 +1183,14 @@ TEST_CASE("Conformance: ALTER TABLE DROP with USING TIMESTAMP", "[cql.conformanc
     SECTION("DROP without USING TIMESTAMP") {
         auto r = parse("ALTER TABLE ks.tbl DROP myCollection;");
         REQUIRE(r.has_value());
-        auto& s = get<AlterTable>(r->value);
+        auto& s     = get<AlterTable>(r->value);
         auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
         REQUIRE(instr.columns.length == 1);
     }
     SECTION("multiple columns DROP without parens") {
         auto r = parse("ALTER TABLE ks.tbl DROP col1, col2;");
         REQUIRE(r.has_value());
-        auto& s = get<AlterTable>(r->value);
+        auto& s     = get<AlterTable>(r->value);
         auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
         REQUIRE(instr.columns.length == 2);
     }
@@ -1214,7 +1214,7 @@ TEST_CASE("Conformance: collection literals in INSERT VALUES", "[cql.conformance
     SECTION("list literal in VALUES") {
         auto r = parse("INSERT INTO tbl (k, l, c) VALUES (3, [0, 1, 2], 4);");
         REQUIRE(r.has_value());
-        auto& s = get<Insert>(r->value);
+        auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
         REQUIRE(nv.values.length == 3);
         REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[1].value));
@@ -1222,7 +1222,7 @@ TEST_CASE("Conformance: collection literals in INSERT VALUES", "[cql.conformance
     SECTION("list, map and set literals in VALUES") {
         auto r = parse("INSERT INTO tbl (a, b, c, d, e, f) VALUES (1, 1, 1, [1, 2], {1: 2}, {1, 2});");
         REQUIRE(r.has_value());
-        auto& s = get<Insert>(r->value);
+        auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
         REQUIRE(nv.values.length == 6);
         REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[3].value));
@@ -1232,7 +1232,7 @@ TEST_CASE("Conformance: collection literals in INSERT VALUES", "[cql.conformance
     SECTION("set literal with single element") {
         auto r = parse("INSERT INTO tbl (k, s) VALUES (1, {1});");
         REQUIRE(r.has_value());
-        auto& s = get<Insert>(r->value);
+        auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
         REQUIRE(nv.values.length == 2);
         REQUIRE(type_matches_tag<SetLiteral>(nv.values[1].value));
@@ -1240,14 +1240,14 @@ TEST_CASE("Conformance: collection literals in INSERT VALUES", "[cql.conformance
     SECTION("list with function call element") {
         auto r = parse("INSERT INTO tbl (k, v) VALUES (0, [now()]);");
         REQUIRE(r.has_value());
-        auto& s = get<Insert>(r->value);
+        auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
         REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[1].value));
     }
     SECTION("list literal in positional VALUES") {
         auto r = parse("INSERT INTO tbl VALUES (1, [1, 2, 3]);");
         REQUIRE(r.has_value());
-        auto& s = get<Insert>(r->value);
+        auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
         REQUIRE(nv.values.length == 2);
         REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[1].value));
@@ -1262,8 +1262,12 @@ TEST_CASE("Conformance: USING TTL AND TIMESTAMP combined", "[cql.conformance.par
         REQUIRE(s.using_parameters.length == 2);
         bool has_ttl = false, has_ts = false;
         for (U64 i = 0; i < s.using_parameters.length; ++i) {
-            if (s.using_parameters[i].kind == UpdateParameter::Kind::TTL)       has_ttl = true;
-            if (s.using_parameters[i].kind == UpdateParameter::Kind::TIMESTAMP)  has_ts  = true;
+            if (s.using_parameters[i].kind == UpdateParameter::Kind::TTL) {
+                has_ttl = true;
+            }
+            if (s.using_parameters[i].kind == UpdateParameter::Kind::TIMESTAMP) {
+                has_ts = true;
+            }
         }
         REQUIRE(has_ttl);
         REQUIRE(has_ts);
@@ -1361,7 +1365,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
     SECTION("single-element tuple") {
         auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<text>);");
         REQUIRE(r.has_value());
-        auto& s = get<CreateTable>(r->value);
+        auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
         REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
         REQUIRE(get<type::Tuple>(col.type.value).elements.length == 1);
@@ -1369,7 +1373,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
     SECTION("three-element tuple") {
         auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, text, boolean>);");
         REQUIRE(r.has_value());
-        auto& s = get<CreateTable>(r->value);
+        auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
         REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
         REQUIRE(get<type::Tuple>(col.type.value).elements.length == 3);
@@ -1377,7 +1381,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
     SECTION("tuple with collection element") {
         auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, list<text>>);");
         REQUIRE(r.has_value());
-        auto& s = get<CreateTable>(r->value);
+        auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
         REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
         auto& tup = get<type::Tuple>(col.type.value);
@@ -1395,7 +1399,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
     SECTION("frozen<map<text, list<tuple<int, duration>>>> nested type") {
         auto r = parse("CREATE TABLE ks.tbl (pk int, m frozen<map<text, list<tuple<int, duration>>>>, v int, PRIMARY KEY (pk, m));");
         REQUIRE(r.has_value());
-        auto& s = get<CreateTable>(r->value);
+        auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
         REQUIRE(type_matches_tag<type::Map>(col.type.value));
         auto& m = get<type::Map>(col.type.value);
@@ -1410,7 +1414,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
     SECTION("frozen<set<tuple<int, text, double>>> nested type") {
         auto r = parse("CREATE TABLE ks.tbl (k int PRIMARY KEY, s frozen<set<tuple<int, text, double>>>);");
         REQUIRE(r.has_value());
-        auto& s = get<CreateTable>(r->value);
+        auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
         REQUIRE(type_matches_tag<type::Set>(col.type.value));
         auto& st = get<type::Set>(col.type.value);
@@ -1421,7 +1425,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
     SECTION("map<text, frozen<map<text, set<int>>>> nested type") {
         auto r = parse("CREATE TABLE ks.tbl (k int PRIMARY KEY, m map<text, frozen<map<text, set<int>>>>);");
         REQUIRE(r.has_value());
-        auto& s = get<CreateTable>(r->value);
+        auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
         REQUIRE(type_matches_tag<type::Map>(col.type.value));
         auto& outer = get<type::Map>(col.type.value);

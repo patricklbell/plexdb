@@ -12,7 +12,7 @@ export namespace plexdb::shard {
     template<typename T, U64 Capacity>
     struct SpscQueue {
         static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be a power of two");
-        static constexpr U64 mask = Capacity - 1;
+        static constexpr U64 mask     = Capacity - 1;
         static constexpr U64 capacity = Capacity;
 
         alignas(64) std::atomic<U64> head{0};
@@ -24,8 +24,9 @@ export namespace plexdb::shard {
     bool try_push(SpscQueue<T, Capacity>& q, const T& value) {
         U64 h = q.head.load(std::memory_order_relaxed);
         U64 t = q.tail.load(std::memory_order_acquire);
-        if (h - t >= Capacity)
+        if (h - t >= Capacity) {
             return false;
+        }
         q.buffer[h & SpscQueue<T, Capacity>::mask] = value;
         q.head.store(h + 1, std::memory_order_release);
         return true;
@@ -35,8 +36,9 @@ export namespace plexdb::shard {
     bool try_pop(SpscQueue<T, Capacity>& q, T& out) {
         U64 t = q.tail.load(std::memory_order_relaxed);
         U64 h = q.head.load(std::memory_order_acquire);
-        if (t == h)
+        if (t == h) {
             return false;
+        }
         out = q.buffer[t & SpscQueue<T, Capacity>::mask];
         q.tail.store(t + 1, std::memory_order_release);
         return true;

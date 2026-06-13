@@ -11,7 +11,7 @@ export namespace plexdb::os {
         Notifier();
         ~Notifier();
 
-        Notifier(const Notifier&) = delete;
+        Notifier(const Notifier&)            = delete;
         Notifier& operator=(const Notifier&) = delete;
 
         Notifier(Notifier&& other) noexcept;
@@ -24,7 +24,7 @@ export namespace plexdb::os {
     void signal_notify_safe(Notifier& notifier);
 
     // @todo wrap int
-    using SignalHandler = void(*)(int);
+    using SignalHandler = void (*)(int);
 
     void signal_register_kill(SignalHandler handler);
     void signal_register_stop(SignalHandler handler);
@@ -38,7 +38,7 @@ export namespace plexdb::os {
         Poll();
         ~Poll();
 
-        Poll(const Poll&) = delete;
+        Poll(const Poll&)            = delete;
         Poll& operator=(const Poll&) = delete;
 
         Poll(Poll&& other) noexcept;
@@ -48,10 +48,10 @@ export namespace plexdb::os {
     };
 
     enum class PollEventMask : U32 {
-        None  = 0,
-        Read  = 1 << 0,
-        Write = 1 << 1,
-        Error = 1 << 2,
+        None   = 0,
+        Read   = 1 << 0,
+        Write  = 1 << 1,
+        Error  = 1 << 2,
         HangUp = 1 << 3,
     };
 
@@ -63,7 +63,7 @@ export namespace plexdb::os {
     }
 
     struct PollEvent {
-        Handle handle = zero_handle();
+        Handle        handle = zero_handle();
         PollEventMask events = PollEventMask::None;
     };
 

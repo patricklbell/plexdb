@@ -30,7 +30,9 @@ export namespace cql {
             return (table == nullptr && other.table == nullptr) ||
                    (table == other.table && current_column_idx == other.current_column_idx);
         }
-        bool operator!=(const ColumnIterator& other) const { return !(*this == other); }
+        bool operator!=(const ColumnIterator& other) const {
+            return !(*this == other);
+        }
 
         friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table,
                                       U64 page_idx, U64 static_page_idx);
@@ -39,7 +41,7 @@ export namespace cql {
         const schema::Table* table = nullptr;
 
         blob::BlobCursor row_cursor;
-        blob::BlobCursor static_cursor;   // valid() == false when no static page
+        blob::BlobCursor static_cursor; // valid() == false when no static page
 
         U64 row_column_count   = 0;
         U64 current_column_idx = 0;
@@ -55,8 +57,9 @@ export namespace cql {
         bool current_is_null() const {
             U64 word = current_column_idx / io::MASK_BIT_COUNT;
             U64 bit  = current_column_idx % io::MASK_BIT_COUNT;
-            if (static_cast<bool>(static_cursor) && table->cols[current_column_idx].is_static)
+            if (static_cast<bool>(static_cursor) && table->cols[current_column_idx].is_static) {
                 return word >= static_masks.length || !(static_masks[word] & (1_u64 << bit));
+            }
             return word >= masks.length || !(masks[word] & (1_u64 << bit));
         }
 
@@ -72,28 +75,32 @@ export namespace cql {
         ColumnIterator start;
         ColumnIterator stop;
 
-        ColumnIterator& begin() { return start; }
-        ColumnIterator& end()   { return stop;  }
+        ColumnIterator& begin() {
+            return start;
+        }
+        ColumnIterator& end() {
+            return stop;
+        }
     };
 
     using PartitionBTree  = schema::PartitionBTree;
     using ClusteringBTree = schema::ClusteringBTree;
 
     struct RowIterator {
-        Pager* pager = nullptr;
+        Pager*         pager = nullptr;
         schema::Table* table = nullptr;
 
         btree::Iterator<PartitionBTree, schema::PartitionEntry> partition_it;
 
-        ClusteringBTree clustering_btree;
+        ClusteringBTree                       clustering_btree;
         btree::Iterator<ClusteringBTree, U64> clustering_it;
         btree::Iterator<ClusteringBTree, U64> clustering_end_it;
 
-        bool static_only_row = false;  // @note true when partition has static data but no clustering rows
+        bool static_only_row = false; // @note true when partition has static data but no clustering rows
 
         RowIterator() = default;
 
-        RowIterator(const RowIterator&) = delete;
+        RowIterator(const RowIterator&)            = delete;
         RowIterator& operator=(const RowIterator&) = delete;
 
         RowIterator(RowIterator&& other) noexcept
@@ -102,18 +109,17 @@ export namespace cql {
             , partition_it(move(other.partition_it))
             , clustering_btree(other.clustering_btree)
             , clustering_it(move(other.clustering_it))
-            , clustering_end_it(move(other.clustering_end_it))
-        {
+            , clustering_end_it(move(other.clustering_end_it)) {
             fix_clustering_btree_ptr(other);
         }
 
         RowIterator& operator=(RowIterator&& other) noexcept {
             if (this != &other) {
-                pager = other.pager;
-                table = other.table;
-                partition_it = move(other.partition_it);
-                clustering_btree = other.clustering_btree;
-                clustering_it = move(other.clustering_it);
+                pager             = other.pager;
+                table             = other.table;
+                partition_it      = move(other.partition_it);
+                clustering_btree  = other.clustering_btree;
+                clustering_it     = move(other.clustering_it);
                 clustering_end_it = move(other.clustering_end_it);
                 fix_clustering_btree_ptr(other);
             }
@@ -128,14 +134,18 @@ export namespace cql {
                         "invalid iterator comparison");
             return partition_it == other.partition_it;
         }
-        bool operator!=(const RowIterator& other) const { return !(*this == other); }
+        bool operator!=(const RowIterator& other) const {
+            return !(*this == other);
+        }
 
     private:
         void fix_clustering_btree_ptr(const RowIterator& src) {
-            if (clustering_it.btree == &src.clustering_btree)
+            if (clustering_it.btree == &src.clustering_btree) {
                 clustering_it.btree = &clustering_btree;
-            if (clustering_end_it.btree == &src.clustering_btree)
+            }
+            if (clustering_end_it.btree == &src.clustering_btree) {
                 clustering_end_it.btree = &clustering_btree;
+            }
         }
     };
 

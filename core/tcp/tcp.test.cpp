@@ -19,7 +19,7 @@ using namespace plexdb::os;
 using namespace plexdb::tcp;
 
 namespace {
-    constexpr int TCP_TEST_PORT_BASE = 21000;
+    constexpr int    TCP_TEST_PORT_BASE = 21000;
     std::atomic<int> port_counter{0};
 
     int get_unique_port() {
@@ -27,11 +27,12 @@ namespace {
     }
 
     struct TestServer {
-        Handle socket = zero_handle();
+        Handle   socket = zero_handle();
         Notifier interrupt;
-        U16 port;
+        U16      port;
 
-        TestServer(int p) : port(static_cast<U16>(p)) {
+        TestServer(int p)
+            : port(static_cast<U16>(p)) {
             socket = socket_open();
             socket_set_option(socket, SocketOption::Reuse, true);
             socket_bind(socket, port);
@@ -39,10 +40,14 @@ namespace {
         }
 
         ~TestServer() {
-            if (!is_zero_handle(socket)) socket_close(socket);
+            if (!is_zero_handle(socket)) {
+                socket_close(socket);
+            }
         }
 
-        void stop() { signal_notify_safe(interrupt); }
+        void stop() {
+            signal_notify_safe(interrupt);
+        }
     };
 }
 
@@ -52,11 +57,11 @@ TEST_CASE("handles signal from pipe", "[cql.tcp]") {
 }
 
 TEST_CASE("receives request", "[cql.tcp]") {
-    bool try_uring = GENERATE(false, true);
+    bool       try_uring = GENERATE(false, true);
     TestServer server(get_unique_port());
 
     threads::Semaphore done{0};
-    AutoString8 received;
+    AutoString8        received;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         {
@@ -77,7 +82,7 @@ TEST_CASE("receives request", "[cql.tcp]") {
 
         done.signal();
     };
-    auto tcp = create_tcp_server(server.socket, &handler, poll, try_uring);
+    auto tcp               = create_tcp_server(server.socket, &handler, poll, try_uring);
     auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
     aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 
@@ -88,15 +93,17 @@ TEST_CASE("receives large request", "[cql.tcp]") {
     TestServer server(get_unique_port());
 
     threads::Semaphore done{0};
-    U64 total_received = 0;
-    constexpr U64 DATA_SIZE = 32 * 1024;
+    U64                total_received = 0;
+    constexpr U64      DATA_SIZE      = 32 * 1024;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         {
             Socket client{socket_open()};
             CHECK(socket_connect(client, "127.0.0.1", server.port));
             std::vector<char> data(DATA_SIZE);
-            for (U64 i = 0; i < DATA_SIZE; i++) data[i] = (char)('A' + (i % 26));
+            for (U64 i = 0; i < DATA_SIZE; i++) {
+                data[i] = (char)('A' + (i % 26));
+            }
             socket_send_all(client, data.data(), data.size());
         }
         done.wait();
@@ -115,7 +122,7 @@ TEST_CASE("receives large request", "[cql.tcp]") {
         total_received = total;
         done.signal();
     };
-    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto tcp               = create_tcp_server(server.socket, &handler, poll);
     auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
     aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 
@@ -126,8 +133,8 @@ TEST_CASE("handles multiple sequential connections", "[cql.tcp]") {
     TestServer server(get_unique_port());
 
     threads::Semaphore connection_sem{0};
-    std::atomic<int> connection_count{0};
-    constexpr int NUM_CONNECTIONS = 5;
+    std::atomic<int>   connection_count{0};
+    constexpr int      NUM_CONNECTIONS = 5;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         for (int i = 0; i < NUM_CONNECTIONS; i++) {
@@ -149,7 +156,7 @@ TEST_CASE("handles multiple sequential connections", "[cql.tcp]") {
         connection_count++;
         connection_sem.signal();
     };
-    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto tcp               = create_tcp_server(server.socket, &handler, poll);
     auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
     aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 
@@ -160,8 +167,8 @@ TEST_CASE("handles concurrent connections", "[cql.tcp]") {
     TestServer server(get_unique_port());
 
     threads::Semaphore request_sem{0};
-    std::atomic<int> request_count{0};
-    constexpr int NUM_CLIENTS = 4;
+    std::atomic<int>   request_count{0};
+    constexpr int      NUM_CLIENTS = 4;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         threads::Thread clients[NUM_CLIENTS];
@@ -169,13 +176,18 @@ TEST_CASE("handles concurrent connections", "[cql.tcp]") {
             clients[i] = threads::launch("tcp-client", [&server, i]() {
                 Socket client{socket_open()};
                 if (socket_connect(client, "127.0.0.1", server.port)) {
-                    char msg[16]; snprintf(msg, sizeof(msg), "CLIENT%d", i);
+                    char msg[16];
+                    snprintf(msg, sizeof(msg), "CLIENT%d", i);
                     socket_send_all(client, msg, (int)strlen(msg));
                 }
             });
         }
-        for (auto& t : clients) t = {};
-        for (int i = 0; i < NUM_CLIENTS; i++) request_sem.wait();
+        for (auto& t : clients) {
+            t = {};
+        }
+        for (int i = 0; i < NUM_CLIENTS; i++) {
+            request_sem.wait();
+        }
         server.stop();
     });
 
@@ -188,7 +200,7 @@ TEST_CASE("handles concurrent connections", "[cql.tcp]") {
         request_count++;
         request_sem.signal();
     };
-    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto tcp               = create_tcp_server(server.socket, &handler, poll);
     auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
     aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 
@@ -201,7 +213,10 @@ TEST_CASE("handles client disconnect", "[cql.tcp]") {
     threads::Semaphore done{0};
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
-        { Socket client{socket_open()}; CHECK(socket_connect(client, "127.0.0.1", server.port)); }
+        {
+            Socket client{socket_open()};
+            CHECK(socket_connect(client, "127.0.0.1", server.port));
+        }
         done.wait();
         server.stop();
     });
@@ -214,7 +229,7 @@ TEST_CASE("handles client disconnect", "[cql.tcp]") {
 
         done.signal();
     };
-    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto tcp               = create_tcp_server(server.socket, &handler, poll);
     auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
     aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 }
@@ -242,7 +257,7 @@ TEST_CASE("tracks statistics correctly", "[cql.tcp]") {
 
         done.signal();
     };
-    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto tcp               = create_tcp_server(server.socket, &handler, poll);
     auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
     aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 
@@ -254,7 +269,7 @@ TEST_CASE("binary data with null bytes", "[cql.tcp]") {
     TestServer server(get_unique_port());
 
     threads::Semaphore done{0};
-    std::vector<U8> received;
+    std::vector<U8>    received;
 
     threads::Thread client_thread = threads::launch("test-client", [&]() {
         {
@@ -276,7 +291,7 @@ TEST_CASE("binary data with null bytes", "[cql.tcp]") {
 
         done.signal();
     };
-    auto tcp = create_tcp_server(server.socket, &handler, poll);
+    auto tcp               = create_tcp_server(server.socket, &handler, poll);
     auto notifier_consumer = aio::create_notifier_consumer(server.interrupt, poll);
     aio::run_blocking_event_loop(poll, tcp.consumer, notifier_consumer);
 

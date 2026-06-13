@@ -7,10 +7,14 @@ export namespace plexdb {
     template<typename Ret, typename... Args>
     struct Functor {
         Ret (*fn)(void*, Args...) = nullptr;
-        void* ctx = nullptr;
+        void* ctx                 = nullptr;
 
-        Ret operator()(Args... args) const { return fn(ctx, args...); }
-        explicit operator bool() const { return fn != nullptr; }
+        Ret operator()(Args... args) const {
+            return fn(ctx, args...);
+        }
+        explicit operator bool() const {
+            return fn != nullptr;
+        }
     };
 
     template<typename Ret, typename... Args, typename F>
@@ -19,7 +23,6 @@ export namespace plexdb {
             [](void* ctx, Args... args) -> Ret {
                 return (*static_cast<F*>(ctx))(args...);
             },
-            &f
-        };
+            &f};
     }
 }

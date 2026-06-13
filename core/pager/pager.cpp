@@ -23,11 +23,11 @@ namespace plexdb::pager {
     // ========================================================================
     static plugin::Producer pager_producer{"otlp.db.pager"};
 
-    static plugin::Stat stat_tx_committed   {&pager_producer, "transaction.committed",   plugin::StatType::Counter};
-    static plugin::Stat stat_tx_rolled_back {&pager_producer, "transaction.rolled_back", plugin::StatType::Counter};
-    static plugin::Stat stat_checkpoint     {&pager_producer, "checkpoint.executed",     plugin::StatType::Counter};
-    static plugin::Stat stat_cache_hit      {&pager_producer, "cache.hit",               plugin::StatType::Counter};
-    static plugin::Stat stat_cache_miss     {&pager_producer, "cache.miss",              plugin::StatType::Counter};
+    static plugin::Stat stat_tx_committed{&pager_producer, "transaction.committed", plugin::StatType::Counter};
+    static plugin::Stat stat_tx_rolled_back{&pager_producer, "transaction.rolled_back", plugin::StatType::Counter};
+    static plugin::Stat stat_checkpoint{&pager_producer, "checkpoint.executed", plugin::StatType::Counter};
+    static plugin::Stat stat_cache_hit{&pager_producer, "cache.hit", plugin::StatType::Counter};
+    static plugin::Stat stat_cache_miss{&pager_producer, "cache.miss", plugin::StatType::Counter};
 
     // ========================================================================
     // internal helpers
@@ -37,11 +37,10 @@ namespace plexdb::pager {
             *pager.file_io_ctx,
             pager.file,
             Rng1U64{
-                .start=pager.base_offset,
-                .end  =pager.base_offset + sizeof(pager.header),
+                .start = pager.base_offset,
+                .end   = pager.base_offset + sizeof(pager.header),
             },
-            &pager.header
-        );
+            &pager.header);
     }
 
     coroutine::Task<Header> create(aio::FileIOContext& file_io_ctx, os::Handle file, U64 page_size, U64 base_offset) {
@@ -49,15 +48,15 @@ namespace plexdb::pager {
         assert_true(page_size % sizeof(U64) == 0, "invalid page size alignment");
 
         Header header{
-            .magic=HEADER_MAGIC,
-            .version=HEADER_CURRENT_VERSION,
-            .page_size=page_size,
-            .page_count=1, // header page
-            .root_page=MAX_U64,
+            .magic      = HEADER_MAGIC,
+            .version    = HEADER_CURRENT_VERSION,
+            .page_size  = page_size,
+            .page_count = 1, // header page
+            .root_page  = MAX_U64,
         };
 
-        os::file_resize_zero(file, base_offset + header.page_count*header.page_size);
-        co_await aio::file_write(file_io_ctx, file, Rng1U64{ .start=base_offset, .end=base_offset + sizeof(header) }, &header);
+        os::file_resize_zero(file, base_offset + header.page_count * header.page_size);
+        co_await aio::file_write(file_io_ctx, file, Rng1U64{.start = base_offset, .end = base_offset + sizeof(header)}, &header);
 
         co_return header;
     }
@@ -66,23 +65,23 @@ namespace plexdb::pager {
     static coroutine::Task<> flush_direct(Pager& pager) {
         aio::FileIOContext& ctx = *pager.file_io_ctx;
         for (auto& pair : pager.page_cache) {
-            if (!pair.second.dirty) continue;
+            if (!pair.second.dirty) {
+                continue;
+            }
             U64 idx = pair.first;
             if (idx < pager.header.page_count) {
                 U64 offset = pager.base_offset + pager.header.page_size * idx;
                 co_await aio::file_write(
                     ctx, pager.file,
-                    Rng1U64{.start=offset, .end=offset + pager.header.page_size},
-                    pair.second.data.ptr
-                );
+                    Rng1U64{.start = offset, .end = offset + pager.header.page_size},
+                    pair.second.data.ptr);
             }
         }
         if (pager.header_in_write_set) {
             co_await aio::file_write(
                 ctx, pager.file,
-                Rng1U64{.start=pager.base_offset, .end=pager.base_offset + sizeof(pager.header)},
-                &pager.header
-            );
+                Rng1U64{.start = pager.base_offset, .end = pager.base_offset + sizeof(pager.header)},
+                &pager.header);
             pager.header_in_write_set = false;
         }
         os::file_resize_zero(pager.file, pager.base_offset + pager.header.page_count * pager.header.page_size);
@@ -91,26 +90,32 @@ namespace plexdb::pager {
     }
 
     static coroutine::Task<> maybe_recover_wal(Pager& pager) {
-        if (!pager.wal) co_return;
-        if (!co_await wal::try_load(pager.wal, *pager.file_io_ctx, pager.header.page_size)) co_return;
-        if (pager.wal.header.frame_count == 0) co_return;
+        if (!pager.wal) {
+            co_return;
+        }
+        if (!co_await wal::try_load(pager.wal, *pager.file_io_ctx, pager.header.page_size)) {
+            co_return;
+        }
+        if (pager.wal.header.frame_count == 0) {
+            co_return;
+        }
 
         assert_true(pager.wal.header.magic == wal::MAGIC, "maybe_recover_wal: WAL header has invalid magic");
 
         U64 page_size = pager.wal.header.page_size;
         {
-            U64 buf_size = max(page_size, static_cast<U64>(sizeof(Header)));
-            threads::Scope sc = threads::scratch();
-            U8* buf = arena::push_array_no_zero<U8>(*sc.arena, buf_size);
+            U64            buf_size = max(page_size, static_cast<U64>(sizeof(Header)));
+            threads::Scope sc       = threads::scratch();
+            U8*            buf      = arena::push_array_no_zero<U8>(*sc.arena, buf_size);
             for (U64 i = 0; i < pager.wal.header.frame_count; i++) {
                 wal::Frame frame{};
                 co_await wal::read_frame(pager.wal, *pager.file_io_ctx, i, frame, buf);
 
                 if (frame.page_idx == MAX_U64) {
-                    co_await aio::file_write(*pager.file_io_ctx, pager.file, Rng1U64{.start=pager.base_offset, .end=pager.base_offset + sizeof(Header)}, buf);
+                    co_await aio::file_write(*pager.file_io_ctx, pager.file, Rng1U64{.start = pager.base_offset, .end = pager.base_offset + sizeof(Header)}, buf);
                 } else {
                     U64 db_start = pager.base_offset + page_size * frame.page_idx;
-                    co_await aio::file_write(*pager.file_io_ctx, pager.file, Rng1U64{.start=db_start, .end=db_start + page_size}, buf);
+                    co_await aio::file_write(*pager.file_io_ctx, pager.file, Rng1U64{.start = db_start, .end = db_start + page_size}, buf);
                 }
             }
         }
@@ -122,11 +127,9 @@ namespace plexdb::pager {
             *pager.file_io_ctx,
             pager.wal.file,
             Rng1U64{
-                .start=offsetof(wal::Header, frame_count),
-                .end  =offsetof(wal::Header, frame_count) + sizeof(U64)
-            },
-            &pager.wal.header.frame_count
-        );
+                .start = offsetof(wal::Header, frame_count),
+                .end   = offsetof(wal::Header, frame_count) + sizeof(U64)},
+            &pager.wal.header.frame_count);
         co_await aio::file_sync(*pager.file_io_ctx, pager.wal.file);
 
         co_await read_header(pager);
@@ -135,59 +138,63 @@ namespace plexdb::pager {
     }
 
     Pager::Pager(aio::FileIOContext* file_io_ctx, os::Handle file, const Header& header, U64 checkpoint_interval, U64 base_offset)
-       : file_io_ctx(file_io_ctx), file(file), base_offset(base_offset), header(header), checkpoint_interval(checkpoint_interval) {
+        : file_io_ctx(file_io_ctx)
+        , file(file)
+        , base_offset(base_offset)
+        , header(header)
+        , checkpoint_interval(checkpoint_interval) {
     }
 
     coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, U64 base_offset) {
         p.file_io_ctx = file_io_ctx;
-        p.file = file;
+        p.file        = file;
         p.base_offset = base_offset;
         co_await read_header(p);
     }
 
     coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, os::Handle wal_file, U64 base_offset) {
         p.file_io_ctx = file_io_ctx;
-        p.file = file;
+        p.file        = file;
         p.base_offset = base_offset;
-        p.wal = Wal{wal_file};
+        p.wal         = Wal{wal_file};
         co_await read_header(p);
         co_await maybe_recover_wal(p);
     }
 
     coroutine::Task<> init(Pager& p, aio::FileIOContext* file_io_ctx, os::Handle file, os::Handle wal_file, const Header& header, U64 base_offset) {
         wal::Header wal_hdr = co_await wal::create(*file_io_ctx, wal_file, header.page_size);
-        p.file_io_ctx = file_io_ctx;
-        p.file = file;
-        p.base_offset = base_offset;
-        p.header = header;
-        p.wal = Wal{wal_file, wal_hdr};
+        p.file_io_ctx       = file_io_ctx;
+        p.file              = file;
+        p.base_offset       = base_offset;
+        p.header            = header;
+        p.wal               = Wal{wal_file, wal_hdr};
     }
 
     coroutine::Task<> destroy(Pager& p) {
         assert_true(p.file_io_ctx != nullptr, "destroy requires file_io_ctx");
-        if (p.transaction_active)
+        if (p.transaction_active) {
             rollback_transaction(p);
-        else if (!p.wal)
+        } else if (!p.wal) {
             co_await flush_direct(p);
+        }
         p.file_io_ctx = nullptr;
     }
 
-    Pager::Pager(Pager&& other):
-        file_io_ctx(other.file_io_ctx),
-        file(other.file),
-        base_offset(other.base_offset),
-        header(other.header),
-        saved_header(other.saved_header),
-        header_in_write_set(other.header_in_write_set),
-        transaction_active(other.transaction_active),
-        tx_waiters(move(other.tx_waiters)),
-        checkpoint_interval(other.checkpoint_interval),
-        wal_transaction_count(other.wal_transaction_count),
-        page_cache(move(other.page_cache)),
-        wal(move(other.wal))
-    {
-        other.file = os::zero_handle();
-        other.file_io_ctx = nullptr;
+    Pager::Pager(Pager&& other)
+        : file_io_ctx(other.file_io_ctx)
+        , file(other.file)
+        , base_offset(other.base_offset)
+        , header(other.header)
+        , saved_header(other.saved_header)
+        , header_in_write_set(other.header_in_write_set)
+        , transaction_active(other.transaction_active)
+        , tx_waiters(move(other.tx_waiters))
+        , checkpoint_interval(other.checkpoint_interval)
+        , wal_transaction_count(other.wal_transaction_count)
+        , page_cache(move(other.page_cache))
+        , wal(move(other.wal)) {
+        other.file               = os::zero_handle();
+        other.file_io_ctx        = nullptr;
         other.transaction_active = false;
     }
 
@@ -202,21 +209,21 @@ namespace plexdb::pager {
 
         assert_true(file_io_ctx == nullptr, "pager overwritten without destroy()");
 
-        file = other.file;
-        base_offset = other.base_offset;
-        file_io_ctx = other.file_io_ctx;
-        header = other.header;
-        saved_header = other.saved_header;
-        header_in_write_set = other.header_in_write_set;
-        transaction_active = other.transaction_active;
-        tx_waiters = move(other.tx_waiters);
-        checkpoint_interval = other.checkpoint_interval;
+        file                  = other.file;
+        base_offset           = other.base_offset;
+        file_io_ctx           = other.file_io_ctx;
+        header                = other.header;
+        saved_header          = other.saved_header;
+        header_in_write_set   = other.header_in_write_set;
+        transaction_active    = other.transaction_active;
+        tx_waiters            = move(other.tx_waiters);
+        checkpoint_interval   = other.checkpoint_interval;
         wal_transaction_count = other.wal_transaction_count;
-        page_cache = move(other.page_cache);
-        wal = move(other.wal);
+        page_cache            = move(other.page_cache);
+        wal                   = move(other.wal);
 
-        other.file = os::zero_handle();
-        other.file_io_ctx = nullptr;
+        other.file               = os::zero_handle();
+        other.file_io_ctx        = nullptr;
         other.transaction_active = false;
 
         return *this;
@@ -242,10 +249,9 @@ namespace plexdb::pager {
             co_await coroutine::Awaitable{
                 [p = &pager, n = &node](std::coroutine_handle<> h) { n->value = h; push_back(p->tx_waiters, n); },
                 []() {},
-                [p = &pager, n = &node]() { remove(p->tx_waiters, n); }
-            };
+                [p = &pager, n = &node]() { remove(p->tx_waiters, n); }};
         }
-        pager.saved_header = pager.header;
+        pager.saved_header       = pager.header;
         pager.transaction_active = true;
     }
 
@@ -257,14 +263,16 @@ namespace plexdb::pager {
             finish_transaction(pager);
             plugin::stat(stat_tx_committed, 1);
             plugin::message(pager_producer, plugin::Level::Debug,
-                fmt("pager: transaction committed, page_count=%" PRIu64, pager.header.page_count));
+                            fmt("pager: transaction committed, page_count=%" PRIu64, pager.header.page_count));
             co_return;
         }
 
         aio::FileIOContext& ctx = *pager.file_io_ctx;
 
         for (auto& pair : pager.page_cache) {
-            if (!pair.second.dirty) continue;
+            if (!pair.second.dirty) {
+                continue;
+            }
             U64 idx = pair.first;
             if (idx < pager.header.page_count) {
                 U64 frame_idx = co_await wal::append_frame(pager.wal, ctx, idx, pair.second.data.ptr);
@@ -289,13 +297,13 @@ namespace plexdb::pager {
         finish_transaction(pager);
         plugin::stat(stat_tx_committed, 1);
         plugin::message(pager_producer, plugin::Level::Debug,
-            fmt("pager: transaction committed, page_count=%" PRIu64, pager.header.page_count));
+                        fmt("pager: transaction committed, page_count=%" PRIu64, pager.header.page_count));
     }
 
     static void rollback_transaction(Pager& pager) {
         plugin::message(pager_producer, plugin::Level::Error, "pager: transaction rolled back");
         plugin::stat(stat_tx_rolled_back, 1);
-        pager.header = pager.saved_header;
+        pager.header              = pager.saved_header;
         pager.header_in_write_set = false;
         clear(pager.page_cache);
         // WAL contains only committed-transaction data; dirty pages from this
@@ -307,23 +315,27 @@ namespace plexdb::pager {
     // ========================================================================
     // RAII Transaction
     // ========================================================================
-    Transaction::Transaction(): p(nullptr) {}
+    Transaction::Transaction()
+        : p(nullptr) {
+    }
 
-    Transaction::Transaction(Pager* in_pager): p(in_pager) {
+    Transaction::Transaction(Pager* in_pager)
+        : p(in_pager) {
         assert_true(in_pager != nullptr, "cannot create a Transaction from a nullptr");
     }
 
     Transaction::Transaction(Transaction&& other)
-        : started_transaction(other.started_transaction), p(other.p) {
+        : started_transaction(other.started_transaction)
+        , p(other.p) {
         other.started_transaction = false;
-        other.p = nullptr;
+        other.p                   = nullptr;
     }
 
     Transaction& Transaction::operator=(Transaction&& other) {
         this->started_transaction = other.started_transaction;
-        this->p = other.p;
+        this->p                   = other.p;
         other.started_transaction = false;
-        other.p = nullptr;
+        other.p                   = nullptr;
         return *this;
     }
 
@@ -340,7 +352,7 @@ namespace plexdb::pager {
         co_await begin_transaction(*p);
         started_transaction = true;
         plugin::message(pager_producer, plugin::Level::Debug,
-            fmt("pager: transaction begun, page_count=%" PRIu64, p->header.page_count));
+                        fmt("pager: transaction begun, page_count=%" PRIu64, p->header.page_count));
     }
 
     coroutine::Task<> Transaction::commit() {
@@ -357,16 +369,17 @@ namespace plexdb::pager {
     // ========================================================================
     // checkpoint
     // ========================================================================
-    coroutine::Task<> checkpoint(Pager& pager) { ZoneScopedN("pager::checkpoint");
+    coroutine::Task<> checkpoint(Pager& pager) {
+        ZoneScopedN("pager::checkpoint");
         assert_true(pager.wal, "checkpoint requires WAL");
         assert_true(pager.file_io_ctx != nullptr, "checkpoint requires file_io_ctx");
 
-        aio::FileIOContext& ctx = *pager.file_io_ctx;
-        U64 page_size = pager.wal.header.page_size;
+        aio::FileIOContext& ctx       = *pager.file_io_ctx;
+        U64                 page_size = pager.wal.header.page_size;
 
-        threads::Scope sc = threads::scratch();
-        U64 buf_size = max(page_size, static_cast<U64>(sizeof(Header)));
-        U8* buf = arena::push_array_no_zero<U8>(*sc.arena, buf_size);
+        threads::Scope sc       = threads::scratch();
+        U64            buf_size = max(page_size, static_cast<U64>(sizeof(Header)));
+        U8*            buf      = arena::push_array_no_zero<U8>(*sc.arena, buf_size);
 
         for (auto& pair : pager.wal.wal_index) {
             U64 page_idx  = pair.first;
@@ -375,26 +388,23 @@ namespace plexdb::pager {
                 co_await aio::file_write(
                     ctx, pager.file,
                     Rng1U64{pager.base_offset, pager.base_offset + sizeof(Header)},
-                    &pager.header
-                );
+                    &pager.header);
             } else {
                 auto* entry = find(pager.page_cache, page_idx);
                 if (entry) {
                     U64 db_start = pager.base_offset + page_size * page_idx;
                     co_await aio::file_write(
                         ctx, pager.file,
-                        Rng1U64{.start=db_start, .end=db_start + page_size},
-                        entry->data.ptr
-                    );
+                        Rng1U64{.start = db_start, .end = db_start + page_size},
+                        entry->data.ptr);
                 } else {
                     wal::Frame frame{};
                     co_await wal::read_frame(pager.wal, ctx, frame_idx, frame, buf);
                     U64 db_start = pager.base_offset + page_size * page_idx;
                     co_await aio::file_write(
                         ctx, pager.file,
-                        Rng1U64{.start=db_start, .end=db_start + page_size},
-                        buf
-                    );
+                        Rng1U64{.start = db_start, .end = db_start + page_size},
+                        buf);
                 }
             }
         }
@@ -412,7 +422,7 @@ namespace plexdb::pager {
     // ========================================================================
     coroutine::Task<> set_root(Pager& pager, U64 page) {
         assert_true(pager.transaction_active, "no transaction active");
-        pager.header.root_page = page;
+        pager.header.root_page    = page;
         pager.header_in_write_set = true;
         co_return;
     }
@@ -429,7 +439,7 @@ namespace plexdb::pager {
         }
 
         plugin::stat(stat_cache_miss, 1);
-        U8* data = os::allocate_zero(pager.header.page_size);
+        U8*  data   = os::allocate_zero(pager.header.page_size);
         bool loaded = false;
         if (pager.wal) {
             if (U64* frame_idx_ptr = find(pager.wal.wal_index, idx)) {
@@ -442,9 +452,8 @@ namespace plexdb::pager {
             auto offset = pager.base_offset + pager.header.page_size * idx;
             co_await aio::file_read(
                 *pager.file_io_ctx, pager.file,
-                Rng1U64{.start=offset, .end=offset + pager.header.page_size},
-                data
-            );
+                Rng1U64{.start = offset, .end = offset + pager.header.page_size},
+                data);
         }
         insert(pager.page_cache, idx, PageCacheEntry{UniquePtr<U8>{data}, false});
         co_return data;
@@ -463,7 +472,7 @@ namespace plexdb::pager {
         }
 
         plugin::stat(stat_cache_miss, 1);
-        U8* data = os::allocate_zero(pager.header.page_size);
+        U8*  data   = os::allocate_zero(pager.header.page_size);
         bool loaded = false;
         if (pager.wal) {
             if (U64* frame_idx_ptr = find(pager.wal.wal_index, idx)) {
@@ -476,9 +485,8 @@ namespace plexdb::pager {
             auto offset = pager.base_offset + pager.header.page_size * idx;
             co_await aio::file_read(
                 *pager.file_io_ctx, pager.file,
-                Rng1U64{.start=offset, .end=offset + pager.header.page_size},
-                data
-            );
+                Rng1U64{.start = offset, .end = offset + pager.header.page_size},
+                data);
         }
         insert(pager.page_cache, idx, PageCacheEntry{UniquePtr<U8>{data}, true});
         co_return data;
@@ -501,7 +509,7 @@ namespace plexdb::pager {
         return pager.header.page_size / sizeof(U64);
     }
     constexpr inline U64 get_pages_per_entry() {
-        return sizeof(U64)*8;
+        return sizeof(U64) * 8;
     }
     inline static coroutine::Task<const U64*> rbitset(Pager& pager, U64 idx) {
         co_return reinterpret_cast<const U64*>(co_await rpage(pager, idx));
@@ -522,11 +530,12 @@ namespace plexdb::pager {
         }
     }
 
-    coroutine::Task<U64> new_page(Pager& pager) { ZoneScopedN("pager::new_page");
+    coroutine::Task<U64> new_page(Pager& pager) {
+        ZoneScopedN("pager::new_page");
         assert_true(pager.transaction_active, "new_page requires an active transaction");
         const U64 ENTRIES_PER_BITSET = get_bitset_entry_count(pager);
-        const U64 BITSET_PAGE_STRIDE = ENTRIES_PER_BITSET*get_pages_per_entry() + 1;
-        auto& h = pager.header;
+        const U64 BITSET_PAGE_STRIDE = ENTRIES_PER_BITSET * get_pages_per_entry() + 1;
+        auto&     h                  = pager.header;
 
         for (U64 bitset_page = 1; bitset_page < h.page_count; bitset_page += BITSET_PAGE_STRIDE) {
             U64* bitset = co_await rwbitset(pager, bitset_page);
@@ -536,11 +545,11 @@ namespace plexdb::pager {
                     U64 bit_idx = bit_count_trailing_zeros(~bitset[entry_idx]);
                     bitset[entry_idx] |= 1_u64 << bit_idx;
 
-                    U64 free_page = bitset_page + 1 + get_pages_per_entry()*entry_idx + bit_idx;
+                    U64 free_page = bitset_page + 1 + get_pages_per_entry() * entry_idx + bit_idx;
                     if (free_page >= h.page_count) {
-                        h.page_count = free_page+1;
+                        h.page_count              = free_page + 1;
                         pager.header_in_write_set = true;
-                        os::file_resize_zero(pager.file, pager.base_offset + h.page_count*h.page_size);
+                        os::file_resize_zero(pager.file, pager.base_offset + h.page_count * h.page_size);
                     }
                     ensure_page_zeroed(pager, free_page);
                     co_return free_page;
@@ -550,10 +559,10 @@ namespace plexdb::pager {
 
         assert_true((h.page_count - 1) % BITSET_PAGE_STRIDE == 0, "bitset correctly aligned");
 
-        U64 bitset_page = h.page_count++;
-        U64 free_page = h.page_count++;
+        U64 bitset_page           = h.page_count++;
+        U64 free_page             = h.page_count++;
         pager.header_in_write_set = true;
-        os::file_resize_zero(pager.file, pager.base_offset + h.page_count*h.page_size);
+        os::file_resize_zero(pager.file, pager.base_offset + h.page_count * h.page_size);
 
         U64* bitset = co_await rwbitset(pager, bitset_page);
         bitset[0] |= 1_u64;
@@ -562,13 +571,14 @@ namespace plexdb::pager {
         co_return free_page;
     }
 
-    coroutine::Task<> delete_page(Pager& pager, U64 idx) { ZoneScopedN("pager::delete_page");
+    coroutine::Task<> delete_page(Pager& pager, U64 idx) {
+        ZoneScopedN("pager::delete_page");
         assert_true(pager.transaction_active, "delete_page requires an active transaction");
         assert_true(idx < pager.header.page_count && idx > 0, "page out of range");
-        const U64 PAGES_PER_BITSET = get_bitset_entry_count(pager)*get_pages_per_entry() + 1;
-        auto& h = pager.header;
+        const U64 PAGES_PER_BITSET = get_bitset_entry_count(pager) * get_pages_per_entry() + 1;
+        auto&     h                = pager.header;
 
-        U64 bitset_page = ((idx - 1)/PAGES_PER_BITSET)*PAGES_PER_BITSET + 1;
+        U64 bitset_page = ((idx - 1) / PAGES_PER_BITSET) * PAGES_PER_BITSET + 1;
         assert_true(idx != bitset_page, "invalid delete page");
         U64* bitset = co_await rwbitset(pager, bitset_page);
 
@@ -590,8 +600,9 @@ namespace plexdb::pager {
             insert(pager.page_cache, idx, PageCacheEntry{UniquePtr<U8>{data}, true});
         }
 
-        if (idx != h.page_count - 1)
+        if (idx != h.page_count - 1) {
             co_return;
+        }
 
         const U64* bitset_r = bitset;
         PLEXDB_DEBUG_X(U64 old_page_count = h.page_count);
@@ -599,7 +610,7 @@ namespace plexdb::pager {
             for (;; entry_idx--) {
                 if (bitset_r[entry_idx] != 0) {
                     U64 occupied_count = get_pages_per_entry() - bit_count_leading_zeros(bitset_r[entry_idx]);
-                    h.page_count = bitset_page + 1 + entry_idx*get_pages_per_entry() + occupied_count;
+                    h.page_count       = bitset_page + 1 + entry_idx * get_pages_per_entry() + occupied_count;
                     break;
                 }
                 if (entry_idx == 0) {
@@ -608,10 +619,11 @@ namespace plexdb::pager {
                 }
             }
 
-            if (h.page_count != bitset_page || h.page_count <= PAGES_PER_BITSET)
+            if (h.page_count != bitset_page || h.page_count <= PAGES_PER_BITSET) {
                 break;
+            }
             bitset_page -= PAGES_PER_BITSET;
-            bitset_r = co_await rbitset(pager, bitset_page);
+            bitset_r  = co_await rbitset(pager, bitset_page);
             entry_idx = get_bitset_entry_count(pager) - 1;
         }
         PLEXDB_DEBUG_X(assert_true(h.page_count < old_page_count, "trimming actually trimmed"));

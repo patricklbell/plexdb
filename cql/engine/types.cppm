@@ -15,11 +15,14 @@ export namespace cql {
     struct Null {};
     struct UUID {
         static constexpr U64 length = 16_u64;
-        Array<U8, length> value;
+        Array<U8, length>    value;
 
         bool operator==(const UUID& o) const {
-            for (U64 i = 0; i < length; i++)
-                if (value[i] != o.value[i]) return false;
+            for (U64 i = 0; i < length; i++) {
+                if (value[i] != o.value[i]) {
+                    return false;
+                }
+            }
             return true;
         }
     };
@@ -27,9 +30,14 @@ export namespace cql {
         DynamicArray<U8> value;
 
         bool operator==(const Hex& o) const {
-            if (value.length != o.value.length) return false;
-            for (U64 i = 0; i < value.length; i++)
-                if (value[i] != o.value[i]) return false;
+            if (value.length != o.value.length) {
+                return false;
+            }
+            for (U64 i = 0; i < value.length; i++) {
+                if (value[i] != o.value[i]) {
+                    return false;
+                }
+            }
             return true;
         }
     };
@@ -37,9 +45,14 @@ export namespace cql {
         DynamicArray<U8> value;
 
         bool operator==(const Blob& o) const {
-            if (value.length != o.value.length) return false;
-            for (U64 i = 0; i < value.length; i++)
-                if (value[i] != o.value[i]) return false;
+            if (value.length != o.value.length) {
+                return false;
+            }
+            for (U64 i = 0; i < value.length; i++) {
+                if (value[i] != o.value[i]) {
+                    return false;
+                }
+            }
             return true;
         }
     };
@@ -51,58 +64,93 @@ export namespace cql {
             Array<U8, 16> v6;
         };
         // Anonymous union members have non-trivial constructors so we must define all special members
-        Inet() : is_v6(false) { new (&v4) Array<U8, 4>{}; }
-        Inet(const Inet& o) : is_v6(o.is_v6) {
-            if (o.is_v6) { new (&v6) Array<U8, 16>(o.v6); }
-            else          { new (&v4) Array<U8,  4>(o.v4); }
+        Inet()
+            : is_v6(false) {
+            new (&v4) Array<U8, 4>{};
         }
-        Inet(Inet&& o) noexcept : is_v6(o.is_v6) {
-            if (o.is_v6) { new (&v6) Array<U8, 16>(move(o.v6)); }
-            else          { new (&v4) Array<U8,  4>(move(o.v4)); }
+        Inet(const Inet& o)
+            : is_v6(o.is_v6) {
+            if (o.is_v6) {
+                new (&v6) Array<U8, 16>(o.v6);
+            } else {
+                new (&v4) Array<U8, 4>(o.v4);
+            }
+        }
+        Inet(Inet&& o) noexcept
+            : is_v6(o.is_v6) {
+            if (o.is_v6) {
+                new (&v6) Array<U8, 16>(move(o.v6));
+            } else {
+                new (&v4) Array<U8, 4>(move(o.v4));
+            }
         }
         Inet& operator=(const Inet& o) {
             is_v6 = o.is_v6;
-            if (o.is_v6) { v6 = o.v6; } else { v4 = o.v4; }
+            if (o.is_v6) {
+                v6 = o.v6;
+            } else {
+                v4 = o.v4;
+            }
             return *this;
         }
         Inet& operator=(Inet&& o) noexcept {
             is_v6 = o.is_v6;
-            if (o.is_v6) { v6 = move(o.v6); } else { v4 = move(o.v4); }
+            if (o.is_v6) {
+                v6 = move(o.v6);
+            } else {
+                v4 = move(o.v4);
+            }
             return *this;
         }
         bool operator==(const Inet& o) const {
-            if (is_v6 != o.is_v6) return false;
+            if (is_v6 != o.is_v6) {
+                return false;
+            }
             if (is_v6) {
-                for (int i = 0; i < 16; i++) if (v6[i] != o.v6[i]) return false;
+                for (int i = 0; i < 16; i++) {
+                    if (v6[i] != o.v6[i]) {
+                        return false;
+                    }
+                }
             } else {
-                for (int i = 0; i < 4;  i++) if (v4[i] != o.v4[i]) return false;
+                for (int i = 0; i < 4; i++) {
+                    if (v4[i] != o.v4[i]) {
+                        return false;
+                    }
+                }
             }
             return true;
         }
     };
 
     struct VarInt {
-        bool negative = false;
-        DynamicArray<U8> magnitude;  // big-endian bytes
-        bool operator==(const VarInt& o) const {
-            if (negative != o.negative || magnitude.length != o.magnitude.length) return false;
-            for (U64 i = 0; i < magnitude.length; i++) if (magnitude[i] != o.magnitude[i]) return false;
+        bool             negative = false;
+        DynamicArray<U8> magnitude; // big-endian bytes
+        bool             operator==(const VarInt& o) const {
+            if (negative != o.negative || magnitude.length != o.magnitude.length) {
+                return false;
+            }
+            for (U64 i = 0; i < magnitude.length; i++) {
+                if (magnitude[i] != o.magnitude[i]) {
+                    return false;
+                }
+            }
             return true;
         }
     };
 
     struct Decimal {
-        S32 scale = 0;
+        S32    scale = 0;
         VarInt unscaled;
-        bool operator==(const Decimal& o) const {
+        bool   operator==(const Decimal& o) const {
             return scale == o.scale && unscaled == o.unscaled;
         }
     };
 
     struct Duration {
-        S32 months = 0;
-        S32 days   = 0;
-        S64 nanoseconds = 0;
+        S32  months      = 0;
+        S32  days        = 0;
+        S64  nanoseconds = 0;
         bool operator==(const Duration& o) const {
             return months == o.months && days == o.days && nanoseconds == o.nanoseconds;
         }
@@ -121,10 +169,11 @@ export namespace cql {
     }
 
     inline U64 hash(const Inet& inet) {
-        if (inet.is_v6)
+        if (inet.is_v6) {
             return plexdb::hash(plexdb::String8(reinterpret_cast<const char*>(&inet.v6[0]), 16));
-        else
+        } else {
             return plexdb::hash(plexdb::String8(reinterpret_cast<const char*>(&inet.v4[0]), 4));
+        }
     }
 
     inline U64 hash(const VarInt& vi) {
@@ -135,7 +184,7 @@ export namespace cql {
 
     inline U64 hash(const Decimal& d) {
         U64 h = hash(d.unscaled);
-        U8 scale_bytes[4];
+        U8  scale_bytes[4];
         os::memory_copy(scale_bytes, &d.scale, 4);
         h ^= plexdb::hash(plexdb::String8(scale_bytes, 4));
         return h;
@@ -143,8 +192,8 @@ export namespace cql {
 
     inline U64 hash(const Duration& dur) {
         U8 buf[16];
-        os::memory_copy(buf,     &dur.months,      4);
-        os::memory_copy(buf + 4, &dur.days,        4);
+        os::memory_copy(buf, &dur.months, 4);
+        os::memory_copy(buf + 4, &dur.days, 4);
         os::memory_copy(buf + 8, &dur.nanoseconds, 8);
         return plexdb::hash(plexdb::String8(buf, 16));
     }
@@ -205,40 +254,93 @@ export namespace cql {
 
         struct Vector {
             Type element;
-            U64 count;
+            U64  count;
             bool frozen;
         };
 
         struct Tuple {
             DynamicArray<Type> elements;
-            bool frozen;
+            bool               frozen;
         };
 
         bool operator==(const Type& a, const Type& b);
 
-        inline bool operator==(const List&   a, const List&   b) { return a.element == b.element && a.frozen == b.frozen; }
-        inline bool operator==(const Set&    a, const Set&    b) { return a.key == b.key && a.frozen == b.frozen; }
-        inline bool operator==(const Map&    a, const Map&    b) { return a.key == b.key && a.value == b.value && a.frozen == b.frozen; }
-        inline bool operator==(const Vector& a, const Vector& b) { return a.element == b.element && a.count == b.count && a.frozen == b.frozen; }
-        inline bool operator==(const Tuple&  a, const Tuple&  b) {
-            if (a.frozen != b.frozen || a.elements.length != b.elements.length) return false;
-            for (U64 i = 0; i < a.elements.length; i++)
-                if (!(a.elements[i] == b.elements[i])) return false;
+        inline bool operator==(const List& a, const List& b) {
+            return a.element == b.element && a.frozen == b.frozen;
+        }
+        inline bool operator==(const Set& a, const Set& b) {
+            return a.key == b.key && a.frozen == b.frozen;
+        }
+        inline bool operator==(const Map& a, const Map& b) {
+            return a.key == b.key && a.value == b.value && a.frozen == b.frozen;
+        }
+        inline bool operator==(const Vector& a, const Vector& b) {
+            return a.element == b.element && a.count == b.count && a.frozen == b.frozen;
+        }
+        inline bool operator==(const Tuple& a, const Tuple& b) {
+            if (a.frozen != b.frozen || a.elements.length != b.elements.length) {
+                return false;
+            }
+            for (U64 i = 0; i < a.elements.length; i++) {
+                if (!(a.elements[i] == b.elements[i])) {
+                    return false;
+                }
+            }
             return true;
         }
 
-        inline bool operator==(const Type& a, const Type& b) { return a.value == b.value; }
+        inline bool operator==(const Type& a, const Type& b) {
+            return a.value == b.value;
+        }
 
-        inline Type create_basic(Basic d) { return Type{Basic{d}}; }
-        inline Type create_list(Basic el, bool frozen=false) { return Type{List{Type{el}, frozen}}; }
-        inline Type create_list(Type el, bool frozen=false) { return Type{List{move(el), frozen}}; }
-        inline Type create_set(Basic key, bool frozen=false) { return Type{Set{Type{key}, frozen}}; }
-        inline Type create_set(Type key, bool frozen=false) { return Type{Set{move(key), frozen}}; }
-        inline Type create_map(Basic key, Basic val, bool frozen=false) { return Type{Map{Type{key}, Type{val}, frozen}}; }
-        inline Type create_map(Type key, Type val, bool frozen=false) { return Type{Map{move(key), move(val), frozen}}; }
-        inline Type create_vector(Basic el, U64 count, bool frozen=false) { return Type{Vector{Type{el}, count, frozen}}; }
-        inline Type create_vector(Type el, U64 count, bool frozen=false) { return Type{Vector{move(el), count, frozen}}; }
-        inline Type create_tuple(DynamicArray<Type> elements, bool frozen=false) { return Type{Tuple{move(elements), frozen}}; }
+        inline Type create_basic(Basic d) {
+            return Type{Basic{d}};
+        }
+        inline Type create_list(Basic el, bool frozen = false) {
+            return Type{
+                List{Type{el}, frozen}
+            };
+        }
+        inline Type create_list(Type el, bool frozen = false) {
+            return Type{
+                List{move(el), frozen}
+            };
+        }
+        inline Type create_set(Basic key, bool frozen = false) {
+            return Type{
+                Set{Type{key}, frozen}
+            };
+        }
+        inline Type create_set(Type key, bool frozen = false) {
+            return Type{
+                Set{move(key), frozen}
+            };
+        }
+        inline Type create_map(Basic key, Basic val, bool frozen = false) {
+            return Type{
+                Map{Type{key}, Type{val}, frozen}
+            };
+        }
+        inline Type create_map(Type key, Type val, bool frozen = false) {
+            return Type{
+                Map{move(key), move(val), frozen}
+            };
+        }
+        inline Type create_vector(Basic el, U64 count, bool frozen = false) {
+            return Type{
+                Vector{Type{el}, count, frozen}
+            };
+        }
+        inline Type create_vector(Type el, U64 count, bool frozen = false) {
+            return Type{
+                Vector{move(el), count, frozen}
+            };
+        }
+        inline Type create_tuple(DynamicArray<Type> elements, bool frozen = false) {
+            return Type{
+                Tuple{move(elements), frozen}
+            };
+        }
     }
 }
 
@@ -276,8 +378,9 @@ export namespace plexdb {
 
     U64 hash(const cql::type::Tuple& t) {
         U64 h = static_cast<U64>(t.frozen);
-        for (U64 i = 0; i < t.elements.length; i++)
+        for (U64 i = 0; i < t.elements.length; i++) {
             h = mix(h, hash(t.elements[i]));
+        }
         return h;
     }
 
@@ -289,28 +392,50 @@ export namespace plexdb {
 
     constexpr inline String8 to_str(cql::type::Basic dtype) {
         switch (dtype) {
-            case cql::type::Basic::text:       return "text";
-            case cql::type::Basic::int_:       return "int";
-            case cql::type::Basic::bigint:     return "bigint";
-            case cql::type::Basic::smallint:   return "smallint";
-            case cql::type::Basic::counter:    return "counter";
-            case cql::type::Basic::timestamp:  return "timestamp";
-            case cql::type::Basic::boolean:    return "boolean";
-            case cql::type::Basic::float_:     return "float";
-            case cql::type::Basic::double_:    return "double";
-            case cql::type::Basic::uuid:       return "uuid";
-            case cql::type::Basic::ascii:      return "ascii";
-            case cql::type::Basic::blob:       return "blob";
-            case cql::type::Basic::date:       return "date";
-            case cql::type::Basic::decimal:    return "decimal";
-            case cql::type::Basic::duration:   return "duration";
-            case cql::type::Basic::inet:       return "inet";
-            case cql::type::Basic::time:       return "time";
-            case cql::type::Basic::timeuuid:   return "timeuuid";
-            case cql::type::Basic::tinyint:    return "tinyint";
-            case cql::type::Basic::varchar:    return "varchar";
-            case cql::type::Basic::varint:     return "varint";
-            case cql::type::Basic::hex:        return "hex";
+            case cql::type::Basic::text:
+                return "text";
+            case cql::type::Basic::int_:
+                return "int";
+            case cql::type::Basic::bigint:
+                return "bigint";
+            case cql::type::Basic::smallint:
+                return "smallint";
+            case cql::type::Basic::counter:
+                return "counter";
+            case cql::type::Basic::timestamp:
+                return "timestamp";
+            case cql::type::Basic::boolean:
+                return "boolean";
+            case cql::type::Basic::float_:
+                return "float";
+            case cql::type::Basic::double_:
+                return "double";
+            case cql::type::Basic::uuid:
+                return "uuid";
+            case cql::type::Basic::ascii:
+                return "ascii";
+            case cql::type::Basic::blob:
+                return "blob";
+            case cql::type::Basic::date:
+                return "date";
+            case cql::type::Basic::decimal:
+                return "decimal";
+            case cql::type::Basic::duration:
+                return "duration";
+            case cql::type::Basic::inet:
+                return "inet";
+            case cql::type::Basic::time:
+                return "time";
+            case cql::type::Basic::timeuuid:
+                return "timeuuid";
+            case cql::type::Basic::tinyint:
+                return "tinyint";
+            case cql::type::Basic::varchar:
+                return "varchar";
+            case cql::type::Basic::varint:
+                return "varint";
+            case cql::type::Basic::hex:
+                return "hex";
         }
         return "unknown";
     }
@@ -319,21 +444,23 @@ export namespace plexdb {
     inline AutoString8 to_str(cql::type::Type cdtype) {
         return visit(cdtype.value, [](const auto& v) -> AutoString8 {
             using T = RemoveCVRef<decltype(v)>;
-            if constexpr (SameAs<T, cql::type::Basic>)
+            if constexpr (SameAs<T, cql::type::Basic>) {
                 return AutoString8(to_str(v));
-            else if constexpr (SameAs<T, cql::type::List>)
+            } else if constexpr (SameAs<T, cql::type::List>) {
                 return "list<"_as + to_str(v.element) + ">";
-            else if constexpr (SameAs<T, cql::type::Set>)
+            } else if constexpr (SameAs<T, cql::type::Set>) {
                 return "set<"_as + to_str(v.key) + ">";
-            else if constexpr (SameAs<T, cql::type::Map>)
+            } else if constexpr (SameAs<T, cql::type::Map>) {
                 return "map<"_as + to_str(v.key) + ", " + to_str(v.value) + ">";
-            else if constexpr (SameAs<T, cql::type::Vector>)
+            } else if constexpr (SameAs<T, cql::type::Vector>) {
                 return "vector["_as + to_str(v.element) + "]";
-            else {
+            } else {
                 static_assert(SameAs<T, cql::type::Tuple>, "unhandled Type variant in to_str");
                 AutoString8 result = "tuple<"_as;
                 for (U64 i = 0; i < v.elements.length; i++) {
-                    if (i > 0) result += ", ";
+                    if (i > 0) {
+                        result += ", ";
+                    }
                     result += String8(to_str(v.elements[i]));
                 }
                 result += ">";

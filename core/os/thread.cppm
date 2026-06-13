@@ -4,7 +4,7 @@ import plexdb.base;
 import plexdb.os.core;
 
 export namespace plexdb::os {
-    using ThreadFunction = void(*)(void*);
+    using ThreadFunction = void (*)(void*);
 
     Handle thread_launch(ThreadFunction fn, void* arg);
     void   thread_join(Handle handle);

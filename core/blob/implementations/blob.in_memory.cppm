@@ -7,7 +7,7 @@ using namespace plexdb;
 
 export namespace plexdb::blob {
     struct BlobInMemory {
-        U64 size_bytes = 0;
+        U64              size_bytes = 0;
         DynamicArray<U8> data;
     };
 }

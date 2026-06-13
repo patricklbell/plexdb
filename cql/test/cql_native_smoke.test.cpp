@@ -10,7 +10,7 @@ CQL_NATIVE_TEST_CASE("smoke: STARTUP returns READY", "[cql.native][smoke]") {
     test::run_native_server(fixture, [](Socket& client, Notifier& interrupt) {
         test::Frame ready = test::send_startup(client);
         CHECK(ready.version == test::RESPONSE_VERSION);
-        CHECK(ready.opcode  == test::op::READY);
+        CHECK(ready.opcode == test::op::READY);
         CHECK(ready.body_len == 0);
         signal_notify_safe(interrupt);
     });

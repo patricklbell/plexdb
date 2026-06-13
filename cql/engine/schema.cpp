@@ -16,14 +16,16 @@ namespace cql::schema {
     static U32        register_type(Schema& schema, const type::Type& t);
 
     static U32 pack_type(Schema& schema, const type::Type& t) {
-        if (type_matches_tag<type::Basic>(t.value))
+        if (type_matches_tag<type::Basic>(t.value)) {
             return static_cast<U32>(get<type::Basic>(t.value));
+        }
         return register_type(schema, t);
     }
 
     static U32 register_type(Schema& schema, const type::Type& t) {
-        if (type_matches_tag<type::Basic>(t.value))
+        if (type_matches_tag<type::Basic>(t.value)) {
             return static_cast<U32>(get<type::Basic>(t.value));
+        }
 
         TypeRegistryEntry entry = visit(t.value, [&](const auto& v) -> TypeRegistryEntry {
             using T = RemoveCVRef<decltype(v)>;
@@ -31,15 +33,15 @@ namespace cql::schema {
             if constexpr (SameAs<T, type::Basic>) {
                 assert_true(false, "unexpected type reached visitor, this should never happen!");
                 return {};
-            } else if constexpr (SameAs<T, type::List>)
+            } else if constexpr (SameAs<T, type::List>) {
                 return {TypeRegistryKind::List, pack_type(schema, v.element), 0, 0, v.frozen};
-            else if constexpr (SameAs<T, type::Set>)
+            } else if constexpr (SameAs<T, type::Set>) {
                 return {TypeRegistryKind::Set, pack_type(schema, v.key), 0, 0, v.frozen};
-            else if constexpr (SameAs<T, type::Map>)
+            } else if constexpr (SameAs<T, type::Map>) {
                 return {TypeRegistryKind::Map, pack_type(schema, v.key), pack_type(schema, v.value), 0, v.frozen};
-            else if constexpr (SameAs<T, type::Vector>)
+            } else if constexpr (SameAs<T, type::Vector>) {
                 return {TypeRegistryKind::Vector, pack_type(schema, v.element), 0, v.count, v.frozen};
-            else if constexpr (SameAs<T, type::Tuple>) {
+            } else if constexpr (SameAs<T, type::Tuple>) {
                 assert_not_implemented("tuple column type is not implemented");
                 return {};
             } else {
@@ -53,8 +55,9 @@ namespace cql::schema {
             // @todo comparison operator, map
             if (existing.kind == entry.kind && existing.elem_id == entry.elem_id &&
                 existing.val_id == entry.val_id && existing.vec_count == entry.vec_count &&
-                existing.frozen == entry.frozen)
+                existing.frozen == entry.frozen) {
                 return static_cast<U32>(type_registry_base + i);
+            }
         }
 
         push_back(schema.storage.type_entries, entry);
@@ -67,10 +70,18 @@ namespace cql::schema {
         }
         const TypeRegistryEntry& e = schema.storage.type_entries[id - type_registry_base];
         switch (e.kind) {
-            case TypeRegistryKind::List  : { return type::create_list  (unpack_type(schema, e.elem_id), e.frozen); }
-            case TypeRegistryKind::Set   : { return type::create_set   (unpack_type(schema, e.elem_id), e.frozen); }
-            case TypeRegistryKind::Map   : { return type::create_map   (unpack_type(schema, e.elem_id), unpack_type(schema, e.val_id), e.frozen); }
-            case TypeRegistryKind::Vector: { return type::create_vector(unpack_type(schema, e.elem_id), e.vec_count, e.frozen); }
+            case TypeRegistryKind::List: {
+                return type::create_list(unpack_type(schema, e.elem_id), e.frozen);
+            }
+            case TypeRegistryKind::Set: {
+                return type::create_set(unpack_type(schema, e.elem_id), e.frozen);
+            }
+            case TypeRegistryKind::Map: {
+                return type::create_map(unpack_type(schema, e.elem_id), unpack_type(schema, e.val_id), e.frozen);
+            }
+            case TypeRegistryKind::Vector: {
+                return type::create_vector(unpack_type(schema, e.elem_id), e.vec_count, e.frozen);
+            }
         }
 
         assert_true(false, "invalid type registry kind, io may be corrupted");
@@ -95,9 +106,9 @@ namespace cql::schema {
         co_await blob::tget(schema.schema_blob, &schema_header);
 
         co_await blob::load(schema.keyspaces_blob, in_pager, schema_header.keyspaces_page);
-        co_await blob::load(schema.tables_blob,    in_pager, schema_header.tables_page);
-        co_await blob::load(schema.columns_blob,   in_pager, schema_header.columns_page);
-        co_await blob::load(schema.types_blob,     in_pager, schema_header.types_page);
+        co_await blob::load(schema.tables_blob, in_pager, schema_header.tables_page);
+        co_await blob::load(schema.columns_blob, in_pager, schema_header.columns_page);
+        co_await blob::load(schema.types_blob, in_pager, schema_header.types_page);
 
         //
         // allocate storage and cache blob contents in memory
@@ -105,12 +116,12 @@ namespace cql::schema {
         for (U64 keyspace_offset_bytes = 0; keyspace_offset_bytes < schema.keyspaces_blob.size_bytes;) {
             KeyspaceStorage ks_storage{
                 .offset_in_blob_bytes = keyspace_offset_bytes,
-                .header = {},
-                .name = {},
-                .tables = {},
-                .replication_class = ReplicationClass::Unknown,
-                .replication_factor = 0,
-                .do_durable_writes = false,
+                .header               = {},
+                .name                 = {},
+                .tables               = {},
+                .replication_class    = ReplicationClass::Unknown,
+                .replication_factor   = 0,
+                .do_durable_writes    = false,
             };
 
             co_await blob::tget(schema.keyspaces_blob, &ks_storage.header, &keyspace_offset_bytes);
@@ -124,9 +135,9 @@ namespace cql::schema {
         for (U64 table_offset_bytes = 0; table_offset_bytes < schema.tables_blob.size_bytes;) {
             TableStorage tbl_storage{
                 .offset_in_blob_bytes = table_offset_bytes,
-                .header = {},
-                .name = {},
-                .columns = {},
+                .header               = {},
+                .name                 = {},
+                .columns              = {},
             };
 
             co_await blob::tget(schema.tables_blob, &tbl_storage.header, &table_offset_bytes);
@@ -144,8 +155,8 @@ namespace cql::schema {
         for (U64 column_offset_bytes = 0; column_offset_bytes < schema.columns_blob.size_bytes;) {
             ColumnStorage col_storage{
                 .offset_in_blob_bytes = column_offset_bytes,
-                .header = {},
-                .name = {},
+                .header               = {},
+                .name                 = {},
             };
 
             co_await blob::tget(schema.columns_blob, &col_storage.header, &column_offset_bytes);
@@ -172,39 +183,38 @@ namespace cql::schema {
         reserve(schema.keyspaces, schema.storage.keyspaces.length);
         for (U64 ks_idx = 0; ks_idx < schema.storage.keyspaces.length; ks_idx++) {
             const KeyspaceStorage& ks_storage = schema.storage.keyspaces[ks_idx];
-            Keyspace ks {
-                .idx = ks_idx,
+            Keyspace               ks{
+                .idx       = ks_idx,
                 .tombstone = ks_storage.header.tombstone,
-                .name = ks_storage.name,
-                .tbls = {},
+                .name      = ks_storage.name,
+                .tbls      = {},
             };
-            for (const auto& tbl_idx: ks_storage.tables) {
+            for (const auto& tbl_idx : ks_storage.tables) {
                 const TableStorage& tbl_storage = schema.storage.tables[tbl_idx];
 
-                Table tbl {
-                    .idx = tbl_idx,
-                    .tombstone = tbl_storage.header.tombstone,
-                    .name = tbl_storage.name,
-                    .cols = {},
-                    .partition_key_col_indices = {},
+                Table tbl{
+                    .idx                        = tbl_idx,
+                    .tombstone                  = tbl_storage.header.tombstone,
+                    .name                       = tbl_storage.name,
+                    .cols                       = {},
+                    .partition_key_col_indices  = {},
                     .clustering_key_col_indices = {},
-                    .static_col_indices = {},
-                    .btree = PartitionBTree{
-                        in_pager, tbl_storage.header.btree_page,
-                        btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
-                    },
+                    .static_col_indices         = {},
+                    .btree                      = PartitionBTree{
+                                                   in_pager, tbl_storage.header.btree_page,
+                                                   btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}},
                 };
 
                 reserve(tbl.cols, tbl_storage.columns.length);
-                for (const auto& col_idx: tbl_storage.columns) {
+                for (const auto& col_idx : tbl_storage.columns) {
                     const ColumnStorage& col_storage = schema.storage.columns[col_idx];
 
-                    Column col {
-                        .tombstone = col_storage.header.tombstone,
-                        .is_static = col_storage.header.is_static,
-                        .name = col_storage.name,
-                        .type = unpack_type(schema, col_storage.header.type_id),
-                        .key_kind = col_storage.header.key_kind,
+                    Column col{
+                        .tombstone    = col_storage.header.tombstone,
+                        .is_static    = col_storage.header.is_static,
+                        .name         = col_storage.name,
+                        .type         = unpack_type(schema, col_storage.header.type_id),
+                        .key_kind     = col_storage.header.key_kind,
                         .key_position = col_storage.header.key_position,
                     };
 
@@ -219,18 +229,18 @@ namespace cql::schema {
                         U64 insert_pos = tbl.partition_key_col_indices.length;
                         push_back(tbl.partition_key_col_indices, ci);
                         while (insert_pos > 0 &&
-                               tbl.cols[tbl.partition_key_col_indices[insert_pos-1]].key_position > col.key_position) {
-                            tbl.partition_key_col_indices[insert_pos] = tbl.partition_key_col_indices[insert_pos-1];
-                            tbl.partition_key_col_indices[insert_pos-1] = ci;
+                               tbl.cols[tbl.partition_key_col_indices[insert_pos - 1]].key_position > col.key_position) {
+                            tbl.partition_key_col_indices[insert_pos]     = tbl.partition_key_col_indices[insert_pos - 1];
+                            tbl.partition_key_col_indices[insert_pos - 1] = ci;
                             insert_pos--;
                         }
                     } else if (col.key_kind == KeyKind::ClusteringKey) {
                         U64 insert_pos = tbl.clustering_key_col_indices.length;
                         push_back(tbl.clustering_key_col_indices, ci);
                         while (insert_pos > 0 &&
-                               tbl.cols[tbl.clustering_key_col_indices[insert_pos-1]].key_position > col.key_position) {
-                            tbl.clustering_key_col_indices[insert_pos] = tbl.clustering_key_col_indices[insert_pos-1];
-                            tbl.clustering_key_col_indices[insert_pos-1] = ci;
+                               tbl.cols[tbl.clustering_key_col_indices[insert_pos - 1]].key_position > col.key_position) {
+                            tbl.clustering_key_col_indices[insert_pos]     = tbl.clustering_key_col_indices[insert_pos - 1];
+                            tbl.clustering_key_col_indices[insert_pos - 1] = ci;
                             insert_pos--;
                         }
                     } else if (col.is_static) {
@@ -242,7 +252,6 @@ namespace cql::schema {
             }
             push_back(schema.keyspaces, move(ks));
         }
-
     }
 
     coroutine::Task<U64> create_schema(Pager& pager) {
@@ -255,9 +264,9 @@ namespace cql::schema {
 
         SchemaHeader header{
             .keyspaces_page = keyspaces_page,
-            .tables_page = tables_page,
-            .columns_page = columns_page,
-            .types_page = types_page,
+            .tables_page    = tables_page,
+            .columns_page   = columns_page,
+            .types_page     = types_page,
         };
 
         blob::BlobStaticPaged schema_blob;
@@ -296,9 +305,15 @@ namespace cql::schema {
         return {nullptr, Error::MissingColumn};
     }
 
-    Result<Keyspace*> read_keyspace(Schema& schema, String8 name) { return read_keyspace_impl(schema, name); }
-    Result<Table*>    read_table(Schema& schema, Keyspace& ks, String8 name) { return read_table_impl(schema, ks, name); }
-    Result<Column*>   read_column(Schema& schema, Table& tbl, String8 name) { return read_column_impl(schema, tbl, name); }
+    Result<Keyspace*> read_keyspace(Schema& schema, String8 name) {
+        return read_keyspace_impl(schema, name);
+    }
+    Result<Table*> read_table(Schema& schema, Keyspace& ks, String8 name) {
+        return read_table_impl(schema, ks, name);
+    }
+    Result<Column*> read_column(Schema& schema, Table& tbl, String8 name) {
+        return read_column_impl(schema, tbl, name);
+    }
 
     [[nodiscard("option may be invalid")]]
     static Result<void> apply_keyspace_replication_option(KeyspaceStorage& storage, const OptionValue& option) {
@@ -345,7 +360,7 @@ namespace cql::schema {
                     return {Error::InvalidOptions, "replication factor should be an integer"};
                 }
                 const auto& value_constant = get<Constant>(value_term.value);
-                S64 value = 0;
+                S64         value          = 0;
                 if (type_matches_tag<S64>(value_constant.value)) {
                     value = get<S64>(value_constant.value);
                 } else if (type_matches_tag<AutoString8>(value_constant.value)) {
@@ -389,9 +404,9 @@ namespace cql::schema {
     [[nodiscard("options may be invalid")]]
     static Result<void> apply_keyspace_options(KeyspaceStorage& storage, const Options& opts) {
         // @todo determine if a replication strategy is required
-        storage.replication_class = ReplicationClass::SimpleStrategy;
+        storage.replication_class  = ReplicationClass::SimpleStrategy;
         storage.replication_factor = 1;
-        storage.do_durable_writes = true;
+        storage.do_durable_writes  = true;
 
         for (const auto& [key, value] : opts.identifier_values) {
             if (key == "replication") {
@@ -415,17 +430,17 @@ namespace cql::schema {
 
         U64 offset_bytes = schema.keyspaces_blob.size_bytes;
 
-        KeyspaceStorage ks_storage {
+        KeyspaceStorage ks_storage{
             .offset_in_blob_bytes = offset_bytes,
-            .header = KeyspaceHeader{
-                .tombstone = false,
-                .name_length = create.name.length,
-            },
-            .name = AutoString8(create.name),
-            .tables = {},
-            .replication_class = ReplicationClass::SimpleStrategy,
+            .header               = KeyspaceHeader{
+                                                   .tombstone   = false,
+                                                   .name_length = create.name.length,
+                                                   },
+            .name               = AutoString8(create.name),
+            .tables             = {              },
+            .replication_class  = ReplicationClass::SimpleStrategy,
             .replication_factor = 1,
-            .do_durable_writes = true,
+            .do_durable_writes  = true,
         };
         if (auto res = apply_keyspace_options(ks_storage, create.options); res.error != Error::None) {
             co_return Result<Keyspace*>{nullptr, res.error, res.message};
@@ -435,18 +450,17 @@ namespace cql::schema {
 
         co_await blob::resize(
             schema.keyspaces_blob, offset_bytes +
-            sizeof(ks_storage_ref.header) +
-            ks_storage_ref.name.length
-        );
+                                       sizeof(ks_storage_ref.header) +
+                                       ks_storage_ref.name.length);
 
         co_await blob::tupdate(schema.keyspaces_blob, &ks_storage_ref.header, &offset_bytes);
         co_await update_str(schema.keyspaces_blob, ks_storage_ref.name, &offset_bytes);
 
-        Keyspace ks {
-            .idx = schema.storage.keyspaces.length-1,
+        Keyspace ks{
+            .idx       = schema.storage.keyspaces.length - 1,
             .tombstone = ks_storage_ref.header.tombstone,
-            .name = ks_storage_ref.name,
-            .tbls = {},
+            .name      = ks_storage_ref.name,
+            .tbls      = {},
         };
         co_return Result<Keyspace*>{&push_back(schema.keyspaces, move(ks))};
     }
@@ -455,7 +469,7 @@ namespace cql::schema {
         auto ks_res = read_keyspace_impl(schema, name);
         if (ks_res.error == Error::None) {
             const auto& ks = ks_res.value;
-            ks->tombstone = true;
+            ks->tombstone  = true;
 
             KeyspaceStorage& ks_storage = schema.storage.keyspaces[ks->idx];
             ks_storage.header.tombstone = true;
@@ -468,8 +482,8 @@ namespace cql::schema {
     }
 
     struct PrimaryKeyInfo {
-        DynamicArray<U64> partition_col_def_indices;   // column_definitions indices, in key position order
-        DynamicArray<U64> clustering_col_def_indices;  // column_definitions indices, in key position order
+        DynamicArray<U64> partition_col_def_indices;  // column_definitions indices, in key position order
+        DynamicArray<U64> clustering_col_def_indices; // column_definitions indices, in key position order
     };
 
     static Optional<PrimaryKeyInfo> get_primary_key_info(const CreateTable& create) {
@@ -489,7 +503,9 @@ namespace cql::schema {
 
             auto find_col_def_idx = [&](String8 col_name) -> Optional<U64> {
                 for (U64 i = 0; i < create.column_definitions.length; i++) {
-                    if (create.column_definitions[i].name.identifier == col_name) return i;
+                    if (create.column_definitions[i].name.identifier == col_name) {
+                        return i;
+                    }
                 }
                 return {};
             };
@@ -497,20 +513,28 @@ namespace cql::schema {
             // Partition key columns
             if (type_matches_tag<ColumnName>(pk.partition_key.column_or_columns)) {
                 String8 pk_name = get<ColumnName>(pk.partition_key.column_or_columns).identifier;
-                if (auto idx = find_col_def_idx(pk_name)) push_back(info.partition_col_def_indices, *idx);
+                if (auto idx = find_col_def_idx(pk_name)) {
+                    push_back(info.partition_col_def_indices, *idx);
+                }
             } else {
                 for (const auto& pk_col : get<DynamicArray<ColumnName>>(pk.partition_key.column_or_columns)) {
-                    if (auto idx = find_col_def_idx(pk_col.identifier)) push_back(info.partition_col_def_indices, *idx);
+                    if (auto idx = find_col_def_idx(pk_col.identifier)) {
+                        push_back(info.partition_col_def_indices, *idx);
+                    }
                 }
             }
 
             // Clustering key columns
             for (const auto& ck_col : pk.clustering_columns) {
-                if (auto idx = find_col_def_idx(ck_col.identifier)) push_back(info.clustering_col_def_indices, *idx);
+                if (auto idx = find_col_def_idx(ck_col.identifier)) {
+                    push_back(info.clustering_col_def_indices, *idx);
+                }
             }
         }
 
-        if (info.partition_col_def_indices.length == 0) return {};
+        if (info.partition_col_def_indices.length == 0) {
+            return {};
+        }
         return info;
     }
 
@@ -518,57 +542,57 @@ namespace cql::schema {
         assert_true(read_table_impl(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
 
         auto pk_info_opt = get_primary_key_info(create);
-        if (!pk_info_opt)
+        if (!pk_info_opt) {
             co_return Result<Table*>{nullptr, Error::MissingPrimaryKey, "table needs a primary key"};
+        }
         PrimaryKeyInfo& pk_info = *pk_info_opt;
 
         U64 btree_page = co_await btree::create_paged(
             *schema.tables_blob.pager,
-            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
-        );
+            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{});
 
         U64 offset_bytes = schema.tables_blob.size_bytes;
 
-        TableStorage tbl_storage {
+        TableStorage tbl_storage{
             .offset_in_blob_bytes = offset_bytes,
-            .header = TableHeader{
-                .tombstone = false,
-                .name_length = create.name.table_name.length,
-                .keyspace_idx = ks.idx,
-                .btree_page = btree_page,
-            },
-            .name = AutoString8(create.name.table_name),
+            .header               = TableHeader{
+                                                .tombstone    = false,
+                                                .name_length  = create.name.table_name.length,
+                                                .keyspace_idx = ks.idx,
+                                                .btree_page   = btree_page,
+                                                },
+            .name    = AutoString8(create.name.table_name),
             .columns = {},
         };
         TableStorage& tbl_storage_ref = push_back(schema.storage.tables, move(tbl_storage));
 
         co_await blob::resize(
             schema.tables_blob, offset_bytes +
-            sizeof(tbl_storage_ref.header) +
-            tbl_storage_ref.name.length
-        );
+                                    sizeof(tbl_storage_ref.header) +
+                                    tbl_storage_ref.name.length);
 
         co_await blob::tupdate(schema.tables_blob, &tbl_storage_ref.header, &offset_bytes);
         co_await update_str(schema.tables_blob, tbl_storage_ref.name, &offset_bytes);
 
-        Table tbl {
-            .idx = schema.storage.tables.length-1,
-            .tombstone = tbl_storage_ref.header.tombstone,
-            .name = tbl_storage_ref.name,
-            .cols = {},
-            .partition_key_col_indices = {},
+        Table tbl{
+            .idx                        = schema.storage.tables.length - 1,
+            .tombstone                  = tbl_storage_ref.header.tombstone,
+            .name                       = tbl_storage_ref.name,
+            .cols                       = {},
+            .partition_key_col_indices  = {},
             .clustering_key_col_indices = {},
-            .static_col_indices = {},
-            .btree = PartitionBTree{
-                schema.tables_blob.pager, tbl_storage_ref.header.btree_page,
-                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
-            },
+            .static_col_indices         = {},
+            .btree                      = PartitionBTree{
+                                           schema.tables_blob.pager, tbl_storage_ref.header.btree_page,
+                                           btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}},
         };
         // @todo avoid this copy
-        for (U64 i = 0; i < pk_info.partition_col_def_indices.length; i++)
+        for (U64 i = 0; i < pk_info.partition_col_def_indices.length; i++) {
             push_back(tbl.partition_key_col_indices, pk_info.partition_col_def_indices[i]);
-        for (U64 i = 0; i < pk_info.clustering_col_def_indices.length; i++)
+        }
+        for (U64 i = 0; i < pk_info.clustering_col_def_indices.length; i++) {
             push_back(tbl.clustering_key_col_indices, pk_info.clustering_col_def_indices[i]);
+        }
 
         Table& tbl_ref = push_back(ks.tbls, move(tbl));
 
@@ -583,7 +607,7 @@ namespace cql::schema {
 
             // Determine key_kind and key_position for this column
             KeyKind kk = KeyKind::None;
-            U16 kp = 0;
+            U16     kp = 0;
             for (U64 i = 0; i < pk_info.partition_col_def_indices.length; i++) {
                 if (pk_info.partition_col_def_indices[i] == col_def_idx) {
                     kk = KeyKind::PartitionKey;
@@ -615,9 +639,9 @@ namespace cql::schema {
         auto tbl_res = read_table_impl(schema, ks, name);
         if (tbl_res.error == Error::None) {
             const auto& tbl = tbl_res.value;
-            tbl->tombstone = true;
+            tbl->tombstone  = true;
 
-            TableStorage& tbl_storage = schema.storage.tables[tbl->idx];
+            TableStorage& tbl_storage    = schema.storage.tables[tbl->idx];
             tbl_storage.header.tombstone = true;
 
             U64 offset = tbl_storage.offset_in_blob_bytes + offsetof(TableHeader, tombstone);
@@ -628,18 +652,20 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create,
-                                                    KeyKind key_kind, U16 key_position) {
+                                                   KeyKind key_kind, U16 key_position) {
         if (create._static) {
-            if (tbl.clustering_key_col_indices.length == 0)
+            if (tbl.clustering_key_col_indices.length == 0) {
                 co_return Result<Column*>{nullptr, Error::InvalidOptions, "static columns require at least one clustering column"};
-            if (key_kind != KeyKind::None)
+            }
+            if (key_kind != KeyKind::None) {
                 co_return Result<Column*>{nullptr, Error::InvalidOptions, "primary key columns cannot be static"};
+            }
         }
         assert_true_not_implemented(!create.mask, "column MASKED WITH is not implemented");
         assert_true(read_column_impl(schema, tbl, create.name.identifier).error == Error::MissingColumn, "column already exists");
 
         U64 prev_type_count = schema.storage.type_entries.length;
-        U32 type_id = register_type(schema, create.type);
+        U32 type_id         = register_type(schema, create.type);
 
         // Persist any newly registered type entries.
         if (schema.storage.type_entries.length > prev_type_count) {
@@ -647,49 +673,50 @@ namespace cql::schema {
             co_await blob::resize(schema.types_blob, schema.storage.type_entries.length * sizeof(TypeRegistryEntry));
             for (U64 i = prev_type_count; i < schema.storage.type_entries.length; i++) {
                 co_await blob::update(schema.types_blob,
-                    reinterpret_cast<const U8*>(&schema.storage.type_entries[i]),
-                    sizeof(TypeRegistryEntry), new_types_offset);
+                                      reinterpret_cast<const U8*>(&schema.storage.type_entries[i]),
+                                      sizeof(TypeRegistryEntry), new_types_offset);
                 new_types_offset += sizeof(TypeRegistryEntry);
             }
         }
 
         U64 offset_bytes = schema.columns_blob.size_bytes;
 
-        ColumnStorage col_storage {
+        ColumnStorage col_storage{
             .offset_in_blob_bytes = offset_bytes,
-            .header = ColumnHeader{
-                .tombstone = false,
-                .is_static = create._static,
-                .name_length = create.name.identifier.length,
-                .type_id = type_id,
-                .table_idx = tbl.idx,
-                .key_kind = key_kind,
-                .key_position = key_position,
-            },
+            .header               = ColumnHeader{
+                                                 .tombstone    = false,
+                                                 .is_static    = create._static,
+                                                 .name_length  = create.name.identifier.length,
+                                                 .type_id      = type_id,
+                                                 .table_idx    = tbl.idx,
+                                                 .key_kind     = key_kind,
+                                                 .key_position = key_position,
+                                                 },
             .name = AutoString8(create.name.identifier),
         };
         ColumnStorage& col_storage_ref = push_back(schema.storage.columns, move(col_storage));
 
         co_await blob::resize(
             schema.columns_blob, offset_bytes +
-            sizeof(col_storage_ref.header) +
-            col_storage_ref.name.length
-        );
+                                     sizeof(col_storage_ref.header) +
+                                     col_storage_ref.name.length);
 
         co_await blob::tupdate(schema.columns_blob, &col_storage_ref.header, &offset_bytes);
         co_await update_str(schema.columns_blob, col_storage_ref.name, &offset_bytes);
 
-        U64 new_col_idx = tbl.cols.length;
-        Column col {
-            .tombstone = col_storage_ref.header.tombstone,
-            .is_static = col_storage_ref.header.is_static,
-            .name = col_storage_ref.name,
-            .type = unpack_type(schema, col_storage_ref.header.type_id),
-            .key_kind = key_kind,
+        U64    new_col_idx = tbl.cols.length;
+        Column col{
+            .tombstone    = col_storage_ref.header.tombstone,
+            .is_static    = col_storage_ref.header.is_static,
+            .name         = col_storage_ref.name,
+            .type         = unpack_type(schema, col_storage_ref.header.type_id),
+            .key_kind     = key_kind,
             .key_position = key_position,
         };
         Column* col_ptr = &push_back(tbl.cols, move(col));
-        if (create._static) push_back(tbl.static_col_indices, new_col_idx);
+        if (create._static) {
+            push_back(tbl.static_col_indices, new_col_idx);
+        }
         co_return Result<Column*>{col_ptr};
     }
 
@@ -697,14 +724,14 @@ namespace cql::schema {
         auto col_res = read_column_impl(schema, tbl, name);
         if (col_res.error == Error::None) {
             const auto& col = col_res.value;
-            col->tombstone = true;
+            col->tombstone  = true;
 
             for (auto& col_storage : schema.storage.columns) {
                 if (!col_storage.header.tombstone &&
                     col_storage.header.table_idx == tbl.idx &&
                     String8(col_storage.name.c_str, col_storage.name.length) == name) {
                     col_storage.header.tombstone = true;
-                    U64 offset = col_storage.offset_in_blob_bytes + offsetof(ColumnHeader, tombstone);
+                    U64 offset                   = col_storage.offset_in_blob_bytes + offsetof(ColumnHeader, tombstone);
                     co_await blob::tupdate(schema.columns_blob, &col_storage.header.tombstone, &offset);
                     break;
                 }

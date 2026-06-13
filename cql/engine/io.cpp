@@ -22,23 +22,42 @@ using namespace cql::io;
 namespace {
     template<typename T>
     static bool can_write_typed_basic_as_column_value(type::Basic dtype) {
-        if constexpr (Either<RemoveCV<T>, AutoString8>)   { return dtype == type::Basic::text || dtype == type::Basic::ascii || dtype == type::Basic::varchar; }
-        else if constexpr (Either<RemoveCV<T>, S16>)      { return dtype == type::Basic::smallint; }
-        else if constexpr (Either<RemoveCV<T>, S32>)      { return dtype == type::Basic::int_ || dtype == type::Basic::date; }
-        else if constexpr (Either<RemoveCV<T>, S64>)      { return dtype == type::Basic::bigint || dtype == type::Basic::timestamp || dtype == type::Basic::counter || dtype == type::Basic::time || dtype == type::Basic::int_ || dtype == type::Basic::smallint || dtype == type::Basic::tinyint || dtype == type::Basic::date; }
-        else if constexpr (Either<RemoveCV<T>, U8>)       { return dtype == type::Basic::boolean || dtype == type::Basic::tinyint; }
-        else if constexpr (Either<RemoveCV<T>, F32>)      { return dtype == type::Basic::float_; }
-        else if constexpr (Either<RemoveCV<T>, F64>)      { return dtype == type::Basic::double_; }
-        else if constexpr (Either<RemoveCV<T>, UUID>)     { return dtype == type::Basic::uuid || dtype == type::Basic::timeuuid; }
-        else if constexpr (Either<RemoveCV<T>, Null>)     { return true; }
-        else if constexpr (Either<RemoveCV<T>, bool>)     { return dtype == type::Basic::boolean; }
-        else if constexpr (Either<RemoveCV<T>, Hex>)      { return dtype == type::Basic::hex; }
-        else if constexpr (Either<RemoveCV<T>, Blob>)     { return dtype == type::Basic::blob || dtype == type::Basic::hex; }
-        else if constexpr (Either<RemoveCV<T>, Inet>)     { return dtype == type::Basic::inet; }
-        else if constexpr (Either<RemoveCV<T>, VarInt>)   { return dtype == type::Basic::varint; }
-        else if constexpr (Either<RemoveCV<T>, Decimal>)  { return dtype == type::Basic::decimal; }
-        else if constexpr (Either<RemoveCV<T>, Duration>) { return dtype == type::Basic::duration; }
-        else                                              { static_assert(!SameAs<T,T>, "missing type case"); return false; }
+        if constexpr (Either<RemoveCV<T>, AutoString8>) {
+            return dtype == type::Basic::text || dtype == type::Basic::ascii || dtype == type::Basic::varchar;
+        } else if constexpr (Either<RemoveCV<T>, S16>) {
+            return dtype == type::Basic::smallint;
+        } else if constexpr (Either<RemoveCV<T>, S32>) {
+            return dtype == type::Basic::int_ || dtype == type::Basic::date;
+        } else if constexpr (Either<RemoveCV<T>, S64>) {
+            return dtype == type::Basic::bigint || dtype == type::Basic::timestamp || dtype == type::Basic::counter || dtype == type::Basic::time || dtype == type::Basic::int_ || dtype == type::Basic::smallint || dtype == type::Basic::tinyint || dtype == type::Basic::date;
+        } else if constexpr (Either<RemoveCV<T>, U8>) {
+            return dtype == type::Basic::boolean || dtype == type::Basic::tinyint;
+        } else if constexpr (Either<RemoveCV<T>, F32>) {
+            return dtype == type::Basic::float_;
+        } else if constexpr (Either<RemoveCV<T>, F64>) {
+            return dtype == type::Basic::double_;
+        } else if constexpr (Either<RemoveCV<T>, UUID>) {
+            return dtype == type::Basic::uuid || dtype == type::Basic::timeuuid;
+        } else if constexpr (Either<RemoveCV<T>, Null>) {
+            return true;
+        } else if constexpr (Either<RemoveCV<T>, bool>) {
+            return dtype == type::Basic::boolean;
+        } else if constexpr (Either<RemoveCV<T>, Hex>) {
+            return dtype == type::Basic::hex;
+        } else if constexpr (Either<RemoveCV<T>, Blob>) {
+            return dtype == type::Basic::blob || dtype == type::Basic::hex;
+        } else if constexpr (Either<RemoveCV<T>, Inet>) {
+            return dtype == type::Basic::inet;
+        } else if constexpr (Either<RemoveCV<T>, VarInt>) {
+            return dtype == type::Basic::varint;
+        } else if constexpr (Either<RemoveCV<T>, Decimal>) {
+            return dtype == type::Basic::decimal;
+        } else if constexpr (Either<RemoveCV<T>, Duration>) {
+            return dtype == type::Basic::duration;
+        } else {
+            static_assert(!SameAs<T, T>, "missing type case");
+            return false;
+        }
     }
 
     static bool can_cast_write_constant_as_column_value(const Constant& constant, type::Basic dtype) {
@@ -59,58 +78,66 @@ namespace {
                 case type::Basic::varint:
                 case type::Basic::decimal:
                 case type::Basic::duration:
-                case type::Basic::hex:{
+                case type::Basic::hex: {
                     w(reinterpret_cast<const U8*>(&src.length), sizeof(src.length));
                     w(reinterpret_cast<const U8*>(src.c_str), src.length);
-                }break;
-                default:{ assert_not_implemented("writing string-like value to this dtype is not implemented"); }break;
+                } break;
+                default: {
+                    assert_not_implemented("writing string-like value to this dtype is not implemented");
+                } break;
             }
         } else if constexpr (SameAs<T, S64>) {
             switch (dtype) {
-                case type::Basic::tinyint:{
+                case type::Basic::tinyint: {
                     U8 tinyint = static_cast<U8>(static_cast<S8>(src));
                     w(reinterpret_cast<const U8*>(&tinyint), sizeof(tinyint));
-                }break;
-                case type::Basic::smallint:{
+                } break;
+                case type::Basic::smallint: {
                     S16 smallint = static_cast<S16>(src);
                     w(reinterpret_cast<const U8*>(&smallint), sizeof(smallint));
-                }break;
-                case type::Basic::int_:{
+                } break;
+                case type::Basic::int_: {
                     S32 int_ = static_cast<S32>(src);
                     w(reinterpret_cast<const U8*>(&int_), sizeof(int_));
-                }break;
-                case type::Basic::date:{
+                } break;
+                case type::Basic::date: {
                     S32 date = static_cast<S32>(src);
                     w(reinterpret_cast<const U8*>(&date), sizeof(date));
-                }break;
+                } break;
                 case type::Basic::time:
                 case type::Basic::timestamp:
                 case type::Basic::counter:
-                case type::Basic::bigint:{
+                case type::Basic::bigint: {
                     S64 bigint = static_cast<S64>(src);
                     w(reinterpret_cast<const U8*>(&bigint), sizeof(bigint));
-                }break;
-                default:{ assert_not_implemented("writing integer value to this dtype is not implemented"); }break;
+                } break;
+                default: {
+                    assert_not_implemented("writing integer value to this dtype is not implemented");
+                } break;
             }
         } else if constexpr (SameAs<T, bool>) {
             switch (dtype) {
-                case type::Basic::boolean:{
+                case type::Basic::boolean: {
                     U8 boolean = static_cast<U8>(src);
                     w(reinterpret_cast<const U8*>(&boolean), sizeof(boolean));
-                }break;
-                default:{ assert_not_implemented("writing boolean value to non-boolean dtype is not implemented"); }break;
+                } break;
+                default: {
+                    assert_not_implemented("writing boolean value to non-boolean dtype is not implemented");
+                } break;
             }
         } else if constexpr (SameAs<T, F64>) {
             switch (dtype) {
-                case type::Basic::float_:{
+                case type::Basic::float_: {
                     F32 float_ = static_cast<F32>(src);
                     w(reinterpret_cast<const U8*>(&float_), sizeof(float_));
-                }break;
-                case type::Basic::double_:{
+                } break;
+                case type::Basic::double_: {
                     F64 double_ = static_cast<F64>(src);
                     w(reinterpret_cast<const U8*>(&double_), sizeof(double_));
-                }break;
-                default:{ assert_not_implemented("writing float value to non-float dtype is not implemented"); }break;
+                } break;
+                default: {
+                    assert_not_implemented("writing float value to non-float dtype is not implemented");
+                } break;
             }
         } else if constexpr (SameAs<T, UUID>) {
             assert_true(dtype == type::Basic::uuid || dtype == type::Basic::timeuuid, "UUID value written to non-uuid column");
@@ -121,14 +148,15 @@ namespace {
             w(&src.value[0], src.value.length);
         } else if constexpr (SameAs<T, Blob>) {
             assert_true(dtype == type::Basic::blob || dtype == type::Basic::inet || dtype == type::Basic::varint ||
-                        dtype == type::Basic::decimal || dtype == type::Basic::duration ||
-                        dtype == type::Basic::hex, "blob value written to incompatible column dtype");
+                            dtype == type::Basic::decimal || dtype == type::Basic::duration ||
+                            dtype == type::Basic::hex,
+                        "blob value written to incompatible column dtype");
             w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
             w(&src.value[0], src.value.length);
         } else if constexpr (SameAs<T, Null>) {
             assert_not_implemented("writing null column values is not implemented");
         } else {
-            static_assert(!SameAs<T,T>, "missing underlying type case");
+            static_assert(!SameAs<T, T>, "missing underlying type case");
         }
     }
 
@@ -138,7 +166,7 @@ namespace {
             String8 s{src};
             w(reinterpret_cast<const U8*>(&s.length), sizeof(s.length));
             w(reinterpret_cast<const U8*>(s.data), s.length);
-        } else if constexpr (Either<T,Array<U8, 16>, S64, S32, S16, U8, F64, F32>) {
+        } else if constexpr (Either<T, Array<U8, 16>, S64, S32, S16, U8, F64, F32>) {
             w(reinterpret_cast<const U8*>(&src), sizeof(src));
         } else if constexpr (SameAs<T, UUID>) {
             w(&src.value[0], src.length);
@@ -169,7 +197,7 @@ namespace {
             w(reinterpret_cast<const U8*>(&src.days), sizeof(src.days));
             w(reinterpret_cast<const U8*>(&src.nanoseconds), sizeof(src.nanoseconds));
         } else {
-            static_assert(!SameAs<T,T>, "missing type case");
+            static_assert(!SameAs<T, T>, "missing type case");
         }
     }
 }
@@ -180,7 +208,7 @@ namespace cql::io {
     // ========================================================================
     coroutine::Task<ColumnValue> read_column_value(Reader r, type::Basic dtype) {
         switch (dtype) {
-            case type::Basic::text:{
+            case type::Basic::text: {
                 U64 length;
                 co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
 
@@ -188,52 +216,52 @@ namespace cql::io {
                 co_await r(reinterpret_cast<U8*>(value.c_str), length);
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::smallint:{
+            } break;
+            case type::Basic::smallint: {
                 S16 value;
                 co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::int_:{
+            } break;
+            case type::Basic::int_: {
                 S32 value;
                 co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
                 co_return {move(value)};
-            }break;
+            } break;
             case type::Basic::counter:
             case type::Basic::timestamp:
-            case type::Basic::bigint:{
+            case type::Basic::bigint: {
                 S64 value;
                 co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::boolean:{
+            } break;
+            case type::Basic::boolean: {
                 U8 value;
                 co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::float_:{
+            } break;
+            case type::Basic::float_: {
                 F32 value;
                 co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::double_:{
+            } break;
+            case type::Basic::double_: {
                 F64 value;
                 co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::uuid:{
+            } break;
+            case type::Basic::uuid: {
                 UUID value;
                 co_await r(&value.value[0], value.length);
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::blob:{
+            } break;
+            case type::Basic::blob: {
                 U64 length;
                 co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
 
@@ -245,7 +273,7 @@ namespace cql::io {
                 co_return {move(value)};
             }
             case type::Basic::ascii:
-            case type::Basic::varchar:{
+            case type::Basic::varchar: {
                 U64 length;
                 co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
 
@@ -253,32 +281,32 @@ namespace cql::io {
                 co_await r(reinterpret_cast<U8*>(value.c_str), length);
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::tinyint:{
+            } break;
+            case type::Basic::tinyint: {
                 U8 value;
                 co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::date:{
+            } break;
+            case type::Basic::date: {
                 S32 value;
                 co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::time:{
+            } break;
+            case type::Basic::time: {
                 S64 value;
                 co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::timeuuid:{
+            } break;
+            case type::Basic::timeuuid: {
                 UUID value;
                 co_await r(&value.value[0], value.length);
 
                 co_return {move(value)};
-            }break;
-            case type::Basic::inet:{
+            } break;
+            case type::Basic::inet: {
                 U8 is_v6;
                 co_await r(reinterpret_cast<U8*>(&is_v6), sizeof(is_v6));
                 Inet value;
@@ -289,8 +317,8 @@ namespace cql::io {
                     co_await r(&value.v4[0], 4);
                 }
                 co_return {move(value)};
-            }break;
-            case type::Basic::varint:{
+            } break;
+            case type::Basic::varint: {
                 U8 negative;
                 co_await r(reinterpret_cast<U8*>(&negative), sizeof(negative));
                 U64 mag_length;
@@ -300,8 +328,8 @@ namespace cql::io {
                 resize(value.magnitude, mag_length);
                 co_await r(value.magnitude.ptr, mag_length);
                 co_return {move(value)};
-            }break;
-            case type::Basic::decimal:{
+            } break;
+            case type::Basic::decimal: {
                 S32 scale;
                 co_await r(reinterpret_cast<U8*>(&scale), sizeof(scale));
                 U8 negative;
@@ -309,20 +337,20 @@ namespace cql::io {
                 U64 mag_length;
                 co_await r(reinterpret_cast<U8*>(&mag_length), sizeof(mag_length));
                 Decimal value;
-                value.scale = scale;
+                value.scale             = scale;
                 value.unscaled.negative = static_cast<bool>(negative);
                 resize(value.unscaled.magnitude, mag_length);
                 co_await r(value.unscaled.magnitude.ptr, mag_length);
                 co_return {move(value)};
-            }break;
-            case type::Basic::duration:{
+            } break;
+            case type::Basic::duration: {
                 Duration value;
                 co_await r(reinterpret_cast<U8*>(&value.months), sizeof(value.months));
                 co_await r(reinterpret_cast<U8*>(&value.days), sizeof(value.days));
                 co_await r(reinterpret_cast<U8*>(&value.nanoseconds), sizeof(value.nanoseconds));
                 co_return {move(value)};
-            }break;
-            case type::Basic::hex:{
+            } break;
+            case type::Basic::hex: {
                 U64 length;
                 co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
                 Blob value;
@@ -330,7 +358,7 @@ namespace cql::io {
                 assert_true(value.value.length == length, "resize successful");
                 co_await r(value.value.ptr, length);
                 co_return {move(value)};
-            }break;
+            } break;
         }
 
         assert_true(false, "invalid basic type for read");
@@ -344,7 +372,7 @@ namespace cql::io {
 
         if (type_matches_tag<type::List>(cdtype.value)) {
             auto& v = get<type::List>(cdtype.value);
-            U64 length;
+            U64   length;
             co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
             DynamicArray<NestedColumnValue> arr{};
             for (U64 i = 0; i < length; i++) {
@@ -357,7 +385,7 @@ namespace cql::io {
 
         if (type_matches_tag<type::Set>(cdtype.value)) {
             auto& v = get<type::Set>(cdtype.value);
-            U64 length;
+            U64   length;
             co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
             DynamicSet<NestedColumnValue> s{};
             for (U64 i = 0; i < length; i++) {
@@ -370,7 +398,7 @@ namespace cql::io {
 
         if (type_matches_tag<type::Map>(cdtype.value)) {
             auto& v = get<type::Map>(cdtype.value);
-            U64 length;
+            U64   length;
             co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
             DynamicMap<NestedColumnValue, NestedColumnValue> m{};
             for (U64 i = 0; i < length; i++) {
@@ -384,8 +412,8 @@ namespace cql::io {
 
         // Vector
         {
-            auto& v = get<type::Vector>(cdtype.value);
-            U64 count = v.count;
+            auto&                           v     = get<type::Vector>(cdtype.value);
+            U64                             count = v.count;
             DynamicArray<NestedColumnValue> arr{};
             for (U64 i = 0; i < count; i++) {
                 NestedColumnValue nv;
@@ -405,9 +433,9 @@ namespace cql::io {
             U64 mask;
             co_await r(reinterpret_cast<U8*>(&mask), sizeof(mask));
 
-            for (U64 bit_idx = 0; bit_idx < min(MASK_BIT_COUNT, column_count - mask_idx*MASK_BIT_COUNT); bit_idx++) {
+            for (U64 bit_idx = 0; bit_idx < min(MASK_BIT_COUNT, column_count - mask_idx * MASK_BIT_COUNT); bit_idx++) {
                 if (mask & (1_u64 << bit_idx)) {
-                    mark_active(mask_idx*MASK_BIT_COUNT + bit_idx);
+                    mark_active(mask_idx * MASK_BIT_COUNT + bit_idx);
                 }
             }
         }
@@ -419,19 +447,31 @@ namespace cql::io {
     coroutine::Task<void> skip_column_value(Reader r, type::Basic dtype) {
         switch (dtype) {
             case type::Basic::boolean:
-            case type::Basic::tinyint:   co_await r(nullptr, 1);             co_return;
-            case type::Basic::smallint:  co_await r(nullptr, sizeof(S16));   co_return;
+            case type::Basic::tinyint:
+                co_await r(nullptr, 1);
+                co_return;
+            case type::Basic::smallint:
+                co_await r(nullptr, sizeof(S16));
+                co_return;
             case type::Basic::int_:
             case type::Basic::date:
-            case type::Basic::float_:    co_await r(nullptr, sizeof(S32));   co_return;
+            case type::Basic::float_:
+                co_await r(nullptr, sizeof(S32));
+                co_return;
             case type::Basic::bigint:
             case type::Basic::counter:
             case type::Basic::timestamp:
             case type::Basic::time:
-            case type::Basic::double_:   co_await r(nullptr, sizeof(S64));   co_return;
+            case type::Basic::double_:
+                co_await r(nullptr, sizeof(S64));
+                co_return;
             case type::Basic::uuid:
-            case type::Basic::timeuuid:  co_await r(nullptr, 16);            co_return;
-            case type::Basic::duration:  co_await r(nullptr, 4+4+8);         co_return;
+            case type::Basic::timeuuid:
+                co_await r(nullptr, 16);
+                co_return;
+            case type::Basic::duration:
+                co_await r(nullptr, 4 + 4 + 8);
+                co_return;
             case type::Basic::text:
             case type::Basic::ascii:
             case type::Basic::varchar:
@@ -472,48 +512,66 @@ namespace cql::io {
             co_return;
         }
 
-        U64 count = 0;
-        type::Basic elem_bt{};
-        bool elem_is_type = false;
+        U64               count = 0;
+        type::Basic       elem_bt{};
+        bool              elem_is_type  = false;
         const type::Type* elem_type_ptr = nullptr;
 
         if (type_matches_tag<type::List>(col_type.value)) {
             auto& lv = get<type::List>(col_type.value);
             co_await r(reinterpret_cast<U8*>(&count), sizeof(count));
             elem_is_type = !type_matches_tag<type::Basic>(lv.element.value);
-            if (elem_is_type) elem_type_ptr = &lv.element;
-            else              elem_bt = get<type::Basic>(lv.element.value);
+            if (elem_is_type) {
+                elem_type_ptr = &lv.element;
+            } else {
+                elem_bt = get<type::Basic>(lv.element.value);
+            }
         } else if (type_matches_tag<type::Set>(col_type.value)) {
             auto& sv = get<type::Set>(col_type.value);
             co_await r(reinterpret_cast<U8*>(&count), sizeof(count));
             elem_is_type = !type_matches_tag<type::Basic>(sv.key.value);
-            if (elem_is_type) elem_type_ptr = &sv.key;
-            else              elem_bt = get<type::Basic>(sv.key.value);
+            if (elem_is_type) {
+                elem_type_ptr = &sv.key;
+            } else {
+                elem_bt = get<type::Basic>(sv.key.value);
+            }
         } else if (type_matches_tag<type::Map>(col_type.value)) {
             auto& mv = get<type::Map>(col_type.value);
             co_await r(reinterpret_cast<U8*>(&count), sizeof(count));
-            bool key_is_type = !type_matches_tag<type::Basic>(mv.key.value);
-            bool val_is_type = !type_matches_tag<type::Basic>(mv.value.value);
-            type::Basic kbt = key_is_type ? type::Basic{} : get<type::Basic>(mv.key.value);
-            type::Basic vbt = val_is_type ? type::Basic{} : get<type::Basic>(mv.value.value);
+            bool        key_is_type = !type_matches_tag<type::Basic>(mv.key.value);
+            bool        val_is_type = !type_matches_tag<type::Basic>(mv.value.value);
+            type::Basic kbt         = key_is_type ? type::Basic{} : get<type::Basic>(mv.key.value);
+            type::Basic vbt         = val_is_type ? type::Basic{} : get<type::Basic>(mv.value.value);
             for (U64 i = 0; i < count; i++) {
-                if (key_is_type) co_await skip_column_value(r, mv.key);
-                else             co_await skip_column_value(r, kbt);
-                if (val_is_type) co_await skip_column_value(r, mv.value);
-                else             co_await skip_column_value(r, vbt);
+                if (key_is_type) {
+                    co_await skip_column_value(r, mv.key);
+                } else {
+                    co_await skip_column_value(r, kbt);
+                }
+                if (val_is_type) {
+                    co_await skip_column_value(r, mv.value);
+                } else {
+                    co_await skip_column_value(r, vbt);
+                }
             }
             co_return;
         } else if (type_matches_tag<type::Vector>(col_type.value)) {
-            auto& vv = get<type::Vector>(col_type.value);
-            count = vv.count;
+            auto& vv     = get<type::Vector>(col_type.value);
+            count        = vv.count;
             elem_is_type = !type_matches_tag<type::Basic>(vv.element.value);
-            if (elem_is_type) elem_type_ptr = &vv.element;
-            else              elem_bt = get<type::Basic>(vv.element.value);
+            if (elem_is_type) {
+                elem_type_ptr = &vv.element;
+            } else {
+                elem_bt = get<type::Basic>(vv.element.value);
+            }
         }
 
         for (U64 i = 0; i < count; i++) {
-            if (elem_is_type) co_await skip_column_value(r, *elem_type_ptr);
-            else              co_await skip_column_value(r, elem_bt);
+            if (elem_is_type) {
+                co_await skip_column_value(r, *elem_type_ptr);
+            } else {
+                co_await skip_column_value(r, elem_bt);
+            }
         }
     }
 
@@ -522,93 +580,93 @@ namespace cql::io {
     // ========================================================================
     void write_default_column_value(Writer w, type::Basic dtype) {
         switch (dtype) {
-            case type::Basic::text:{
+            case type::Basic::text: {
                 U64 length = 0_u64;
                 w(reinterpret_cast<const U8*>(&length), sizeof(length));
-            }break;
-            case type::Basic::smallint:{
+            } break;
+            case type::Basic::smallint: {
                 S16 smallint = 0_s16;
                 w(reinterpret_cast<const U8*>(&smallint), sizeof(smallint));
-            }break;
-            case type::Basic::int_:{
+            } break;
+            case type::Basic::int_: {
                 S32 int_ = 0_s32;
                 w(reinterpret_cast<const U8*>(&int_), sizeof(int_));
-            }break;
+            } break;
             case type::Basic::counter:
-            case type::Basic::bigint:{
+            case type::Basic::bigint: {
                 S64 bigint = 0_s64;
                 w(reinterpret_cast<const U8*>(&bigint), sizeof(bigint));
-            }break;
-            case type::Basic::boolean:{
+            } break;
+            case type::Basic::boolean: {
                 U8 boolean = false;
                 w(reinterpret_cast<const U8*>(&boolean), sizeof(boolean));
-            }break;
-            case type::Basic::float_:{
+            } break;
+            case type::Basic::float_: {
                 F32 float_ = 0_f32;
                 w(reinterpret_cast<const U8*>(&float_), sizeof(float_));
-            }break;
-            case type::Basic::double_:{
+            } break;
+            case type::Basic::double_: {
                 F64 double_ = 0_f64;
                 w(reinterpret_cast<const U8*>(&double_), sizeof(double_));
-            }break;
-            case type::Basic::uuid:{
+            } break;
+            case type::Basic::uuid: {
                 UUID uuid{};
                 w(&uuid.value[0], uuid.value.length);
-            }break;
-            case type::Basic::blob:{
+            } break;
+            case type::Basic::blob: {
                 U64 length = 0_u64;
                 w(reinterpret_cast<const U8*>(&length), sizeof(length));
-            }break;
+            } break;
             case type::Basic::timestamp:
             case type::Basic::time:
             case type::Basic::ascii:
-            case type::Basic::varchar:{
+            case type::Basic::varchar: {
                 U64 length = 0_u64;
                 w(reinterpret_cast<const U8*>(&length), sizeof(length));
-            }break;
-            case type::Basic::tinyint:{
+            } break;
+            case type::Basic::tinyint: {
                 U8 tinyint = U8(0);
                 w(reinterpret_cast<const U8*>(&tinyint), sizeof(tinyint));
-            }break;
-            case type::Basic::date:{
+            } break;
+            case type::Basic::date: {
                 S32 date = 0_s32;
                 w(reinterpret_cast<const U8*>(&date), sizeof(date));
-            }break;
-            case type::Basic::timeuuid:{
+            } break;
+            case type::Basic::timeuuid: {
                 UUID uuid{};
                 w(&uuid.value[0], uuid.length);
-            }break;
-            case type::Basic::inet:{
+            } break;
+            case type::Basic::inet: {
                 U8 is_v6 = 0;
                 w(reinterpret_cast<const U8*>(&is_v6), sizeof(is_v6));
                 U8 zeros[4] = {0, 0, 0, 0};
                 w(zeros, 4);
-            }break;
-            case type::Basic::varint:{
+            } break;
+            case type::Basic::varint: {
                 U8 negative = 0;
                 w(reinterpret_cast<const U8*>(&negative), sizeof(negative));
                 U64 mag_length = 0;
                 w(reinterpret_cast<const U8*>(&mag_length), sizeof(mag_length));
-            }break;
-            case type::Basic::decimal:{
+            } break;
+            case type::Basic::decimal: {
                 S32 scale = 0;
                 w(reinterpret_cast<const U8*>(&scale), sizeof(scale));
                 U8 negative = 0;
                 w(reinterpret_cast<const U8*>(&negative), sizeof(negative));
                 U64 mag_length = 0;
                 w(reinterpret_cast<const U8*>(&mag_length), sizeof(mag_length));
-            }break;
-            case type::Basic::duration:{
+            } break;
+            case type::Basic::duration: {
                 S32 zero32 = 0;
                 S64 zero64 = 0;
                 w(reinterpret_cast<const U8*>(&zero32), sizeof(zero32));
                 w(reinterpret_cast<const U8*>(&zero32), sizeof(zero32));
                 w(reinterpret_cast<const U8*>(&zero64), sizeof(zero64));
-            }break;
-            case type::Basic::hex:{
+            } break;
+            case type::Basic::hex: {
                 U64 length = 0_u64;
                 w(reinterpret_cast<const U8*>(&length), sizeof(length));
-            }break;
+            } break;
         }
     }
 
@@ -645,7 +703,7 @@ namespace cql::io {
             } else if constexpr (SameAs<T, ColumnValue>) {
                 return can_write_column_value(cv, cdtype);
             } else {
-                static_assert(!SameAs<T,T>, "missing type case");
+                static_assert(!SameAs<T, T>, "missing type case");
                 return false;
             }
         });
@@ -667,7 +725,7 @@ namespace cql::io {
             } else if constexpr (SameAs<T, Null>) {
                 return true;
             } else {
-                static_assert(!SameAs<T,T>, "missing type case");
+                static_assert(!SameAs<T, T>, "missing type case");
             }
         });
     }
@@ -688,15 +746,17 @@ namespace cql::io {
                     w(reinterpret_cast<const U8*>(&len), sizeof(len));
                 }
                 const auto& elem = is_vec ? get<type::Vector>(cdtype.value).element : get<type::List>(cdtype.value).element;
-                for (const auto& el : v)
+                for (const auto& el : v) {
                     write_column_value(w, el.value, elem);
+                }
             } else if constexpr (SameAs<T, DynamicSet<NestedColumnValue>>) {
                 assert_true(type_matches_tag<type::Set>(cdtype.value), "set requires ctype set");
                 U64 len = length(v);
                 w(reinterpret_cast<const U8*>(&len), sizeof(len));
                 const auto& key_type = get<type::Set>(cdtype.value).key;
-                for (auto it = v.begin(); it != v.end(); ++it)
+                for (auto it = v.begin(); it != v.end(); ++it) {
                     write_column_value(w, (*it).value, key_type);
+                }
             } else if constexpr (SameAs<T, DynamicMap<NestedColumnValue, NestedColumnValue>>) {
                 assert_true(type_matches_tag<type::Map>(cdtype.value), "map requires ctype map");
                 U64 len = length(v);
@@ -709,7 +769,7 @@ namespace cql::io {
             } else if constexpr (SameAs<T, Null>) {
                 // null column values are tracked via column mask; nothing to write
             } else {
-                static_assert(!SameAs<T,T>, "unhandled read value type");
+                static_assert(!SameAs<T, T>, "unhandled read value type");
             }
         });
     }
@@ -726,10 +786,10 @@ namespace cql::io {
                 });
             } else if constexpr (SameAs<T, MapLiteral>) {
                 assert_true(type_matches_tag<type::Map>(cdtype.value), "map literal written to non-map column");
-                auto& m = get<type::Map>(cdtype.value);
+                auto&      m        = get<type::Map>(cdtype.value);
                 type::Type key_type = m.key;
                 type::Type val_type = m.value;
-                U64 len = cv.key_values.length;
+                U64        len      = cv.key_values.length;
                 w(reinterpret_cast<const U8*>(&len), sizeof(len));
                 for (U64 i = 0; i < len; i++) {
                     Evaluated k = evaluate(cv.key_values[i].first, ctx);
@@ -740,14 +800,14 @@ namespace cql::io {
             } else if constexpr (SameAs<T, SetLiteral>) {
                 assert_true(type_matches_tag<type::Set>(cdtype.value), "set literal written to non-set column");
                 type::Type key_type = get<type::Set>(cdtype.value).key;
-                U64 len = cv.keys.length;
+                U64        len      = cv.keys.length;
                 w(reinterpret_cast<const U8*>(&len), sizeof(len));
                 for (U64 i = 0; i < len; i++) {
                     Evaluated el = evaluate(cv.keys[i], ctx);
                     cast_write_evaluated_as_column_value(w, el, key_type, ctx);
                 }
             } else if constexpr (SameAs<T, ListOrVectorLiteral>) {
-                bool is_vec = type_matches_tag<type::Vector>(cdtype.value);
+                bool is_vec  = type_matches_tag<type::Vector>(cdtype.value);
                 bool is_list = type_matches_tag<type::List>(cdtype.value);
                 assert_true(is_list || is_vec, "list/vector literal written to incompatible column");
                 if (is_list) {
@@ -767,7 +827,7 @@ namespace cql::io {
             } else if constexpr (SameAs<T, ColumnValue>) {
                 write_column_value(w, cv, cdtype);
             } else {
-                static_assert(!SameAs<T,T>, "missing type case");
+                static_assert(!SameAs<T, T>, "missing type case");
             }
         });
     }
@@ -806,16 +866,26 @@ namespace plexdb {
                 AutoString8 hex = bytes_to_hex(&v.value[0], 16);
                 AutoString8 result{36};
                 const char* h = hex.c_str;
-                char* o = result.c_str;
-                for (int i = 0; i < 8;  i++) o[i]    = h[i];
+                char*       o = result.c_str;
+                for (int i = 0; i < 8; i++) {
+                    o[i] = h[i];
+                }
                 o[8] = '-';
-                for (int i = 0; i < 4;  i++) o[9+i]  = h[8+i];
+                for (int i = 0; i < 4; i++) {
+                    o[9 + i] = h[8 + i];
+                }
                 o[13] = '-';
-                for (int i = 0; i < 4;  i++) o[14+i] = h[12+i];
+                for (int i = 0; i < 4; i++) {
+                    o[14 + i] = h[12 + i];
+                }
                 o[18] = '-';
-                for (int i = 0; i < 4;  i++) o[19+i] = h[16+i];
+                for (int i = 0; i < 4; i++) {
+                    o[19 + i] = h[16 + i];
+                }
                 o[23] = '-';
-                for (int i = 0; i < 12; i++) o[24+i] = h[20+i];
+                for (int i = 0; i < 12; i++) {
+                    o[24 + i] = h[20 + i];
+                }
                 return result;
             } else if constexpr (SameAs<T, cql::Blob>) {
                 return "0x"_as + bytes_to_hex(v.value.ptr, v.value.length);
@@ -823,8 +893,10 @@ namespace plexdb {
                 if (v.is_v6) {
                     AutoString8 result = ""_as;
                     for (int i = 0; i < 8; i++) {
-                        if (i > 0) result = result + ":";
-                        result = result + bytes_to_hex(&v.v6[i*2], 2);
+                        if (i > 0) {
+                            result = result + ":";
+                        }
+                        result = result + bytes_to_hex(&v.v6[i * 2], 2);
                     }
                     return result;
                 } else {
@@ -851,40 +923,47 @@ namespace plexdb {
     }
 
     AutoString8 to_str(const cql::ColumnValue& value, const cql::type::Type& cdtype) {
-        if (type_matches_tag<cql::type::Basic>(cdtype.value))
+        if (type_matches_tag<cql::type::Basic>(cdtype.value)) {
             return to_str(value, get<cql::type::Basic>(cdtype.value));
+        }
         return visit(value, [&cdtype](auto& v) -> AutoString8 {
             using T = Decay<decltype(v)>;
             if constexpr (SameAs<T, DynamicArray<cql::NestedColumnValue>>) {
-                bool is_vec = type_matches_tag<cql::type::Vector>(cdtype.value);
-                const auto& elem = is_vec ? get<cql::type::Vector>(cdtype.value).element : get<cql::type::List>(cdtype.value).element;
+                bool        is_vec = type_matches_tag<cql::type::Vector>(cdtype.value);
+                const auto& elem   = is_vec ? get<cql::type::Vector>(cdtype.value).element : get<cql::type::List>(cdtype.value).element;
                 AutoString8 result = "["_as;
-                bool first = true;
+                bool        first  = true;
                 for (const auto& el : v) {
-                    if (!first) result = result + ", ";
+                    if (!first) {
+                        result = result + ", ";
+                    }
                     result = result + to_str(el.value, elem);
-                    first = false;
+                    first  = false;
                 }
                 return result + "]";
             } else if constexpr (SameAs<T, DynamicSet<cql::NestedColumnValue>>) {
                 AutoString8 result = "{"_as;
-                bool first = true;
+                bool        first  = true;
                 for (auto it = v.begin(); it != v.end(); ++it) {
-                    if (!first) result = result + ", ";
+                    if (!first) {
+                        result = result + ", ";
+                    }
                     result = result + to_str((*it).value, get<cql::type::Set>(cdtype.value).key);
-                    first = false;
+                    first  = false;
                 }
                 return result + "}";
             } else if constexpr (SameAs<T, DynamicMap<cql::NestedColumnValue, cql::NestedColumnValue>>) {
-                const auto& m = get<cql::type::Map>(cdtype.value);
+                const auto& m      = get<cql::type::Map>(cdtype.value);
                 AutoString8 result = "{"_as;
-                bool first = true;
+                bool        first  = true;
                 for (auto it = v.begin(); it != v.end(); ++it) {
-                    if (!first) result = result + ", ";
+                    if (!first) {
+                        result = result + ", ";
+                    }
                     result = result + to_str((*it).first.value, m.key);
                     result = result + ": ";
                     result = result + to_str((*it).second.value, m.value);
-                    first = false;
+                    first  = false;
                 }
                 return result + "}";
             } else {

@@ -1,7 +1,7 @@
 module;
 #include <plexdb/macros/macros.h>
 #if PLEXDB_OS_LINUX
-    #include <time.h>
+#include <time.h>
 #endif
 
 module plexdb.os.time;

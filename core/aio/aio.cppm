@@ -19,17 +19,19 @@ export namespace plexdb::aio {
     // ========================================================================
     using OnUnblockFunctor = AutoFunctor<bool(const TArrayView<os::PollEvent>&)>;
     struct EventConsumer {
-        U64 max_events;
+        U64              max_events;
         OnUnblockFunctor on_unblock;
     };
 
     template<typename... Cs>
     void run_blocking_event_loop(const os::Poll& unblock, Cs&... consumers) {
         U64 total_max_events = (consumers.max_events + ... + U64(0));
-        if (total_max_events == 0) total_max_events = 1;
+        if (total_max_events == 0) {
+            total_max_events = 1;
+        }
 
-        threads::Scope scratch = threads::scratch();
-        os::PollEvent* ev_storage = arena::push_array<os::PollEvent>(*scratch.arena, total_max_events);
+        threads::Scope                  scratch    = threads::scratch();
+        os::PollEvent*                  ev_storage = arena::push_array<os::PollEvent>(*scratch.arena, total_max_events);
         CappedTArrayView<os::PollEvent> events_view{ev_storage, total_max_events, 0};
 
         while (true) {
@@ -37,11 +39,15 @@ export namespace plexdb::aio {
             os::block_until_poll_unblocks_wth_events(unblock, &events_view);
             TArrayView<os::PollEvent> events{events_view.ptr, events_view.cap};
 
-            bool stop = false;
-            auto dispatch = [&](auto& c) { stop |= !c.on_unblock(events); };
+            bool stop     = false;
+            auto dispatch = [&](auto& c) {
+                stop |= !c.on_unblock(events);
+            };
             (dispatch(consumers), ...);
 
-            if (stop) break;
+            if (stop) {
+                break;
+            }
         }
     }
 
@@ -61,9 +67,9 @@ export namespace plexdb::aio {
         // @note resize and stat is assumed to be fast enough synchronously
     };
 
-    coroutine::Task<> file_read (FileIOContext& ctx, os::Handle file, Rng1U64 rng, void* out);
+    coroutine::Task<> file_read(FileIOContext& ctx, os::Handle file, Rng1U64 rng, void* out);
     coroutine::Task<> file_write(FileIOContext& ctx, os::Handle file, Rng1U64 rng, const void* in);
-    coroutine::Task<> file_sync (FileIOContext& ctx, os::Handle file);
+    coroutine::Task<> file_sync(FileIOContext& ctx, os::Handle file);
 
     Pair<FileIOContext, EventConsumer> create_aio_async_file_io_context(os::AIOContext* aio_ctx, arena::Arena& arena, os::Poll& poll);
     Pair<FileIOContext, EventConsumer> create_uring_async_file_io_context(uring::Ring* ring, arena::Arena& arena, os::Poll& poll);
@@ -77,9 +83,9 @@ export namespace plexdb::aio {
     // ========================================================================
     template<typename TaskT>
     void pump_task(TaskT& task, EventConsumer& consumer, os::Poll& poll) {
-        U64 max = consumer.max_events > 0 ? consumer.max_events : 1;
-        threads::Scope scratch = threads::scratch();
-        os::PollEvent* ev_storage = arena::push_array<os::PollEvent>(*scratch.arena, max);
+        U64                             max        = consumer.max_events > 0 ? consumer.max_events : 1;
+        threads::Scope                  scratch    = threads::scratch();
+        os::PollEvent*                  ev_storage = arena::push_array<os::PollEvent>(*scratch.arena, max);
         CappedTArrayView<os::PollEvent> events{ev_storage, max, 0};
         task.resume();
         while (!task.done()) {

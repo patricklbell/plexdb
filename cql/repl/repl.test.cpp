@@ -4,7 +4,7 @@
 #include <cql/test_macros/test_macros.h>
 
 #if !PLEXDB_OS_LINUX
-    #error "Process piping in REPL test not implemented for OS"
+#error "Process piping in REPL test not implemented for OS"
 #endif
 
 import plexdb.base;
@@ -20,15 +20,19 @@ using namespace cql;
 namespace {
     // @note uses process_fork() to avoid fd issues with Catch2
     AutoString8 run_repl_batch(Engine& eng, const char* input) {
-        auto [in_read,  in_write]  = stream_pipe();
+        auto [in_read, in_write]   = stream_pipe();
         auto [out_read, out_write] = stream_pipe();
-        if (is_zero_handle(in_read) || is_zero_handle(out_read)) abort();
+        if (is_zero_handle(in_read) || is_zero_handle(out_read)) {
+            abort();
+        }
 
         stream_write(in_write, String8(input));
         stream_close(in_write);
 
         Optional<Handle> child_opt = process_fork();
-        if (!child_opt) abort();
+        if (!child_opt) {
+            abort();
+        }
         Handle child = *child_opt;
 
         if (is_zero_handle(child)) {
@@ -43,10 +47,12 @@ namespace {
         stream_close(out_write);
 
         AutoString8 out;
-        U8 buf[256];
+        U8          buf[256];
         while (true) {
             U64 n = stream_read(out_read, buf, sizeof(buf));
-            if (n == 0) break;
+            if (n == 0) {
+                break;
+            }
             out += String8(reinterpret_cast<const char*>(buf), n);
         }
         stream_close(out_read);

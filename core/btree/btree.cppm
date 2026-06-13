@@ -24,10 +24,12 @@ export namespace plexdb::btree {
     template<BTree BT, typename T>
     struct Iterator {
         IteratorImpl<BTreeKP<BT>, BTreeVP<BT>> impl;
-        BT* btree;
+        BT*                                    btree;
 
         Iterator() = default;
-        explicit Iterator(BT* in_btree) : btree(in_btree) {}
+        explicit Iterator(BT* in_btree)
+            : btree(in_btree) {
+        }
 
         coroutine::Task<void> advance() {
             co_await next_iterator_inplace(*this->btree, this->impl);
@@ -35,7 +37,7 @@ export namespace plexdb::btree {
 
         T operator*() const {
             auto v = leaf_value_const(impl.leaf, impl.node_size, impl.kp, impl.vp, impl.idx);
-            T val;
+            T    val;
             os::memory_copy(&val, v.ptr, sizeof(T));
             return val;
         }
@@ -45,8 +47,12 @@ export namespace plexdb::btree {
             return read_key(impl.kp, k.ptr, k.length);
         }
 
-        bool operator==(const Iterator& other) const { return impl == other.impl; }
-        bool operator!=(const Iterator& other) const { return !(*this == other); }
+        bool operator==(const Iterator& other) const {
+            return impl == other.impl;
+        }
+        bool operator!=(const Iterator& other) const {
+            return !(*this == other);
+        }
     };
 
     // ========================================================================
@@ -68,8 +74,9 @@ export namespace plexdb::btree {
 
     template<BTree BT>
     coroutine::Task<U8*> update_it(BT& t, BTreeKeyType<BT> key) {
-        if (Search<true> s = co_await search_impl<true>(t, key))
+        if (Search<true> s = co_await search_impl<true>(t, key)) {
             co_return s.value;
+        }
         co_return nullptr;
     }
 
@@ -78,7 +85,9 @@ export namespace plexdb::btree {
         if (Search<false> s = co_await search_impl<false>(t, key)) {
             U16 copy_len = s.value_length < max_size ? s.value_length : max_size;
             os::memory_copy(out_value, s.value, copy_len);
-            if (out_size) *out_size = s.value_length;
+            if (out_size) {
+                *out_size = s.value_length;
+            }
             co_return true;
         }
         co_return false;
@@ -109,8 +118,9 @@ export namespace plexdb::btree {
         requires TriviallyCopyable<T> && TriviallyConstructible<T>
     coroutine::Task<Optional<T>> tfind(BT& t, BTreeKeyType<BT> key) {
         T value;
-        if (co_await find(t, key, reinterpret_cast<U8*>(&value), sizeof(T)))
+        if (co_await find(t, key, reinterpret_cast<U8*>(&value), sizeof(T))) {
             co_return Optional{value};
+        }
         co_return Optional<T>{};
     }
 

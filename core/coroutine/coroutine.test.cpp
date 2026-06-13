@@ -12,7 +12,9 @@ using namespace plexdb::coroutine;
 // ============================================================================
 
 TEST_CASE("Task<int> returns value", "[coroutine]") {
-    auto task = []() -> Task<int> { co_return 42; }();
+    auto task = []() -> Task<int> {
+        co_return 42;
+    }();
     task.resume();
     REQUIRE(task.done());
     REQUIRE(task.has_value());
@@ -21,7 +23,7 @@ TEST_CASE("Task<int> returns value", "[coroutine]") {
 
 TEST_CASE("Task<void> completes", "[coroutine]") {
     bool executed = false;
-    auto task = [&]() -> Task<> {
+    auto task     = [&]() -> Task<> {
         executed = true;
         co_return;
     }();
@@ -32,7 +34,9 @@ TEST_CASE("Task<void> completes", "[coroutine]") {
 }
 
 TEST_CASE("Task chaining with co_await", "[coroutine]") {
-    auto inner = []() -> Task<int> { co_return 10; };
+    auto inner = []() -> Task<int> {
+        co_return 10;
+    };
     auto outer = [&]() -> Task<int> {
         auto a = co_await inner();
         auto b = co_await inner();
@@ -44,7 +48,9 @@ TEST_CASE("Task chaining with co_await", "[coroutine]") {
 }
 
 TEST_CASE("Task deep chain with symmetric transfer", "[coroutine]") {
-    auto leaf = []() -> Task<int> { co_return 1; };
+    auto leaf = []() -> Task<int> {
+        co_return 1;
+    };
     auto mid = [&]() -> Task<int> {
         auto v = co_await leaf();
         co_return v + 1;
@@ -61,7 +67,9 @@ TEST_CASE("Task deep chain with symmetric transfer", "[coroutine]") {
 }
 
 TEST_CASE("Task move semantics", "[coroutine]") {
-    auto make = []() -> Task<int> { co_return 7; };
+    auto make = []() -> Task<int> {
+        co_return 7;
+    };
     auto t1 = make();
     auto t2 = move(t1);
     t2.resume();
@@ -70,8 +78,8 @@ TEST_CASE("Task move semantics", "[coroutine]") {
 }
 
 TEST_CASE("Task<void> chaining", "[coroutine]") {
-    int counter = 0;
-    auto step = [&]() -> Task<> {
+    int  counter = 0;
+    auto step    = [&]() -> Task<> {
         counter++;
         co_return;
     };
@@ -91,7 +99,7 @@ TEST_CASE("Task<void> chaining", "[coroutine]") {
 
 TEST_CASE("Task<int, Start::Eager> runs immediately", "[coroutine]") {
     bool executed = false;
-    auto task = [&]() -> Task<int, Start::Eager> {
+    auto task     = [&]() -> Task<int, Start::Eager> {
         executed = true;
         co_return 99;
     }();
@@ -103,7 +111,7 @@ TEST_CASE("Task<int, Start::Eager> runs immediately", "[coroutine]") {
 
 TEST_CASE("Task<void, Start::Eager> runs immediately", "[coroutine]") {
     bool executed = false;
-    auto task = [&]() -> Task<void, Start::Eager> {
+    auto task     = [&]() -> Task<void, Start::Eager> {
         executed = true;
         co_return;
     }();
@@ -113,7 +121,9 @@ TEST_CASE("Task<void, Start::Eager> runs immediately", "[coroutine]") {
 
 TEST_CASE("Task<int, Start::Eager> co_await from lazy task", "[coroutine]") {
     // Eager sub-task completes synchronously; lazy outer resumes it via await_ready.
-    auto sub = []() -> Task<int, Start::Eager> { co_return 5; };
+    auto sub = []() -> Task<int, Start::Eager> {
+        co_return 5;
+    };
     auto outer = [&]() -> Task<int> {
         auto v = co_await sub();
         co_return v * 2;
@@ -130,13 +140,12 @@ TEST_CASE("Task<int, Start::Eager> co_await from lazy task", "[coroutine]") {
 TEST_CASE("Awaitable suspends and resumes with result", "[coroutine]") {
     // Simulate an event loop: store the handle, then drive it externally.
     std::coroutine_handle<> stored;
-    int result = 0;
+    int                     result = 0;
 
     auto task = [&]() -> Task<int> {
         int v = co_await Awaitable{
             [&](std::coroutine_handle<> h) { stored = h; },
-            [&]() -> int { return result; }
-        };
+            [&]() -> int { return result; }};
         co_return v * 2;
     }();
 
@@ -145,20 +154,19 @@ TEST_CASE("Awaitable suspends and resumes with result", "[coroutine]") {
     REQUIRE(stored);
 
     result = 21;
-    stored.resume();   // simulates event loop processing a CQE
+    stored.resume(); // simulates event loop processing a CQE
     REQUIRE(task.done());
     REQUIRE(task.value() == 42);
 }
 
 TEST_CASE("Awaitable<void> fire-and-forget", "[coroutine]") {
     std::coroutine_handle<> stored;
-    bool completed = false;
+    bool                    completed = false;
 
     auto task = [&]() -> Task<> {
         co_await Awaitable{
             [&](std::coroutine_handle<> h) { stored = h; },
-            [&]() { completed = true; }
-        };
+            [&]() { completed = true; }};
     }();
 
     task.resume();
@@ -181,7 +189,9 @@ TEST_CASE("Generator yields values via range-for", "[coroutine]") {
     }();
 
     int sum = 0;
-    for (auto& val : gen) sum += val;
+    for (auto& val : gen) {
+        sum += val;
+    }
     REQUIRE(sum == 6);
 }
 
@@ -204,13 +214,17 @@ TEST_CASE("Generator next() API", "[coroutine]") {
 }
 
 TEST_CASE("Generator empty", "[coroutine]") {
-    auto gen = []() -> Generator<int> { co_return; }();
+    auto gen = []() -> Generator<int> {
+        co_return;
+    }();
 
     auto val = gen.next();
     REQUIRE_FALSE(val.has_value());
 
-    int count = 0;
-    auto gen2 = []() -> Generator<int> { co_return; }();
+    int  count = 0;
+    auto gen2  = []() -> Generator<int> {
+        co_return;
+    }();
     for (auto& v : gen2) {
         (void)v;
         count++;
@@ -220,7 +234,9 @@ TEST_CASE("Generator empty", "[coroutine]") {
 
 TEST_CASE("Generator sequence with parameter", "[coroutine]") {
     auto range = [](int start, int end) -> Generator<int> {
-        for (int i = start; i < end; i++) co_yield i;
+        for (int i = start; i < end; i++) {
+            co_yield i;
+        }
     };
 
     int expected = 0;
@@ -235,7 +251,9 @@ TEST_CASE("Generator early destruction", "[coroutine]") {
     bool destroyed = false;
     struct Guard {
         bool& flag;
-        ~Guard() { flag = true; }
+        ~Guard() {
+            flag = true;
+        }
     };
 
     {

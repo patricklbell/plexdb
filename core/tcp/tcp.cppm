@@ -22,36 +22,33 @@ export namespace plexdb::tcp {
     // @note non-movable: EventConsumer holds raw pointers into state
     struct TcpServer {
         TaggedUnion<UringListenerState, SocketListenerState> state;
-        aio::EventConsumer consumer;
-        Stats* stats;
+        aio::EventConsumer                                   consumer;
+        Stats*                                               stats;
 
-        TcpServer(const TcpServer&) = delete;
+        TcpServer(const TcpServer&)            = delete;
         TcpServer& operator=(const TcpServer&) = delete;
-        TcpServer(TcpServer&&) = delete;
-        TcpServer& operator=(TcpServer&&) = delete;
+        TcpServer(TcpServer&&)                 = delete;
+        TcpServer& operator=(TcpServer&&)      = delete;
 
         TcpServer(UringListenerState s, const ConnectionHandler auto* in_handler, os::Poll& poll)
-            : state(move(s))
-        {
+            : state(move(s)) {
             consumer = listen_uring_start(&get<UringListenerState>(state), in_handler, poll);
-            stats = &get<UringListenerState>(state).stats;
+            stats    = &get<UringListenerState>(state).stats;
         }
 
         TcpServer(SocketListenerState s, const ConnectionHandler auto* in_handler, os::Poll& poll)
-            : state(move(s))
-        {
+            : state(move(s)) {
             consumer = listen_socket_start(&get<SocketListenerState>(state), in_handler, poll);
-            stats = &get<SocketListenerState>(state).stats;
+            stats    = &get<SocketListenerState>(state).stats;
         }
     };
 
     // @note relies on copy elision
     TcpServer create_tcp_server(
-        os::Handle socket,
+        os::Handle                    socket,
         const ConnectionHandler auto* in_handler,
-        os::Poll& poll,
-        bool try_uring = true
-    ) {
+        os::Poll&                     poll,
+        bool                          try_uring = true) {
         if (try_uring) {
             auto ring_settings = uring::get_ring_settings();
             if (ring_settings->recommended) {
@@ -59,8 +56,7 @@ export namespace plexdb::tcp {
                     socket,
                     ring_settings->recommended_queue_depth,
                     ring_settings->recommended_buffer_size,
-                    ring_settings->recommended_buffer_count
-                };
+                    ring_settings->recommended_buffer_count};
                 if (ring && !os::is_zero_handle(ring.event_fd)) {
                     return TcpServer{UringListenerState{move(ring)}, in_handler, poll};
                 }
@@ -68,7 +64,10 @@ export namespace plexdb::tcp {
         }
 
         plugin::message(producer, plugin::Level::Warn, "io_uring not available, falling back to async sockets");
-        return TcpServer{SocketListenerState{socket, &poll}, in_handler, poll};
+        return TcpServer{
+            SocketListenerState{socket, &poll},
+            in_handler, poll
+        };
     }
 }
 

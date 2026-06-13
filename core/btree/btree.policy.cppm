@@ -10,11 +10,19 @@ export namespace plexdb::btree {
     struct LexicographicComparator {
         Ordering operator()(TArrayView<const U8, U16> a, TArrayView<const U8, U16> b) const noexcept {
             U16 min_len = a.length < b.length ? a.length : b.length;
-            S32 res = os::memory_compare(a.ptr, b.ptr, min_len);
-            if (res < 0) return Ordering::Less;
-            if (res > 0) return Ordering::Greater;
-            if (a.length < b.length) return Ordering::Less;
-            if (a.length > b.length) return Ordering::Greater;
+            S32 res     = os::memory_compare(a.ptr, b.ptr, min_len);
+            if (res < 0) {
+                return Ordering::Less;
+            }
+            if (res > 0) {
+                return Ordering::Greater;
+            }
+            if (a.length < b.length) {
+                return Ordering::Less;
+            }
+            if (a.length > b.length) {
+                return Ordering::Greater;
+            }
             return Ordering::Equal;
         }
     };
@@ -26,12 +34,11 @@ export namespace plexdb::btree {
     concept KeyPolicy = requires {
         typename P::key_type;
         { P::is_fixed_size } -> ConvertibleTo<bool>;
-    } && requires(const P& p, typename P::key_type a, typename P::key_type b,
-                  U8* dst, const U8* src, U16 len) {
+    } && requires(const P& p, typename P::key_type a, typename P::key_type b, U8* dst, const U8* src, U16 len) {
         { stored_key_size(p, a) } -> SameAs<U16>;
         { write_key(p, dst, a) };
         { read_key(p, src, len) } -> SameAs<typename P::key_type>;
-        { compare_key(p, a, b) }  -> SameAs<Ordering>;
+        { compare_key(p, a, b) } -> SameAs<Ordering>;
     };
 
     template<typename P>
@@ -45,27 +52,32 @@ export namespace plexdb::btree {
 
     template<TriviallyCopyable T>
     struct FixedKeyPolicy {
-        using key_type = T;
+        using key_type                      = T;
         static constexpr bool is_fixed_size = true;
-        static constexpr U16 key_stride = sizeof(T);
+        static constexpr U16  key_stride    = sizeof(T);
 
-        friend U16 stored_key_size(FixedKeyPolicy, T) noexcept { return sizeof(T); }
+        friend U16 stored_key_size(FixedKeyPolicy, T) noexcept {
+            return sizeof(T);
+        }
         friend void write_key(FixedKeyPolicy, U8* dst, T k) noexcept {
             os::memory_copy(dst, &k, sizeof(T));
         }
         friend T read_key(FixedKeyPolicy, const U8* src, U16 len) noexcept {
             assert_true(len == sizeof(T), "key length mismatch for fixed key policy");
-            T k; os::memory_copy(&k, src, sizeof(T)); return k;
+            T k;
+            os::memory_copy(&k, src, sizeof(T));
+            return k;
         }
         friend Ordering compare_key(FixedKeyPolicy, T a, T b) noexcept {
-            return a < b ? Ordering::Less : a > b ? Ordering::Greater : Ordering::Equal;
+            return a < b ? Ordering::Less : a > b ? Ordering::Greater
+                                                  : Ordering::Equal;
         }
     };
 
     template<typename Comparator = LexicographicComparator>
     struct VarlenKeyPolicy {
-        using key_type = TArrayView<const U8, U16>;
-        static constexpr bool is_fixed_size = false;
+        using key_type                                 = TArrayView<const U8, U16>;
+        static constexpr bool            is_fixed_size = false;
         [[no_unique_address]] Comparator comparator{};
 
         friend U16 stored_key_size(const VarlenKeyPolicy&, TArrayView<const U8, U16> k) noexcept {
@@ -77,7 +89,7 @@ export namespace plexdb::btree {
         friend TArrayView<const U8, U16> read_key(const VarlenKeyPolicy&, const U8* src, U16 len) noexcept {
             return {const_cast<U8*>(src), len};
         }
-        friend Ordering compare_key(const VarlenKeyPolicy& p,
+        friend Ordering compare_key(const VarlenKeyPolicy&    p,
                                     TArrayView<const U8, U16> a,
                                     TArrayView<const U8, U16> b) noexcept {
             return p.comparator(a, b);
@@ -86,9 +98,9 @@ export namespace plexdb::btree {
 
     template<U64 stride_byte_count>
     struct FixedValuePolicy {
-        using value_type = TArrayView<const U8, U16>;
+        using value_type                    = TArrayView<const U8, U16>;
         static constexpr bool is_fixed_size = true;
-        static constexpr U16 value_stride = stride_byte_count;
+        static constexpr U16  value_stride  = stride_byte_count;
 
         friend U16 stored_value_size(FixedValuePolicy, TArrayView<const U8, U16>) noexcept {
             return stride_byte_count;
@@ -101,7 +113,7 @@ export namespace plexdb::btree {
     };
 
     struct VarlenValuePolicy {
-        using value_type = TArrayView<const U8, U16>;
+        using value_type                    = TArrayView<const U8, U16>;
         static constexpr bool is_fixed_size = false;
 
         friend U16 stored_value_size(VarlenValuePolicy, TArrayView<const U8, U16> v) noexcept {

@@ -20,7 +20,10 @@ export namespace keyvalue {
         AutoString8 key;
     };
     struct Set {
-        AutoString8 key; AutoString8 value; bool nx; bool xx;
+        AutoString8 key;
+        AutoString8 value;
+        bool        nx;
+        bool        xx;
     };
     struct Del {
         DynamicArray<AutoString8> keys;
@@ -38,7 +41,9 @@ export namespace keyvalue {
         AutoString8 pattern;
     };
     struct Scan {
-        U64 cursor; Optional<AutoString8> match; Optional<U64> count;
+        U64                   cursor;
+        Optional<AutoString8> match;
+        Optional<U64>         count;
     };
     struct TypeOf {
         AutoString8 key;
@@ -55,7 +60,8 @@ export namespace keyvalue {
         Optional<AutoString8> section;
     };
     struct Unknown {
-        AutoString8 name; DynamicArray<AutoString8> args;
+        AutoString8               name;
+        DynamicArray<AutoString8> args;
     };
 
     struct Statement {
@@ -65,7 +71,7 @@ export namespace keyvalue {
             Keys, Scan,
             FlushDb, FlushAll, DbSize,
             TypeOf, Cmd, SelectDb, ClientGetName, Client, Info,
-            Unknown
-        > value;
+            Unknown>
+            value;
     };
 }

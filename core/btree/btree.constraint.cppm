@@ -10,9 +10,9 @@ import plexdb.btree.paged.detail;
 export namespace plexdb::btree {
     template<typename B>
     concept BTree = requires(const B& b) {
-        { key_policy(b)   } -> KeyPolicy;
+        { key_policy(b) } -> KeyPolicy;
         { value_policy(b) } -> ValuePolicy;
-        { node_size(b)    } -> SameAs<U32>;
+        { node_size(b) } -> SameAs<U32>;
     };
 
     template<BTree BT>

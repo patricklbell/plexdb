@@ -15,10 +15,25 @@ export namespace plexdb::btree {
     template<bool VarlenKey, bool VarlenValue>
     struct SlotEntry;
 
-    template<> struct SlotEntry<false, false> {};
-    template<> struct SlotEntry<false, true>  { U16 val_off; U16 val_len; };
-    template<> struct SlotEntry<true,  false> { U16 key_off; U16 key_len; };
-    template<> struct SlotEntry<true,  true>  { U16 key_off; U16 key_len; U16 val_off; U16 val_len; };
+    template<>
+    struct SlotEntry<false, false> {};
+    template<>
+    struct SlotEntry<false, true> {
+        U16 val_off;
+        U16 val_len;
+    };
+    template<>
+    struct SlotEntry<true, false> {
+        U16 key_off;
+        U16 key_len;
+    };
+    template<>
+    struct SlotEntry<true, true> {
+        U16 key_off;
+        U16 key_len;
+        U16 val_off;
+        U16 val_len;
+    };
 
     using InternalSlotEntry = SlotEntry<true, false>;
     using LeafSlotEntry     = SlotEntry<true, true>;
@@ -33,8 +48,12 @@ export namespace plexdb::btree {
         U16       key_stride;
         U16       val_stride;
 
-        U8* keys_base() const noexcept { return base; }
-        U8* vals_base() const noexcept { return base + capacity * key_stride; }
+        U8* keys_base() const noexcept {
+            return base;
+        }
+        U8* vals_base() const noexcept {
+            return base + capacity * key_stride;
+        }
     };
 
     TArrayView<const U8, U16> key_at(const FixedLeafSlots& s, CountType i) noexcept {
@@ -48,7 +67,9 @@ export namespace plexdb::btree {
     }
     bool insert(FixedLeafSlots& s, CountType i,
                 TArrayView<const U8, U16> k, TArrayView<const U8, U16> v) noexcept {
-        if (s.count >= s.capacity) return false;
+        if (s.count >= s.capacity) {
+            return false;
+        }
         U8* kp = s.keys_base() + i * s.key_stride;
         U8* vp = s.vals_base() + i * s.val_stride;
         os::memory_move(kp + s.key_stride, kp, (s.count - i) * s.key_stride);
@@ -90,7 +111,9 @@ export namespace plexdb::btree {
         CountType capacity;
         U16       key_stride;
 
-        U8*      keys_base()     const noexcept { return base; }
+        U8* keys_base() const noexcept {
+            return base;
+        }
         NodeRef* children_base() const noexcept {
             return reinterpret_cast<NodeRef*>(base + capacity * key_stride);
         }
@@ -111,7 +134,9 @@ export namespace plexdb::btree {
     }
     // insert key at index i (shifts keys i..count-1 right; children shifted separately)
     bool insert_key(FixedInternalSlots& s, CountType i, TArrayView<const U8, U16> k) noexcept {
-        if (s.count >= s.capacity) return false;
+        if (s.count >= s.capacity) {
+            return false;
+        }
         U8* kp = s.keys_base() + i * s.key_stride;
         os::memory_move(kp + s.key_stride, kp, (s.count - i) * s.key_stride);
         os::memory_copy(kp, k.ptr, s.key_stride);
@@ -162,14 +187,20 @@ export namespace plexdb::btree {
         U16       key_stride; // only used when VK==false
 
         using Entry = SlotEntry<VK, true>;
-        Entry* slots() const noexcept { return reinterpret_cast<Entry*>(base); }
+        Entry* slots() const noexcept {
+            return reinterpret_cast<Entry*>(base);
+        }
 
-        U16 header_bytes() const noexcept { return slot_end; }
+        U16 header_bytes() const noexcept {
+            return slot_end;
+        }
         U16 free_space() const noexcept {
             return static_cast<U16>(data_low - slot_end);
         }
 
-        static constexpr U16 slot_entry_size() noexcept { return static_cast<U16>(sizeof(Entry)); }
+        static constexpr U16 slot_entry_size() noexcept {
+            return static_cast<U16>(sizeof(Entry));
+        }
     };
 
     template<bool VK>
@@ -210,9 +241,9 @@ export namespace plexdb::btree {
         // Stage all data in a separate buffer first. Without staging, packing a
         // slot's data to a higher address (upward move) overwrites another slot's
         // source data before it can be read, producing corrupted/duplicate keys.
-        threads::Scope sc = threads::scratch();
-        U8* staging = arena::push_array_no_zero<U8>(*sc.arena, p.page_size);
-        U16 write_pos = p.page_size;
+        threads::Scope sc        = threads::scratch();
+        U8*            staging   = arena::push_array_no_zero<U8>(*sc.arena, p.page_size);
+        U16            write_pos = p.page_size;
         for (CountType i = 0; i < p.count; i++) {
             auto& e = p.slots()[i];
             write_pos -= e.val_len;
@@ -235,7 +266,9 @@ export namespace plexdb::btree {
         U16 needed = static_cast<U16>(sizeof(SlotEntry<VK, true>) + k.length + v.length);
         if (p.free_space() < needed) {
             compact(p);
-            if (p.free_space() < needed) return false;
+            if (p.free_space() < needed) {
+                return false;
+            }
         }
         auto* slots = p.slots();
         os::memory_move(slots + i + 1, slots + i, (p.count - i) * sizeof(SlotEntry<VK, true>));
@@ -259,7 +292,7 @@ export namespace plexdb::btree {
     void remove(SlottedLeafPage<VK>& p, CountType i) noexcept {
         static_assert(VK, "SlottedLeafPage remove requires varlen key");
         auto* slots = p.slots();
-        auto& e = slots[i];
+        auto& e     = slots[i];
 
         {
             U16 off = e.key_off;
@@ -267,9 +300,15 @@ export namespace plexdb::btree {
             os::memory_move(p.base + p.data_low + len, p.base + p.data_low, off - p.data_low);
             p.data_low += len;
             for (CountType j = 0; j < p.count; j++) {
-                if (j == i) continue;
-                if (slots[j].key_off < off) slots[j].key_off += len;
-                if (slots[j].val_off < off) slots[j].val_off += len;
+                if (j == i) {
+                    continue;
+                }
+                if (slots[j].key_off < off) {
+                    slots[j].key_off += len;
+                }
+                if (slots[j].val_off < off) {
+                    slots[j].val_off += len;
+                }
             }
         }
         {
@@ -278,9 +317,15 @@ export namespace plexdb::btree {
             os::memory_move(p.base + p.data_low + len, p.base + p.data_low, off - p.data_low);
             p.data_low += len;
             for (CountType j = 0; j < p.count; j++) {
-                if (j == i) continue;
-                if (slots[j].key_off < off) slots[j].key_off += len;
-                if (slots[j].val_off < off) slots[j].val_off += len;
+                if (j == i) {
+                    continue;
+                }
+                if (slots[j].key_off < off) {
+                    slots[j].key_off += len;
+                }
+                if (slots[j].val_off < off) {
+                    slots[j].val_off += len;
+                }
             }
         }
 
@@ -293,12 +338,12 @@ export namespace plexdb::btree {
     void copy_suffix_to(const SlottedLeafPage<VK>& src, CountType from,
                         SlottedLeafPage<VK>& dst) noexcept {
         static_assert(VK, "copy_suffix_to requires varlen key");
-        CountType n = static_cast<CountType>(src.count - from);
+        CountType   n         = static_cast<CountType>(src.count - from);
         const auto* src_slots = src.slots();
-        auto* dst_slots = dst.slots();
+        auto*       dst_slots = dst.slots();
         for (CountType i = 0; i < n; i++) {
             const auto& se = src_slots[from + i];
-            auto& de = dst_slots[i];
+            auto&       de = dst_slots[i];
             // Write val first (higher address), then key (lower address),
             // matching insert() layout so that remove() works correctly.
             dst.data_low -= se.val_len;
@@ -327,11 +372,13 @@ export namespace plexdb::btree {
         U16       slot_end;
         U16       data_low;
         U16       page_size;
-        U16       key_stride;    // only used when VK==false
-        CountType max_children;  // determines where children area starts
+        U16       key_stride;   // only used when VK==false
+        CountType max_children; // determines where children area starts
 
         using Entry = SlotEntry<VK, false>;
-        Entry*   slots()    const noexcept { return reinterpret_cast<Entry*>(base); }
+        Entry* slots() const noexcept {
+            return reinterpret_cast<Entry*>(base);
+        }
         NodeRef* children() const noexcept {
             return reinterpret_cast<NodeRef*>(base + page_size - max_children * sizeof(NodeRef));
         }
@@ -374,13 +421,15 @@ export namespace plexdb::btree {
 
     template<bool VK>
     void compact(SlottedInternalPage<VK>& p) noexcept {
-        if constexpr (!VK) return;
+        if constexpr (!VK) {
+            return;
+        }
         U16 usable = p.usable_capacity();
 
         // @todo investigate algorithm which does not require scratch
-        threads::Scope sc = threads::scratch();
-        U8* staging = arena::push_array_no_zero<U8>(*sc.arena, usable);
-        U16 write_pos = usable;
+        threads::Scope sc        = threads::scratch();
+        U8*            staging   = arena::push_array_no_zero<U8>(*sc.arena, usable);
+        U16            write_pos = usable;
         for (CountType i = 0; i < p.count; i++) {
             auto& e = p.slots()[i];
             write_pos -= e.key_len;
@@ -401,12 +450,17 @@ export namespace plexdb::btree {
         U16 old_off = e.key_off, old_len = e.key_len;
         os::memory_move(p.base + p.data_low + old_len, p.base + p.data_low, old_off - p.data_low);
         p.data_low += old_len;
-        for (CountType j = 0; j < p.count; j++)
-            if (p.slots()[j].key_off < old_off) p.slots()[j].key_off += old_len;
+        for (CountType j = 0; j < p.count; j++) {
+            if (p.slots()[j].key_off < old_off) {
+                p.slots()[j].key_off += old_len;
+            }
+        }
         // allocate new key bytes
         if (p.free_space() < k.length) {
             compact(p);
-            if (p.free_space() < k.length) return false;
+            if (p.free_space() < k.length) {
+                return false;
+            }
         }
         p.data_low -= k.length;
         os::memory_copy(p.base + p.data_low, k.ptr, k.length);
@@ -419,19 +473,21 @@ export namespace plexdb::btree {
     bool insert_key(SlottedInternalPage<VK>& p, CountType i,
                     TArrayView<const U8, U16> k) noexcept {
         static_assert(VK, "insert_key on SlottedInternalPage requires varlen key");
-        U16 needed = static_cast<U16>(sizeof(SlotEntry<VK,false>) + k.length);
+        U16 needed = static_cast<U16>(sizeof(SlotEntry<VK, false>) + k.length);
         if (p.free_space() < needed) {
             compact(p);
-            if (p.free_space() < needed) return false;
+            if (p.free_space() < needed) {
+                return false;
+            }
         }
         auto* slots = p.slots();
-        os::memory_move(slots + i + 1, slots + i, (p.count - i) * sizeof(SlotEntry<VK,false>));
+        os::memory_move(slots + i + 1, slots + i, (p.count - i) * sizeof(SlotEntry<VK, false>));
         auto& e = slots[i];
         p.data_low -= k.length;
         os::memory_copy(p.base + p.data_low, k.ptr, k.length);
         e.key_off = p.data_low;
         e.key_len = k.length;
-        p.slot_end += sizeof(SlotEntry<VK,false>);
+        p.slot_end += sizeof(SlotEntry<VK, false>);
         p.count++;
         return true;
     }
@@ -447,19 +503,23 @@ export namespace plexdb::btree {
     void remove(SlottedInternalPage<VK>& p, CountType i) noexcept {
         static_assert(VK, "remove on SlottedInternalPage requires varlen key");
         auto* slots = p.slots();
-        auto& e = slots[i];
+        auto& e     = slots[i];
         // reclaim key data
         U16 off = e.key_off;
         U16 len = e.key_len;
         os::memory_move(p.base + p.data_low + len, p.base + p.data_low, off - p.data_low);
         p.data_low += len;
         for (CountType j = 0; j < p.count; j++) {
-            if (j == i) continue;
-            if (slots[j].key_off < off) slots[j].key_off += len;
+            if (j == i) {
+                continue;
+            }
+            if (slots[j].key_off < off) {
+                slots[j].key_off += len;
+            }
         }
         // shift slot dir left
-        os::memory_move(slots + i, slots + i + 1, (p.count - i - 1) * sizeof(SlotEntry<VK,false>));
-        p.slot_end -= sizeof(SlotEntry<VK,false>);
+        os::memory_move(slots + i, slots + i + 1, (p.count - i - 1) * sizeof(SlotEntry<VK, false>));
+        p.slot_end -= sizeof(SlotEntry<VK, false>);
         // shift children: remove child at index i+1
         NodeRef* cp = p.children() + i + 2;
         os::memory_move(cp - 1, cp, (p.count - i - 1) * sizeof(NodeRef));
@@ -471,14 +531,17 @@ export namespace plexdb::btree {
     void remove_front(SlottedInternalPage<VK>& p) noexcept {
         static_assert(VK, "remove_front requires varlen key");
         auto* slots = p.slots();
-        auto& e = slots[0];
-        U16 off = e.key_off, len = e.key_len;
+        auto& e     = slots[0];
+        U16   off = e.key_off, len = e.key_len;
         os::memory_move(p.base + p.data_low + len, p.base + p.data_low, off - p.data_low);
         p.data_low += len;
-        for (CountType j = 1; j < p.count; j++)
-            if (slots[j].key_off < off) slots[j].key_off += len;
-        os::memory_move(slots, slots + 1, (p.count - 1) * sizeof(SlotEntry<VK,false>));
-        p.slot_end -= sizeof(SlotEntry<VK,false>);
+        for (CountType j = 1; j < p.count; j++) {
+            if (slots[j].key_off < off) {
+                slots[j].key_off += len;
+            }
+        }
+        os::memory_move(slots, slots + 1, (p.count - 1) * sizeof(SlotEntry<VK, false>));
+        p.slot_end -= sizeof(SlotEntry<VK, false>);
         p.count--;
         // shift children left to remove children[0]
         NodeRef* cp = p.children();
@@ -494,18 +557,18 @@ export namespace plexdb::btree {
     void copy_suffix_to(const SlottedInternalPage<VK>& src, CountType from,
                         SlottedInternalPage<VK>& dst) noexcept {
         static_assert(VK, "copy_suffix_to requires varlen key");
-        CountType n = static_cast<CountType>(src.count - from);
+        CountType   n  = static_cast<CountType>(src.count - from);
         const auto* ss = src.slots();
-        auto* ds = dst.slots();
+        auto*       ds = dst.slots();
         for (CountType i = 0; i < n; i++) {
             const auto& se = ss[from + i];
-            auto& de = ds[i];
+            auto&       de = ds[i];
             dst.data_low -= se.key_len;
             os::memory_copy(dst.base + dst.data_low, src.base + se.key_off, se.key_len);
             de.key_off = dst.data_low;
             de.key_len = se.key_len;
         }
-        dst.slot_end += n * sizeof(SlotEntry<VK,false>);
+        dst.slot_end += n * sizeof(SlotEntry<VK, false>);
         dst.count = n;
         // copy children from..count (inclusive) = n+1 children
         os::memory_copy(dst.children(), src.children() + from, (n + 1) * sizeof(NodeRef));

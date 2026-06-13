@@ -45,17 +45,18 @@ export namespace cql {
             TypeList<Constant, BindMarker>,
             TypeList<
                 MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
-                FunctionCall, ArithmeticOperation, TypeHint, ColumnValue
-            >
-        > value;
+                FunctionCall, ArithmeticOperation, TypeHint, ColumnValue>>
+            value;
     };
 
     struct TermWithIdentifiers {
         TermWithIdentifiers() = default;
 
         template<typename T>
-            requires (!SameAs<Decay<T>, Term> && !SameAs<Decay<T>, TermWithIdentifiers>)
-        explicit TermWithIdentifiers(T&& v) : value(forward<T>(v)) {}
+            requires(!SameAs<Decay<T>, Term> && !SameAs<Decay<T>, TermWithIdentifiers>)
+        explicit TermWithIdentifiers(T&& v)
+            : value(forward<T>(v)) {
+        }
 
         // this custom constructor unwraps a term -> twi, used to unify the parsing
         // @warn requires that type index needs to match term
@@ -79,9 +80,8 @@ export namespace cql {
             TypeList<
                 MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
                 FunctionCall, ArithmeticOperation, TypeHint,
-                TOIArithmeticOperation, AutoString8
-            >
-        > value;
+                TOIArithmeticOperation, AutoString8>>
+            value;
     };
 
     // ========================================================================
@@ -107,7 +107,7 @@ export namespace cql {
     // functions
     // ========================================================================
     struct FunctionCall {
-        AutoString8 identifier;
+        AutoString8        identifier;
         DynamicArray<Term> arguments;
     };
 
@@ -126,9 +126,9 @@ export namespace cql {
         Term operand;
     };
     struct BinaryArithmeticOperation {
-        Term lhs;
+        Term               lhs;
         ArithmeticOperator op;
-        Term rhs;
+        Term               rhs;
     };
     struct ArithmeticOperation {
         TaggedUnion<UnaryMinusArithmeticOperation, BinaryArithmeticOperation> value;
@@ -139,7 +139,7 @@ export namespace cql {
     // ========================================================================
     struct TypeHint {
         type::Type type;
-        Term operand;
+        Term       operand;
     };
 
     // ========================================================================
@@ -150,7 +150,7 @@ export namespace cql {
     };
     struct TOIBinaryArithmetic {
         TermWithIdentifiers lhs;
-        ArithmeticOperator op;
+        ArithmeticOperator  op;
         TermWithIdentifiers rhs;
     };
     struct TOIArithmeticOperation {
@@ -162,15 +162,15 @@ export namespace cql {
     // ========================================================================
     struct TableName {
         Optional<AutoString8> keyspace_name;
-        AutoString8 table_name;
+        AutoString8           table_name;
     };
     struct ColumnName {
         AutoString8 identifier;
     };
 
-    using OptionKey = AutoString8;
+    using OptionKey   = AutoString8;
     using OptionValue = ExpandTaggedUnion<TypeList<AutoString8, Constant, MapLiteral>>;
-    using OptionPair = Pair<OptionKey, OptionValue>;
+    using OptionPair  = Pair<OptionKey, OptionValue>;
     struct Options {
         DynamicArray<OptionPair> identifier_values;
     };
@@ -185,24 +185,41 @@ export namespace cql {
     };
 
     struct UpdateParameter {
-        enum class Kind { TIMESTAMP, TTL };
-        Kind kind;
+        enum class Kind {
+            TIMESTAMP,
+            TTL
+        };
+        Kind                         kind;
         TaggedUnion<S64, BindMarker> value;
     };
 
-    enum class Operator { eq, lt, gt, le, ge, ne, in, contains, contains_key };
+    enum class Operator {
+        eq,
+        lt,
+        gt,
+        le,
+        ge,
+        ne,
+        in,
+        contains,
+        contains_key
+    };
 
     struct SimpleSelection {
-        struct Subscript { Term index; };
-        struct FieldAccess { AutoString8 field; };
-        ColumnName column;
+        struct Subscript {
+            Term index;
+        };
+        struct FieldAccess {
+            AutoString8 field;
+        };
+        ColumnName                                    column;
         Optional<TaggedUnion<Subscript, FieldAccess>> access;
     };
 
     struct Condition {
         SimpleSelection selection;
-        Operator op;
-        Term value;
+        Operator        op;
+        Term            value;
     };
 
     struct IfExists {};
@@ -214,18 +231,18 @@ export namespace cql {
     struct WhereClause {
         struct ColumnExpressionRelation {
             ColumnName column;
-            Operator operator_;
-            Term value;
+            Operator   operator_;
+            Term       value;
         };
         struct TupleExpressionRelation {
             DynamicArray<ColumnName> columns;
-            Operator operator_;
-            DynamicArray<Term> values;
+            Operator                 operator_;
+            DynamicArray<Term>       values;
         };
         struct TokenRelation {
             DynamicArray<ColumnName> columns;
-            Operator operator_;
-            Term value;
+            Operator                 operator_;
+            Term                     value;
         };
         struct Relation {
             TaggedUnion<ColumnExpressionRelation, TupleExpressionRelation, TokenRelation> value;
@@ -234,20 +251,20 @@ export namespace cql {
     };
 
     struct ColumnDefinition {
-        ColumnName name;
-        type::Type type;
-        bool _static;
+        ColumnName           name;
+        type::Type           type;
+        bool                 _static;
         Optional<ColumnMask> mask;
-        bool primary_key;
+        bool                 primary_key;
     };
 
     // ========================================================================
     // Data definition (DDL)
     // ========================================================================
     struct CreateKeyspace {
-        bool if_not_exists;
+        bool        if_not_exists;
         AutoString8 name;
-        Options options;
+        Options     options;
     };
 
     struct UseKeyspace {
@@ -255,13 +272,13 @@ export namespace cql {
     };
 
     struct AlterKeyspace {
-        bool if_exists;
+        bool        if_exists;
         AutoString8 keyspace;
-        Options options;
+        Options     options;
     };
 
     struct DropKeyspace {
-        bool if_exists;
+        bool        if_exists;
         AutoString8 keyspace;
     };
 
@@ -272,14 +289,14 @@ export namespace cql {
 
         using ClusteringColumns = DynamicArray<ColumnName>;
         struct PrimaryKey {
-            PartitionKey partition_key;
+            PartitionKey      partition_key;
             ClusteringColumns clustering_columns;
         };
 
         struct CompactStorage {};
         struct ColumnOrder {
             ColumnName column;
-            Sort sort;
+            Sort       sort;
         };
         struct ClusteringOrder {
             DynamicArray<ColumnOrder> column_orders;
@@ -288,42 +305,42 @@ export namespace cql {
             DynamicArray<ExpandTaggedUnion<TypeList<CompactStorage, ClusteringOrder, OptionPair>>> value;
         };
 
-        bool if_not_exists;
-        TableName name;
+        bool                           if_not_exists;
+        TableName                      name;
         DynamicArray<ColumnDefinition> column_definitions;
-        Optional<PrimaryKey> primary_key;
-        TableOptions options;
+        Optional<PrimaryKey>           primary_key;
+        TableOptions                   options;
     };
 
     struct AlterTable {
         struct AddColumnInstruction {
-            bool if_not_exists;
+            bool                           if_not_exists;
             DynamicArray<ColumnDefinition> column_definitions; // @note static & primary_key are not allowed
         };
 
         struct DropColumnInstruction {
-            bool if_exists;
+            bool                     if_exists;
             DynamicArray<ColumnName> columns;
         };
 
         struct RenameColumnInstruction {
-            bool if_exists;
+            bool                                       if_exists;
             DynamicArray<Pair<ColumnName, ColumnName>> old_to_new_columns;
         };
 
         struct AlterColumnInstruction {
-            bool if_exists;
-            ColumnName column;
+            bool                 if_exists;
+            ColumnName           column;
             Optional<ColumnMask> column_mask;
         };
 
-        bool if_exists;
-        TableName table;
+        bool                                                                                                               if_exists;
+        TableName                                                                                                          table;
         TaggedUnion<AddColumnInstruction, DropColumnInstruction, RenameColumnInstruction, AlterColumnInstruction, Options> alter_table_instruction;
     };
 
     struct DropTable {
-        bool if_exists;
+        bool      if_exists;
         TableName table;
     };
 
@@ -332,20 +349,20 @@ export namespace cql {
     };
 
     struct CreateIndex {
-        bool custom;
-        bool if_not_exists;
+        bool                  custom;
+        bool                  if_not_exists;
         Optional<AutoString8> index_name;
-        TableName table;
+        TableName             table;
     };
 
     struct CreateType {
-        bool if_not_exists;
-        TableName name;
+        bool                           if_not_exists;
+        TableName                      name;
         DynamicArray<ColumnDefinition> fields;
     };
 
     struct DropType {
-        bool if_exists;
+        bool      if_exists;
         TableName name;
     };
 
@@ -356,7 +373,7 @@ export namespace cql {
         struct RenameFieldInstruction {
             DynamicArray<Pair<ColumnName, ColumnName>> old_to_new_fields;
         };
-        TableName name;
+        TableName                                                name;
         TaggedUnion<AddFieldInstruction, RenameFieldInstruction> instruction;
     };
 
@@ -366,51 +383,58 @@ export namespace cql {
     struct Insert {
         struct NamesValues {
             DynamicArray<ColumnName> names;
-            DynamicArray<Term> values;
+            DynamicArray<Term>       values;
         };
 
         struct JsonClause {
-            enum class Default { NUL, UNSET };
+            enum class Default {
+                NUL,
+                UNSET
+            };
             AutoString8 string;
-            Default default_; // @note if not in query, defaults to UNSET
+            Default     default_; // @note if not in query, defaults to UNSET
         };
 
-        TableName table;
+        TableName                            table;
         TaggedUnion<NamesValues, JsonClause> insert_clause;
-        bool if_not_exists;
-        DynamicArray<UpdateParameter> using_parameters;
+        bool                                 if_not_exists;
+        DynamicArray<UpdateParameter>        using_parameters;
     };
 
     struct Update {
         struct Assignment {
-            SimpleSelection target;
+            SimpleSelection     target;
             TermWithIdentifiers value;
         };
 
-        TableName table;
+        TableName                     table;
         DynamicArray<UpdateParameter> using_parameters;
-        DynamicArray<Assignment> assignments;
-        WhereClause where;
-        Optional<IfClause> if_;
+        DynamicArray<Assignment>      assignments;
+        WhereClause                   where;
+        Optional<IfClause>            if_;
     };
 
     struct Delete {
         DynamicArray<SimpleSelection> selections;
-        TableName table;
+        TableName                     table;
         DynamicArray<UpdateParameter> using_parameters;
-        WhereClause where;
-        Optional<IfClause> if_;
+        WhereClause                   where;
+        Optional<IfClause>            if_;
     };
 
     struct Batch {
-        enum class Kind { LOGGED, UNLOGGED, COUNTER };
+        enum class Kind {
+            LOGGED,
+            UNLOGGED,
+            COUNTER
+        };
 
         struct ModificationStatement {
             TaggedUnion<Insert, Update, Delete> value;
         };
 
-        Kind kind; // @note if not in query, set to LOGGED
-        DynamicArray<UpdateParameter> using_parameters;
+        Kind                                kind; // @note if not in query, set to LOGGED
+        DynamicArray<UpdateParameter>       using_parameters;
         DynamicArray<ModificationStatement> statements;
     };
 
@@ -424,9 +448,9 @@ export namespace cql {
         };
 
         struct Cast;
-        struct Selector;  // forward-declare for Function (DynamicArray<Selector> needs only a pointer)
+        struct Selector; // forward-declare for Function (DynamicArray<Selector> needs only a pointer)
         struct Function {
-            AutoString8 function_name;
+            AutoString8            function_name;
             DynamicArray<Selector> arguments;
         };
         struct Count {};
@@ -436,11 +460,11 @@ export namespace cql {
             HybridTaggedUnion<TypeList<ColumnName, Term, Function, Count>, TypeList<Cast>> value;
         };
         struct Cast {
-            Selector column;
+            Selector   column;
             type::Type to;
         };
         struct SelectColumn {
-            Selector column;
+            Selector              column;
             Optional<AutoString8> as;
         };
         struct SelectClause {
@@ -452,7 +476,7 @@ export namespace cql {
         };
 
         struct ColumnOrderBy {
-            Sort sort;
+            Sort       sort;
             ColumnName column;
         };
         struct OrderByClause {
@@ -466,15 +490,15 @@ export namespace cql {
             TaggedUnion<S64, BindMarker> value; // @note optional
         };
 
-        Optional<Transform> transform;
-        SelectClause select;
-        TableName from;
-        Optional<WhereClause> where;
+        Optional<Transform>     transform;
+        SelectClause            select;
+        TableName               from;
+        Optional<WhereClause>   where;
         Optional<GroupByClause> group_by;
         Optional<OrderByClause> order_by;
-        PerPartitionLimit per_partition_limit;
-        Limit limit;
-        bool allow_filtering;
+        PerPartitionLimit       per_partition_limit;
+        Limit                   limit;
+        bool                    allow_filtering;
     };
 
     // ========================================================================
@@ -498,7 +522,7 @@ export namespace cql {
             Insert,
             Update,
             Delete,
-            Batch
-        > value;
+            Batch>
+            value;
     };
 }

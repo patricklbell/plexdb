@@ -49,244 +49,273 @@ namespace resource_sdk = opentelemetry::sdk::resource;
 
 namespace {
 
-// ============================================================================
-// naming — strip "otlp." prefix for OTel semantic convention names
-// ============================================================================
-std::string otel_scope(const std::string& producer_name) {
-    constexpr std::string_view prefix = "otlp.";
-    if (producer_name.starts_with(prefix))
-        return producer_name.substr(prefix.size());
-    return producer_name;
-}
-
-// ============================================================================
-// severity mapping
-// ============================================================================
-logs_api::Severity to_severity(uint32_t level) {
-    switch (level) {
-        case PLEXDB_LOG_TRACE: return logs_api::Severity::kTrace;
-        case PLEXDB_LOG_DEBUG: return logs_api::Severity::kDebug;
-        case PLEXDB_LOG_INFO:  return logs_api::Severity::kInfo;
-        case PLEXDB_LOG_WARN:  return logs_api::Severity::kWarn;
-        case PLEXDB_LOG_ERROR: return logs_api::Severity::kError;
-        default:               return logs_api::Severity::kInfo;
+    // ============================================================================
+    // naming — strip "otlp." prefix for OTel semantic convention names
+    // ============================================================================
+    std::string otel_scope(const std::string& producer_name) {
+        constexpr std::string_view prefix = "otlp.";
+        if (producer_name.starts_with(prefix)) {
+            return producer_name.substr(prefix.size());
+        }
+        return producer_name;
     }
-}
 
-// ============================================================================
-// metric storage
-// ============================================================================
-struct MetricKey {
-    uint32_t producer_id;
-    uint32_t stat_id;
-    bool operator<(const MetricKey& o) const {
-        if (producer_id != o.producer_id) return producer_id < o.producer_id;
-        return stat_id < o.stat_id;
+    // ============================================================================
+    // severity mapping
+    // ============================================================================
+    logs_api::Severity to_severity(uint32_t level) {
+        switch (level) {
+            case PLEXDB_LOG_TRACE:
+                return logs_api::Severity::kTrace;
+            case PLEXDB_LOG_DEBUG:
+                return logs_api::Severity::kDebug;
+            case PLEXDB_LOG_INFO:
+                return logs_api::Severity::kInfo;
+            case PLEXDB_LOG_WARN:
+                return logs_api::Severity::kWarn;
+            case PLEXDB_LOG_ERROR:
+                return logs_api::Severity::kError;
+            default:
+                return logs_api::Severity::kInfo;
+        }
     }
-};
 
-struct Instrument {
-    uint32_t stat_type;
-    metrics_api::Counter<uint64_t>* counter = nullptr;
-    metrics_api::Gauge<int64_t>*    gauge   = nullptr;
-};
+    // ============================================================================
+    // metric storage
+    // ============================================================================
+    struct MetricKey {
+        uint32_t producer_id;
+        uint32_t stat_id;
+        bool     operator<(const MetricKey& o) const {
+            if (producer_id != o.producer_id) {
+                return producer_id < o.producer_id;
+            }
+            return stat_id < o.stat_id;
+        }
+    };
 
-// ============================================================================
-// state
-// ============================================================================
-struct OtelState {
-    std::shared_ptr<metrics_sdk::MeterProvider> meter_provider;
-    std::shared_ptr<logs_sdk::LoggerProvider>   logger_provider;
+    struct Instrument {
+        uint32_t                        stat_type;
+        metrics_api::Counter<uint64_t>* counter = nullptr;
+        metrics_api::Gauge<int64_t>*    gauge   = nullptr;
+    };
 
-    opentelemetry::nostd::shared_ptr<metrics_api::Meter> meter;
-    opentelemetry::nostd::shared_ptr<logs_api::Logger>   logger;
+    // ============================================================================
+    // state
+    // ============================================================================
+    struct OtelState {
+        std::shared_ptr<metrics_sdk::MeterProvider> meter_provider;
+        std::shared_ptr<logs_sdk::LoggerProvider>   logger_provider;
 
-    std::mutex mtx;
-    std::map<uint32_t, std::string>    producers;
-    std::map<MetricKey, Instrument>    instruments;
+        opentelemetry::nostd::shared_ptr<metrics_api::Meter> meter;
+        opentelemetry::nostd::shared_ptr<logs_api::Logger>   logger;
 
-    // own the instrument unique_ptrs to keep them alive
-    std::vector<opentelemetry::nostd::unique_ptr<metrics_api::Counter<uint64_t>>> owned_counters;
-    std::vector<opentelemetry::nostd::unique_ptr<metrics_api::Gauge<int64_t>>>    owned_gauges;
-};
+        std::mutex                      mtx;
+        std::map<uint32_t, std::string> producers;
+        std::map<MetricKey, Instrument> instruments;
 
-OtelState* g_state = nullptr;
+        // own the instrument unique_ptrs to keep them alive
+        std::vector<opentelemetry::nostd::unique_ptr<metrics_api::Counter<uint64_t>>> owned_counters;
+        std::vector<opentelemetry::nostd::unique_ptr<metrics_api::Gauge<int64_t>>>    owned_gauges;
+    };
 
-// ============================================================================
-// event handlers
-// ============================================================================
-void handle_producer_registered(OtelState* s, uint32_t id, const char* name) {
-    std::lock_guard<std::mutex> guard(s->mtx);
-    s->producers[id] = name;
-}
+    OtelState* g_state = nullptr;
 
-void handle_stat_meta(OtelState* s, uint32_t pid, uint32_t sid,
-                      uint32_t stat_type, const char* name) {
-    std::lock_guard<std::mutex> guard(s->mtx);
-    MetricKey key{pid, sid};
-    if (s->instruments.count(key)) return;
-
-    auto it = s->producers.find(pid);
-    std::string scope = (it != s->producers.end()) ? otel_scope(it->second) : "unknown";
-    std::string full_name = scope + "." + name;
-
-    Instrument inst{stat_type};
-    if (stat_type == PLEXDB_STAT_COUNTER) {
-        auto handle = s->meter->CreateUInt64Counter(full_name);
-        inst.counter = handle.get();
-        s->owned_counters.push_back(std::move(handle));
-    } else {
-        auto handle = s->meter->CreateInt64Gauge(full_name);
-        inst.gauge = handle.get();
-        s->owned_gauges.push_back(std::move(handle));
-    }
-    s->instruments[key] = inst;
-}
-
-void handle_stat(OtelState* s, uint32_t pid, uint32_t sid, int64_t value) {
-    std::lock_guard<std::mutex> guard(s->mtx);
-    MetricKey key{pid, sid};
-    auto it = s->instruments.find(key);
-    if (it == s->instruments.end()) return;
-
-    auto& inst = it->second;
-    if (inst.stat_type == PLEXDB_STAT_COUNTER)
-        inst.counter->Add(static_cast<uint64_t>(value));
-    else
-        inst.gauge->Record(value);
-}
-
-void handle_message(OtelState* s, uint32_t pid, uint32_t level,
-                    const char* text, size_t text_len, const char* message_id) {
-    if (!message_id) return;
-
-    std::string producer_name;
-    {
+    // ============================================================================
+    // event handlers
+    // ============================================================================
+    void handle_producer_registered(OtelState* s, uint32_t id, const char* name) {
         std::lock_guard<std::mutex> guard(s->mtx);
-        auto it = s->producers.find(pid);
-        if (it != s->producers.end()) producer_name = it->second;
+        s->producers[id] = name;
     }
 
-    std::string scope     = otel_scope(producer_name);
-    std::string attr_name = scope + "." + message_id;
-    std::string body{text, text_len};
+    void handle_stat_meta(OtelState* s, uint32_t pid, uint32_t sid,
+                          uint32_t stat_type, const char* name) {
+        std::lock_guard<std::mutex> guard(s->mtx);
+        MetricKey                   key{pid, sid};
+        if (s->instruments.count(key)) {
+            return;
+        }
 
-    auto record = s->logger->CreateLogRecord();
-    record->SetSeverity(to_severity(level));
-    record->SetBody(body);
-    record->SetAttribute(attr_name, body);
-    s->logger->EmitLogRecord(std::move(record));
-}
+        auto        it        = s->producers.find(pid);
+        std::string scope     = (it != s->producers.end()) ? otel_scope(it->second) : "unknown";
+        std::string full_name = scope + "." + name;
 
-// ============================================================================
-// consumer callback
-// ============================================================================
-void on_event(const PlexdbLogEvent* event, void* ctx) {
-    auto* s = static_cast<OtelState*>(ctx);
-    switch (event->type) {
-        case PLEXDB_LOG_PRODUCER_REGISTERED:
-            handle_producer_registered(s,
-                event->producer_registered.producer_id,
-                event->producer_registered.name);
-            break;
-        case PLEXDB_LOG_STAT_META:
-            handle_stat_meta(s,
-                event->stat_meta.producer_id,
-                event->stat_meta.stat_id,
-                event->stat_meta.stat_type,
-                event->stat_meta.name);
-            break;
-        case PLEXDB_LOG_STAT:
-            handle_stat(s,
-                event->stat.producer_id,
-                event->stat.stat_id,
-                event->stat.value);
-            break;
-        case PLEXDB_LOG_MESSAGE:
-            handle_message(s,
-                event->message.producer_id,
-                event->message.level,
-                event->message.text,
-                event->message.text_len,
-                event->message.message_id);
-            break;
-        default:
-            break;
+        Instrument inst{stat_type};
+        if (stat_type == PLEXDB_STAT_COUNTER) {
+            auto handle  = s->meter->CreateUInt64Counter(full_name);
+            inst.counter = handle.get();
+            s->owned_counters.push_back(std::move(handle));
+        } else {
+            auto handle = s->meter->CreateInt64Gauge(full_name);
+            inst.gauge  = handle.get();
+            s->owned_gauges.push_back(std::move(handle));
+        }
+        s->instruments[key] = inst;
     }
-}
 
-// ============================================================================
-// lifecycle
-// ============================================================================
-OtelState* otel_init() {
-    auto* s = new OtelState{};
+    void handle_stat(OtelState* s, uint32_t pid, uint32_t sid, int64_t value) {
+        std::lock_guard<std::mutex> guard(s->mtx);
+        MetricKey                   key{pid, sid};
+        auto                        it = s->instruments.find(key);
+        if (it == s->instruments.end()) {
+            return;
+        }
 
-    const char* ep = std::getenv("PLEXDB_OTLP_ENDPOINT");
-    std::string endpoint = ep ? ep : "localhost:4317";
+        auto& inst = it->second;
+        if (inst.stat_type == PLEXDB_STAT_COUNTER) {
+            inst.counter->Add(static_cast<uint64_t>(value));
+        } else {
+            inst.gauge->Record(value);
+        }
+    }
 
-    const char* interval_env = std::getenv("PLEXDB_OTLP_INTERVAL_MS");
-    int interval_ms = interval_env ? std::atoi(interval_env) : 10000;
-    if (interval_ms <= 0) interval_ms = 10000;
+    void handle_message(OtelState* s, uint32_t pid, uint32_t level,
+                        const char* text, size_t text_len, const char* message_id) {
+        if (!message_id) {
+            return;
+        }
 
-    const char* svc = std::getenv("PLEXDB_OTLP_SERVICE");
-    std::string service = svc ? svc : "plexdb";
+        std::string producer_name;
+        {
+            std::lock_guard<std::mutex> guard(s->mtx);
+            auto                        it = s->producers.find(pid);
+            if (it != s->producers.end()) {
+                producer_name = it->second;
+            }
+        }
 
-    auto res = resource_sdk::Resource::Create({{"service.name", service}});
+        std::string scope     = otel_scope(producer_name);
+        std::string attr_name = scope + "." + message_id;
+        std::string body{text, text_len};
 
-    // --- metrics ---
-    otlp::OtlpGrpcMetricExporterOptions metric_opts;
-    metric_opts.endpoint = endpoint;
-    metric_opts.use_ssl_credentials = false;
-    auto metric_exporter = otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts);
+        auto record = s->logger->CreateLogRecord();
+        record->SetSeverity(to_severity(level));
+        record->SetBody(body);
+        record->SetAttribute(attr_name, body);
+        s->logger->EmitLogRecord(std::move(record));
+    }
 
-    metrics_sdk::PeriodicExportingMetricReaderOptions reader_opts;
-    reader_opts.export_interval_millis = std::chrono::milliseconds(interval_ms);
-    reader_opts.export_timeout_millis  = std::chrono::milliseconds(interval_ms / 2);
-    auto reader = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
-        std::move(metric_exporter), reader_opts);
+    // ============================================================================
+    // consumer callback
+    // ============================================================================
+    void on_event(const PlexdbLogEvent* event, void* ctx) {
+        auto* s = static_cast<OtelState*>(ctx);
+        switch (event->type) {
+            case PLEXDB_LOG_PRODUCER_REGISTERED:
+                handle_producer_registered(s,
+                                           event->producer_registered.producer_id,
+                                           event->producer_registered.name);
+                break;
+            case PLEXDB_LOG_STAT_META:
+                handle_stat_meta(s,
+                                 event->stat_meta.producer_id,
+                                 event->stat_meta.stat_id,
+                                 event->stat_meta.stat_type,
+                                 event->stat_meta.name);
+                break;
+            case PLEXDB_LOG_STAT:
+                handle_stat(s,
+                            event->stat.producer_id,
+                            event->stat.stat_id,
+                            event->stat.value);
+                break;
+            case PLEXDB_LOG_MESSAGE:
+                handle_message(s,
+                               event->message.producer_id,
+                               event->message.level,
+                               event->message.text,
+                               event->message.text_len,
+                               event->message.message_id);
+                break;
+            default:
+                break;
+        }
+    }
 
-    s->meter_provider = std::make_shared<metrics_sdk::MeterProvider>(
-        std::make_unique<metrics_sdk::ViewRegistry>(), res);
-    s->meter_provider->AddMetricReader(std::move(reader));
-    s->meter = s->meter_provider->GetMeter("plexdb.plugin");
+    // ============================================================================
+    // lifecycle
+    // ============================================================================
+    OtelState* otel_init() {
+        auto* s = new OtelState{};
 
-    // --- logs ---
-    otlp::OtlpGrpcLogRecordExporterOptions log_opts;
-    log_opts.endpoint = endpoint;
-    log_opts.use_ssl_credentials = false;
-    auto log_exporter = otlp::OtlpGrpcLogRecordExporterFactory::Create(log_opts);
-    auto log_processor = logs_sdk::SimpleLogRecordProcessorFactory::Create(
-        std::move(log_exporter));
+        const char* ep       = std::getenv("PLEXDB_OTLP_ENDPOINT");
+        std::string endpoint = ep ? ep : "localhost:4317";
 
-    s->logger_provider = std::make_shared<logs_sdk::LoggerProvider>(
-        std::move(log_processor), res);
-    s->logger = s->logger_provider->GetLogger("plexdb.plugin", "plexdb");
+        const char* interval_env = std::getenv("PLEXDB_OTLP_INTERVAL_MS");
+        int         interval_ms  = interval_env ? std::atoi(interval_env) : 10000;
+        if (interval_ms <= 0) {
+            interval_ms = 10000;
+        }
 
-    std::fprintf(stderr, "[otel] exporting to %s every %d ms (service: %s)\n",
-                 endpoint.c_str(), interval_ms, service.c_str());
+        const char* svc     = std::getenv("PLEXDB_OTLP_SERVICE");
+        std::string service = svc ? svc : "plexdb";
 
-    return s;
-}
+        auto res = resource_sdk::Resource::Create({
+            {"service.name", service}
+        });
 
-void otel_fini(OtelState* s) {
-    if (!s) return;
-    if (s->meter_provider) s->meter_provider->Shutdown();
-    if (s->logger_provider) s->logger_provider->Shutdown();
-    delete s;
-}
+        // --- metrics ---
+        otlp::OtlpGrpcMetricExporterOptions metric_opts;
+        metric_opts.endpoint            = endpoint;
+        metric_opts.use_ssl_credentials = false;
+        auto metric_exporter            = otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts);
+
+        metrics_sdk::PeriodicExportingMetricReaderOptions reader_opts;
+        reader_opts.export_interval_millis = std::chrono::milliseconds(interval_ms);
+        reader_opts.export_timeout_millis  = std::chrono::milliseconds(interval_ms / 2);
+        auto reader                        = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
+            std::move(metric_exporter), reader_opts);
+
+        s->meter_provider = std::make_shared<metrics_sdk::MeterProvider>(
+            std::make_unique<metrics_sdk::ViewRegistry>(), res);
+        s->meter_provider->AddMetricReader(std::move(reader));
+        s->meter = s->meter_provider->GetMeter("plexdb.plugin");
+
+        // --- logs ---
+        otlp::OtlpGrpcLogRecordExporterOptions log_opts;
+        log_opts.endpoint            = endpoint;
+        log_opts.use_ssl_credentials = false;
+        auto log_exporter            = otlp::OtlpGrpcLogRecordExporterFactory::Create(log_opts);
+        auto log_processor           = logs_sdk::SimpleLogRecordProcessorFactory::Create(
+            std::move(log_exporter));
+
+        s->logger_provider = std::make_shared<logs_sdk::LoggerProvider>(
+            std::move(log_processor), res);
+        s->logger = s->logger_provider->GetLogger("plexdb.plugin", "plexdb");
+
+        std::fprintf(stderr, "[otel] exporting to %s every %d ms (service: %s)\n",
+                     endpoint.c_str(), interval_ms, service.c_str());
+
+        return s;
+    }
+
+    void otel_fini(OtelState* s) {
+        if (!s) {
+            return;
+        }
+        if (s->meter_provider) {
+            s->meter_provider->Shutdown();
+        }
+        if (s->logger_provider) {
+            s->logger_provider->Shutdown();
+        }
+        delete s;
+    }
 
 } // namespace
 
-__attribute__((constructor))
-static void init() {
+__attribute__((constructor)) static void init() {
     g_state = otel_init();
-    if (g_state)
+    if (g_state) {
         plexdb_plugin_register_consumer(on_event, g_state);
+    }
 }
 
-__attribute__((destructor))
-static void fini() {
-    if (!g_state) return;
+__attribute__((destructor)) static void fini() {
+    if (!g_state) {
+        return;
+    }
     plexdb_plugin_unregister_consumer(on_event, g_state);
     otel_fini(g_state);
     g_state = nullptr;

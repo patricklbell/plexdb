@@ -15,7 +15,7 @@ export namespace plexdb {
             void (*destroy)(void* data);
         };
 
-        void* data = nullptr;
+        void*   data   = nullptr;
         Vtable* vtable = nullptr;
 
         template<typename F>
@@ -31,9 +31,8 @@ export namespace plexdb {
         template<typename F>
         static Vtable* get_vtable() {
             static Vtable vt = {
-                .invoke = &invoke_impl<F>,
-                .destroy = &destroy_impl<F>
-            };
+                .invoke  = &invoke_impl<F>,
+                .destroy = &destroy_impl<F>};
             return &vt;
         }
 
@@ -41,13 +40,13 @@ export namespace plexdb {
         AutoFunctor() noexcept = default;
 
         template<typename F>
-            requires (!SameAs<RemoveCVRef<F>, AutoFunctor>)
+            requires(!SameAs<RemoveCVRef<F>, AutoFunctor>)
         AutoFunctor(F&& f) {
             using FType = RemoveCVRef<F>;
-            
+
             this->data = os::allocate(sizeof(FType));
             assert_true(this->data != nullptr, "allocation failed");
-            
+
             new (this->data) FType(forward<F>(f));
             this->vtable = get_vtable<FType>();
         }
@@ -56,21 +55,22 @@ export namespace plexdb {
             reset();
         }
 
-        AutoFunctor(const AutoFunctor&) = delete;
+        AutoFunctor(const AutoFunctor&)            = delete;
         AutoFunctor& operator=(const AutoFunctor&) = delete;
 
-        AutoFunctor(AutoFunctor&& other) noexcept 
-            : data(other.data), vtable(other.vtable) {
-            other.data = nullptr;
+        AutoFunctor(AutoFunctor&& other) noexcept
+            : data(other.data)
+            , vtable(other.vtable) {
+            other.data   = nullptr;
             other.vtable = nullptr;
         }
 
         AutoFunctor& operator=(AutoFunctor&& other) noexcept {
             if (this != &other) {
                 reset();
-                this->data = other.data;
+                this->data   = other.data;
                 this->vtable = other.vtable;
-                other.data = nullptr;
+                other.data   = nullptr;
                 other.vtable = nullptr;
             }
             return *this;
@@ -78,13 +78,21 @@ export namespace plexdb {
 
         Ret operator()(Args... args) {
             assert_true(this->data != nullptr && this->vtable != nullptr, "called null function");
-            if constexpr (SameAs<Ret, void>) { if (!this->data || !this->vtable) return; }
+            if constexpr (SameAs<Ret, void>) {
+                if (!this->data || !this->vtable) {
+                    return;
+                }
+            }
             return this->vtable->invoke(this->data, forward<Args>(args)...);
         }
 
         Ret operator()(Args... args) const {
             assert_true(this->data != nullptr && this->vtable != nullptr, "called null function");
-            if constexpr (SameAs<Ret, void>) { if (!this->data || !this->vtable) return; }
+            if constexpr (SameAs<Ret, void>) {
+                if (!this->data || !this->vtable) {
+                    return;
+                }
+            }
             return this->vtable->invoke(const_cast<void*>(this->data), forward<Args>(args)...);
         }
 
@@ -97,7 +105,7 @@ export namespace plexdb {
             if (this->data != nullptr && this->vtable != nullptr) {
                 this->vtable->destroy(this->data);
                 os::deallocate(this->data);
-                this->data = nullptr;
+                this->data   = nullptr;
                 this->vtable = nullptr;
             }
         }

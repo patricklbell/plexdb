@@ -26,11 +26,19 @@ namespace plexdb::wal {
         return sizeof(Header) + frame_idx * (sizeof(Frame) + wal.header.page_size);
     }
 
-    Wal::Wal(os::Handle file) : file(file) {}
+    Wal::Wal(os::Handle file)
+        : file(file) {
+    }
 
-    Wal::Wal(os::Handle file, const Header& header) : file(file), header(header) {}
+    Wal::Wal(os::Handle file, const Header& header)
+        : file(file)
+        , header(header) {
+    }
 
-    Wal::Wal(Wal&& other) noexcept : file(other.file), header(other.header), wal_index(move(other.wal_index)) {
+    Wal::Wal(Wal&& other) noexcept
+        : file(other.file)
+        , header(other.header)
+        , wal_index(move(other.wal_index)) {
         other.file = os::zero_handle();
     }
 
@@ -44,7 +52,8 @@ namespace plexdb::wal {
         return *this;
     }
 
-    Wal::~Wal() {}
+    Wal::~Wal() {
+    }
 
     coroutine::Task<Header> create(aio::FileIOContext& ctx, os::Handle file, U64 page_size) {
         assert_true(!os::is_zero_handle(file), "wal::create requires valid file handle");
@@ -57,7 +66,7 @@ namespace plexdb::wal {
             .frame_count = 0,
         };
         os::file_resize_zero(file, sizeof(Header));
-        co_await aio::file_write(ctx, file, Rng1U64{.start=0, .end=sizeof(Header)}, &header);
+        co_await aio::file_write(ctx, file, Rng1U64{.start = 0, .end = sizeof(Header)}, &header);
         co_await aio::file_sync(ctx, file);
 
         co_return header;
@@ -72,10 +81,14 @@ namespace plexdb::wal {
         }
 
         Header h{};
-        co_await aio::file_read(ctx, wal.file, Rng1U64{.start=0, .end=sizeof(Header)}, &h);
+        co_await aio::file_read(ctx, wal.file, Rng1U64{.start = 0, .end = sizeof(Header)}, &h);
 
-        if (h.magic != MAGIC)              co_return false;
-        if (h.page_size != expected_page_size) co_return false;
+        if (h.magic != MAGIC) {
+            co_return false;
+        }
+        if (h.page_size != expected_page_size) {
+            co_return false;
+        }
 
         wal.header = h;
         co_return true;
@@ -85,8 +98,8 @@ namespace plexdb::wal {
         assert_true(!os::is_zero_handle(wal.file), "wal::append_frame requires valid file handle");
         assert_true(wal.header.frame_count < MAX_U64, "wal::append_frame: frame_count would overflow");
 
-        U64 frame_idx = wal.header.frame_count;
-        U64 offset = frame_offset(wal, frame_idx);
+        U64   frame_idx = wal.header.frame_count;
+        U64   offset    = frame_offset(wal, frame_idx);
         Frame frame{
             .page_idx = page_idx,
             .checksum = frame_checksum(wal.header.salt, page_idx, data),
@@ -98,15 +111,13 @@ namespace plexdb::wal {
         co_await aio::file_write(
             ctx,
             wal.file,
-            Rng1U64{.start=offset, .end=offset + sizeof(Frame)},
-            &frame
-        );
+            Rng1U64{.start = offset, .end = offset + sizeof(Frame)},
+            &frame);
         co_await aio::file_write(
             ctx,
             wal.file,
-            Rng1U64{.start=offset + sizeof(Frame), .end=offset + sizeof(Frame) + data_size},
-            data
-        );
+            Rng1U64{.start = offset + sizeof(Frame), .end = offset + sizeof(Frame) + data_size},
+            data);
 
         wal.header.frame_count++;
         co_return frame_idx;
@@ -120,9 +131,8 @@ namespace plexdb::wal {
         co_await aio::file_write(
             ctx,
             wal.file,
-            Rng1U64{.start=offsetof(Header, frame_count), .end=offsetof(Header, frame_count) + sizeof(U64)},
-            &wal.header.frame_count
-        );
+            Rng1U64{.start = offsetof(Header, frame_count), .end = offsetof(Header, frame_count) + sizeof(U64)},
+            &wal.header.frame_count);
         co_await aio::file_sync(ctx, wal.file);
     }
 
@@ -130,15 +140,14 @@ namespace plexdb::wal {
         assert_true(!os::is_zero_handle(wal.file), "wal::read_frame requires valid file handle");
         assert_true(frame_idx < wal.header.frame_count, "wal frame index out of range");
 
-        U64 offset = frame_offset(wal, frame_idx);
+        U64 offset    = frame_offset(wal, frame_idx);
         U64 data_size = wal.header.page_size;
 
         co_await aio::file_read(
             ctx,
             wal.file,
-            Rng1U64{.start=offset, .end=offset + sizeof(Frame)},
-            reinterpret_cast<U8*>(&frame_out)
-        );
+            Rng1U64{.start = offset, .end = offset + sizeof(Frame)},
+            reinterpret_cast<U8*>(&frame_out));
 
         if (frame_out.page_idx == HEADER_FRAME_IDX) {
             data_size = sizeof(Header);
@@ -147,9 +156,8 @@ namespace plexdb::wal {
         co_await aio::file_read(
             ctx,
             wal.file,
-            Rng1U64{.start=offset + sizeof(Frame), .end=offset + sizeof(Frame) + data_size},
-            data_out
-        );
+            Rng1U64{.start = offset + sizeof(Frame), .end = offset + sizeof(Frame) + data_size},
+            data_out);
 
         U64 expected = frame_checksum(wal.header.salt, frame_out.page_idx, data_out);
         assert_true(frame_out.checksum == expected, "WAL frame checksum mismatch");
@@ -163,9 +171,8 @@ namespace plexdb::wal {
         co_await aio::file_write(
             ctx,
             wal.file,
-            Rng1U64{.start=offsetof(Header, frame_count), .end=offsetof(Header, frame_count) + sizeof(U64)},
-            &wal.header.frame_count
-        );
+            Rng1U64{.start = offsetof(Header, frame_count), .end = offsetof(Header, frame_count) + sizeof(U64)},
+            &wal.header.frame_count);
         co_await aio::file_sync(ctx, wal.file);
     }
 }

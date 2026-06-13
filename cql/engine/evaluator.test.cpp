@@ -20,28 +20,39 @@ using namespace cql::io;
 namespace {
     struct Buffer {
         DynamicArray<U8> data{};
-        U64 cursor = 0;
+        U64              cursor = 0;
 
         struct WriterCallable {
             Buffer* self;
-            void operator()(const U8* src, U64 size) {
-                for (U64 i = 0; i < size; i++) push_back(self->data, src[i]);
+            void    operator()(const U8* src, U64 size) {
+                for (U64 i = 0; i < size; i++) {
+                    push_back(self->data, src[i]);
+                }
             }
         } _wc{nullptr};
 
         struct ReaderCallable {
-            Buffer* self;
+            Buffer*               self;
             coroutine::Task<void> operator()(U8* dst, U64 size) {
-                for (U64 i = 0; i < size; i++) dst[i] = self->data[self->cursor + i];
+                for (U64 i = 0; i < size; i++) {
+                    dst[i] = self->data[self->cursor + i];
+                }
                 self->cursor += size;
                 co_return;
             }
         } _rc{nullptr};
 
-        Buffer() : _wc{this}, _rc{this} {}
+        Buffer()
+            : _wc{this}
+            , _rc{this} {
+        }
 
-        Writer writer() { return to_writer(_wc); }
-        Reader reader() { return to_reader(_rc); }
+        Writer writer() {
+            return to_writer(_wc);
+        }
+        Reader reader() {
+            return to_reader(_rc);
+        }
     };
 
     Term constant_s64(S64 value) {
@@ -74,7 +85,7 @@ TEST_CASE("evaluator - arithmetic", "[cql.engine.evaluator]") {
     EvalContext ctx{};
 
     SECTION("integer addition") {
-        Term term{ArithmeticOperation{BinaryArithmeticOperation{constant_s64(1), ArithmeticOperator::plus, constant_s64(2)}}};
+        Term      term{ArithmeticOperation{BinaryArithmeticOperation{constant_s64(1), ArithmeticOperator::plus, constant_s64(2)}}};
         Evaluated out = evaluate(term, ctx);
         REQUIRE(type_matches_tag<Constant>(out.value));
         REQUIRE(type_matches_tag<S64>(as_constant(out).value));
@@ -82,7 +93,7 @@ TEST_CASE("evaluator - arithmetic", "[cql.engine.evaluator]") {
     }
 
     SECTION("mixed int and float promotes to float") {
-        Term term{ArithmeticOperation{BinaryArithmeticOperation{constant_s64(2), ArithmeticOperator::times, constant_f64(1.5)}}};
+        Term      term{ArithmeticOperation{BinaryArithmeticOperation{constant_s64(2), ArithmeticOperator::times, constant_f64(1.5)}}};
         Evaluated out = evaluate(term, ctx);
         REQUIRE(type_matches_tag<Constant>(out.value));
         REQUIRE(type_matches_tag<F64>(as_constant(out).value));
@@ -90,21 +101,21 @@ TEST_CASE("evaluator - arithmetic", "[cql.engine.evaluator]") {
     }
 
     SECTION("integer division truncates") {
-        Term term{ArithmeticOperation{BinaryArithmeticOperation{constant_s64(5), ArithmeticOperator::divide, constant_s64(2)}}};
+        Term      term{ArithmeticOperation{BinaryArithmeticOperation{constant_s64(5), ArithmeticOperator::divide, constant_s64(2)}}};
         Evaluated out = evaluate(term, ctx);
         REQUIRE(type_matches_tag<Constant>(out.value));
         REQUIRE(get<S64>(as_constant(out).value) == 2);
     }
 
     SECTION("modulus works for integers") {
-        Term term{ArithmeticOperation{BinaryArithmeticOperation{constant_s64(17), ArithmeticOperator::mod, constant_s64(5)}}};
+        Term      term{ArithmeticOperation{BinaryArithmeticOperation{constant_s64(17), ArithmeticOperator::mod, constant_s64(5)}}};
         Evaluated out = evaluate(term, ctx);
         REQUIRE(type_matches_tag<Constant>(out.value));
         REQUIRE(get<S64>(as_constant(out).value) == 2);
     }
 
     SECTION("string concatenation") {
-        Term term{ArithmeticOperation{BinaryArithmeticOperation{constant_text("hel"), ArithmeticOperator::plus, constant_text("lo")}}};
+        Term      term{ArithmeticOperation{BinaryArithmeticOperation{constant_text("hel"), ArithmeticOperator::plus, constant_text("lo")}}};
         Evaluated out = evaluate(term, ctx);
         REQUIRE(type_matches_tag<Constant>(out.value));
         REQUIRE(type_matches_tag<AutoString8>(as_constant(out).value));
@@ -112,7 +123,7 @@ TEST_CASE("evaluator - arithmetic", "[cql.engine.evaluator]") {
     }
 
     SECTION("unary minus") {
-        Term term{ArithmeticOperation{UnaryMinusArithmeticOperation{constant_s64(7)}}};
+        Term      term{ArithmeticOperation{UnaryMinusArithmeticOperation{constant_s64(7)}}};
         Evaluated out = evaluate(term, ctx);
         REQUIRE(type_matches_tag<Constant>(out.value));
         REQUIRE(get<S64>(as_constant(out).value) == -7);
@@ -128,24 +139,26 @@ TEST_CASE("evaluator - bind markers and type hints", "[cql.engine.evaluator]") {
 
     EvalContext ctx{};
     ctx.positional_bindings = positional;
-    ctx.named_bindings = named;
+    ctx.named_bindings      = named;
 
     SECTION("positional bind marker uses the first binding") {
-        Term term{BindMarker{AutoString8("0")}};
+        Term      term{BindMarker{AutoString8("0")}};
         Evaluated out = evaluate(term, ctx);
         REQUIRE(type_matches_tag<Constant>(out.value));
         REQUIRE(get<S64>(as_constant(out).value) == 41);
     }
 
     SECTION("named bind marker resolves by name") {
-        Term term{BindMarker{AutoString8("answer")}};
+        Term      term{BindMarker{AutoString8("answer")}};
         Evaluated out = evaluate(term, ctx);
         REQUIRE(type_matches_tag<Constant>(out.value));
         REQUIRE(get<S64>(as_constant(out).value) == 42);
     }
 
     SECTION("type hint preserves the evaluated value") {
-        Term term{TypeHint{type::create_basic(type::Basic::int_), constant_s64(123)}};
+        Term term{
+            TypeHint{type::create_basic(type::Basic::int_), constant_s64(123)}
+        };
         Evaluated out = evaluate(term, ctx);
         REQUIRE(type_matches_tag<Constant>(out.value));
         REQUIRE(get<S64>(as_constant(out).value) == 123);
@@ -188,7 +201,7 @@ TEST_CASE("evaluator - builtins", "[cql.engine.evaluator]") {
         outer_call.identifier = AutoString8("toTimestamp");
         push_back(outer_call.arguments, Term{move(inner_call)});
 
-        Term term{move(outer_call)};
+        Term      term{move(outer_call)};
         Evaluated out = evaluate(term, ctx);
         REQUIRE(type_matches_tag<Constant>(out.value));
         REQUIRE(type_matches_tag<S64>(as_constant(out).value));
@@ -227,7 +240,7 @@ IO_TEST_CASE("evaluator - nested expression evaluation in collection writes", "[
     push_back(outer_call.arguments, Term{move(inner_call)});
     push_back(list.elements, Term{move(outer_call)});
 
-    Term term{move(list)};
+    Term      term{move(list)};
     Evaluated evaluated = evaluate(term, ctx);
 
     Buffer buf;

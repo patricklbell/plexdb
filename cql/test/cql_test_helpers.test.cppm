@@ -53,7 +53,7 @@ export namespace cql::test {
     //   ServerFixture lives on the stack and is mutated by open/close.
     // ========================================================================
     struct ServerFixture {
-        Handle db_file   = zero_handle();
+        Handle db_file = zero_handle();
         Pager  pager;
         Engine engine;
         U16    port      = 0;
@@ -72,43 +72,43 @@ export namespace cql::test {
     // ========================================================================
     struct Frame {
         DynamicArray<U8> body;
-        U8  version  = 0;
-        U8  flags    = 0;
-        S16 stream   = 0;
-        U8  opcode   = 0;
-        S32 body_len = 0;
+        U8               version  = 0;
+        U8               flags    = 0;
+        S16              stream   = 0;
+        U8               opcode   = 0;
+        S32              body_len = 0;
     };
 
     // Low-level byte encoders for building bodies and frames
-    void append_u8       (DynamicArray<U8>& buf, U8  v);
-    void append_be_u16   (DynamicArray<U8>& buf, U16 v);
-    void append_be_s32   (DynamicArray<U8>& buf, S32 v);
-    void append_be_s64   (DynamicArray<U8>& buf, S64 v);
-    void append_be_f64   (DynamicArray<U8>& buf, F64 v);
-    void append_bytes    (DynamicArray<U8>& buf, const U8* data, U64 n);
+    void append_u8(DynamicArray<U8>& buf, U8 v);
+    void append_be_u16(DynamicArray<U8>& buf, U16 v);
+    void append_be_s32(DynamicArray<U8>& buf, S32 v);
+    void append_be_s64(DynamicArray<U8>& buf, S64 v);
+    void append_be_f64(DynamicArray<U8>& buf, F64 v);
+    void append_bytes(DynamicArray<U8>& buf, const U8* data, U64 n);
 
-    void append_cql_string      (DynamicArray<U8>& buf, String8 s);
-    void append_cql_long_string (DynamicArray<U8>& buf, String8 s);
-    void append_cql_short_bytes (DynamicArray<U8>& buf, const U8* data, U16 n);
-    void append_cql_bytes       (DynamicArray<U8>& buf, const U8* data, S32 n);
+    void append_cql_string(DynamicArray<U8>& buf, String8 s);
+    void append_cql_long_string(DynamicArray<U8>& buf, String8 s);
+    void append_cql_short_bytes(DynamicArray<U8>& buf, const U8* data, U16 n);
+    void append_cql_bytes(DynamicArray<U8>& buf, const U8* data, S32 n);
 
     // Wrap the buffer with the 9-byte v4 frame header
     void prepend_v4_header(DynamicArray<U8>& buf, U8 opcode, S16 stream);
 
     // Construct ready-to-send frames
-    DynamicArray<U8> build_startup (S16 stream = 0);
-    DynamicArray<U8> build_options (S16 stream = 0);
-    DynamicArray<U8> build_query   (String8 cql, S16 stream = 0);
-    DynamicArray<U8> build_prepare (String8 cql, S16 stream = 0);
+    DynamicArray<U8> build_startup(S16 stream = 0);
+    DynamicArray<U8> build_options(S16 stream = 0);
+    DynamicArray<U8> build_query(String8 cql, S16 stream = 0);
+    DynamicArray<U8> build_prepare(String8 cql, S16 stream = 0);
 
     void  send_frame(Socket& socket, const DynamicArray<U8>& frame);
     Frame recv_frame(Socket& socket);
 
     // Send-then-recv convenience
-    Frame send_startup (Socket& socket, S16 stream = 0);
-    Frame send_options (Socket& socket, S16 stream = 0);
-    Frame send_query   (Socket& socket, String8 cql, S16 stream = 0);
-    Frame send_prepare (Socket& socket, String8 cql, S16 stream = 0);
+    Frame send_startup(Socket& socket, S16 stream = 0);
+    Frame send_options(Socket& socket, S16 stream = 0);
+    Frame send_query(Socket& socket, String8 cql, S16 stream = 0);
+    Frame send_prepare(Socket& socket, String8 cql, S16 stream = 0);
 
     // Perform STARTUP and assert via assert_true that READY is returned. For
     // tests that do not care about the handshake exchange itself.
@@ -117,8 +117,8 @@ export namespace cql::test {
     // ========================================================================
     // frame inspection
     // ========================================================================
-    S32     result_kind  (const Frame& f);
-    String8 body_str     (const Frame& f);
+    S32     result_kind(const Frame& f);
+    String8 body_str(const Frame& f);
     bool    body_contains(const Frame& f, String8 needle);
     bool    body_contains(const Frame& f, const U8* needle, U64 needle_len);
 
@@ -129,9 +129,9 @@ export namespace cql::test {
     // ========================================================================
     // typed bind-value helpers (CQL [bytes] encoding for EXECUTE / QUERY bodies)
     // ========================================================================
-    void append_cql_bind_s32(DynamicArray<U8>& buf, S32 v);   // [bytes] of 4
-    void append_cql_bind_s64(DynamicArray<U8>& buf, S64 v);   // [bytes] of 8
-    void append_cql_bind_f64(DynamicArray<U8>& buf, F64 v);   // [bytes] of 8
+    void append_cql_bind_s32(DynamicArray<U8>& buf, S32 v);     // [bytes] of 4
+    void append_cql_bind_s64(DynamicArray<U8>& buf, S64 v);     // [bytes] of 8
+    void append_cql_bind_f64(DynamicArray<U8>& buf, F64 v);     // [bytes] of 8
     void append_cql_bind_str(DynamicArray<U8>& buf, String8 s); // [bytes] of s.length
 
     // Named-value prefix: [string] name then the bind value bytes
@@ -151,30 +151,18 @@ export namespace cql::test {
     // Fixture-based variant (standard single-session tests)
     template<typename ClientFn>
     void run_native_server(ServerFixture& f, ClientFn&& client_fn) {
-        run_server_test("cql-test-client",
-            [&](Notifier& interrupt) {
+        run_server_test("cql-test-client", [&](Notifier& interrupt) {
                 Socket client = client_connect(f.port);
-                client_fn(client, interrupt);
-            },
-            [&](auto on_ready, auto& signal_consumer, auto& poll) {
-                native::run(f.port, f.engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
-            }
-        );
+                client_fn(client, interrupt); }, [&](auto on_ready, auto& signal_consumer, auto& poll) { native::run(f.port, f.engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll); });
     }
 
     // Engine+port variant for multi-session / WAL / crash tests where the
     // caller manages file handles and pager lifecycle manually.
     template<typename ClientFn>
     void run_native_server(Engine& engine, U16 port, ClientFn&& client_fn) {
-        run_server_test("cql-test-client",
-            [&](Notifier& interrupt) {
+        run_server_test("cql-test-client", [&](Notifier& interrupt) {
                 Socket client = client_connect(port);
-                client_fn(client, interrupt);
-            },
-            [&](auto on_ready, auto& signal_consumer, auto& poll) {
-                native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll);
-            }
-        );
+                client_fn(client, interrupt); }, [&](auto on_ready, auto& signal_consumer, auto& poll) { native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll); });
     }
 
     // Handshake variants (perform STARTUP before handing socket to client_fn)

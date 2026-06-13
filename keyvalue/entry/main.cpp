@@ -17,14 +17,14 @@ import keyvalue.resp;
 using namespace plexdb;
 using namespace keyvalue;
 
-os::Notifier g_signal_notifier{};
+os::Notifier                 g_signal_notifier{};
 static volatile sig_atomic_t g_signal_count = 0;
 
 static void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
 static void signal_handler(int);
 
 int main(int argc, char* argv[]) {
-    threads::Context main_thread_ctx{.arenas={},.is_main=true};
+    threads::Context main_thread_ctx{.arenas = {}, .is_main = true};
     threads::equip(&main_thread_ctx);
 
     set_assert_handler(assert_handler);
@@ -35,9 +35,9 @@ int main(int argc, char* argv[]) {
 
     auto arg_parser = argparse::create_parser("resp", "Redis serialization protocol (RESP) compatible key-value server");
 
-    U64 port_arg      = argparse::add_option(arg_parser, "--port",      "-p", "TCP port to listen on", "6379");
-    U64 no_uring_arg  = argparse::add_flag(arg_parser,   "--no-uring",  "-U", "Disable io_uring and use synchronous socket I/O");
-    U64 in_memory_arg = argparse::add_flag(arg_parser,   "--in-memory", "",   "Run without persistence (no database file)");
+    U64 port_arg      = argparse::add_option(arg_parser, "--port", "-p", "TCP port to listen on", "6379");
+    U64 no_uring_arg  = argparse::add_flag(arg_parser, "--no-uring", "-U", "Disable io_uring and use synchronous socket I/O");
+    U64 in_memory_arg = argparse::add_flag(arg_parser, "--in-memory", "", "Run without persistence (no database file)");
     U64 path_arg      = argparse::add_optional_positional(arg_parser, "path", "Database file path (required without --in-memory)");
 
     auto args = argparse::parse(arg_parser, argc, argv);
@@ -51,8 +51,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    bool in_memory = argparse::has_flag(args, in_memory_arg);
-    String8 db_path = argparse::get_optional_positional(args, path_arg);
+    bool    in_memory = argparse::has_flag(args, in_memory_arg);
+    String8 db_path   = argparse::get_optional_positional(args, path_arg);
 
     if (!in_memory && db_path.length == 0) {
         println("error: database path required (or use --in-memory)");
@@ -60,7 +60,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    U16 port = u16_from_str(argparse::get_option(args, port_arg));
+    U16  port     = u16_from_str(argparse::get_option(args, port_arg));
     bool no_uring = argparse::has_flag(args, no_uring_arg);
     if (port == 0) {
         println("Invalid port");
@@ -68,15 +68,17 @@ int main(int argc, char* argv[]) {
     }
 
     os::Poll io_poll{};
-    auto on_ready = [&port]() {
+    auto     on_ready = [&port]() {
         println("listening on port ", to_str(port), " (RESP)");
     };
     auto signal_consumer = aio::create_notifier_consumer(g_signal_notifier, io_poll);
 
     if (in_memory) {
         engine::InMemoryEngine engine{};
-        Optional<String8> err = resp::run(port, engine, on_ready, !no_uring, signal_consumer, io_poll);
-        if (err) println(*err);
+        Optional<String8>      err = resp::run(port, engine, on_ready, !no_uring, signal_consumer, io_poll);
+        if (err) {
+            println(*err);
+        }
     } else {
         assert_not_implemented("persistent engine");
     }
@@ -96,6 +98,8 @@ static void assert_handler(const char* msg, const char* file_name, const char* f
 
 static void signal_handler(int) {
     g_signal_count += 1;
-    if (g_signal_count > 1) os::process_exit(1);
+    if (g_signal_count > 1) {
+        os::process_exit(1);
+    }
     os::signal_notify_safe(g_signal_notifier);
 }

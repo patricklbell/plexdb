@@ -12,12 +12,12 @@ import plexdb.os.function;
 export namespace plexdb::threads {
     struct Context {
         Arena arenas[2];
-        bool is_main = false;
+        bool  is_main = false;
     };
 
     void     equip(Context* in_ctx);
     Context* get_context();
-    Arena*   get_scratch(TArrayView<Arena*,U64> conflicts);
+    Arena*   get_scratch(TArrayView<Arena*, U64> conflicts);
 
     // ========================================================================
     // thread RAII wrapper
@@ -26,23 +26,27 @@ export namespace plexdb::threads {
         os::Handle handle = os::zero_handle();
 
         Thread() = default;
-        explicit Thread(os::Handle h) : handle(h) {}
+        explicit Thread(os::Handle h)
+            : handle(h) {
+        }
         ~Thread();
 
-        Thread(const Thread&) = delete;
+        Thread(const Thread&)            = delete;
         Thread& operator=(const Thread&) = delete;
 
         Thread(Thread&& other) noexcept;
         Thread& operator=(Thread&& other) noexcept;
 
-        operator os::Handle() const { return handle; }
+        operator os::Handle() const {
+            return handle;
+        }
         operator bool() const;
     };
 
     Thread launch(AutoFunctor<void()> fn, const char* name = nullptr);
 
     template<typename F>
-        requires (!SameAs<RemoveCVRef<F>, AutoFunctor<void()>>)
+        requires(!SameAs<RemoveCVRef<F>, AutoFunctor<void()>>)
     Thread launch(F&& fn, const char* name = nullptr) {
         return launch(AutoFunctor<void()>(forward<F>(fn)), name);
     }
@@ -61,7 +65,7 @@ export namespace plexdb::threads {
         explicit Semaphore(U32 initial_count = 0);
         ~Semaphore();
 
-        Semaphore(const Semaphore&) = delete;
+        Semaphore(const Semaphore&)            = delete;
         Semaphore& operator=(const Semaphore&) = delete;
 
         Semaphore(Semaphore&& other) noexcept;
@@ -76,19 +80,23 @@ export namespace plexdb::threads {
     // ========================================================================
     struct Scope {
         Arena* arena;
-        U64 offset;
-        bool active = true;
+        U64    offset;
+        bool   active = true;
 
         Scope(Arena* in_arena);
         ~Scope();
 
-        Scope(const Scope&) = delete;
+        Scope(const Scope&)            = delete;
         Scope& operator=(const Scope&) = delete;
 
         Scope(Scope&&) noexcept;
         Scope& operator=(Scope&&) noexcept;
     };
 
-    inline Scope scratch(TArrayView<Arena*,U64> conflicts) { return Scope(get_scratch(conflicts)); }
-    inline Scope scratch()                                 { return scratch(TArrayView<Arena*,U64>()); }
+    inline Scope scratch(TArrayView<Arena*, U64> conflicts) {
+        return Scope(get_scratch(conflicts));
+    }
+    inline Scope scratch() {
+        return scratch(TArrayView<Arena*, U64>());
+    }
 }

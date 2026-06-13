@@ -17,7 +17,7 @@ export namespace plexdb {
         // ====================================================================
         // destructor
         // ====================================================================
-        template <size_t I>
+        template<size_t I>
         void destroy_at_index() noexcept {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
@@ -25,7 +25,7 @@ export namespace plexdb {
             }
         }
 
-        template <size_t... Is>
+        template<size_t... Is>
         void destroy_impl(size_t idx, IndexSequence<Is...>) noexcept {
             ((idx == Is ? (destroy_at_index<Is>(), void()) : void()), ...);
         }
@@ -42,7 +42,7 @@ export namespace plexdb {
         // ====================================================================
         // copy into already-allocated ptr
         // ====================================================================
-        template <size_t I>
+        template<size_t I>
         void copy_construct_at_index(const AutoTaggedUnion& other) {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
@@ -50,7 +50,7 @@ export namespace plexdb {
             }
         }
 
-        template <size_t... Is>
+        template<size_t... Is>
         void copy_construct_impl(const AutoTaggedUnion& other, IndexSequence<Is...>) {
             ((other.index == Is ? (copy_construct_at_index<Is>(other), void()) : void()), ...);
         }
@@ -58,7 +58,7 @@ export namespace plexdb {
         // ====================================================================
         // copy assignment helpers
         // ====================================================================
-        template <size_t I>
+        template<size_t I>
         void copy_assign_at_index(const AutoTaggedUnion& other) {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
@@ -72,7 +72,7 @@ export namespace plexdb {
             }
         }
 
-        template <size_t... Is>
+        template<size_t... Is>
         void copy_assign_impl(const AutoTaggedUnion& other, IndexSequence<Is...>) {
             ((other.index == Is ? (copy_assign_at_index<Is>(other), void()) : void()), ...);
         }
@@ -80,7 +80,7 @@ export namespace plexdb {
         // ====================================================================
         // move assignment helpers
         // ====================================================================
-        template <size_t I>
+        template<size_t I>
         void move_assign_at_index(AutoTaggedUnion&& other) {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
@@ -94,7 +94,7 @@ export namespace plexdb {
             }
         }
 
-        template <size_t... Is>
+        template<size_t... Is>
         void move_assign_impl(AutoTaggedUnion&& other, IndexSequence<Is...>) {
             ((other.index == Is ? (move_assign_at_index<Is>(move(other)), void()) : void()), ...);
         }
@@ -106,10 +106,10 @@ export namespace plexdb {
         AutoTaggedUnion() = default;
 
         template<typename T>
-            requires (SameAs<Decay<T>, Types> || ...)
+            requires(SameAs<Decay<T>, Types> || ...)
         AutoTaggedUnion(T&& value) {
             using DecayedT = Decay<T>;
-            ptr = os::allocate(max(sizeof(Types)...));
+            ptr            = os::allocate(max(sizeof(Types)...));
             new (ptr) DecayedT(forward<T>(value));
             index = TypeIndex<DecayedT, Types...>;
         }
@@ -141,7 +141,9 @@ export namespace plexdb {
         // assignment
         // ====================================================================
         AutoTaggedUnion& operator=(const AutoTaggedUnion& other) {
-            if (this == &other) return *this;
+            if (this == &other) {
+                return *this;
+            }
 
             if (other.ptr == nullptr) {
                 destroy();
@@ -156,7 +158,9 @@ export namespace plexdb {
         }
 
         AutoTaggedUnion& operator=(AutoTaggedUnion&& other) noexcept {
-            if (this == &other) return *this;
+            if (this == &other) {
+                return *this;
+            }
 
             destroy();
             ptr         = other.ptr;
@@ -167,9 +171,9 @@ export namespace plexdb {
         }
 
         template<typename T>
-            requires (SameAs<Decay<T>, Types> || ...)
+            requires(SameAs<Decay<T>, Types> || ...)
         AutoTaggedUnion& operator=(T&& value) {
-            using DecayedT = Decay<T>;
+            using DecayedT             = Decay<T>;
             constexpr size_t new_index = TypeIndex<DecayedT, Types...>;
 
             if (ptr == nullptr) {
@@ -194,7 +198,7 @@ export namespace plexdb {
     template<typename T, typename... Types>
     constexpr bool type_matches_tag(const AutoTaggedUnion<Types...>& u) noexcept {
         using DecayedT = Decay<T>;
-        size_t idx = TypeIndex<DecayedT, Types...>;
+        size_t idx     = TypeIndex<DecayedT, Types...>;
         return u.index == idx;
     }
 
@@ -280,7 +284,10 @@ export namespace plexdb {
         void destroy() noexcept {
             if (index != invalid_index) {
                 destroy_impl(index, IndexSequenceFor<STs..., DTs...>{});
-                if (ptr != nullptr) { os::deallocate(ptr); ptr = nullptr; }
+                if (ptr != nullptr) {
+                    os::deallocate(ptr);
+                    ptr = nullptr;
+                }
                 index = invalid_index;
             }
         }
@@ -323,7 +330,10 @@ export namespace plexdb {
                     *reinterpret_cast<T*>(&storage) = *reinterpret_cast<const T*>(&other.storage);
                 } else {
                     destroy_impl(index, IndexSequenceFor<STs..., DTs...>{});
-                    if (ptr != nullptr) { os::deallocate(ptr); ptr = nullptr; }
+                    if (ptr != nullptr) {
+                        os::deallocate(ptr);
+                        ptr = nullptr;
+                    }
                     new (&storage) T(*reinterpret_cast<const T*>(&other.storage));
                     index = I;
                 }
@@ -334,7 +344,9 @@ export namespace plexdb {
                 } else {
                     destroy_impl(index, IndexSequenceFor<STs..., DTs...>{});
                     // Reuse ptr allocation if we already had a dynamic type (same total size).
-                    if (ptr == nullptr) ptr = os::allocate(dynamic_allocation_size());
+                    if (ptr == nullptr) {
+                        ptr = os::allocate(dynamic_allocation_size());
+                    }
                     new (ptr) T(*reinterpret_cast<const T*>(other.ptr));
                     index = I;
                 }
@@ -354,7 +366,10 @@ export namespace plexdb {
                     *reinterpret_cast<T*>(&storage) = move(*reinterpret_cast<T*>(&other.storage));
                 } else {
                     destroy_impl(index, IndexSequenceFor<STs..., DTs...>{});
-                    if (ptr != nullptr) { os::deallocate(ptr); ptr = nullptr; }
+                    if (ptr != nullptr) {
+                        os::deallocate(ptr);
+                        ptr = nullptr;
+                    }
                     new (&storage) T(move(*reinterpret_cast<T*>(&other.storage)));
                     index = I;
                 }
@@ -365,11 +380,14 @@ export namespace plexdb {
                 } else {
                     // Steal the allocation; must invalidate other since its ptr becomes null.
                     destroy_impl(index, IndexSequenceFor<STs..., DTs...>{});
-                    if (ptr != nullptr) { os::deallocate(ptr); ptr = nullptr; }
-                    ptr = other.ptr;
-                    other.ptr = nullptr;
+                    if (ptr != nullptr) {
+                        os::deallocate(ptr);
+                        ptr = nullptr;
+                    }
+                    ptr         = other.ptr;
+                    other.ptr   = nullptr;
                     other.index = invalid_index;
-                    index = I;
+                    index       = I;
                 }
             }
         }
@@ -383,7 +401,7 @@ export namespace plexdb {
         HybridTaggedUnion() = default;
 
         template<typename T>
-            requires (SameAs<Decay<T>, STs> || ...)
+            requires(SameAs<Decay<T>, STs> || ...)
         HybridTaggedUnion(T&& value) {
             using DT = Decay<T>;
             new (&storage) DT(forward<T>(value));
@@ -391,18 +409,19 @@ export namespace plexdb {
         }
 
         template<typename T>
-            requires (SameAs<Decay<T>, DTs> || ...)
+            requires(SameAs<Decay<T>, DTs> || ...)
         HybridTaggedUnion(T&& value) {
             using DT = Decay<T>;
-            ptr = os::allocate(dynamic_allocation_size());
+            ptr      = os::allocate(dynamic_allocation_size());
             new (ptr) DT(forward<T>(value));
             index = TypeIndex<DT, STs..., DTs...>;
         }
 
         HybridTaggedUnion(const HybridTaggedUnion& other) {
             if (other.index != invalid_index) {
-                if (other.index >= static_count)
+                if (other.index >= static_count) {
                     ptr = os::allocate(dynamic_allocation_size());
+                }
                 copy_construct_impl(other, IndexSequenceFor<STs..., DTs...>{});
                 index = other.index;
             }
@@ -413,8 +432,8 @@ export namespace plexdb {
                 index = other.index;
                 if (other.index >= static_count) {
                     // Steal the heap allocation; invalidate other.
-                    ptr = other.ptr;
-                    other.ptr = nullptr;
+                    ptr         = other.ptr;
+                    other.ptr   = nullptr;
                     other.index = invalid_index;
                 } else {
                     // Move-construct into storage; leave other.index so other's dtor can run.
@@ -423,27 +442,37 @@ export namespace plexdb {
             }
         }
 
-        ~HybridTaggedUnion() { destroy(); }
+        ~HybridTaggedUnion() {
+            destroy();
+        }
 
         HybridTaggedUnion& operator=(const HybridTaggedUnion& other) {
-            if (this == &other) return *this;
-            if (other.index == invalid_index) { destroy(); }
-            else { copy_assign_impl(other, IndexSequenceFor<STs..., DTs...>{}); }
+            if (this == &other) {
+                return *this;
+            }
+            if (other.index == invalid_index) {
+                destroy();
+            } else {
+                copy_assign_impl(other, IndexSequenceFor<STs..., DTs...>{});
+            }
             return *this;
         }
 
         HybridTaggedUnion& operator=(HybridTaggedUnion&& other) noexcept {
-            if (this == &other) return *this;
+            if (this == &other) {
+                return *this;
+            }
             destroy();
-            if (other.index != invalid_index)
+            if (other.index != invalid_index) {
                 move_assign_impl(move(other), IndexSequenceFor<STs..., DTs...>{});
+            }
             return *this;
         }
 
         template<typename T>
-            requires ((SameAs<Decay<T>, STs> || ...) && !(SameAs<Decay<T>, DTs> || ...))
+            requires((SameAs<Decay<T>, STs> || ...) && !(SameAs<Decay<T>, DTs> || ...))
         HybridTaggedUnion& operator=(T&& value) {
-            using DT = Decay<T>;
+            using DT                 = Decay<T>;
             constexpr size_t new_idx = TypeIndex<DT, STs..., DTs...>;
             if (index == new_idx) {
                 *reinterpret_cast<DT*>(&storage) = forward<T>(value);
@@ -456,9 +485,9 @@ export namespace plexdb {
         }
 
         template<typename T>
-            requires (!(SameAs<Decay<T>, STs> || ...) && (SameAs<Decay<T>, DTs> || ...))
+            requires(!(SameAs<Decay<T>, STs> || ...) && (SameAs<Decay<T>, DTs> || ...))
         HybridTaggedUnion& operator=(T&& value) {
-            using DT = Decay<T>;
+            using DT                 = Decay<T>;
             constexpr size_t new_idx = TypeIndex<DT, STs..., DTs...>;
             if (index == new_idx) {
                 *reinterpret_cast<DT*>(ptr) = forward<T>(value);
@@ -471,7 +500,9 @@ export namespace plexdb {
             return *this;
         }
 
-        explicit operator bool() const noexcept { return index != invalid_index; }
+        explicit operator bool() const noexcept {
+            return index != invalid_index;
+        }
     };
 
     template<typename T, typename... STs, typename... DTs>
@@ -523,12 +554,12 @@ namespace plexdb {
 
     template<typename Visitor, typename... AllTypes, size_t... Is>
     decltype(auto) htu_visit_impl(auto& u, Visitor&& vis, TypeList<AllTypes...>, IndexSequence<Is...>) {
-        using HTU = RemoveRef<decltype(u)>;
-        using V   = RemoveRef<Visitor>;
-        using ElemRef = Conditional<IsConst<HTU>, const TypeAtIndex<0, AllTypes...>&, TypeAtIndex<0, AllTypes...>&>;
-        using Return  = decltype(declval<V&>()(declval<ElemRef>()));
-        using Fn      = Return(*)(HTU&, V&);
-        static constexpr Fn table[] = { &HtuCase<Is, V, Return, HTU, TypeList<AllTypes...>>::apply... };
+        using HTU                   = RemoveRef<decltype(u)>;
+        using V                     = RemoveRef<Visitor>;
+        using ElemRef               = Conditional<IsConst<HTU>, const TypeAtIndex<0, AllTypes...>&, TypeAtIndex<0, AllTypes...>&>;
+        using Return                = decltype(declval<V&>()(declval<ElemRef>()));
+        using Fn                    = Return (*)(HTU&, V&);
+        static constexpr Fn table[] = {&HtuCase<Is, V, Return, HTU, TypeList<AllTypes...>>::apply...};
         return table[u.index](u, vis);
     }
 
@@ -547,8 +578,12 @@ namespace plexdb {
     export template<typename... STs, typename... DTs>
     bool operator==(const HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>& a,
                     const HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>& b) {
-        if (a.index != b.index) return false;
-        if (a.index == HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>::invalid_index) return true;
+        if (a.index != b.index) {
+            return false;
+        }
+        if (a.index == HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>::invalid_index) {
+            return true;
+        }
         return visit(a, [&b](const auto& av) -> bool {
             using T = RemoveCVRef<decltype(av)>;
             return av == get<T>(b);
@@ -575,9 +610,9 @@ namespace plexdb {
 
         using ElemRef = Conditional<IsConst<DTU>, const TypeAtIndex<0, Types...>&, TypeAtIndex<0, Types...>&>;
         using Return  = decltype(declval<V&>()(declval<ElemRef>()));
-        using Fn      = Return(*)(DTU&, V&);
+        using Fn      = Return (*)(DTU&, V&);
 
-        static constexpr Fn table[] = { &DtuCase<Is, V, Return, DTU, Types...>::apply... };
+        static constexpr Fn table[] = {&DtuCase<Is, V, Return, DTU, Types...>::apply...};
         return table[u.index](u, vis);
     }
 

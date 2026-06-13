@@ -2,12 +2,12 @@ module;
 #include <plexdb/macros/macros.h>
 
 #if PLEXDB_OS_LINUX
-    #include <linux/aio_abi.h>
-    #include <sys/syscall.h>
-    #include <sys/eventfd.h>
-    #include <sys/time.h>
-    #include <unistd.h>
-    #include <string.h>
+#include <linux/aio_abi.h>
+#include <sys/syscall.h>
+#include <sys/eventfd.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <string.h>
 #endif
 
 module plexdb.os.aio;
@@ -17,8 +17,12 @@ import plexdb.os;
 
 namespace plexdb::os {
 #if PLEXDB_OS_LINUX
-    static int handle_to_fd(Handle h) { return static_cast<int>(h.u32[0]); }
-    static Handle fd_to_handle(int fd) { return Handle{.u32 = {static_cast<U32>(fd)}}; }
+    static int handle_to_fd(Handle h) {
+        return static_cast<int>(h.u32[0]);
+    }
+    static Handle fd_to_handle(int fd) {
+        return Handle{.u32 = {static_cast<U32>(fd)}};
+    }
 
     static long _io_setup(unsigned nr, aio_context_t* ctx) {
         return ::syscall(SYS_io_setup, nr, ctx);
@@ -39,13 +43,15 @@ namespace plexdb::os {
     }
 
     AIOContext::AIOContext(U32 max_ops, Handle notifier)
-        : max_ops(max_ops), notifier(notifier)
-    {
+        : max_ops(max_ops)
+        , notifier(notifier) {
         aio_context_t raw_ctx = 0;
-        if (_io_setup(max_ops, &raw_ctx) < 0) return;
+        if (_io_setup(max_ops, &raw_ctx) < 0) {
+            return;
+        }
 
-        ctx_ptr   = reinterpret_cast<void*>(raw_ctx);
-        slots_ptr = ::operator new(sizeof(iocb) * max_ops);
+        ctx_ptr    = reinterpret_cast<void*>(raw_ctx);
+        slots_ptr  = ::operator new(sizeof(iocb) * max_ops);
         in_use_ptr = new bool[max_ops]();
         ::memset(slots_ptr, 0, sizeof(iocb) * max_ops);
     }
@@ -55,28 +61,39 @@ namespace plexdb::os {
             _io_destroy(reinterpret_cast<aio_context_t>(ctx_ptr));
             ctx_ptr = nullptr;
         }
-        if (slots_ptr) { ::operator delete(slots_ptr); slots_ptr = nullptr; }
-        if (in_use_ptr) { delete[] in_use_ptr; in_use_ptr = nullptr; }
+        if (slots_ptr) {
+            ::operator delete(slots_ptr);
+            slots_ptr = nullptr;
+        }
+        if (in_use_ptr) {
+            delete[] in_use_ptr;
+            in_use_ptr = nullptr;
+        }
     }
 
     AIOContext::AIOContext(AIOContext&& o) noexcept
-        : ctx_ptr(o.ctx_ptr), slots_ptr(o.slots_ptr), in_use_ptr(o.in_use_ptr)
-        , max_ops(o.max_ops), next_free(o.next_free), notifier(o.notifier)
-    {
+        : ctx_ptr(o.ctx_ptr)
+        , slots_ptr(o.slots_ptr)
+        , in_use_ptr(o.in_use_ptr)
+        , max_ops(o.max_ops)
+        , next_free(o.next_free)
+        , notifier(o.notifier) {
         o.ctx_ptr = o.slots_ptr = o.in_use_ptr = nullptr;
         o.max_ops = o.next_free = 0;
-        o.notifier = zero_handle();
+        o.notifier              = zero_handle();
     }
 
     AIOContext& AIOContext::operator=(AIOContext&& o) noexcept {
         if (this != &o) {
             this->~AIOContext();
-            new(this) AIOContext(plexdb::move(o));
+            new (this) AIOContext(plexdb::move(o));
         }
         return *this;
     }
 
-    AIOContext::operator bool() const { return ctx_ptr != nullptr; }
+    AIOContext::operator bool() const {
+        return ctx_ptr != nullptr;
+    }
 
     Handle aio_notifier_create() {
         int fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -94,7 +111,7 @@ namespace plexdb::os {
         do {
             if (!ctx.in_use_ptr[cur]) {
                 ctx.in_use_ptr[cur] = true;
-                ctx.next_free = (cur + 1) % ctx.max_ops;
+                ctx.next_free       = (cur + 1) % ctx.max_ops;
                 return cur;
             }
             cur = (cur + 1) % ctx.max_ops;
@@ -103,7 +120,7 @@ namespace plexdb::os {
     }
 
     static bool aio_submit_iocb(AIOContext& ctx, U32 slot) {
-        iocb* cbp = slot_ptr(ctx, slot);
+        iocb* cbp      = slot_ptr(ctx, slot);
         cbp->aio_flags = IOCB_FLAG_RESFD;
         cbp->aio_resfd = static_cast<U32>(handle_to_fd(ctx.notifier));
         cbp->aio_data  = static_cast<U64>(slot);
@@ -119,7 +136,9 @@ namespace plexdb::os {
         assert_true(rng.end > rng.start, "invalid aio file read range");
 
         U64 slot = aio_acquire_slot(ctx);
-        if (slot == INVALID_AIO_SLOT) return INVALID_AIO_SLOT;
+        if (slot == INVALID_AIO_SLOT) {
+            return INVALID_AIO_SLOT;
+        }
 
         iocb* cb = slot_ptr(ctx, U32(slot));
         ::memset(cb, 0, sizeof(*cb));
@@ -136,7 +155,9 @@ namespace plexdb::os {
         assert_true(rng.end > rng.start, "invalid aio file write range");
 
         U64 slot = aio_acquire_slot(ctx);
-        if (slot == INVALID_AIO_SLOT) return INVALID_AIO_SLOT;
+        if (slot == INVALID_AIO_SLOT) {
+            return INVALID_AIO_SLOT;
+        }
 
         iocb* cb = slot_ptr(ctx, U32(slot));
         ::memset(cb, 0, sizeof(*cb));
@@ -151,7 +172,9 @@ namespace plexdb::os {
 
     U64 aio_submit_sync(AIOContext& ctx, Handle file) {
         U64 slot = aio_acquire_slot(ctx);
-        if (slot == INVALID_AIO_SLOT) return INVALID_AIO_SLOT;
+        if (slot == INVALID_AIO_SLOT) {
+            return INVALID_AIO_SLOT;
+        }
 
         iocb* cb = slot_ptr(ctx, U32(slot));
         ::memset(cb, 0, sizeof(*cb));
@@ -163,35 +186,57 @@ namespace plexdb::os {
 
     U32 aio_collect_completions(AIOContext& ctx, U64* out_tokens, U32 max_count) {
         struct io_event events[64];
-        U32 to_collect = max_count < 64 ? max_count : 64;
-        struct timespec timeout = {0, 0};
-        long n = _io_getevents(
+        U32             to_collect = max_count < 64 ? max_count : 64;
+        struct timespec timeout    = {0, 0};
+        long            n          = _io_getevents(
             reinterpret_cast<aio_context_t>(ctx.ctx_ptr),
-            0, static_cast<long>(to_collect), events, &timeout
-        );
-        if (n <= 0) return 0;
+            0, static_cast<long>(to_collect), events, &timeout);
+        if (n <= 0) {
+            return 0;
+        }
 
         for (long i = 0; i < n; i++) {
-            U32 slot = static_cast<U32>(events[i].data);
+            U32 slot             = static_cast<U32>(events[i].data);
             ctx.in_use_ptr[slot] = false;
-            out_tokens[i] = static_cast<U64>(slot);
+            out_tokens[i]        = static_cast<U64>(slot);
         }
         return static_cast<U32>(n);
     }
 
 #else // @todo
 
-    AIOContext::AIOContext([[maybe_unused]] U32 max_ops, [[maybe_unused]] Handle notifier) { }
-    AIOContext::~AIOContext()                                                              { static_assert(false); }
-    AIOContext::AIOContext(AIOContext&&) noexcept = default;
+    AIOContext::AIOContext([[maybe_unused]] U32 max_ops, [[maybe_unused]] Handle notifier) {
+    }
+    AIOContext::~AIOContext() {
+        static_assert(false);
+    }
+    AIOContext::AIOContext(AIOContext&&) noexcept            = default;
     AIOContext& AIOContext::operator=(AIOContext&&) noexcept = default;
-    AIOContext::operator bool() const                                                      { return false; }
+    AIOContext::operator bool() const {
+        return false;
+    }
 
-    Handle aio_notifier_create()                                                                                                               { return zero_handle(); }
-    void   aio_notifier_drain([[maybe_unused]] Handle)                                                                                         { static_assert(false); }
-    U64 aio_submit_read([[maybe_unused]] AIOContext&, [[maybe_unused]] Handle, [[maybe_unused]] Rng1U64 rng, [[maybe_unused]] void* out)       { static_assert(false); return INVALID_AIO_SLOT; }
-    U64 aio_submit_write([[maybe_unused]] AIOContext&, [[maybe_unused]] Handle, [[maybe_unused]] Rng1U64 rng, [[maybe_unused]] const void* in) { static_assert(false); return INVALID_AIO_SLOT; }
-    U64 aio_submit_sync([[maybe_unused]] AIOContext&, [[maybe_unused]] Handle)                                                                 { static_assert(false); return INVALID_AIO_SLOT; }
-    U32 aio_collect_completions([[maybe_unused]] AIOContext&, [[maybe_unused]] U64*, [[maybe_unused]] U32)                                     { static_assert(false); return 0; }
+    Handle aio_notifier_create() {
+        return zero_handle();
+    }
+    void aio_notifier_drain([[maybe_unused]] Handle) {
+        static_assert(false);
+    }
+    U64 aio_submit_read([[maybe_unused]] AIOContext&, [[maybe_unused]] Handle, [[maybe_unused]] Rng1U64 rng, [[maybe_unused]] void* out) {
+        static_assert(false);
+        return INVALID_AIO_SLOT;
+    }
+    U64 aio_submit_write([[maybe_unused]] AIOContext&, [[maybe_unused]] Handle, [[maybe_unused]] Rng1U64 rng, [[maybe_unused]] const void* in) {
+        static_assert(false);
+        return INVALID_AIO_SLOT;
+    }
+    U64 aio_submit_sync([[maybe_unused]] AIOContext&, [[maybe_unused]] Handle) {
+        static_assert(false);
+        return INVALID_AIO_SLOT;
+    }
+    U32 aio_collect_completions([[maybe_unused]] AIOContext&, [[maybe_unused]] U64*, [[maybe_unused]] U32) {
+        static_assert(false);
+        return 0;
+    }
 #endif
 }

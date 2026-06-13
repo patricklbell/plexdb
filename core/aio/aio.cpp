@@ -31,57 +31,55 @@ namespace plexdb::aio {
     Pair<FileIOContext, EventConsumer> create_aio_async_file_io_context(os::AIOContext* aio_ctx, arena::Arena& arena, os::Poll& poll) {
         assert_true(aio_ctx && static_cast<bool>(*aio_ctx), "invalid os aio ctx, cannot create async io file io interface");
 
-        U64 max_events = aio_ctx->max_ops;
-        auto* handles = default_construct_placement_array(arena::push_array_no_zero<std::coroutine_handle<>>(arena, max_events), max_events);
-        auto* tokens  = arena::push_array_no_zero<U64>(arena, max_events);
+        U64   max_events = aio_ctx->max_ops;
+        auto* handles    = default_construct_placement_array(arena::push_array_no_zero<std::coroutine_handle<>>(arena, max_events), max_events);
+        auto* tokens     = arena::push_array_no_zero<U64>(arena, max_events);
 
         os::poll_unblock_on(poll, aio_ctx->notifier);
 
         return {
             FileIOContext{
-                FileReadFunctor{[handles, aio_ctx](os::Handle f, Rng1U64 rng, void* out) -> coroutine::Task<> {
-                    U64 slot = os::aio_submit_read(*aio_ctx, f, rng, out);
-                    assert_true(slot != os::INVALID_AIO_SLOT, "no free slots for read, the aio context may be corrupted");
-                    co_await coroutine::Awaitable{
-                        [handles, slot](std::coroutine_handle<> h) { handles[slot] = h; },
-                        []() {},
-                        [handles, slot]() { handles[slot] = {}; }
-                    };
-                }},
-                FileWriteFunctor{[handles, aio_ctx](os::Handle f, Rng1U64 rng, const void* in) -> coroutine::Task<> {
-                    U64 slot = os::aio_submit_write(*aio_ctx, f, rng, in);
-                    assert_true(slot != os::INVALID_AIO_SLOT, "no free slots for write, the aio context may be corrupted");
-                    co_await coroutine::Awaitable{
-                        [handles, slot](std::coroutine_handle<> h) { handles[slot] = h; },
-                        []() {},
-                        [handles, slot]() { handles[slot] = {}; }
-                    };
-                }},
-                FileSyncFunctor{[handles, aio_ctx](os::Handle f) -> coroutine::Task<> {
-                    U64 slot = os::aio_submit_sync(*aio_ctx, f);
-                    assert_true(slot != os::INVALID_AIO_SLOT, "no free slots for sync, the aio context may be corrupted");
-                    co_await coroutine::Awaitable{
-                        [handles, slot](std::coroutine_handle<> h) { handles[slot] = h; },
-                        []() {},
-                        [handles, slot]() { handles[slot] = {}; }
-                    };
-                }},
-            },
+                          FileReadFunctor{[handles, aio_ctx](os::Handle f, Rng1U64 rng, void* out) -> coroutine::Task<> {
+                          U64 slot = os::aio_submit_read(*aio_ctx, f, rng, out);
+                          assert_true(slot != os::INVALID_AIO_SLOT, "no free slots for read, the aio context may be corrupted");
+                          co_await coroutine::Awaitable{
+                          [handles, slot](std::coroutine_handle<> h) { handles[slot] = h; },
+                          []() {},
+                          [handles, slot]() { handles[slot] = {}; }};
+                          }},
+                          FileWriteFunctor{[handles, aio_ctx](os::Handle f, Rng1U64 rng, const void* in) -> coroutine::Task<> {
+                          U64 slot = os::aio_submit_write(*aio_ctx, f, rng, in);
+                          assert_true(slot != os::INVALID_AIO_SLOT, "no free slots for write, the aio context may be corrupted");
+                          co_await coroutine::Awaitable{
+                          [handles, slot](std::coroutine_handle<> h) { handles[slot] = h; },
+                          []() {},
+                          [handles, slot]() { handles[slot] = {}; }};
+                          }},
+                          FileSyncFunctor{[handles, aio_ctx](os::Handle f) -> coroutine::Task<> {
+                          U64 slot = os::aio_submit_sync(*aio_ctx, f);
+                          assert_true(slot != os::INVALID_AIO_SLOT, "no free slots for sync, the aio context may be corrupted");
+                          co_await coroutine::Awaitable{
+                          [handles, slot](std::coroutine_handle<> h) { handles[slot] = h; },
+                          []() {},
+                          [handles, slot]() { handles[slot] = {}; }};
+                          }},
+                          },
             EventConsumer{
-                .max_events = max_events,
-                .on_unblock = OnUnblockFunctor{[handles, aio_ctx, tokens]([[maybe_unused]] const TArrayView<os::PollEvent>&) -> bool {
-                    os::aio_notifier_drain(aio_ctx->notifier);
+                          .max_events = max_events,
+                          .on_unblock = OnUnblockFunctor{[handles, aio_ctx, tokens]([[maybe_unused]] const TArrayView<os::PollEvent>&) -> bool {
+                          os::aio_notifier_drain(aio_ctx->notifier);
 
-                    U32 n = os::aio_collect_completions(*aio_ctx, tokens, aio_ctx->max_ops);
-                    for (U32 i = 0; i < n; i++) {
-                        U32 slot = U32(tokens[i]);
-                        auto h = handles[slot];
-                        handles[slot] = std::coroutine_handle<>{};
-                        if (h) h.resume();
-                    }
-                    return true;
-                }}
-            }
+                          U32 n = os::aio_collect_completions(*aio_ctx, tokens, aio_ctx->max_ops);
+                          for (U32 i = 0; i < n; i++) {
+                          U32  slot     = U32(tokens[i]);
+                          auto h        = handles[slot];
+                          handles[slot] = std::coroutine_handle<>{};
+                          if (h) {
+                          h.resume();
+                          }
+                          }
+                          return true;
+                          }} }
         };
     }
 
@@ -93,27 +91,27 @@ namespace plexdb::aio {
 
         struct PendingOp {
             std::coroutine_handle<> handle;
-            void* dst;
-            U32 bytes;
+            void*                   dst;
+            U32                     bytes;
         };
 
         struct State {
-            uring::Ring* ring;
-            U64 buf_size;
-            U32 buf_count;
-            PendingOp* ops;       // arena[buf_count]
-            bool* buf_in_use;     // arena[buf_count]
-            U32 next_free_buf = 0;
+            uring::Ring*                   ring;
+            U64                            buf_size;
+            U32                            buf_count;
+            PendingOp*                     ops;        // arena[buf_count]
+            bool*                          buf_in_use; // arena[buf_count]
+            U32                            next_free_buf = 0;
             Deque<std::coroutine_handle<>> buf_waiters{};
-            std::coroutine_handle<> sync_handles[MAX_SYNC_SLOTS]{};
-            U32 next_sync_slot = 0;
+            std::coroutine_handle<>        sync_handles[MAX_SYNC_SLOTS]{};
+            U32                            next_sync_slot = 0;
 
             U32 try_acquire_buf() {
                 U32 cur = next_free_buf;
                 for (U32 i = 0; i < buf_count; ++i) {
                     if (!buf_in_use[cur]) {
                         buf_in_use[cur] = true;
-                        next_free_buf = (cur + 1) % buf_count;
+                        next_free_buf   = (cur + 1) % buf_count;
                         return cur;
                     }
                     cur = (cur + 1) % buf_count;
@@ -124,14 +122,15 @@ namespace plexdb::aio {
             coroutine::Task<U32> acquire_buf() {
                 while (true) {
                     U32 idx = try_acquire_buf();
-                    if (idx != MAX_U32) co_return idx;
+                    if (idx != MAX_U32) {
+                        co_return idx;
+                    }
                     // Block scope ensures node outlives ~Awaitable (reverse construction order).
                     Deque<std::coroutine_handle<>>::Node node{};
                     co_await coroutine::Awaitable{
                         [s = this, n = &node](std::coroutine_handle<> h) { n->value = h; push_back(s->buf_waiters, n); },
                         []() {},
-                        [s = this, n = &node]() { remove(s->buf_waiters, n); }
-                    };
+                        [s = this, n = &node]() { remove(s->buf_waiters, n); }};
                 }
             }
 
@@ -152,7 +151,7 @@ namespace plexdb::aio {
 
         auto* ops    = arena::push_array<PendingOp>(arena, buf_count);
         auto* in_use = arena::push_array<bool>(arena, buf_count);
-        auto* state  = new(arena::push_array_no_zero<State>(arena, 1)) State{ring, buf_size, buf_count, ops, in_use};
+        auto* state  = new (arena::push_array_no_zero<State>(arena, 1)) State{ring, buf_size, buf_count, ops, in_use};
 
         auto read_fn = FileReadFunctor{[state](os::Handle file, Rng1U64 rng, void* dst) -> coroutine::Task<> {
             assert_true(rng.end - rng.start <= state->buf_size, "file read larger than ring buffer");
@@ -168,11 +167,11 @@ namespace plexdb::aio {
             co_await coroutine::Awaitable{
                 [s = state, buf_idx](std::coroutine_handle<> h) { s->ops[buf_idx].handle = h; },
                 []() {},
-                [s = state, buf_idx]() { s->ops[buf_idx].handle = {}; }
-            };
+                [s = state, buf_idx]() { s->ops[buf_idx].handle = {}; }};
 
-            if (op.dst && op.bytes > 0)
+            if (op.dst && op.bytes > 0) {
                 os::memory_copy(op.dst, state->ring->buffers + U64(buf_idx) * state->buf_size, op.bytes);
+            }
             state->release_buf(buf_idx);
         }};
 
@@ -192,8 +191,7 @@ namespace plexdb::aio {
             co_await coroutine::Awaitable{
                 [s = state, buf_idx](std::coroutine_handle<> h) { s->ops[buf_idx].handle = h; },
                 []() {},
-                [s = state, buf_idx]() { s->ops[buf_idx].handle = {}; }
-            };
+                [s = state, buf_idx]() { s->ops[buf_idx].handle = {}; }};
 
             state->release_buf(buf_idx);
         }};
@@ -205,14 +203,15 @@ namespace plexdb::aio {
             co_await coroutine::Awaitable{
                 [s = state, sync_idx](std::coroutine_handle<> h) { s->sync_handles[sync_idx] = h; },
                 []() {},
-                [s = state, sync_idx]() { s->sync_handles[sync_idx] = {}; }
-            };
+                [s = state, sync_idx]() { s->sync_handles[sync_idx] = {}; }};
         }};
 
         EventConsumer consumer{
             .max_events = U64(buf_count) + MAX_SYNC_SLOTS,
             .on_unblock = OnUnblockFunctor{[state]([[maybe_unused]] const TArrayView<os::PollEvent>&) -> bool {
-                if (!uring::ring_drain_event_fd(*state->ring)) return true;
+                if (!uring::ring_drain_event_fd(*state->ring)) {
+                    return true;
+                }
 
                 uring::sqe_submit_non_blocking(*state->ring);
                 while (uring::cqe_get_size(*state->ring) > 0) {
@@ -222,35 +221,45 @@ namespace plexdb::aio {
                     visit(cqe, [state](const auto& ev) {
                         using T = RemoveCVRef<decltype(ev)>;
                         if constexpr (SameAs<T, uring::FileReadEvent>) {
-                            auto& op = state->ops[ev.buffer_idx];
-                            op.bytes = ev.bytes_read;
-                            auto h = op.handle;
+                            auto& op  = state->ops[ev.buffer_idx];
+                            op.bytes  = ev.bytes_read;
+                            auto h    = op.handle;
                             op.handle = {};
                             // h == {} if the coroutine was destroyed in-flight; release the buffer instead
-                            if (h) h.resume();
-                            else state->release_buf(ev.buffer_idx);
+                            if (h) {
+                                h.resume();
+                            } else {
+                                state->release_buf(ev.buffer_idx);
+                            }
                         } else if constexpr (SameAs<T, uring::FileWriteEvent>) {
-                            auto& op = state->ops[ev.buffer_idx];
-                            op.bytes = ev.bytes_written;
-                            auto h = op.handle;
+                            auto& op  = state->ops[ev.buffer_idx];
+                            op.bytes  = ev.bytes_written;
+                            auto h    = op.handle;
                             op.handle = {};
-                            if (h) h.resume();
-                            else state->release_buf(ev.buffer_idx);
+                            if (h) {
+                                h.resume();
+                            } else {
+                                state->release_buf(ev.buffer_idx);
+                            }
                         } else if constexpr (SameAs<T, uring::FileSyncEvent>) {
-                            U32 idx = U32(ev.token) % MAX_SYNC_SLOTS;
-                            auto h = state->sync_handles[idx];
+                            U32  idx                 = U32(ev.token) % MAX_SYNC_SLOTS;
+                            auto h                   = state->sync_handles[idx];
                             state->sync_handles[idx] = {};
-                            if (h) h.resume();
+                            if (h) {
+                                h.resume();
+                            }
                         }
                     });
                 }
 
                 uring::sqe_submit_non_blocking(*state->ring);
                 return true;
-            }}
-        };
+            }}};
 
-        return {FileIOContext{plexdb::move(read_fn), plexdb::move(write_fn), plexdb::move(sync_fn)}, plexdb::move(consumer)};
+        return {
+            FileIOContext{plexdb::move(read_fn), plexdb::move(write_fn), plexdb::move(sync_fn)},
+            plexdb::move(consumer)
+        };
     }
 
     FileIOContext create_sync_file_io_context() {
@@ -263,11 +272,10 @@ namespace plexdb::aio {
                 os::file_write(f, rng, src);
                 co_return;
             }},
-            FileSyncFunctor {[](os::Handle f) -> coroutine::Task<> {
+            FileSyncFunctor{[](os::Handle f) -> coroutine::Task<> {
                 os::file_sync(f);
                 co_return;
-            }}
-        };
+            }}};
     }
 
     EventConsumer create_notifier_consumer(os::Notifier& notifier, os::Poll& poll) {
@@ -282,7 +290,6 @@ namespace plexdb::aio {
                     }
                 }
                 return true;
-            }}
-        };
+            }}};
     }
 }

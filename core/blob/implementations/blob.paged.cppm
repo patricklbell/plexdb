@@ -23,9 +23,9 @@ export namespace plexdb::blob {
     //
     // This allows offset reads without traversing any extra pages.
     struct BlobStaticPaged {
-        Pager* pager = nullptr;
-        U64 size_bytes;
-        U64 header_bytes;
+        Pager*               pager = nullptr;
+        U64                  size_bytes;
+        U64                  header_bytes;
         TArrayView<U64, U64> pages;
 
         BlobStaticPaged() = default;
@@ -35,13 +35,15 @@ export namespace plexdb::blob {
 
         ~BlobStaticPaged();
 
-        BlobStaticPaged(const BlobStaticPaged& other) = delete;
+        BlobStaticPaged(const BlobStaticPaged& other)            = delete;
         BlobStaticPaged& operator=(const BlobStaticPaged& other) = delete;
 
-        explicit operator bool() const { return pager == nullptr; }
+        explicit operator bool() const {
+            return pager == nullptr;
+        }
     };
     coroutine::Task<U64> create_paged_static(Pager& pager, U64 size);
-    coroutine::Task<> load(BlobStaticPaged& blob, Pager* in_pager, U64 in_page, U64 in_size);
+    coroutine::Task<>    load(BlobStaticPaged& blob, Pager* in_pager, U64 in_page, U64 in_size);
 
     // A dynamic blob is divided into two parts, the header and body. The header
     // (if present) is a singly linked list, with header containing as entries
@@ -58,8 +60,8 @@ export namespace plexdb::blob {
     // preserving offset reads. Disadvantage in that reading offset into large
     // blob requires reading first data page.
     struct BlobDynamicPaged {
-        Pager* pager;
-        U64 size_bytes;
+        Pager*               pager;
+        U64                  size_bytes;
         TArrayView<U64, U64> header_pages;
         TArrayView<U64, U64> data_pages;
 
@@ -71,9 +73,9 @@ export namespace plexdb::blob {
         ~BlobDynamicPaged();
 
         // @todo
-        BlobDynamicPaged(const BlobDynamicPaged& other) = delete;
+        BlobDynamicPaged(const BlobDynamicPaged& other)            = delete;
         BlobDynamicPaged& operator=(const BlobDynamicPaged& other) = delete;
     };
     coroutine::Task<U64> create_paged_dynamic(Pager& pager, U64 initial_size = 0);
-    coroutine::Task<> load(BlobDynamicPaged& blob, Pager* in_pager, U64 in_page);
+    coroutine::Task<>    load(BlobDynamicPaged& blob, Pager* in_pager, U64 in_page);
 }

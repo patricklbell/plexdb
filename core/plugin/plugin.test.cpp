@@ -10,26 +10,26 @@ using namespace plexdb::plugin;
 TEST_CASE("log level to_str", "[plexdb.plugin]") {
     CHECK(to_str(Level::Trace)[0] == 'T');
     CHECK(to_str(Level::Debug)[0] == 'D');
-    CHECK(to_str(Level::Info)[0]  == 'I');
-    CHECK(to_str(Level::Warn)[0]  == 'W');
+    CHECK(to_str(Level::Info)[0] == 'I');
+    CHECK(to_str(Level::Warn)[0] == 'W');
     CHECK(to_str(Level::Error)[0] == 'E');
 }
 
 namespace {
     struct TestConsumer {
-        unsigned message_count = 0;
-        unsigned stat_count    = 0;
-        unsigned meta_count    = 0;
-        unsigned producer_registered_count = 0;
-        uint32_t last_level    = 0;
-        int64_t  last_stat_val = 0;
-        uint32_t last_stat_id  = 0;
-        uint32_t last_meta_producer = 0;
-        uint32_t last_meta_stat_id  = 0;
-        uint32_t last_meta_stat_type = 0;
-        const char* last_meta_name  = nullptr;
-        const char* last_producer_name = nullptr;
-        const char* last_message_id = nullptr;
+        unsigned    message_count             = 0;
+        unsigned    stat_count                = 0;
+        unsigned    meta_count                = 0;
+        unsigned    producer_registered_count = 0;
+        uint32_t    last_level                = 0;
+        int64_t     last_stat_val             = 0;
+        uint32_t    last_stat_id              = 0;
+        uint32_t    last_meta_producer        = 0;
+        uint32_t    last_meta_stat_id         = 0;
+        uint32_t    last_meta_stat_type       = 0;
+        const char* last_meta_name            = nullptr;
+        const char* last_producer_name        = nullptr;
+        const char* last_message_id           = nullptr;
     };
 
     void test_on_event(const PlexdbLogEvent* event, void* ctx) {
@@ -41,7 +41,7 @@ namespace {
                 break;
             case PLEXDB_LOG_MESSAGE:
                 c->message_count++;
-                c->last_level = event->message.level;
+                c->last_level      = event->message.level;
                 c->last_message_id = event->message.message_id;
                 break;
             case PLEXDB_LOG_STAT:
@@ -63,7 +63,9 @@ namespace {
 }
 
 TEST_CASE("message with log level", "[plexdb.plugin]") {
-    if constexpr (!enabled) { return; }
+    if constexpr (!enabled) {
+        return;
+    }
 
     TestConsumer tc{};
     plexdb_plugin_register_consumer(test_on_event, &tc);
@@ -92,14 +94,16 @@ TEST_CASE("message with log level", "[plexdb.plugin]") {
 }
 
 TEST_CASE("stat delivers structured metrics", "[plexdb.plugin]") {
-    if constexpr (!enabled) { return; }
+    if constexpr (!enabled) {
+        return;
+    }
 
     TestConsumer tc{};
     plexdb_plugin_register_consumer(test_on_event, &tc);
 
     Producer p{"test_stat"};
-    Stat s1{&p, "requests"};
-    Stat s2{&p, "latency"};
+    Stat     s1{&p, "requests"};
+    Stat     s2{&p, "latency"};
 
     stat(s1, 1000);
     CHECK(tc.stat_count == 1);
@@ -115,13 +119,15 @@ TEST_CASE("stat delivers structured metrics", "[plexdb.plugin]") {
 }
 
 TEST_CASE("stat registration fires stat_meta", "[plexdb.plugin]") {
-    if constexpr (!enabled) { return; }
+    if constexpr (!enabled) {
+        return;
+    }
 
     TestConsumer tc{};
     plexdb_plugin_register_consumer(test_on_event, &tc);
 
     Producer p{"test_meta"};
-    Stat s{&p, "requests_per_sec"};
+    Stat     s{&p, "requests_per_sec"};
 
     auto meta_before = tc.meta_count;
     stat(s, 42);
@@ -135,14 +141,16 @@ TEST_CASE("stat registration fires stat_meta", "[plexdb.plugin]") {
 }
 
 TEST_CASE("stat type counter and gauge", "[plexdb.plugin]") {
-    if constexpr (!enabled) { return; }
+    if constexpr (!enabled) {
+        return;
+    }
 
     TestConsumer tc{};
     plexdb_plugin_register_consumer(test_on_event, &tc);
 
     Producer p{"test_types"};
-    Stat counter{&p, "total_requests", StatType::Counter};
-    Stat gauge{&p, "active_connections", StatType::Gauge};
+    Stat     counter{&p, "total_requests", StatType::Counter};
+    Stat     gauge{&p, "active_connections", StatType::Gauge};
 
     stat(counter, 5);
     CHECK(tc.meta_count >= 1);
@@ -157,7 +165,9 @@ TEST_CASE("stat type counter and gauge", "[plexdb.plugin]") {
 }
 
 TEST_CASE("lazy producer registration", "[plexdb.plugin]") {
-    if constexpr (!enabled) { return; }
+    if constexpr (!enabled) {
+        return;
+    }
 
     Producer p{"lazy_producer"};
     CHECK(p.id == 0);
@@ -173,7 +183,9 @@ TEST_CASE("lazy producer registration", "[plexdb.plugin]") {
 }
 
 TEST_CASE("message with message_id", "[plexdb.plugin]") {
-    if constexpr (!enabled) { return; }
+    if constexpr (!enabled) {
+        return;
+    }
 
     TestConsumer tc{};
     plexdb_plugin_register_consumer(test_on_event, &tc);
@@ -197,10 +209,12 @@ TEST_CASE("message with message_id", "[plexdb.plugin]") {
 }
 
 TEST_CASE("stat and producer catch-up on consumer registration", "[plexdb.plugin]") {
-    if constexpr (!enabled) { return; }
+    if constexpr (!enabled) {
+        return;
+    }
 
     Producer p{"catchup_producer"};
-    Stat s{&p, "catchup_stat"};
+    Stat     s{&p, "catchup_stat"};
 
     // Force registration before consumer exists
     stat(s, 100);

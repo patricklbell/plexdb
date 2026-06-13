@@ -26,8 +26,8 @@ using namespace cql::test;
 CQL_NATIVE_TEST_CASE("Native protocol STARTUP handshake", "[cql.native]") {
     run_native_server(fixture, [](Socket& client, Notifier& interrupt) {
         Frame ready = send_startup(client);
-        CHECK(ready.version  == RESPONSE_VERSION);
-        CHECK(ready.opcode   == op::READY);
+        CHECK(ready.version == RESPONSE_VERSION);
+        CHECK(ready.opcode == op::READY);
         CHECK(ready.body_len == 0);
         signal_notify_safe(interrupt);
     });
@@ -38,7 +38,7 @@ CQL_NATIVE_TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[cql.native]"
     run_native_server(fixture, [](Socket& client, Notifier& interrupt) {
         Frame supported = send_options(client);
         CHECK(supported.version == RESPONSE_VERSION);
-        CHECK(supported.opcode  == op::SUPPORTED);
+        CHECK(supported.opcode == op::SUPPORTED);
         CHECK(supported.body_len > 0);
         CHECK(body_contains(supported, "CQL_VERSION"));
         CHECK(body_contains(supported, "3.0.0"));
@@ -65,8 +65,8 @@ CQL_NATIVE_TEST_CASE("Native protocol CQL DDL and DML operations", "[cql.native]
         CHECK(use.opcode == op::RESULT);
         CHECK(result_kind(use) == result::SET_KEYSPACE);
 
-        CHECK(result_kind(send_query(client, "DROP TABLE ks.users;"))   == result::SCHEMA_CHANGE);
-        CHECK(result_kind(send_query(client, "DROP KEYSPACE ks;"))      == result::SCHEMA_CHANGE);
+        CHECK(result_kind(send_query(client, "DROP TABLE ks.users;")) == result::SCHEMA_CHANGE);
+        CHECK(result_kind(send_query(client, "DROP KEYSPACE ks;")) == result::SCHEMA_CHANGE);
 
         signal_notify_safe(interrupt);
     });
@@ -86,7 +86,6 @@ CQL_NATIVE_TEST_CASE("Native protocol error responses", "[cql.native]") {
     co_return;
 }
 
-
 CQL_NATIVE_TEST_CASE("Native protocol UPDATE modifies existing row", "[cql.native]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
         CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
@@ -96,7 +95,7 @@ CQL_NATIVE_TEST_CASE("Native protocol UPDATE modifies existing row", "[cql.nativ
 
         Frame sel = send_query(client, "SELECT * FROM ks.t;");
         CHECK(result_kind(sel) == result::ROWS);
-        CHECK( body_contains(sel, "Bob"));
+        CHECK(body_contains(sel, "Bob"));
         CHECK(!body_contains(sel, "Alice"));
 
         signal_notify_safe(interrupt);
@@ -114,7 +113,7 @@ CQL_NATIVE_TEST_CASE("Native protocol DELETE removes a row by primary key", "[cq
 
         Frame sel = send_query(client, "SELECT * FROM ks.t;");
         CHECK(result_kind(sel) == result::ROWS);
-        CHECK( body_contains(sel, "Bob"));
+        CHECK(body_contains(sel, "Bob"));
         CHECK(!body_contains(sel, "Alice"));
 
         signal_notify_safe(interrupt);
@@ -139,8 +138,6 @@ CQL_NATIVE_TEST_CASE("Native protocol TRUNCATE clears all rows", "[cql.native]")
     });
     co_return;
 }
-
-
 
 CQL_NATIVE_TEST_CASE("Native protocol system.local virtual view", "[cql.native]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
@@ -210,16 +207,14 @@ CQL_NATIVE_TEST_CASE("Native protocol collection serialization", "[cql.native]")
         CHECK(body_contains(local, set_option, 4));
 
         // tokens set value encodes one-element set containing '0'
-        const U8 set_value[] = {0x00,0x00,0x00,0x09, 0x00,0x00,0x00,0x01,
-                                 0x00,0x00,0x00,0x01, 0x30};
+        const U8 set_value[] = {0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01,
+                                0x00, 0x00, 0x00, 0x01, 0x30};
         CHECK(body_contains(local, set_value, sizeof(set_value)));
 
         signal_notify_safe(interrupt);
     });
     co_return;
 }
-
-
 
 CQL_NATIVE_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
@@ -235,9 +230,9 @@ CQL_NATIVE_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native]") {
 
             DynamicArray<U8> ex;
             append_cql_short_bytes(ex, pid.ptr, U16(pid.length));
-            append_be_u16(ex, 0x0001);    // consistency = ONE
-            append_u8(ex, 0x01);          // flags: values present
-            append_be_u16(ex, 3);         // value count
+            append_be_u16(ex, 0x0001); // consistency = ONE
+            append_u8(ex, 0x01);       // flags: values present
+            append_be_u16(ex, 3);      // value count
             append_cql_bind_s32(ex, 42);
             append_cql_bind_str(ex, "Alice");
             append_cql_bind_f64(ex, 99.5);
@@ -263,7 +258,7 @@ CQL_NATIVE_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native]") {
             DynamicArray<U8> ex;
             append_cql_short_bytes(ex, pid.ptr, U16(pid.length));
             append_be_u16(ex, 0x0001);
-            append_u8(ex, 0x41);          // flags: values + named values
+            append_u8(ex, 0x41); // flags: values + named values
             append_be_u16(ex, 3);
             append_cql_named_f64(ex, "score", 77.7);
             append_cql_named_str(ex, "name", "Bob");
@@ -285,23 +280,27 @@ CQL_NATIVE_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native]") {
         CHECK(send_query(client, "CREATE TABLE prep_ks.expr_texts (tag text PRIMARY KEY, note text);").opcode == op::RESULT);
         CHECK(send_query(client, "CREATE TABLE prep_ks.expr_now (tag text PRIMARY KEY, val bigint);").opcode == op::RESULT);
 
-        struct NumericCase { const char* query; S64 expected; const char* tag; };
+        struct NumericCase {
+            const char* query;
+            S64         expected;
+            const char* tag;
+        };
         const NumericCase numeric_cases[] = {
-            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (1 + 2 * 3, 'mul_precedence');", 7, "mul_precedence"},
-            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES ((1 + 2) * 3, 'paren');", 9, "paren"},
-            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (10 - 4 - 1, 'left_sub');", 5, "left_sub"},
-            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (20 / 5 / 2, 'left_div');", 2, "left_div"},
-            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (20 % 6 % 4, 'mod');", 2, "mod"},
-            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (-7, 'neg');", -7, "neg"},
-            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (toDate(86400000), 'date');", 1, "date"},
-            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (toTimestamp(minTimeuuid(1234567890)), 'mints');", 1234567890, "mints"},
-            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (toTimestamp(maxTimeuuid(1234567891)), 'maxts');", 1234567891, "maxts"},
-            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (toUnixTimestamp(minTimeuuid(1234567892)), 'unixts');", 1234567892, "unixts"},
-            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (dateOf(minTimeuuid(1234567893)), 'dateof');", 1234567893, "dateof"},
+            {                       "INSERT INTO prep_ks.expr_values (val, tag) VALUES (1 + 2 * 3, 'mul_precedence');",          7, "mul_precedence"},
+            {                              "INSERT INTO prep_ks.expr_values (val, tag) VALUES ((1 + 2) * 3, 'paren');",          9,          "paren"},
+            {                            "INSERT INTO prep_ks.expr_values (val, tag) VALUES (10 - 4 - 1, 'left_sub');",          5,       "left_sub"},
+            {                            "INSERT INTO prep_ks.expr_values (val, tag) VALUES (20 / 5 / 2, 'left_div');",          2,       "left_div"},
+            {                                 "INSERT INTO prep_ks.expr_values (val, tag) VALUES (20 % 6 % 4, 'mod');",          2,            "mod"},
+            {                                         "INSERT INTO prep_ks.expr_values (val, tag) VALUES (-7, 'neg');",         -7,            "neg"},
+            {                          "INSERT INTO prep_ks.expr_values (val, tag) VALUES (toDate(86400000), 'date');",          1,           "date"},
+            {     "INSERT INTO prep_ks.expr_values (val, tag) VALUES (toTimestamp(minTimeuuid(1234567890)), 'mints');", 1234567890,          "mints"},
+            {     "INSERT INTO prep_ks.expr_values (val, tag) VALUES (toTimestamp(maxTimeuuid(1234567891)), 'maxts');", 1234567891,          "maxts"},
+            {"INSERT INTO prep_ks.expr_values (val, tag) VALUES (toUnixTimestamp(minTimeuuid(1234567892)), 'unixts');", 1234567892,         "unixts"},
+            {         "INSERT INTO prep_ks.expr_values (val, tag) VALUES (dateOf(minTimeuuid(1234567893)), 'dateof');", 1234567893,         "dateof"},
         };
         for (const auto& c : numeric_cases) {
             CHECK(send_query(client, c.query).opcode == op::RESULT);
-            auto q = fmt("SELECT tag FROM prep_ks.expr_values WHERE val = %lld;", (long long)c.expected);
+            auto  q   = fmt("SELECT tag FROM prep_ks.expr_values WHERE val = %lld;", (long long)c.expected);
             Frame sel = send_query(client, q);
             CHECK(result_kind(sel) == result::ROWS);
             CHECK(body_contains(sel, c.tag));
@@ -319,7 +318,9 @@ CQL_NATIVE_TEST_CASE("Native protocol PREPARE and EXECUTE", "[cql.native]") {
             "INSERT INTO prep_ks.expr_now (tag, val) VALUES ('toTimestampNow', toTimestamp(now()));",
             "INSERT INTO prep_ks.expr_now (tag, val) VALUES ('toUnixTimestampNow', toUnixTimestamp(now()));",
         };
-        for (const auto* q : now_inserts) CHECK(send_query(client, q).opcode == op::RESULT);
+        for (const auto* q : now_inserts) {
+            CHECK(send_query(client, q).opcode == op::RESULT);
+        }
 
         Frame now_sel = send_query(client, "SELECT * FROM prep_ks.expr_now;");
         CHECK(result_kind(now_sel) == result::ROWS);
@@ -402,23 +403,23 @@ CQL_NATIVE_TEST_CASE("Native protocol QUERY with bind values", "[cql.native]") {
     co_return;
 }
 
-
-
 CQL_NATIVE_TEST_CASE("Native protocol collection INSERT and SELECT", "[cql.native]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
         CHECK(send_query(client, "CREATE KEYSPACE coll_ks;").opcode == op::RESULT);
         CHECK(send_query(client,
-            "CREATE TABLE coll_ks.t ("
-            "  id int PRIMARY KEY,"
-            "  tags list<text>,"
-            "  scores set<int>,"
-            "  meta map<text, int>"
-            ");").opcode == op::RESULT);
+                         "CREATE TABLE coll_ks.t ("
+                         "  id int PRIMARY KEY,"
+                         "  tags list<text>,"
+                         "  scores set<int>,"
+                         "  meta map<text, int>"
+                         ");")
+                  .opcode == op::RESULT);
 
         // Literal collection values
         CHECK(send_query(client,
-            "INSERT INTO coll_ks.t (id, tags, scores, meta)"
-            " VALUES (1, ['a', 'b'], {10, 20}, {'x': 1, 'y': 2});").opcode == op::RESULT);
+                         "INSERT INTO coll_ks.t (id, tags, scores, meta)"
+                         " VALUES (1, ['a', 'b'], {10, 20}, {'x': 1, 'y': 2});")
+                  .opcode == op::RESULT);
 
         Frame sel1 = send_query(client, "SELECT * FROM coll_ks.t WHERE id = 1;");
         CHECK(result_kind(sel1) == result::ROWS);
@@ -430,8 +431,10 @@ CQL_NATIVE_TEST_CASE("Native protocol collection INSERT and SELECT", "[cql.nativ
         {
             DynamicArray<U8> list_body;
             append_be_s32(list_body, 2);
-            append_be_s32(list_body, 5); append_bytes(list_body, reinterpret_cast<const U8*>("hello"), 5);
-            append_be_s32(list_body, 5); append_bytes(list_body, reinterpret_cast<const U8*>("world"), 5);
+            append_be_s32(list_body, 5);
+            append_bytes(list_body, reinterpret_cast<const U8*>("hello"), 5);
+            append_be_s32(list_body, 5);
+            append_bytes(list_body, reinterpret_cast<const U8*>("world"), 5);
 
             DynamicArray<U8> b;
             append_cql_long_string(b, "INSERT INTO coll_ks.t (id, tags) VALUES (?, ?)");
@@ -453,9 +456,11 @@ CQL_NATIVE_TEST_CASE("Native protocol collection INSERT and SELECT", "[cql.nativ
         {
             DynamicArray<U8> map_body;
             append_be_s32(map_body, 1);
-            append_be_s32(map_body, 1); push_back(map_body, U8('k'));
+            append_be_s32(map_body, 1);
+            push_back(map_body, U8('k'));
             U8 v99[4] = {0, 0, 0, 99};
-            append_be_s32(map_body, 4); append_bytes(map_body, v99, 4);
+            append_be_s32(map_body, 4);
+            append_bytes(map_body, v99, 4);
 
             DynamicArray<U8> b;
             append_cql_long_string(b, "INSERT INTO coll_ks.t (id, meta) VALUES (?, ?)");
@@ -477,18 +482,17 @@ CQL_NATIVE_TEST_CASE("Native protocol collection INSERT and SELECT", "[cql.nativ
     co_return;
 }
 
-
-
 CQL_NATIVE_TEST_CASE("Static columns: value shared across clustering rows", "[cql.native]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
         CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
         CHECK(send_query(client,
-            "CREATE TABLE ks.cyclists ("
-            "  country text,"
-            "  name    text,"
-            "  flag    text STATIC,"
-            "  PRIMARY KEY (country, name)"
-            ");").opcode == op::RESULT);
+                         "CREATE TABLE ks.cyclists ("
+                         "  country text,"
+                         "  name    text,"
+                         "  flag    text STATIC,"
+                         "  PRIMARY KEY (country, name)"
+                         ");")
+                  .opcode == op::RESULT);
 
         CHECK(send_query(client, "INSERT INTO ks.cyclists (country, name, flag) VALUES ('Belgium', 'Boonen', 'BE');").opcode == op::RESULT);
         CHECK(send_query(client, "INSERT INTO ks.cyclists (country, name) VALUES ('Belgium', 'Steels');").opcode == op::RESULT);
@@ -513,7 +517,7 @@ CQL_NATIVE_TEST_CASE("Static columns: overwrite replaces value partition-wide", 
 
         Frame sel = send_query(client, "SELECT * FROM ks.t WHERE pk = 1;");
         CHECK(result_kind(sel) == result::ROWS);
-        CHECK( body_contains(sel, "v2"));
+        CHECK(body_contains(sel, "v2"));
         CHECK(!body_contains(sel, "v1"));
 
         signal_notify_safe(interrupt);
@@ -533,10 +537,9 @@ CQL_NATIVE_TEST_CASE("Static columns: rejected on table without clustering key",
     co_return;
 }
 
-
 PAGER_TEST_CASE("Native protocol data persists across restarts", "[cql.native]") {
-    U16 port1 = next_test_port();
-    U16 port2 = next_test_port();
+    U16    port1   = next_test_port();
+    U16    port2   = next_test_port();
     Handle db_file = file_tmp();
     REQUIRE(!is_zero_handle(db_file));
 
@@ -561,7 +564,7 @@ PAGER_TEST_CASE("Native protocol data persists across restarts", "[cql.native]")
     }
 
     {
-        Pager pager = test_pager(db_file);
+        Pager  pager = test_pager(db_file);
         Engine engine;
         co_await engine::init(engine, &pager);
 
@@ -577,19 +580,23 @@ PAGER_TEST_CASE("Native protocol data persists across restarts", "[cql.native]")
 }
 
 PAGER_TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cql.native]") {
-    U16 port1 = next_test_port();
-    U16 port2 = next_test_port();
-    Handle pid = process_get_handle();
-    AutoString8 db_path  = fmt("/tmp/plexdb_cql::wal_%" PLEXDB_FMT_U64 "_db",  pid.u64[0]);
+    U16         port1    = next_test_port();
+    U16         port2    = next_test_port();
+    Handle      pid      = process_get_handle();
+    AutoString8 db_path  = fmt("/tmp/plexdb_cql::wal_%" PLEXDB_FMT_U64 "_db", pid.u64[0]);
     AutoString8 wal_path = fmt("/tmp/plexdb_cql::wal_%" PLEXDB_FMT_U64 "_wal", pid.u64[0]);
 
-    if (file_exists(db_path))  file_delete(db_path);
-    if (file_exists(wal_path)) file_delete(wal_path);
+    if (file_exists(db_path)) {
+        file_delete(db_path);
+    }
+    if (file_exists(wal_path)) {
+        file_delete(wal_path);
+    }
 
     {
-        Handle db  = file_open(db_path);
-        Handle wal = file_open(wal_path);
-        Pager pager = create_test_pager(db, wal, 4_kb);
+        Handle db    = file_open(db_path);
+        Handle wal   = file_open(wal_path);
+        Pager  pager = create_test_pager(db, wal, 4_kb);
         {
             pager::Transaction tx{&pager};
             co_await tx.begin();
@@ -611,9 +618,9 @@ PAGER_TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cq
     }
 
     {
-        Handle db  = file_open(db_path);
-        Handle wal = file_open(wal_path);
-        Pager pager = test_pager(db, wal);
+        Handle db    = file_open(db_path);
+        Handle wal   = file_open(wal_path);
+        Pager  pager = test_pager(db, wal);
         Engine engine;
         co_await engine::init(engine, &pager);
 
@@ -633,14 +640,18 @@ PAGER_TEST_CASE("Native protocol data persists across WAL-enabled restart", "[cq
 }
 
 PAGER_TEST_CASE("Static columns: persist across reopen", "[cql.native]") {
-    U16 port1 = next_test_port();
-    U16 port2 = next_test_port();
-    Handle pid = process_get_handle();
-    AutoString8 db_path  = fmt("/tmp/plexdb_cql::static_%" PLEXDB_FMT_U64 "_db",  pid.u64[0]);
+    U16         port1    = next_test_port();
+    U16         port2    = next_test_port();
+    Handle      pid      = process_get_handle();
+    AutoString8 db_path  = fmt("/tmp/plexdb_cql::static_%" PLEXDB_FMT_U64 "_db", pid.u64[0]);
     AutoString8 wal_path = fmt("/tmp/plexdb_cql::static_%" PLEXDB_FMT_U64 "_wal", pid.u64[0]);
 
-    if (file_exists(db_path))  file_delete(db_path);
-    if (file_exists(wal_path)) file_delete(wal_path);
+    if (file_exists(db_path)) {
+        file_delete(db_path);
+    }
+    if (file_exists(wal_path)) {
+        file_delete(wal_path);
+    }
 
     Handle db_file  = file_open(db_path);
     Handle wal_file = file_open(wal_path);
@@ -667,9 +678,9 @@ PAGER_TEST_CASE("Static columns: persist across reopen", "[cql.native]") {
         destroy_test_pager(pager);
     }
 
-    Handle db2  = file_open(db_path);
-    Handle wal2 = file_open(wal_path);
-    Pager pager2 = test_pager(db2, wal2);
+    Handle db2    = file_open(db_path);
+    Handle wal2   = file_open(wal_path);
+    Pager  pager2 = test_pager(db2, wal2);
     Engine engine2;
     co_await engine::init(engine2, &pager2);
 
@@ -697,12 +708,16 @@ PAGER_TEST_CASE("Static columns: persist across reopen", "[cql.native]") {
 //   make assertions exact.
 // ============================================================================
 PAGER_TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]") {
-    Handle pid = process_get_handle();
-    AutoString8 db_path  = fmt("/tmp/plexdb_cql::crash_%" PLEXDB_FMT_U64 "_db",  pid.u64[0]);
+    Handle      pid      = process_get_handle();
+    AutoString8 db_path  = fmt("/tmp/plexdb_cql::crash_%" PLEXDB_FMT_U64 "_db", pid.u64[0]);
     AutoString8 wal_path = fmt("/tmp/plexdb_cql::crash_%" PLEXDB_FMT_U64 "_wal", pid.u64[0]);
 
-    if (file_exists(db_path))  file_delete(db_path);
-    if (file_exists(wal_path)) file_delete(wal_path);
+    if (file_exists(db_path)) {
+        file_delete(db_path);
+    }
+    if (file_exists(wal_path)) {
+        file_delete(wal_path);
+    }
 
     U16 port1 = next_test_port();
     U16 port2 = next_test_port();
@@ -710,14 +725,14 @@ PAGER_TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]")
     int confirmed_count = GENERATE(take(1, random(5, 20)));
 
     Notifier ready{};
-    auto child_opt = process_fork();
+    auto     child_opt = process_fork();
     REQUIRE(static_cast<bool>(child_opt));
     Handle child = *child_opt;
 
     if (is_zero_handle(child)) {
-        Handle db  = file_open(db_path);
-        Handle wal = file_open(wal_path);
-        Pager pager = create_test_pager(db, wal, 4_kb);
+        Handle db    = file_open(db_path);
+        Handle wal   = file_open(wal_path);
+        Pager  pager = create_test_pager(db, wal, 4_kb);
         {
             pager::Transaction tx{&pager};
             co_await tx.begin();
@@ -727,15 +742,17 @@ PAGER_TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]")
         Engine eng;
         co_await engine::init(eng, &pager);
 
-        Poll poll{};
+        Poll     poll{};
         Notifier interrupt{};
-        auto signal_consumer = aio::create_notifier_consumer(interrupt, poll);
-        native::run(port1, eng, [&ready]{ signal_notify_safe(ready); },
-                    false, g_test_sync_consumer, signal_consumer, poll);
+        auto     signal_consumer = aio::create_notifier_consumer(interrupt, poll);
+        native::run(port1, eng, [&ready] { signal_notify_safe(ready); }, false, g_test_sync_consumer, signal_consumer, poll);
         process_exit(0);
     }
 
-    { U8 b; stream_read(ready.read, &b, 1); }
+    {
+        U8 b;
+        stream_read(ready.read, &b, 1);
+    }
 
     {
         Socket client = client_connect(port1);
@@ -758,9 +775,9 @@ PAGER_TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]")
     signal_send_kill(child);
     process_wait(child);
 
-    Handle db  = file_open(db_path);
-    Handle wal = file_open(wal_path);
-    Pager pager = test_pager(db, wal);
+    Handle db    = file_open(db_path);
+    Handle wal   = file_open(wal_path);
+    Pager  pager = test_pager(db, wal);
     Engine eng2;
     co_await engine::init(eng2, &pager);
 

@@ -16,16 +16,22 @@ import xxhash;
 namespace plexdb {
     AutoString8 bytes_to_hex(const U8* data, U64 len) {
         constexpr char hx[] = "0123456789abcdef";
-        AutoString8 result{len * 2};
+        AutoString8    result{len * 2};
         for (U64 i = 0; i < len; i++) {
-            result.c_str[i*2]     = hx[data[i] >> 4];
-            result.c_str[i*2 + 1] = hx[data[i] & 0xf];
+            result.c_str[i * 2]     = hx[data[i] >> 4];
+            result.c_str[i * 2 + 1] = hx[data[i] & 0xf];
         }
         return result;
     }
 
-    String8::String8(const AutoString8& str) : data(str.c_str), length(str.length) {}
-    String8::String8(const char* in_c_str) : data(in_c_str), length(strlen(in_c_str)) {}
+    String8::String8(const AutoString8& str)
+        : data(str.c_str)
+        , length(str.length) {
+    }
+    String8::String8(const char* in_c_str)
+        : data(in_c_str)
+        , length(strlen(in_c_str)) {
+    }
 
     const char* String8::c_str() const {
         assert_true(strlen(this->data) == this->length, "c_str called on non-null terminated string");
@@ -33,19 +39,22 @@ namespace plexdb {
     }
 
     bool operator==(const String8& a, const String8& b) {
-        if (a.length != b.length)
+        if (a.length != b.length) {
             return false;
+        }
         for (U64 i = 0; i < b.length; i++) {
-            if (a.data[i] != b.data[i])
+            if (a.data[i] != b.data[i]) {
                 return false;
+            }
         }
         return true;
     }
     bool operator==(const char* a, const String8& b) {
         U64 i = 0;
         for (; a[i] != '\0' && i < b.length; i++) {
-            if (a[i] != b.data[i])
+            if (a[i] != b.data[i]) {
                 return false;
+            }
         }
         return i == b.length;
     }
@@ -60,22 +69,31 @@ namespace plexdb {
     }
 
     bool contains(String8 haystack, String8 needle) {
-        if (needle.length > haystack.length) return false;
+        if (needle.length > haystack.length) {
+            return false;
+        }
         for (U64 i = 0; i <= haystack.length - needle.length; i++) {
             bool match = true;
             for (U64 j = 0; j < needle.length; j++) {
-                if (haystack.data[i + j] != needle.data[j]) { match = false; break; }
+                if (haystack.data[i + j] != needle.data[j]) {
+                    match = false;
+                    break;
+                }
             }
-            if (match) return true;
+            if (match) {
+                return true;
+            }
         }
         return false;
     }
 
     AutoString8::AutoString8()
-        : c_str(nullptr), length(0) {}
+        : c_str(nullptr)
+        , length(0) {
+    }
     AutoString8::AutoString8(U64 length)
         : length(length) {
-        this->c_str = reinterpret_cast<char*>(os::allocate(this->length+1));
+        this->c_str               = reinterpret_cast<char*>(os::allocate(this->length + 1));
         this->c_str[this->length] = '\0';
     }
     AutoString8::AutoString8(const U8* in, U64 length)
@@ -83,22 +101,28 @@ namespace plexdb {
         os::memory_copy(this->c_str, in, this->length);
     }
     AutoString8::AutoString8(const char* str)
-        : AutoString8(reinterpret_cast<const U8*>(str), ::strlen(str)) {}
+        : AutoString8(reinterpret_cast<const U8*>(str), ::strlen(str)) {
+    }
     AutoString8::AutoString8(const String8& str)
-        : AutoString8(reinterpret_cast<const U8*>(str.data), str.length) {}
+        : AutoString8(reinterpret_cast<const U8*>(str.data), str.length) {
+    }
     AutoString8::AutoString8(char c, U64 length)
         : AutoString8(length) {
         os::memory_set(this->c_str, c, this->length);
     }
 
     AutoString8::~AutoString8() {
-        if (this->c_str)
+        if (this->c_str) {
             os::deallocate(this->c_str);
+        }
     }
     AutoString8::AutoString8(const AutoString8& other)
-        : AutoString8(reinterpret_cast<U8*>(other.c_str), other.length) {}
+        : AutoString8(reinterpret_cast<U8*>(other.c_str), other.length) {
+    }
     AutoString8::AutoString8(AutoString8&& other)
-        : c_str(exchange(other.c_str, nullptr)), length(exchange(other.length, 0)) {}
+        : c_str(exchange(other.c_str, nullptr))
+        , length(exchange(other.length, 0)) {
+    }
 
     AutoString8& AutoString8::operator=(const AutoString8& other) noexcept {
         return *this = AutoString8(reinterpret_cast<const U8*>(other.c_str), other.length);
@@ -113,15 +137,15 @@ namespace plexdb {
     }
 
     AutoString8& AutoString8::operator+=(const String8& rhs) {
-        U64 new_length = this->length + rhs.length;
-        char* new_c_str = reinterpret_cast<char*>(os::allocate(new_length + 1));
+        U64   new_length = this->length + rhs.length;
+        char* new_c_str  = reinterpret_cast<char*>(os::allocate(new_length + 1));
 
         os::memory_copy(new_c_str, this->c_str, this->length);
         os::deallocate(this->c_str);
         os::memory_copy(new_c_str + this->length, rhs.data, rhs.length);
 
-        this->c_str = new_c_str;
-        this->length = new_length;
+        this->c_str               = new_c_str;
+        this->length              = new_length;
         this->c_str[this->length] = '\0';
         return *this;
     }
@@ -146,9 +170,13 @@ namespace plexdb {
         return strcmp(this->c_str, b) == 0;
     }
     bool AutoString8::operator==(const AutoString8& b) const {
-        if (this->length != b.length) return false;
+        if (this->length != b.length) {
+            return false;
+        }
         for (U64 i = 0; i < this->length; i++) {
-            if (this->c_str[i] != b.c_str[i]) return false;
+            if (this->c_str[i] != b.c_str[i]) {
+                return false;
+            }
         }
         return true;
     }
@@ -164,18 +192,19 @@ namespace plexdb {
 
     void resize(AutoString8& str, U64 length) {
         if (length < str.length) {
-            str.length = length;
+            str.length        = length;
             str.c_str[length] = '\0';
             return;
         }
-        if (length == str.length)
+        if (length == str.length) {
             return;
+        }
 
         char* new_c_str = reinterpret_cast<char*>(os::allocate(length + 1));
         os::memory_copy(new_c_str, str.c_str, str.length);
         os::deallocate(str.c_str);
-        str.c_str = new_c_str;
-        str.length = length;
+        str.c_str         = new_c_str;
+        str.length        = length;
         str.c_str[length] = '\0';
     }
 
@@ -184,7 +213,7 @@ namespace plexdb {
         os::memory_copy(new_c_str, str.c_str, str.length);
         os::deallocate(str.c_str);
 
-        str.c_str = new_c_str;
+        str.c_str             = new_c_str;
         str.c_str[str.length] = c;
         str.length++;
         str.c_str[str.length] = '\0';
@@ -193,8 +222,8 @@ namespace plexdb {
     void append(AutoString8& str, const char* first, const char* last) {
         assert_true(first && last && last >= first, "invalid string append arguments");
 
-        U64 append_len = last - first;
-        char* new_c_str = reinterpret_cast<char*>(os::allocate(str.length + append_len + 1));
+        U64   append_len = last - first;
+        char* new_c_str  = reinterpret_cast<char*>(os::allocate(str.length + append_len + 1));
 
         os::memory_copy(new_c_str, str.c_str, str.length);
         os::memory_copy(new_c_str + str.length, first, append_len);
@@ -212,20 +241,20 @@ namespace plexdb {
 
     void to_lowercase_inplace(AutoString8& str) {
         for (U64 i = 0; i < str.length; i++) {
-            char c = str.c_str[i];
+            char c       = str.c_str[i];
             str.c_str[i] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
         }
     }
 
     AutoString8 operator+(const String8& lhs, const String8& rhs) {
-        U64 length = lhs.length + rhs.length;
-        char* c_str = reinterpret_cast<char*>(os::allocate(length + 1));
+        U64   length = lhs.length + rhs.length;
+        char* c_str  = reinterpret_cast<char*>(os::allocate(length + 1));
         os::memory_copy(c_str, lhs.data, lhs.length);
         os::memory_copy(c_str + lhs.length, rhs.data, rhs.length);
         c_str[length] = '\0';
 
         AutoString8 res{};
-        res.c_str = c_str;
+        res.c_str  = c_str;
         res.length = length;
         return res;
     }
@@ -336,8 +365,8 @@ namespace plexdb {
     namespace {
         struct FmtContext {
             char* buf;
-            U64 remaining;
-            U64 written;
+            U64   remaining;
+            U64   written;
         };
 
         char* fmt_callback(const char*, void* user, int len) {
@@ -354,8 +383,8 @@ namespace plexdb {
 
         struct AppendFmtContext {
             char* buf_ptr;
-            U64 buf_len;
-            U64* length_ptr;
+            U64   buf_len;
+            U64*  length_ptr;
             void* flush_ctx;
             void (*flush_fn)(void* ctx, const char* data, U64 len);
         };
@@ -363,8 +392,8 @@ namespace plexdb {
         char* append_fmt_callback(const char* buf, void* user, int len) {
             auto* ctx = static_cast<AppendFmtContext*>(user);
 
-            const char* src = buf;
-            int remaining = len;
+            const char* src       = buf;
+            int         remaining = len;
 
             while (remaining > 0) {
                 U64 space = ctx->buf_len - *ctx->length_ptr;
@@ -372,7 +401,7 @@ namespace plexdb {
                 if (space == 0) {
                     ctx->flush_fn(ctx->flush_ctx, ctx->buf_ptr, *ctx->length_ptr);
                     *ctx->length_ptr = 0;
-                    space = ctx->buf_len;
+                    space            = ctx->buf_len;
                 }
 
                 U64 to_copy = (static_cast<U64>(remaining) < space) ? remaining : space;
@@ -388,7 +417,7 @@ namespace plexdb {
 
     U64 fmt_raw_impl(char* buf, U64 buf_len, const char* fmt, ...) {
         FmtContext ctx{buf, buf_len, 0};
-        va_list va;
+        va_list    va;
         va_start(va, fmt);
         stbsp_vsprintfcb(fmt_callback, &ctx, ctx.buf, fmt, va);
         va_end(va);
@@ -396,17 +425,18 @@ namespace plexdb {
     }
 
     void append_fmt_impl(char* buf_ptr, U64 buf_len, U64* length_ptr, void* flush_ctx, void (*flush_fn)(void*, const char*, U64), const char* fmt, ...) {
-        char working_buf[STB_SPRINTF_MIN];
+        char             working_buf[STB_SPRINTF_MIN];
         AppendFmtContext ctx{buf_ptr, buf_len, length_ptr, flush_ctx, flush_fn};
-        va_list va;
+        va_list          va;
         va_start(va, fmt);
         stbsp_vsprintfcb(append_fmt_callback, &ctx, working_buf, fmt, va);
         va_end(va);
     }
 
     void print(const String8& str) {
-        if (str.length == 0)
+        if (str.length == 0) {
             return;
+        }
         printf("%.*s", (int)str.length, str.data);
     }
 }

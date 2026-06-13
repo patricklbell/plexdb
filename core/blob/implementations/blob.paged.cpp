@@ -13,36 +13,36 @@ namespace plexdb::blob {
     coroutine::Task<> load(BlobStaticPaged& blob, Pager* in_pager, U64 in_page, U64 in_size) {
         const auto& page_size = in_pager->header.page_size;
 
-        blob.pager = in_pager;
+        blob.pager      = in_pager;
         blob.size_bytes = in_size;
 
         if (blob.size_bytes <= page_size) {
             blob.header_bytes = 0;
 
             U64* pages_ptr = reinterpret_cast<U64*>(os::allocate(sizeof(U64)));
-            pages_ptr[0] = in_page;
-            blob.pages = TArrayView<U64,U64>(pages_ptr, 1);
+            pages_ptr[0]   = in_page;
+            blob.pages     = TArrayView<U64, U64>(pages_ptr, 1);
             co_return;
         }
 
         // @note first header page is implicit
-        U64 x = blob.size_bytes - page_size;
-        U64 h = calculate_header_bytes(x, page_size);
+        U64 x             = blob.size_bytes - page_size;
+        U64 h             = calculate_header_bytes(x, page_size);
         blob.header_bytes = h;
 
         assert_true(h % sizeof(U64) == 0, "header bytes have correct alignment");
 
         {
-            U64 pages_count = 1 + h/sizeof(U64);
-            U64* pages_ptr = reinterpret_cast<U64*>(os::allocate(sizeof(U64)*pages_count));
-            pages_ptr[0] = in_page;
+            U64  pages_count = 1 + h / sizeof(U64);
+            U64* pages_ptr   = reinterpret_cast<U64*>(os::allocate(sizeof(U64) * pages_count));
+            pages_ptr[0]     = in_page;
 
             U64 h_page_idx = 1;
-            U64 h_offset = 0;
-            U64 h_page = pages_ptr[0];
+            U64 h_offset   = 0;
+            U64 h_page     = pages_ptr[0];
             while (h_offset + page_size < h) {
                 const U8* data = co_await pager::rpage(*in_pager, h_page);
-                os::memory_copy(&pages_ptr[1 + h_offset/sizeof(U64)], data, page_size); // @note skip root
+                os::memory_copy(&pages_ptr[1 + h_offset / sizeof(U64)], data, page_size); // @note skip root
 
                 h_offset += page_size;
                 h_page = pages_ptr[h_page_idx];
@@ -50,18 +50,17 @@ namespace plexdb::blob {
             }
 
             const U8* data = co_await pager::rpage(*in_pager, h_page);
-            os::memory_copy(&pages_ptr[1 + h_offset/sizeof(U64)], data, h - h_offset); // @note skip root
+            os::memory_copy(&pages_ptr[1 + h_offset / sizeof(U64)], data, h - h_offset); // @note skip root
 
             blob.pages = TArrayView(pages_ptr, pages_count);
         }
     }
 
-    BlobStaticPaged::BlobStaticPaged(BlobStaticPaged&& other):
-        pager(other.pager),
-        size_bytes(other.size_bytes),
-        header_bytes(other.header_bytes),
-        pages(other.pages)
-    {
+    BlobStaticPaged::BlobStaticPaged(BlobStaticPaged&& other)
+        : pager(other.pager)
+        , size_bytes(other.size_bytes)
+        , header_bytes(other.header_bytes)
+        , pages(other.pages) {
         other.pages.ptr = nullptr;
     }
 
@@ -74,9 +73,9 @@ namespace plexdb::blob {
             this->pager        = other.pager;
             this->pages        = other.pages;
 
-            other.pages.ptr = nullptr;
+            other.pages.ptr    = nullptr;
             other.header_bytes = 0;
-            other.size_bytes = 0;
+            other.size_bytes   = 0;
         }
 
         return *this;
@@ -88,7 +87,7 @@ namespace plexdb::blob {
 
     coroutine::Task<U64> create_paged_static(Pager& pager, U64 size) {
         const auto& page_size = pager.header.page_size;
-        assert_true(page_size >= 2*sizeof(U64), "not enough space in page to fit blob header");
+        assert_true(page_size >= 2 * sizeof(U64), "not enough space in page to fit blob header");
 
         if (size <= page_size) {
             co_return co_await pager::new_page(pager);
@@ -106,7 +105,7 @@ namespace plexdb::blob {
 
         {
             threads::Scope scratch = threads::scratch();
-            U64* pages = arena::push_array<U64>(*scratch.arena, total_page_count);
+            U64*           pages   = arena::push_array<U64>(*scratch.arena, total_page_count);
 
             for (U64 idx = 0; idx < total_page_count; idx++) {
                 // @todo bulk?
@@ -114,17 +113,17 @@ namespace plexdb::blob {
             }
             root = pages[0];
 
-            U64 h_offset = 0;
+            U64 h_offset   = 0;
             U64 h_page_idx = 0;
             while (h_offset + page_size < h) {
                 U8* data = co_await pager::rwpage(pager, pages[h_page_idx]);
-                os::memory_copy(data, &pages[1 + h_offset/sizeof(U64)], page_size); // @note remove root
+                os::memory_copy(data, &pages[1 + h_offset / sizeof(U64)], page_size); // @note remove root
                 h_page_idx++;
                 h_offset += page_size;
             }
 
             U8* data = co_await pager::rwpage(pager, pages[h_page_idx]);
-            os::memory_copy(data, &pages[1 + h_offset/sizeof(U64)], h - h_offset); // @note remove root
+            os::memory_copy(data, &pages[1 + h_offset / sizeof(U64)], h - h_offset); // @note remove root
         }
 
         co_return root;
@@ -135,22 +134,22 @@ namespace plexdb::blob {
 
         blob.pager = in_pager;
 
-        const U64 entry_count_per_page = page_size/sizeof(U64) - 1;
-        const U64 next_page_entry_idx = page_size/sizeof(U64) - 1;
-        const U64 size_entry_idx = 0;
+        const U64 entry_count_per_page = page_size / sizeof(U64) - 1;
+        const U64 next_page_entry_idx  = page_size / sizeof(U64) - 1;
+        const U64 size_entry_idx       = 0;
         assert_true(next_page_entry_idx != size_entry_idx, "size and next page overlap");
 
         const U64* first_data_entries = reinterpret_cast<const U64*>(co_await pager::rpage(*in_pager, in_page));
-        blob.size_bytes = first_data_entries[size_entry_idx];
-        const U64 data_size_bytes = blob.size_bytes + 2*sizeof(U64);
+        blob.size_bytes               = first_data_entries[size_entry_idx];
+        const U64 data_size_bytes     = blob.size_bytes + 2 * sizeof(U64);
 
         const U64 data_page_count = ceil_div(data_size_bytes, page_size);
         // @note first data page entry is implicit
         const U64 header_page_count = ceil_div(data_page_count - 1, entry_count_per_page);
-        const U64 total_page_count = data_page_count + header_page_count;
+        const U64 total_page_count  = data_page_count + header_page_count;
 
         assert_true(total_page_count > 0, "dynamic blob has at least one page");
-        U64* pages_ptr = reinterpret_cast<U64*>(os::allocate(sizeof(U64)*total_page_count));
+        U64* pages_ptr = reinterpret_cast<U64*>(os::allocate(sizeof(U64) * total_page_count));
 
         blob.data_pages = TArrayView(pages_ptr, 0_u64);
         append_in_place(blob.data_pages, in_page);
@@ -166,8 +165,8 @@ namespace plexdb::blob {
         // traverse header linked list
         append_in_place(blob.header_pages, first_data_entries[next_page_entry_idx]);
         for (;;) {
-            U64 header_page = blob.header_pages[blob.header_pages.length-1];
-            const U64* entries = reinterpret_cast<const U64*>(co_await pager::rpage(*in_pager, header_page));
+            U64        header_page = blob.header_pages[blob.header_pages.length - 1];
+            const U64* entries     = reinterpret_cast<const U64*>(co_await pager::rpage(*in_pager, header_page));
 
             bool last_header_page = blob.header_pages.length >= header_page_count;
 
@@ -186,12 +185,11 @@ namespace plexdb::blob {
         assert_true(blob.data_pages.length == data_page_count, "data page view matches calculation");
     }
 
-    BlobDynamicPaged::BlobDynamicPaged(BlobDynamicPaged&& other):
-        pager(other.pager),
-        size_bytes(other.size_bytes),
-        header_pages(other.header_pages),
-        data_pages(other.data_pages)
-    {
+    BlobDynamicPaged::BlobDynamicPaged(BlobDynamicPaged&& other)
+        : pager(other.pager)
+        , size_bytes(other.size_bytes)
+        , header_pages(other.header_pages)
+        , data_pages(other.data_pages) {
         other.data_pages.ptr = nullptr;
     }
 
@@ -216,11 +214,11 @@ namespace plexdb::blob {
 
     coroutine::Task<U64> create_paged_dynamic(Pager& pager, U64 initial_size) {
         const auto& page_size = pager.header.page_size;
-        assert_true(page_size > 2*sizeof(U64), "enough space in page");
+        assert_true(page_size > 2 * sizeof(U64), "enough space in page");
 
-        U64 page = co_await pager::new_page(pager);
+        U64  page     = co_await pager::new_page(pager);
         U64* size_ptr = reinterpret_cast<U64*>(co_await pager::rwpage(pager, page));
-        *size_ptr = 0;
+        *size_ptr     = 0;
 
         // @todo @perf avoid allocations and unnecessary reads
         if (initial_size != 0) {

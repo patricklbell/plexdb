@@ -13,7 +13,7 @@ using namespace plexdb;
 
 export namespace cql::engine {
     struct VirtualColumn {
-        String8 name;
+        String8    name;
         type::Type type;
     };
 
@@ -22,9 +22,9 @@ export namespace cql::engine {
     };
 
     struct VirtualRows {
-        String8 keyspace;
-        String8 table;
+        String8                     keyspace;
+        String8                     table;
         DynamicArray<VirtualColumn> columns;
-        DynamicArray<VirtualRow> rows;
+        DynamicArray<VirtualRow>    rows;
     };
 }

@@ -58,7 +58,7 @@ TEST_CASE("AutoTaggedUnion copy construction from empty", "[dynamic.tagged_union
 
 TEST_CASE("AutoTaggedUnion move construction", "[dynamic.tagged_union]") {
     AutoTaggedUnion<int, double> src(55);
-    void* original_ptr = src.ptr;
+    void*                        original_ptr = src.ptr;
 
     AutoTaggedUnion<int, double> dst(move(src));
 
@@ -101,7 +101,7 @@ TEST_CASE("AutoTaggedUnion copy assignment", "[dynamic.tagged_union]") {
 
 TEST_CASE("AutoTaggedUnion move assignment", "[dynamic.tagged_union]") {
     AutoTaggedUnion<int, double> src(77);
-    void* original_ptr = src.ptr;
+    void*                        original_ptr = src.ptr;
 
     AutoTaggedUnion<int, double> dst;
     dst = move(src);
@@ -113,8 +113,8 @@ TEST_CASE("AutoTaggedUnion move assignment", "[dynamic.tagged_union]") {
 
 TEST_CASE("AutoTaggedUnion self-assignment", "[dynamic.tagged_union]") {
     AutoTaggedUnion<int, double> u(5);
-    auto& u_ref = u;
-    u = u_ref;
+    auto&                        u_ref = u;
+    u                                  = u_ref;
     REQUIRE(get<int>(u) == 5);
 }
 

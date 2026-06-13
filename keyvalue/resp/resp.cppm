@@ -22,16 +22,15 @@ export namespace keyvalue::resp {
     concept OnReady = requires(F f) { f(); };
 
     Optional<String8> run(
-        U16 port,
-        Engine auto& engine,
+        U16                 port,
+        Engine auto&        engine,
         const OnReady auto& on_ready_callback,
-        bool use_uring,
+        bool                use_uring,
         aio::EventConsumer& signal_consumer,
-        os::Poll& io_poll
-    ) {
+        os::Poll&           io_poll) {
         const auto try_append = [](const tcp::Request& req, DynamicArray<U8>& buf) -> coroutine::Task<bool> {
             RWBuffer rbuf = co_await tcp::acquire(req);
-            Error err = co_await tcp::read(req, &rbuf);
+            Error    err  = co_await tcp::read(req, &rbuf);
             if (err != Error::None) {
                 tcp::release(req, &rbuf);
                 co_return false;
@@ -46,8 +45,8 @@ export namespace keyvalue::resp {
         const auto send_block = [](const tcp::Request& req, const U8* data, U64 len) -> coroutine::Task<> {
             U64 sent = 0;
             while (sent < len) {
-                RWBuffer wbuf = co_await tcp::acquire(req);
-                U64 chunk = min(len - sent, wbuf.length);
+                RWBuffer wbuf  = co_await tcp::acquire(req);
+                U64      chunk = min(len - sent, wbuf.length);
                 os::memory_copy(wbuf.view.ptr, data + sent, chunk);
                 wbuf.view.length = U32(chunk);
                 co_await tcp::write(req, &wbuf);
@@ -59,14 +58,13 @@ export namespace keyvalue::resp {
         S64 active_connections = 0;
 
         const auto connection_handler = [&engine, &try_append, &send_block, &active_connections](const tcp::Request& req)
-            -> coroutine::Task<void, coroutine::Start::Eager>
-        {
+            -> coroutine::Task<void, coroutine::Start::Eager> {
             log::db_connection_count(++active_connections);
             DynamicArray<U8> read_buf{};
             DynamicArray<U8> write_buf{};
 
             while (true) {
-                U64 consumed = 0;
+                U64 consumed           = 0;
                 auto [parse_res, stmt] = parsers::parse(read_buf.ptr, read_buf.length, &consumed);
 
                 if (parse_res == parsers::ParseResult::Incomplete) {
@@ -87,18 +85,20 @@ export namespace keyvalue::resp {
 
                 clear(write_buf);
 
-                S64 t0 = os::monotonic_us();
+                S64                     t0     = os::monotonic_us();
                 engine::ExecutionResult result = co_await engine::execute(engine, stmt);
                 log::db_operation_duration(os::monotonic_us() - t0);
 
                 bool keep_alive = protocol::encode_result(result, write_buf);
 
-                if (write_buf.length > 0)
+                if (write_buf.length > 0) {
                     co_await send_block(req, write_buf.ptr, write_buf.length);
+                }
 
                 U64 remaining = read_buf.length - consumed;
-                if (remaining > 0)
+                if (remaining > 0) {
                     os::memory_move(read_buf.ptr, read_buf.ptr + consumed, remaining);
+                }
                 resize(read_buf, remaining);
 
                 if (!keep_alive) {
@@ -110,14 +110,18 @@ export namespace keyvalue::resp {
 
         {
             os::Socket socket{os::socket_open()};
-            if (!socket)
+            if (!socket) {
                 return {"failed to open server socket"};
-            if (!os::socket_set_option(socket, os::SocketOption::Reuse, true))
+            }
+            if (!os::socket_set_option(socket, os::SocketOption::Reuse, true)) {
                 return {"failed to set reuse on server socket"};
-            if (!os::socket_bind(socket, port))
+            }
+            if (!os::socket_bind(socket, port)) {
                 return {"failed to bind server socket"};
-            if (!os::socket_listen(socket, 128))
+            }
+            if (!os::socket_listen(socket, 128)) {
                 return {"failed to listen on server socket"};
+            }
             log::db_connection_max(128);
 
             auto tcp_server = tcp::create_tcp_server(socket, &connection_handler, io_poll, use_uring);

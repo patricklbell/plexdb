@@ -15,15 +15,14 @@ using namespace plexdb;
 
 export namespace cql {
     struct EvalContext {
-        TArrayView<const Constant> positional_bindings{};
+        TArrayView<const Constant>                    positional_bindings{};
         TArrayView<const Pair<AutoString8, Constant>> named_bindings{};
-        const schema::Table* table = nullptr;
-        const ColumnValue* row_values = nullptr;  // array of length table->cols.length
+        const schema::Table*                          table      = nullptr;
+        const ColumnValue*                            row_values = nullptr; // array of length table->cols.length
     };
 
     using EvaluatedTypes = TypeList<
-        Constant, MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral, ColumnValue
-    >;
+        Constant, MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral, ColumnValue>;
 
     struct Evaluated {
         // @note @warn DO NOT modify without also checking TermWithIdentifier

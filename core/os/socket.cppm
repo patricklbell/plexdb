@@ -21,7 +21,7 @@ export namespace plexdb::os {
     };
 
     struct SocketResult {
-        U32 byte_count;
+        U32         byte_count;
         SocketError error;
     };
 
@@ -43,16 +43,20 @@ export namespace plexdb::os {
         Handle handle = zero_handle();
 
         Socket() = default;
-        explicit Socket(Handle h) : handle(h) {}
+        explicit Socket(Handle h)
+            : handle(h) {
+        }
         ~Socket();
 
-        Socket(const Socket&) = delete;
+        Socket(const Socket&)            = delete;
         Socket& operator=(const Socket&) = delete;
 
         Socket(Socket&& other) noexcept;
         Socket& operator=(Socket&& other) noexcept;
 
-        operator Handle() const { return handle; }
+        operator Handle() const {
+            return handle;
+        }
         operator bool() const;
     };
 }

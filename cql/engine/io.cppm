@@ -39,32 +39,40 @@ export namespace cql::io {
     };
 
     // Type-erased concrete IO handles — 16 bytes, pass by value
-    using Reader             = plexdb::Functor<coroutine::Task<void>, U8*, U64>;
-    using Writer             = plexdb::Functor<void, const U8*, U64>;
-    using ColumnActiveSetter = plexdb::Functor<void, U64>;
+    using Reader              = plexdb::Functor<coroutine::Task<void>, U8*, U64>;
+    using Writer              = plexdb::Functor<void, const U8*, U64>;
+    using ColumnActiveSetter  = plexdb::Functor<void, U64>;
     using ColumnActiveChecker = plexdb::Functor<bool, U64>;
 
     // Bridge helpers: wrap a concept-satisfying callable into the concrete erased handle.
     // The callable must outlive the handle.
     template<Read F>
-    Reader to_reader(F& f) { return plexdb::to_functor<coroutine::Task<void>, U8*, U64>(f); }
+    Reader to_reader(F& f) {
+        return plexdb::to_functor<coroutine::Task<void>, U8*, U64>(f);
+    }
     template<Write F>
-    Writer to_writer(F& f) { return plexdb::to_functor<void, const U8*, U64>(f); }
+    Writer to_writer(F& f) {
+        return plexdb::to_functor<void, const U8*, U64>(f);
+    }
     template<MarkColumnActive F>
-    ColumnActiveSetter to_setter(F& f) { return plexdb::to_functor<void, U64>(f); }
+    ColumnActiveSetter to_setter(F& f) {
+        return plexdb::to_functor<void, U64>(f);
+    }
     template<IsColumnActive F>
-    ColumnActiveChecker to_checker(F& f) { return plexdb::to_functor<bool, U64>(f); }
+    ColumnActiveChecker to_checker(F& f) {
+        return plexdb::to_functor<bool, U64>(f);
+    }
 
     constexpr U64 COLUMN_COUNT_BYTE_COUNT = sizeof(U64);
-    constexpr U64 MASK_BYTE_COUNT = sizeof(U64);
-    constexpr U64 MASK_BIT_COUNT = MASK_BYTE_COUNT*8_u64;
+    constexpr U64 MASK_BYTE_COUNT         = sizeof(U64);
+    constexpr U64 MASK_BIT_COUNT          = MASK_BYTE_COUNT * 8_u64;
 
     // Declarations — all bodies live in io.cpp
     coroutine::Task<ColumnValue> read_column_value(Reader r, type::Basic dtype);
     coroutine::Task<ColumnValue> read_column_value(Reader r, const type::Type& cdtype);
-    coroutine::Task<void> read_column_mask(Reader r, ColumnActiveSetter mark_active);
-    coroutine::Task<void> skip_column_value(Reader r, type::Basic dtype);
-    coroutine::Task<void> skip_column_value(Reader r, const type::Type& col_type);
+    coroutine::Task<void>        read_column_mask(Reader r, ColumnActiveSetter mark_active);
+    coroutine::Task<void>        skip_column_value(Reader r, type::Basic dtype);
+    coroutine::Task<void>        skip_column_value(Reader r, const type::Type& col_type);
 
     void write_default_column_value(Writer w, type::Basic dtype);
     void write_default_column_value(Writer w, const type::Type& cdtype);

@@ -11,7 +11,7 @@ using namespace plexdb;
 using namespace plexdb::os;
 
 namespace {
-    constexpr int TEST_PORT_BASE = 19000;
+    constexpr int    TEST_PORT_BASE = 19000;
     std::atomic<int> port_counter{0};
 
     int get_unique_port() {
@@ -23,7 +23,7 @@ TEST_CASE("Socket simple client-server exchange", "[plexdb.os.socket]") {
     int port = get_unique_port();
 
     threads::Semaphore server_ready{0};
-    AutoString8 received_data;
+    AutoString8        received_data;
 
     Socket listen_sock{socket_open()};
     socket_set_option(listen_sock, SocketOption::Reuse, true);
@@ -38,8 +38,8 @@ TEST_CASE("Socket simple client-server exchange", "[plexdb.os.socket]") {
         socket_set_timeout(client, 1000);
         CHECK(socket_connect(client, "127.0.0.1", (U16)port));
 
-        String8 message = "PING";
-        auto send_res = socket_send_all(client, message.data, message.length);
+        String8 message  = "PING";
+        auto    send_res = socket_send_all(client, message.data, message.length);
         CHECK(send_res.error == SocketError::None);
 
         char buffer[256];
@@ -61,7 +61,7 @@ TEST_CASE("Socket simple client-server exchange", "[plexdb.os.socket]") {
         auto res = socket_receive(accepted, buffer, sizeof(buffer) - 1);
         if (res.byte_count > 0) {
             buffer[res.byte_count] = '\0';
-            received_data = AutoString8{buffer};
+            received_data          = AutoString8{buffer};
 
             String8 response = "PONG";
             socket_send(accepted, response.data, response.length);
@@ -107,8 +107,8 @@ TEST_CASE("Socket recv timeout", "[plexdb.os.socket]") {
 TEST_CASE("Socket multiple rapid connections", "[plexdb.os.socket]") {
     int port = get_unique_port();
 
-    std::atomic<bool> server_running{true};
-    std::atomic<int> connections_handled{0};
+    std::atomic<bool>  server_running{true};
+    std::atomic<int>   connections_handled{0};
     threads::Semaphore server_ready{0};
 
     Socket listen_sock{socket_open()};
@@ -150,8 +150,8 @@ TEST_CASE("Socket send_all sends complete data", "[plexdb.os.socket]") {
     int port = get_unique_port();
 
     threads::Semaphore server_ready{0};
-    U64 total_received = 0;
-    constexpr U64 DATA_SIZE = 4096;
+    U64                total_received = 0;
+    constexpr U64      DATA_SIZE      = 4096;
 
     Socket listen_sock{socket_open()};
     socket_set_option(listen_sock, SocketOption::Reuse, true);
@@ -201,7 +201,7 @@ TEST_CASE("Socket handles empty connection (connect and close)", "[plexdb.os.soc
     int port = get_unique_port();
 
     threads::Semaphore server_ready{0};
-    std::atomic<bool> client_closed{false};
+    std::atomic<bool>  client_closed{false};
 
     Socket listen_sock{socket_open()};
     socket_set_option(listen_sock, SocketOption::Reuse, true);
@@ -239,7 +239,7 @@ TEST_CASE("Socket handles partial data", "[plexdb.os.socket]") {
     int port = get_unique_port();
 
     threads::Semaphore server_ready{0};
-    U64 total_received = 0;
+    U64                total_received = 0;
 
     Socket listen_sock{socket_open()};
     socket_set_option(listen_sock, SocketOption::Reuse, true);
@@ -284,8 +284,8 @@ TEST_CASE("Socket handles binary data with null bytes", "[plexdb.os.socket]") {
     int port = get_unique_port();
 
     threads::Semaphore server_ready{0};
-    char received_data[256] = {0};
-    U64 received_len = 0;
+    char               received_data[256] = {0};
+    U64                received_len       = 0;
 
     Socket listen_sock{socket_open()};
     socket_set_option(listen_sock, SocketOption::Reuse, true);

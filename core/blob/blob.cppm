@@ -23,18 +23,22 @@ export namespace plexdb::blob {
     // ========================================================================
     struct BlobCursor {
         BlobDynamicPaged blob;
-        U64 offset = 0;
+        U64              offset = 0;
 
-        explicit operator bool() const { return blob.pager != nullptr; }
+        explicit operator bool() const {
+            return blob.pager != nullptr;
+        }
 
         // Advance offset without any I/O.
-        void skip(U64 size) { offset += size; }
+        void skip(U64 size) {
+            offset += size;
+        }
     };
 
     // ========================================================================
     // untyped interface
     // ========================================================================
-    coroutine::Task<void> update(Blob auto& blob, const U8* in_value, U64 size, U64 offset=0) {
+    coroutine::Task<void> update(Blob auto& blob, const U8* in_value, U64 size, U64 offset = 0) {
         assert_true(offset + size <= blob.size_bytes, "update fits in blob");
 
         U64 value_offset = 0;
@@ -45,7 +49,7 @@ export namespace plexdb::blob {
         }
     }
 
-    coroutine::Task<void> get(Blob auto& blob, U8* out_value, U64 size, U64 offset=0) {
+    coroutine::Task<void> get(Blob auto& blob, U8* out_value, U64 size, U64 offset = 0) {
         assert_true(offset + size <= blob.size_bytes, "gets fits in blob");
 
         U64 value_offset = 0;
@@ -71,7 +75,7 @@ export namespace plexdb::blob {
         co_await update(blob, in_value, size, offset);
     }
 
-    coroutine::Task<void> insert(Blob auto& blob, const U8* in_value, U64 size, U64 offset=0) {
+    coroutine::Task<void> insert(Blob auto& blob, const U8* in_value, U64 size, U64 offset = 0) {
         if (offset + size > blob.size_bytes) {
             co_await resize(blob, offset + size);
         }
@@ -134,11 +138,15 @@ export namespace plexdb::blob {
     // Opens its own short transaction if none is active; otherwise uses the caller's.
     // Advances cursor.offset by 'size'.
     coroutine::Task<void> read(BlobCursor& cursor, U8* dst, U64 size) {
-        bool own_tx = !cursor.blob.pager->transaction_active;
+        bool               own_tx = !cursor.blob.pager->transaction_active;
         pager::Transaction tx{cursor.blob.pager};
-        if (own_tx) co_await tx.begin();
+        if (own_tx) {
+            co_await tx.begin();
+        }
         co_await get(cursor.blob, dst, size, cursor.offset);
-        if (own_tx) co_await tx.commit();
+        if (own_tx) {
+            co_await tx.commit();
+        }
         cursor.offset += size;
     }
 
@@ -146,12 +154,16 @@ export namespace plexdb::blob {
     // (length prefix + payload).
     // Opens its own short transaction if none is active; otherwise uses the caller's.
     coroutine::Task<void> skip_varlen(BlobCursor& cursor) {
-        U64 length;
-        bool own_tx = !cursor.blob.pager->transaction_active;
+        U64                length;
+        bool               own_tx = !cursor.blob.pager->transaction_active;
         pager::Transaction tx{cursor.blob.pager};
-        if (own_tx) co_await tx.begin();
+        if (own_tx) {
+            co_await tx.begin();
+        }
         co_await get(cursor.blob, reinterpret_cast<U8*>(&length), sizeof(U64), cursor.offset);
-        if (own_tx) co_await tx.commit();
+        if (own_tx) {
+            co_await tx.commit();
+        }
         cursor.offset += sizeof(U64) + length;
     }
 }

@@ -16,10 +16,10 @@ namespace plexdb::support::lexy {
     struct ErrorCallback {
         struct _sink {
             using return_type = size_t;
-            size_t _count = 0;
+            size_t  _count    = 0;
             ErrorFn fn;
 
-            template <typename Input, typename Reader, typename Tag>
+            template<typename Input, typename Reader, typename Tag>
             void operator()(const ::lexy::error_context<Input>& context, const ::lexy::error<Reader, Tag>& error) {
                 auto location = ::lexy::get_input_location(context.input(), error.position());
 

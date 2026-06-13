@@ -28,10 +28,13 @@ namespace keyvalue::engine {
         U64 total = sizeof(U64) * 2 + key.length + value.length;
         co_await plexdb::blob::resize(b, total);
         U64 off = 0;
-        co_await plexdb::blob::update(b, reinterpret_cast<const U8*>(&key.length),   sizeof(U64), off); off += sizeof(U64);
-        co_await plexdb::blob::update(b, reinterpret_cast<const U8*>(key.data),       key.length,  off); off += key.length;
-        co_await plexdb::blob::update(b, reinterpret_cast<const U8*>(&value.length), sizeof(U64), off); off += sizeof(U64);
-        co_await plexdb::blob::update(b, reinterpret_cast<const U8*>(value.data),    value.length, off);
+        co_await plexdb::blob::update(b, reinterpret_cast<const U8*>(&key.length), sizeof(U64), off);
+        off += sizeof(U64);
+        co_await plexdb::blob::update(b, reinterpret_cast<const U8*>(key.data), key.length, off);
+        off += key.length;
+        co_await plexdb::blob::update(b, reinterpret_cast<const U8*>(&value.length), sizeof(U64), off);
+        off += sizeof(U64);
+        co_await plexdb::blob::update(b, reinterpret_cast<const U8*>(value.data), value.length, off);
     }
 
     template<typename Blob>
@@ -41,19 +44,25 @@ namespace keyvalue::engine {
         DynamicArray<U8> buf;
         resize(buf, key_len);
         co_await plexdb::blob::get(b, buf.ptr, key_len, sizeof(U64));
-        co_return AutoString8{String8{reinterpret_cast<const char*>(buf.ptr), key_len}};
+        co_return AutoString8{
+            String8{reinterpret_cast<const char*>(buf.ptr), key_len}
+        };
     }
 
     template<typename Blob>
     coroutine::Task<AutoString8> blob_read_value(Blob& b) {
         U64 key_len = 0, value_len = 0;
         U64 off = 0;
-        co_await plexdb::blob::get(b, reinterpret_cast<U8*>(&key_len),   sizeof(U64), off); off += sizeof(U64) + key_len;
-        co_await plexdb::blob::get(b, reinterpret_cast<U8*>(&value_len), sizeof(U64), off); off += sizeof(U64);
+        co_await plexdb::blob::get(b, reinterpret_cast<U8*>(&key_len), sizeof(U64), off);
+        off += sizeof(U64) + key_len;
+        co_await plexdb::blob::get(b, reinterpret_cast<U8*>(&value_len), sizeof(U64), off);
+        off += sizeof(U64);
         DynamicArray<U8> buf;
         resize(buf, value_len);
         co_await plexdb::blob::get(b, buf.ptr, value_len, off);
-        co_return AutoString8{String8{reinterpret_cast<const char*>(buf.ptr), value_len}};
+        co_return AutoString8{
+            String8{reinterpret_cast<const char*>(buf.ptr), value_len}
+        };
     }
 }
 
@@ -61,31 +70,46 @@ namespace keyvalue::engine {
 // exported types and engine api
 // ============================================================================
 export namespace keyvalue::engine {
-    enum class ExecutionStatus : U8 { Ok, NotFound, Error, Close };
-    enum class ResultKind : U8 { None, SimpleStr, BulkStr, Int, Arr, NullArr, Scan };
+    enum class ExecutionStatus : U8 {
+        Ok,
+        NotFound,
+        Error,
+        Close
+    };
+    enum class ResultKind : U8 {
+        None,
+        SimpleStr,
+        BulkStr,
+        Int,
+        Arr,
+        NullArr,
+        Scan
+    };
 
     struct ExecutionResult {
-        ExecutionStatus status = ExecutionStatus::Ok;
-        ResultKind kind = ResultKind::None;
-        AutoString8 str;
-        S64 integer = 0;
-        DynamicArray<AutoString8> arr;
+        ExecutionStatus                     status = ExecutionStatus::Ok;
+        ResultKind                          kind   = ResultKind::None;
+        AutoString8                         str;
+        S64                                 integer = 0;
+        DynamicArray<AutoString8>           arr;
         DynamicArray<Optional<AutoString8>> null_arr;
-        AutoString8 cursor;
-        AutoString8 error_message;
+        AutoString8                         cursor;
+        AutoString8                         error_message;
     };
 
     struct InMemoryEngine {
         btree::BTreeInMemory<btree::FixedKeyPolicy<U64>, btree::FixedValuePolicy<sizeof(U64)>> index;
-        DynamicMap<U64, blob::BlobInMemory> blobs;
-        U64 next_blob_id = 0;
+        DynamicMap<U64, blob::BlobInMemory>                                                    blobs;
+        U64                                                                                    next_blob_id = 0;
 
-        InMemoryEngine() : index{btree::FixedKeyPolicy<U64>{}, btree::FixedValuePolicy<sizeof(U64)>{}, 544u} {}
+        InMemoryEngine()
+            : index{btree::FixedKeyPolicy<U64>{}, btree::FixedValuePolicy<sizeof(U64)>{}, 544u} {
+        }
     };
 
     struct PagedEngine {
         btree::BTreePaged<btree::FixedKeyPolicy<U64>, btree::FixedValuePolicy<sizeof(U64)>> index;
-        Pager* pager = nullptr;
+        Pager*                                                                              pager = nullptr;
     };
 
     template<typename E>
@@ -106,31 +130,57 @@ export namespace keyvalue::engine {
 
 namespace keyvalue::engine {
     ExecutionResult create_not_found() {
-        ExecutionResult r; r.status = ExecutionStatus::NotFound; return r;
+        ExecutionResult r;
+        r.status = ExecutionStatus::NotFound;
+        return r;
     }
     ExecutionResult create_close() {
-        ExecutionResult r; r.status = ExecutionStatus::Close; return r;
+        ExecutionResult r;
+        r.status = ExecutionStatus::Close;
+        return r;
     }
     ExecutionResult create_error(AutoString8 msg) {
-        ExecutionResult r; r.status = ExecutionStatus::Error; r.error_message = move(msg); return r;
+        ExecutionResult r;
+        r.status        = ExecutionStatus::Error;
+        r.error_message = move(msg);
+        return r;
     }
     ExecutionResult create_simple(String8 s) {
-        ExecutionResult r; r.kind = ResultKind::SimpleStr; r.str = s; return r;
+        ExecutionResult r;
+        r.kind = ResultKind::SimpleStr;
+        r.str  = s;
+        return r;
     }
     ExecutionResult create_bulk(AutoString8 s) {
-        ExecutionResult r; r.kind = ResultKind::BulkStr; r.str = move(s); return r;
+        ExecutionResult r;
+        r.kind = ResultKind::BulkStr;
+        r.str  = move(s);
+        return r;
     }
     ExecutionResult create_int(S64 n) {
-        ExecutionResult r; r.kind = ResultKind::Int; r.integer = n; return r;
+        ExecutionResult r;
+        r.kind    = ResultKind::Int;
+        r.integer = n;
+        return r;
     }
     ExecutionResult create_arr(DynamicArray<AutoString8> a) {
-        ExecutionResult r; r.kind = ResultKind::Arr; r.arr = move(a); return r;
+        ExecutionResult r;
+        r.kind = ResultKind::Arr;
+        r.arr  = move(a);
+        return r;
     }
     ExecutionResult create_null_arr(DynamicArray<Optional<AutoString8>> a) {
-        ExecutionResult r; r.kind = ResultKind::NullArr; r.null_arr = move(a); return r;
+        ExecutionResult r;
+        r.kind     = ResultKind::NullArr;
+        r.null_arr = move(a);
+        return r;
     }
     ExecutionResult create_scan(AutoString8 cursor, DynamicArray<AutoString8> keys) {
-        ExecutionResult r; r.kind = ResultKind::Scan; r.cursor = move(cursor); r.arr = move(keys); return r;
+        ExecutionResult r;
+        r.kind   = ResultKind::Scan;
+        r.cursor = move(cursor);
+        r.arr    = move(keys);
+        return r;
     }
 }
 
@@ -199,19 +249,27 @@ namespace keyvalue::engine {
             using T = Decay<decltype(v)>;
 
             if constexpr (SameAs<T, Ping>) {
-                if (v.message) co_return create_bulk(AutoString8{*v.message});
+                if (v.message) {
+                    co_return create_bulk(AutoString8{*v.message});
+                }
                 co_return create_simple("PONG");
             } else if constexpr (SameAs<T, Quit>) {
                 co_return create_close();
             } else if constexpr (SameAs<T, Get>) {
                 auto id_opt = co_await btree::tfind<U64>(engine.index, hash(String8{v.key}));
-                if (!id_opt) co_return create_not_found();
+                if (!id_opt) {
+                    co_return create_not_found();
+                }
                 co_return create_bulk(co_await read_value(engine, *id_opt));
             } else if constexpr (SameAs<T, Set>) {
-                U64 key_hash = hash(String8{v.key});
-                auto id_opt = co_await btree::tfind<U64>(engine.index, key_hash);
-                if (v.nx && id_opt)  co_return create_not_found();
-                if (v.xx && !id_opt) co_return create_not_found();
+                U64  key_hash = hash(String8{v.key});
+                auto id_opt   = co_await btree::tfind<U64>(engine.index, key_hash);
+                if (v.nx && id_opt) {
+                    co_return create_not_found();
+                }
+                if (v.xx && !id_opt) {
+                    co_return create_not_found();
+                }
                 if (id_opt) {
                     co_await write_entry(engine, *id_opt, String8{v.key}, String8{v.value});
                 } else {
@@ -223,9 +281,11 @@ namespace keyvalue::engine {
             } else if constexpr (SameAs<T, Del>) {
                 U64 count = 0;
                 for (U64 i = 0; i < v.keys.length; i++) {
-                    U64 key_hash = hash(String8{v.keys[i]});
-                    auto id_opt = co_await btree::tfind<U64>(engine.index, key_hash);
-                    if (!id_opt) continue;
+                    U64  key_hash = hash(String8{v.keys[i]});
+                    auto id_opt   = co_await btree::tfind<U64>(engine.index, key_hash);
+                    if (!id_opt) {
+                        continue;
+                    }
                     co_await free_blob(engine, *id_opt);
                     co_await btree::remove(engine.index, key_hash);
                     count++;
@@ -234,24 +294,26 @@ namespace keyvalue::engine {
             } else if constexpr (SameAs<T, Exists>) {
                 U64 count = 0;
                 for (U64 i = 0; i < v.keys.length; i++) {
-                    if (co_await btree::tfind<U64>(engine.index, hash(String8{v.keys[i]})))
+                    if (co_await btree::tfind<U64>(engine.index, hash(String8{v.keys[i]}))) {
                         count++;
+                    }
                 }
                 co_return create_int(S64(count));
             } else if constexpr (SameAs<T, Mget>) {
                 DynamicArray<Optional<AutoString8>> vals;
                 for (U64 i = 0; i < v.keys.length; i++) {
                     auto id_opt = co_await btree::tfind<U64>(engine.index, hash(String8{v.keys[i]}));
-                    if (id_opt)
+                    if (id_opt) {
                         push_back(vals, Optional<AutoString8>{co_await read_value(engine, *id_opt)});
-                    else
+                    } else {
                         push_back(vals, Optional<AutoString8>{});
+                    }
                 }
                 co_return create_null_arr(move(vals));
             } else if constexpr (SameAs<T, Mset>) {
                 for (U64 i = 0; i < v.pairs.length; i++) {
-                    U64 key_hash = hash(String8{v.pairs[i].first});
-                    auto id_opt = co_await btree::tfind<U64>(engine.index, key_hash);
+                    U64  key_hash = hash(String8{v.pairs[i].first});
+                    auto id_opt   = co_await btree::tfind<U64>(engine.index, key_hash);
                     if (id_opt) {
                         co_await write_entry(engine, *id_opt, String8{v.pairs[i].first}, String8{v.pairs[i].second});
                     } else {
@@ -262,32 +324,34 @@ namespace keyvalue::engine {
                 }
                 co_return create_simple("OK");
             } else if constexpr (SameAs<T, Keys>) {
-                String8 pattern = v.pattern;
+                String8                   pattern = v.pattern;
                 DynamicArray<AutoString8> keys;
-                auto it = co_await btree::begin<U64>(engine.index);
-                auto end_it = btree::end<U64>(engine.index);
+                auto                      it     = co_await btree::begin<U64>(engine.index);
+                auto                      end_it = btree::end<U64>(engine.index);
                 while (it != end_it) {
                     AutoString8 key = co_await read_key(engine, *it);
-                    if (glob::match(String8{key}, pattern))
+                    if (glob::match(String8{key}, pattern)) {
                         push_back(keys, move(key));
+                    }
                     co_await it.advance();
                 }
                 co_return create_arr(move(keys));
             } else if constexpr (SameAs<T, Scan>) {
-                String8 pattern = v.match ? String8{*v.match} : String8{"*"};
-                U64 count = v.count ? *v.count : 10;
+                String8                   pattern = v.match ? String8{*v.match} : String8{"*"};
+                U64                       count   = v.count ? *v.count : 10;
                 DynamicArray<AutoString8> result;
 
-                auto it = v.cursor == 0
-                    ? co_await btree::begin<U64>(engine.index)
-                    : co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(engine.index, v.cursor);
+                auto it     = v.cursor == 0
+                                  ? co_await btree::begin<U64>(engine.index)
+                                  : co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(engine.index, v.cursor);
                 auto end_it = btree::end<U64>(engine.index);
 
                 U64 scanned = 0;
                 while (it != end_it && scanned < count) {
                     AutoString8 key = co_await read_key(engine, *it);
-                    if (glob::match(String8{key}, pattern))
+                    if (glob::match(String8{key}, pattern)) {
                         push_back(result, move(key));
+                    }
                     scanned++;
                     co_await it.advance();
                 }
@@ -295,14 +359,14 @@ namespace keyvalue::engine {
                 U64 next_cursor = 0;
                 if (it != end_it) {
                     AutoString8 next_key = co_await read_key(engine, *it);
-                    next_cursor = hash(String8{next_key});
+                    next_cursor          = hash(String8{next_key});
                 }
                 co_return create_scan(to_str(next_cursor), move(result));
             } else if constexpr (SameAs<T, FlushDb> || SameAs<T, FlushAll>) {
                 if constexpr (SameAs<Decay<decltype(engine)>, InMemoryEngine>) {
                     clear(engine.blobs);
                 } else {
-                    auto it = co_await btree::begin<U64>(engine.index);
+                    auto it     = co_await btree::begin<U64>(engine.index);
                     auto end_it = btree::end<U64>(engine.index);
                     while (it != end_it) {
                         U64 id = *it;
@@ -320,7 +384,9 @@ namespace keyvalue::engine {
             } else if constexpr (SameAs<T, Cmd>) {
                 co_return create_arr({});
             } else if constexpr (SameAs<T, SelectDb>) {
-                if (v.index != 0) assert_not_implemented("multiple databases");
+                if (v.index != 0) {
+                    assert_not_implemented("multiple databases");
+                }
                 co_return create_simple("OK");
             } else if constexpr (SameAs<T, ClientGetName>) {
                 co_return create_not_found();
@@ -329,10 +395,7 @@ namespace keyvalue::engine {
             } else if constexpr (SameAs<T, Info>) {
                 U64 db_size = co_await btree::size(engine.index);
                 co_return create_bulk(
-                    "# Server\r\nredis_version:7.0.0\r\narch_bits:64\r\n# Keyspace\r\ndb0:keys="_as
-                    + to_str(db_size)
-                    + ",expires=0\r\n"_as
-                );
+                    "# Server\r\nredis_version:7.0.0\r\narch_bits:64\r\n# Keyspace\r\ndb0:keys="_as + to_str(db_size) + ",expires=0\r\n"_as);
             } else if constexpr (SameAs<T, Unknown>) {
                 co_return create_error("unknown command '"_as + v.name + "'"_as);
             } else {
@@ -343,7 +406,8 @@ namespace keyvalue::engine {
     }
 
     export template<Engine E>
-    coroutine::Task<ExecutionResult> execute(E& engine, const Statement& statement) { ZoneScopedN("engine::execute");
+    coroutine::Task<ExecutionResult> execute(E& engine, const Statement& statement) {
+        ZoneScopedN("engine::execute");
         if constexpr (SameAs<E, PagedEngine>) {
             pager::Transaction tx{&engine.pager};
 

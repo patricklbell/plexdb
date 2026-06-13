@@ -16,62 +16,62 @@ export namespace plexdb {
         // ====================================================================
         // destructor
         // ====================================================================
-        template <size_t I>
+        template<size_t I>
         void destroy_at_index() noexcept {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
                 reinterpret_cast<T*>(&storage)->~T();
             }
         }
-        
-        template <size_t... Is>
+
+        template<size_t... Is>
         void destroy_impl(size_t idx, IndexSequence<Is...>) noexcept {
             ((idx == Is ? (destroy_at_index<Is>(), void()) : void()), ...);
         }
-        
+
         void destroy() noexcept {
             if (index != invalid_index) {
                 destroy_impl(index, IndexSequenceFor<Types...>{});
                 index = invalid_index;
             }
         }
-        
+
         // ====================================================================
         // copy constructor
         // ====================================================================
-        template <size_t I>
+        template<size_t I>
         void copy_construct_at_index(const TaggedUnion& other) {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
                 new (&storage) T(*reinterpret_cast<const T*>(&other.storage));
             }
         }
-        
-        template <size_t... Is>
+
+        template<size_t... Is>
         void copy_construct_impl(const TaggedUnion& other, IndexSequence<Is...>) {
             ((other.index == Is ? (copy_construct_at_index<Is>(other), void()) : void()), ...);
         }
-        
+
         // ====================================================================
         // move constructor
         // ====================================================================
-        template <size_t I>
+        template<size_t I>
         void move_construct_at_index(TaggedUnion&& other) {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
                 new (&storage) T(move(*reinterpret_cast<T*>(&other.storage)));
             }
         }
-        
-        template <size_t... Is>
+
+        template<size_t... Is>
         void move_construct_impl(TaggedUnion&& other, IndexSequence<Is...>) {
             ((other.index == Is ? (move_construct_at_index<Is>(move(other)), void()) : void()), ...);
         }
-        
+
         // ====================================================================
         // copy assignment
         // ====================================================================
-        template <size_t I>
+        template<size_t I>
         void copy_assign_at_index(const TaggedUnion& other) {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
@@ -84,16 +84,16 @@ export namespace plexdb {
                 }
             }
         }
-        
-        template <size_t... Is>
+
+        template<size_t... Is>
         void copy_assign_impl(const TaggedUnion& other, IndexSequence<Is...>) {
             ((other.index == Is ? (copy_assign_at_index<Is>(other), void()) : void()), ...);
         }
-        
+
         // ====================================================================
         // move assignment
         // ====================================================================
-        template <size_t I>
+        template<size_t I>
         void move_assign_at_index(TaggedUnion&& other) {
             if constexpr (I < sizeof...(Types)) {
                 using T = TypeAtIndex<I, Types...>;
@@ -106,12 +106,12 @@ export namespace plexdb {
                 }
             }
         }
-        
-        template <size_t... Is>
+
+        template<size_t... Is>
         void move_assign_impl(TaggedUnion&& other, IndexSequence<Is...>) {
             ((other.index == Is ? (move_assign_at_index<Is>(move(other)), void()) : void()), ...);
         }
-        
+
     public:
         // ====================================================================
         // constructors
@@ -119,7 +119,7 @@ export namespace plexdb {
         TaggedUnion() = default;
 
         template<typename T>
-            requires (SameAs<Decay<T>, Types> || ...)
+            requires(SameAs<Decay<T>, Types> || ...)
         constexpr TaggedUnion(T&& value) noexcept(NoThrowMoveConstructible<T>) {
             using DecayedT = Decay<T>;
 
@@ -133,7 +133,7 @@ export namespace plexdb {
                 index = other.index;
             }
         }
-        
+
         TaggedUnion(TaggedUnion&& other) noexcept(AllNoThrowMoveConstructible<Types...>) {
             if (other.index != invalid_index) {
                 move_construct_impl(move(other), IndexSequenceFor<Types...>{});
@@ -147,7 +147,7 @@ export namespace plexdb {
         ~TaggedUnion() {
             destroy();
         }
-        
+
         // ====================================================================
         // assignment
         // ====================================================================
@@ -172,14 +172,14 @@ export namespace plexdb {
             }
             return *this;
         }
-        
+
         // Assign from one of the types
         template<typename T>
-            requires (SameAs<Decay<T>, Types> || ...)
+            requires(SameAs<Decay<T>, Types> || ...)
         TaggedUnion& operator=(T&& value) {
-            using DecayedT = Decay<T>;
+            using DecayedT             = Decay<T>;
             constexpr size_t new_index = TypeIndex<DecayedT, Types...>;
-            
+
             if (index == new_index) {
                 *reinterpret_cast<DecayedT*>(&storage) = forward<T>(value);
             } else {
@@ -198,7 +198,7 @@ export namespace plexdb {
     template<typename T, typename... Types>
     constexpr bool type_matches_tag(const TaggedUnion<Types...>& u) noexcept {
         using DecayedT = Decay<T>;
-        size_t idx = TypeIndex<DecayedT, Types...>;
+        size_t idx     = TypeIndex<DecayedT, Types...>;
         return u.index == idx;
     }
 
@@ -207,7 +207,7 @@ export namespace plexdb {
         assert_true(type_matches_tag<T>(u), "reading wrong type from tagged union");
         return *reinterpret_cast<T*>(&u.storage);
     }
-    
+
     template<typename T, typename... Types>
     const T& get(const TaggedUnion<Types...>& u) noexcept {
         assert_true(type_matches_tag<T>(u), "reading wrong type from tagged union");
@@ -238,13 +238,13 @@ namespace plexdb {
     template<typename Visitor, typename... Types, size_t... Is>
     decltype(auto) visit_impl(auto& u, Visitor&& vis, IndexSequence<Is...>) {
         using TU = RemoveRef<decltype(u)>;
-        using V = RemoveRef<Visitor>;
-        
-        using ElemRef = Conditional<IsConst<TU>, const TypeAtIndex<0, Types...>&, TypeAtIndex<0, Types...>&>;
-        using Return = decltype(declval<V&>()(declval<ElemRef>()));
-        using Fn = Return(*)(TU&, V&);
+        using V  = RemoveRef<Visitor>;
 
-        static constexpr Fn table[] = { &Case<Is, V, Return, TU, Types...>::apply... };
+        using ElemRef = Conditional<IsConst<TU>, const TypeAtIndex<0, Types...>&, TypeAtIndex<0, Types...>&>;
+        using Return  = decltype(declval<V&>()(declval<ElemRef>()));
+        using Fn      = Return (*)(TU&, V&);
+
+        static constexpr Fn table[] = {&Case<Is, V, Return, TU, Types...>::apply...};
 
         return table[u.index](u, vis);
     }
@@ -263,8 +263,12 @@ namespace plexdb {
 
     export template<typename... Types>
     bool operator==(const TaggedUnion<Types...>& a, const TaggedUnion<Types...>& b) {
-        if (a.index != b.index) return false;
-        if (a.index == TaggedUnion<Types...>::invalid_index) return true;
+        if (a.index != b.index) {
+            return false;
+        }
+        if (a.index == TaggedUnion<Types...>::invalid_index) {
+            return true;
+        }
         return visit(a, [&b](const auto& av) -> bool {
             using T = RemoveCVRef<decltype(av)>;
             return av == get<T>(b);

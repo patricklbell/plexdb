@@ -34,12 +34,18 @@ export namespace plexdb::plugin {
 
     inline constexpr const char* to_str(Level lvl) {
         switch (lvl) {
-            case Level::Trace: return "TRACE";
-            case Level::Debug: return "DEBUG";
-            case Level::Info:  return "INFO";
-            case Level::Warn:  return "WARN";
-            case Level::Error: return "ERROR";
-            default:           return "???";
+            case Level::Trace:
+                return "TRACE";
+            case Level::Debug:
+                return "DEBUG";
+            case Level::Info:
+                return "INFO";
+            case Level::Warn:
+                return "WARN";
+            case Level::Error:
+                return "ERROR";
+            default:
+                return "???";
         }
     }
 
@@ -52,12 +58,18 @@ export namespace plexdb::plugin {
     class Producer {
     public:
         mutable uint32_t id;
-        const char* name;
+        const char*      name;
 
-        Producer(const char* name) : id(0), name(name) {}
+        Producer(const char* name)
+            : id(0)
+            , name(name) {
+        }
         ~Producer() {
-            if constexpr (enabled)
-                if (id) internal_unregister_producer(id);
+            if constexpr (enabled) {
+                if (id) {
+                    internal_unregister_producer(id);
+                }
+            }
         }
 
         Producer(const Producer&)            = delete;
@@ -66,8 +78,9 @@ export namespace plexdb::plugin {
 
     inline void ensure_registered(const Producer& p) {
         if constexpr (enabled) {
-            if (p.id == 0)
+            if (p.id == 0) {
                 p.id = internal_register_producer(p.name);
+            }
         }
     }
 
@@ -75,8 +88,8 @@ export namespace plexdb::plugin {
     // stat types
     // ========================================================================
     enum class StatType : uint32_t {
-        Counter = PLEXDB_STAT_COUNTER,  // monotonically increasing cumulative value
-        Gauge   = PLEXDB_STAT_GAUGE,    // point-in-time measurement
+        Counter = PLEXDB_STAT_COUNTER, // monotonically increasing cumulative value
+        Gauge   = PLEXDB_STAT_GAUGE,   // point-in-time measurement
     };
 
     // ========================================================================
@@ -87,16 +100,23 @@ export namespace plexdb::plugin {
     // ========================================================================
     class Stat {
     public:
-        const Producer* producer;
+        const Producer*  producer;
         mutable uint32_t id;
-        const char* name;
-        StatType type;
+        const char*      name;
+        StatType         type;
 
         Stat(const Producer* producer, const char* name, StatType type = StatType::Gauge)
-            : producer(producer), id(0), name(name), type(type) {}
+            : producer(producer)
+            , id(0)
+            , name(name)
+            , type(type) {
+        }
         ~Stat() {
-            if constexpr (enabled)
-                if (id) internal_unregister_stat(producer->id, id);
+            if constexpr (enabled) {
+                if (id) {
+                    internal_unregister_stat(producer->id, id);
+                }
+            }
         }
 
         Stat(const Stat&)            = delete;
@@ -106,8 +126,9 @@ export namespace plexdb::plugin {
     inline void ensure_registered(const Stat& s) {
         if constexpr (enabled) {
             ensure_registered(*s.producer);
-            if (s.id == 0)
+            if (s.id == 0) {
                 s.id = internal_register_stat(s.producer->id, static_cast<uint32_t>(s.type), s.name);
+            }
         }
     }
 

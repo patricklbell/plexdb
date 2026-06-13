@@ -8,15 +8,15 @@ namespace plexdb::arena {
         if (base == nullptr) {
             base = os::allocate(page_size + HEADER_SIZE);
         }
-        
+
         // extract arena header & fill
         ArenaPage* arena = reinterpret_cast<ArenaPage*>(base);
-        *arena = {
-            .prev = nullptr,
-            .current = arena,
-            .free_stack = nullptr,
+        *arena           = {
+            .prev        = nullptr,
+            .current     = arena,
+            .free_stack  = nullptr,
             .page_offset = HEADER_SIZE,
-            .page_size = page_size,
+            .page_size   = page_size,
             .base_offset = 0,
         };
         return arena;
@@ -36,11 +36,15 @@ namespace plexdb::arena {
     }
 
     Arena::Arena(U64 page_size, void* optional_backing_buffer)
-      : page(allocate(page_size, optional_backing_buffer)) {}
-    Arena::Arena(ArenaPage* page) : page(page) {}
+        : page(allocate(page_size, optional_backing_buffer)) {
+    }
+    Arena::Arena(ArenaPage* page)
+        : page(page) {
+    }
     Arena::~Arena() {
-        if (page != nullptr)
+        if (page != nullptr) {
             deallocate(page);
+        }
     }
     Arena::Arena(Arena&& other) noexcept {
         this->page = other.page;
@@ -48,42 +52,42 @@ namespace plexdb::arena {
     }
     Arena& Arena::operator=(Arena&& other) noexcept {
         ArenaPage* tmp = this->page;
-        this->page = other.page;
-        other.page = tmp;
+        this->page     = other.page;
+        other.page     = tmp;
         return *this;
     }
 
     void* push(ArenaPage** page, U64 size, U64 align) {
-        ArenaPage* current = (*page)->current;
-        U64 page_offset_before = align_pow2(current->page_offset, align);
-        U64 page_offset_after = page_offset_before + size;
+        ArenaPage* current            = (*page)->current;
+        U64        page_offset_before = align_pow2(current->page_offset, align);
+        U64        page_offset_after  = page_offset_before + size;
 
         if (page_offset_after > HEADER_SIZE + current->page_size) {
             ArenaPage* new_page;
 
             // if there is a large enough page on top of the free list use it
             if ((*page)->free_stack != nullptr && (*page)->free_stack->page_size > size) {
-                new_page = (*page)->free_stack;
+                new_page            = (*page)->free_stack;
                 (*page)->free_stack = (new_page->prev == *page) ? nullptr : new_page->prev;
 
-                new_page->current = new_page;
+                new_page->current     = new_page;
                 new_page->page_offset = HEADER_SIZE;
             } else {
                 U64 new_page_size = current->page_size;
-                if(size > new_page_size) {
+                if (size > new_page_size) {
                     new_page_size = align_pow2(size, align);
                 }
-        
+
                 new_page = allocate(new_page_size, nullptr);
             }
 
             new_page->base_offset = current->base_offset + HEADER_SIZE + current->page_size;
-            new_page->prev = current;
-            (*page)->current = new_page;
-            current = new_page;
+            new_page->prev        = current;
+            (*page)->current      = new_page;
+            current               = new_page;
 
             page_offset_before = align_pow2(current->page_offset, align);
-            page_offset_after = page_offset_before + size;
+            page_offset_after  = page_offset_before + size;
             assert_true(page_offset_after <= HEADER_SIZE + current->page_size, "page not large enough"); // @todo reserve across pages
         }
 
@@ -116,7 +120,7 @@ namespace plexdb::arena {
 
         if (page->current != page) {
             page->free_stack = page->current;
-            page->current = page;
+            page->current    = page;
         }
     }
 }

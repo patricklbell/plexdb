@@ -25,7 +25,7 @@ export namespace plexdb::os {
     // process info
     // ========================================================================
     struct ProcessInfo {
-        U32 pid;
+        U32  pid;
         bool large_pages_allowed;
     };
 
@@ -34,9 +34,9 @@ export namespace plexdb::os {
     // ========================================================================
     struct IoUringFeatures {
         bool supported;
-        U32 max_sq_entries;
-        U32 max_cq_entries;
-        U32 max_iovecs;
+        U32  max_sq_entries;
+        U32  max_cq_entries;
+        U32  max_iovecs;
         bool sqpoll;
         bool iopoll;
         bool registered_buffers;
@@ -47,9 +47,9 @@ export namespace plexdb::os {
         U32 major;
         U32 minor;
         U32 patch;
-        
+
         IoUringFeatures io_uring;
-        
+
         bool aio_supported;
         bool aio_poll_supported;
         bool transparent_huge_pages;

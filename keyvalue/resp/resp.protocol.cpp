@@ -18,7 +18,8 @@ namespace keyvalue::resp::protocol {
     static void append_crlf(DynamicArray<U8>& buf) {
         U64 old = buf.length;
         resize(buf, old + 2);
-        buf[old] = '\r'; buf[old + 1] = '\n';
+        buf[old]     = '\r';
+        buf[old + 1] = '\n';
     }
     static void append_decimal(DynamicArray<U8>& buf, S64 value) {
         AutoString8 s = to_str(value);
@@ -52,13 +53,17 @@ namespace keyvalue::resp::protocol {
         append_str(buf, value);
         append_crlf(buf);
     }
-    void append_null_bulk_string(DynamicArray<U8>& buf) { append_str(buf, "$-1\r\n"); }
+    void append_null_bulk_string(DynamicArray<U8>& buf) {
+        append_str(buf, "$-1\r\n");
+    }
     void append_array_header(DynamicArray<U8>& buf, S64 count) {
         push_back(buf, U8('*'));
         append_decimal(buf, count);
         append_crlf(buf);
     }
-    void append_null_array(DynamicArray<U8>& buf) { append_str(buf, "*-1\r\n"); }
+    void append_null_array(DynamicArray<U8>& buf) {
+        append_str(buf, "*-1\r\n");
+    }
 
     bool encode_result(const engine::ExecutionResult& result, DynamicArray<U8>& buf) {
         if (result.status == engine::ExecutionStatus::Close) {
@@ -87,22 +92,27 @@ namespace keyvalue::resp::protocol {
                 break;
             case engine::ResultKind::Arr:
                 append_array_header(buf, S64(result.arr.length));
-                for (U64 i = 0; i < result.arr.length; i++)
+                for (U64 i = 0; i < result.arr.length; i++) {
                     append_bulk_string(buf, result.arr[i]);
+                }
                 break;
             case engine::ResultKind::NullArr:
                 append_array_header(buf, S64(result.null_arr.length));
                 for (U64 i = 0; i < result.null_arr.length; i++) {
-                    if (result.null_arr[i]) append_bulk_string(buf, *result.null_arr[i]);
-                    else                    append_null_bulk_string(buf);
+                    if (result.null_arr[i]) {
+                        append_bulk_string(buf, *result.null_arr[i]);
+                    } else {
+                        append_null_bulk_string(buf);
+                    }
                 }
                 break;
             case engine::ResultKind::Scan:
                 append_array_header(buf, 2);
                 append_bulk_string(buf, result.cursor);
                 append_array_header(buf, S64(result.arr.length));
-                for (U64 i = 0; i < result.arr.length; i++)
+                for (U64 i = 0; i < result.arr.length; i++) {
                     append_bulk_string(buf, result.arr[i]);
+                }
                 break;
         }
         return true;

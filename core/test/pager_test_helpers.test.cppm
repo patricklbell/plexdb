@@ -14,9 +14,9 @@ import plexdb.coroutine;
 using namespace plexdb;
 
 export {
-    inline auto g_test_sync_file_io_ctx = aio::create_sync_file_io_context();
+    inline auto               g_test_sync_file_io_ctx = aio::create_sync_file_io_context();
     inline aio::EventConsumer g_test_sync_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
-    inline os::Poll g_test_poll{};
+    inline os::Poll           g_test_poll{};
 
     inline Pager test_pager(os::Handle f) {
         Pager p;
@@ -34,7 +34,7 @@ export {
         return Pager{&g_test_sync_file_io_ctx, f, header};
     }
     inline Pager create_test_pager(os::Handle f, os::Handle wal, U64 page_size) {
-        Pager p;
+        Pager         p;
         pager::Header header = aio::drive(pager::create(g_test_sync_file_io_ctx, f, page_size), g_test_sync_consumer, g_test_poll);
         aio::drive(pager::init(p, &g_test_sync_file_io_ctx, f, wal, header), g_test_sync_consumer, g_test_poll);
         return p;
@@ -47,7 +47,6 @@ export {
     inline Wal create_test_wal(os::Handle f, U64 page_size) {
         return Wal{f, aio::drive(wal::create(g_test_sync_file_io_ctx, f, page_size), g_test_sync_consumer, g_test_poll)};
     }
-
 
     template<typename T>
     T drive_test_pager(coroutine::Task<T> task) {

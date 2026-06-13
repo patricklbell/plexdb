@@ -16,15 +16,15 @@ export namespace plexdb::uring {
     // ========================================================================
     struct RingSettings {
         bool recommended;
-        U32 recommended_queue_depth;
-        U64 recommended_buffer_size;
-        U32 recommended_buffer_count;
-        
+        U32  recommended_queue_depth;
+        U64  recommended_buffer_size;
+        U32  recommended_buffer_count;
+
         bool available;
-        U32 available_queue_depth;
-        U64 available_buffer_bytes;
-        U32 available_buffer_count;
-        U32 available_ring_count;
+        U32  available_queue_depth;
+        U64  available_buffer_bytes;
+        U32  available_buffer_count;
+        U32  available_ring_count;
     };
 
     // @todo thread safe
@@ -38,19 +38,19 @@ export namespace plexdb::uring {
     // - IORING_OP_CLOSE: close operation support
     // - Multishot accept support (kernel 5.19+)
     struct Ring {
-        os::Handle server   = os::zero_handle();
-        os::Handle event_fd = os::zero_handle(); // readable when CQEs are available (for epoll integration)
-        void* ring_vptr = nullptr;
-        U8* buffers = nullptr;
-        void* iovecs_vptr = nullptr;
-        U64 buffer_size = 0;
-        U32 buffer_count = 0;
+        os::Handle server       = os::zero_handle();
+        os::Handle event_fd     = os::zero_handle(); // readable when CQEs are available (for epoll integration)
+        void*      ring_vptr    = nullptr;
+        U8*        buffers      = nullptr;
+        void*      iovecs_vptr  = nullptr;
+        U64        buffer_size  = 0;
+        U32        buffer_count = 0;
 
         Ring() = default;
         Ring(os::Handle server, U32 queue_depth, U64 buffer_size, U32 buffer_count);
         ~Ring();
 
-        Ring(const Ring&) = delete;
+        Ring(const Ring&)            = delete;
         Ring& operator=(const Ring&) = delete;
 
         Ring(Ring&& other) noexcept;
@@ -65,58 +65,58 @@ export namespace plexdb::uring {
     // completion queue entry
     // ========================================================================
     enum class Error {
-        None = 0,       // success
-        NotFound,       // resource not found
-        Invalid,        // invalid argument
-        IO,             // generic I/O error
-        Unknown         // unmapped or unknown error
+        None = 0, // success
+        NotFound, // resource not found
+        Invalid,  // invalid argument
+        IO,       // generic I/O error
+        Unknown   // unmapped or unknown error
     };
 
     struct ReadEvent {
         Error error;
-        U32 buffer_idx;
-        U32 bytes_read;
+        U32   buffer_idx;
+        U32   bytes_read;
     };
     struct WriteEvent {
         Error error;
-        U32 buffer_idx;
-        U32 bytes_written;
+        U32   buffer_idx;
+        U32   bytes_written;
     };
     struct AcceptEvent {
-        Error error;
+        Error      error;
         os::Handle client;
     };
     struct MultishotAcceptEvent {
-        Error error;
+        Error      error;
         os::Handle client;
     };
     struct CloseEvent {
-        Error error;
+        Error      error;
         os::Handle client;
     };
 
     struct FileReadEvent {
         Error error;
-        U32 buffer_idx;
-        U32 bytes_read;
-        U64 token;
+        U32   buffer_idx;
+        U32   bytes_read;
+        U64   token;
     };
     struct FileWriteEvent {
         Error error;
-        U32 buffer_idx;
-        U32 bytes_written;
-        U64 token;
+        U32   buffer_idx;
+        U32   bytes_written;
+        U64   token;
     };
     struct FileSyncEvent {
         Error error;
-        U64 token;
+        U64   token;
     };
 
-    using CQE = TaggedUnion<ReadEvent,WriteEvent,AcceptEvent,MultishotAcceptEvent,CloseEvent,
-                            FileReadEvent,FileWriteEvent,FileSyncEvent>;
+    using CQE = TaggedUnion<ReadEvent, WriteEvent, AcceptEvent, MultishotAcceptEvent, CloseEvent,
+                            FileReadEvent, FileWriteEvent, FileSyncEvent>;
 
-    U32 cqe_get_size(const Ring& ring);
-    CQE cqe_top(Ring& ring);
+    U32  cqe_get_size(const Ring& ring);
+    CQE  cqe_top(Ring& ring);
     bool cqe_pop(Ring& ring, U32 count = 0);
 
     // ========================================================================
@@ -173,20 +173,24 @@ export namespace plexdb::uring {
     // for a free buffer slot.
     template<U64 MaxWaiters>
     struct BufferPool {
-        U32 buffer_count = 0;
-        U32 next_free = 0;
-        DynamicArray<bool> in_use;
+        U32                                           buffer_count = 0;
+        U32                                           next_free    = 0;
+        DynamicArray<bool>                            in_use;
         RingFifo<std::coroutine_handle<>, MaxWaiters> waiters;
 
-        explicit BufferPool(U32 count) : buffer_count(count), next_free(0), in_use(count) {}
+        explicit BufferPool(U32 count)
+            : buffer_count(count)
+            , next_free(0)
+            , in_use(count) {
+        }
 
         U32 try_acquire() {
             U32 start = next_free;
-            U32 cur = start;
+            U32 cur   = start;
             do {
                 if (!in_use[cur]) {
                     in_use[cur] = true;
-                    next_free = (cur + 1) % buffer_count;
+                    next_free   = (cur + 1) % buffer_count;
                     return cur;
                 }
                 cur = (cur + 1) % buffer_count;
@@ -197,11 +201,12 @@ export namespace plexdb::uring {
         coroutine::Task<U32> acquire() {
             while (true) {
                 U32 idx = try_acquire();
-                if (idx != INVALID_BUFFER_IDX) co_return idx;
+                if (idx != INVALID_BUFFER_IDX) {
+                    co_return idx;
+                }
                 co_await coroutine::Awaitable{
                     [this](std::coroutine_handle<> h) { push_front(waiters, h); },
-                    []() {}
-                };
+                    []() {}};
             }
         }
 

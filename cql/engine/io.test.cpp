@@ -19,33 +19,46 @@ using namespace cql::io;
 
 struct Buffer {
     DynamicArray<U8> data{};
-    U64 cursor = 0;
+    U64              cursor = 0;
 
     struct WriterCallable {
         Buffer* self;
-        void operator()(const U8* src, U64 size) {
-            for (U64 i = 0; i < size; i++) push_back(self->data, src[i]);
+        void    operator()(const U8* src, U64 size) {
+            for (U64 i = 0; i < size; i++) {
+                push_back(self->data, src[i]);
+            }
         }
     } _wc{nullptr};
 
     struct ReaderCallable {
-        Buffer* self;
+        Buffer*               self;
         coroutine::Task<void> operator()(U8* dst, U64 size) {
-            if (dst) for (U64 i = 0; i < size; i++) dst[i] = self->data[self->cursor + i];
+            if (dst) {
+                for (U64 i = 0; i < size; i++) {
+                    dst[i] = self->data[self->cursor + i];
+                }
+            }
             self->cursor += size;
             co_return;
         }
     } _rc{nullptr};
 
-    Buffer() : _wc{this}, _rc{this} {}
+    Buffer()
+        : _wc{this}
+        , _rc{this} {
+    }
 
-    Writer writer() { return to_writer(_wc); }
-    Reader reader() { return to_reader(_rc); }
+    Writer writer() {
+        return to_writer(_wc);
+    }
+    Reader reader() {
+        return to_reader(_rc);
+    }
 };
 
 IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
     SECTION("text") {
-        Buffer buf;
+        Buffer      buf;
         ColumnValue in{AutoString8("hello world")};
         write_column_value(buf.writer(), in, type::create_basic(type::Basic::text));
         auto out = co_await read_column_value(buf.reader(), type::Basic::text);
@@ -54,7 +67,7 @@ IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
     }
 
     SECTION("empty text") {
-        Buffer buf;
+        Buffer      buf;
         ColumnValue in{AutoString8("")};
         write_column_value(buf.writer(), in, type::create_basic(type::Basic::text));
         auto out = co_await read_column_value(buf.reader(), type::Basic::text);
@@ -63,7 +76,7 @@ IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
     }
 
     SECTION("int") {
-        Buffer buf;
+        Buffer      buf;
         ColumnValue in{S32(-42)};
         write_column_value(buf.writer(), in, type::create_basic(type::Basic::int_));
         auto out = co_await read_column_value(buf.reader(), type::Basic::int_);
@@ -72,7 +85,7 @@ IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
     }
 
     SECTION("bigint") {
-        Buffer buf;
+        Buffer      buf;
         ColumnValue in{S64(9999999999LL)};
         write_column_value(buf.writer(), in, type::create_basic(type::Basic::bigint));
         auto out = co_await read_column_value(buf.reader(), type::Basic::bigint);
@@ -81,7 +94,7 @@ IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
     }
 
     SECTION("smallint") {
-        Buffer buf;
+        Buffer      buf;
         ColumnValue in{S16(-32000)};
         write_column_value(buf.writer(), in, type::create_basic(type::Basic::smallint));
         auto out = co_await read_column_value(buf.reader(), type::Basic::smallint);
@@ -90,14 +103,14 @@ IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
     }
 
     SECTION("boolean") {
-        Buffer buf;
+        Buffer      buf;
         ColumnValue in_t{U8(1)};
         write_column_value(buf.writer(), in_t, type::create_basic(type::Basic::boolean));
         auto out_t = co_await read_column_value(buf.reader(), type::Basic::boolean);
         REQUIRE(type_matches_tag<U8>(out_t));
         REQUIRE(get<U8>(out_t) == 1);
 
-        Buffer buf2;
+        Buffer      buf2;
         ColumnValue in_f{U8(0)};
         write_column_value(buf2.writer(), in_f, type::create_basic(type::Basic::boolean));
         auto out_f = co_await read_column_value(buf2.reader(), type::Basic::boolean);
@@ -105,7 +118,7 @@ IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
     }
 
     SECTION("float") {
-        Buffer buf;
+        Buffer      buf;
         ColumnValue in{F32(3.14f)};
         write_column_value(buf.writer(), in, type::create_basic(type::Basic::float_));
         auto out = co_await read_column_value(buf.reader(), type::Basic::float_);
@@ -114,7 +127,7 @@ IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
     }
 
     SECTION("double") {
-        Buffer buf;
+        Buffer      buf;
         ColumnValue in{F64(-2.71828)};
         write_column_value(buf.writer(), in, type::create_basic(type::Basic::double_));
         auto out = co_await read_column_value(buf.reader(), type::Basic::double_);
@@ -124,8 +137,10 @@ IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
 
     SECTION("uuid") {
         Buffer buf;
-        UUID id;
-        for (U64 i = 0; i < 16; i++) id.value[i] = static_cast<U8>(i + 1);
+        UUID   id;
+        for (U64 i = 0; i < 16; i++) {
+            id.value[i] = static_cast<U8>(i + 1);
+        }
         ColumnValue in{id};
         write_column_value(buf.writer(), in, type::create_basic(type::Basic::uuid));
         auto out = co_await read_column_value(buf.reader(), type::Basic::uuid);
@@ -137,9 +152,12 @@ IO_TEST_CASE("io roundtrip - scalar types", "[cql.engine.io]") {
 IO_TEST_CASE("io roundtrip - inet", "[cql.engine.io]") {
     SECTION("ipv4") {
         Buffer buf;
-        Inet addr;
+        Inet   addr;
         addr.is_v6 = false;
-        addr.v4[0] = 192; addr.v4[1] = 168; addr.v4[2] = 1; addr.v4[3] = 42;
+        addr.v4[0] = 192;
+        addr.v4[1] = 168;
+        addr.v4[2] = 1;
+        addr.v4[3] = 42;
         ColumnValue in{addr};
         write_column_value(buf.writer(), in, type::create_basic(type::Basic::inet));
         auto out = co_await read_column_value(buf.reader(), type::Basic::inet);
@@ -149,9 +167,11 @@ IO_TEST_CASE("io roundtrip - inet", "[cql.engine.io]") {
 
     SECTION("ipv6") {
         Buffer buf;
-        Inet addr;
+        Inet   addr;
         addr.is_v6 = true;
-        for (int i = 0; i < 16; i++) addr.v6[i] = static_cast<U8>(i * 0x11);
+        for (int i = 0; i < 16; i++) {
+            addr.v6[i] = static_cast<U8>(i * 0x11);
+        }
         ColumnValue in{addr};
         write_column_value(buf.writer(), in, type::create_basic(type::Basic::inet));
         auto out = co_await read_column_value(buf.reader(), type::Basic::inet);
@@ -199,9 +219,9 @@ IO_TEST_CASE("io roundtrip - varint", "[cql.engine.io]") {
 }
 
 IO_TEST_CASE("io roundtrip - decimal", "[cql.engine.io]") {
-    Buffer buf;
+    Buffer  buf;
     Decimal val;
-    val.scale = 3;
+    val.scale             = 3;
     val.unscaled.negative = false;
     push_back(val.unscaled.magnitude, U8(0x27));
     push_back(val.unscaled.magnitude, U8(0x0F));
@@ -213,8 +233,8 @@ IO_TEST_CASE("io roundtrip - decimal", "[cql.engine.io]") {
 }
 
 IO_TEST_CASE("io roundtrip - duration", "[cql.engine.io]") {
-    Buffer buf;
-    Duration val{.months = 1, .days = 15, .nanoseconds = 3600000000000LL};
+    Buffer      buf;
+    Duration    val{.months = 1, .days = 15, .nanoseconds = 3600000000000LL};
     ColumnValue in{val};
     write_column_value(buf.writer(), in, type::create_basic(type::Basic::duration));
     auto out = co_await read_column_value(buf.reader(), type::Basic::duration);
@@ -224,8 +244,8 @@ IO_TEST_CASE("io roundtrip - duration", "[cql.engine.io]") {
 
 IO_TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
     SECTION("list<text>") {
-        Buffer buf;
-        type::Type t = type::create_list(type::Basic::text);
+        Buffer                          buf;
+        type::Type                      t = type::create_list(type::Basic::text);
         DynamicArray<NestedColumnValue> arr{};
         push_back(arr, NestedColumnValue{ColumnValue{AutoString8("alpha")}});
         push_back(arr, NestedColumnValue{ColumnValue{AutoString8("beta")}});
@@ -242,8 +262,8 @@ IO_TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
     }
 
     SECTION("list<int>") {
-        Buffer buf;
-        type::Type t = type::create_list(type::Basic::int_);
+        Buffer                          buf;
+        type::Type                      t = type::create_list(type::Basic::int_);
         DynamicArray<NestedColumnValue> arr{};
         push_back(arr, NestedColumnValue{ColumnValue{S32(1)}});
         push_back(arr, NestedColumnValue{ColumnValue{S32(-99)}});
@@ -260,10 +280,10 @@ IO_TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
     }
 
     SECTION("empty list") {
-        Buffer buf;
-        type::Type t = type::create_list(type::Basic::bigint);
+        Buffer                          buf;
+        type::Type                      t = type::create_list(type::Basic::bigint);
         DynamicArray<NestedColumnValue> arr{};
-        ColumnValue in{move(arr)};
+        ColumnValue                     in{move(arr)};
         write_column_value(buf.writer(), in, t);
         auto out = co_await read_column_value(buf.reader(), t);
         REQUIRE(type_matches_tag<DynamicArray<NestedColumnValue>>(out));
@@ -271,8 +291,8 @@ IO_TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
     }
 
     SECTION("vector<float>") {
-        Buffer buf;
-        type::Type t = type::create_vector(type::Basic::float_, 3);
+        Buffer                          buf;
+        type::Type                      t = type::create_vector(type::Basic::float_, 3);
         DynamicArray<NestedColumnValue> arr{};
         push_back(arr, NestedColumnValue{ColumnValue{F32(1.0f)}});
         push_back(arr, NestedColumnValue{ColumnValue{F32(2.5f)}});
@@ -289,8 +309,8 @@ IO_TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
     }
 
     SECTION("set<bigint>") {
-        Buffer buf;
-        type::Type t = type::create_set(type::Basic::bigint);
+        Buffer                        buf;
+        type::Type                    t = type::create_set(type::Basic::bigint);
         DynamicSet<NestedColumnValue> s{};
         insert(s, NestedColumnValue{ColumnValue{S64(100LL)}});
         insert(s, NestedColumnValue{ColumnValue{S64(200LL)}});
@@ -303,8 +323,8 @@ IO_TEST_CASE("io roundtrip - collections", "[cql.engine.io]") {
     }
 
     SECTION("map<text,bigint>") {
-        Buffer buf;
-        type::Type t = type::create_map(type::Basic::text, type::Basic::bigint);
+        Buffer                                           buf;
+        type::Type                                       t = type::create_map(type::Basic::text, type::Basic::bigint);
         DynamicMap<NestedColumnValue, NestedColumnValue> m{};
         insert(m, NestedColumnValue{ColumnValue{AutoString8("key1")}}, NestedColumnValue{ColumnValue{S64(42LL)}});
         insert(m, NestedColumnValue{ColumnValue{AutoString8("key2")}}, NestedColumnValue{ColumnValue{S64(-1LL)}});
@@ -364,10 +384,12 @@ TEST_CASE("io to_str - scalars", "[cql.engine.io]") {
 
 TEST_CASE("io to_str - uuid format", "[cql.engine.io]") {
     UUID id;
-    for (U64 i = 0; i < 16; i++) id.value[i] = 0;
+    for (U64 i = 0; i < 16; i++) {
+        id.value[i] = 0;
+    }
     auto s = to_str(ColumnValue{id}, type::Basic::uuid);
     REQUIRE(s.length == 36);
-    REQUIRE(s.c_str[8]  == '-');
+    REQUIRE(s.c_str[8] == '-');
     REQUIRE(s.c_str[13] == '-');
     REQUIRE(s.c_str[18] == '-');
     REQUIRE(s.c_str[23] == '-');
@@ -376,7 +398,10 @@ TEST_CASE("io to_str - uuid format", "[cql.engine.io]") {
 TEST_CASE("io to_str - inet ipv4", "[cql.engine.io]") {
     Inet addr;
     addr.is_v6 = false;
-    addr.v4[0] = 127; addr.v4[1] = 0; addr.v4[2] = 0; addr.v4[3] = 1;
+    addr.v4[0] = 127;
+    addr.v4[1] = 0;
+    addr.v4[2] = 0;
+    addr.v4[3] = 1;
     REQUIRE(to_str(ColumnValue{addr}, type::Basic::inet) == "127.0.0.1");
 }
 

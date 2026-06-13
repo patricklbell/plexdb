@@ -23,9 +23,9 @@ namespace plexdb::coroutine {
 
     struct TracyFiber {
         // "0x" + hex digits for pointer + NUL
-        static constexpr int k_len = 2 + static_cast<int>(sizeof(void*)) * 2 + 1;
-        char        name[k_len]          = {};
-        const char* continuation_name    = nullptr;
+        static constexpr int k_len             = 2 + static_cast<int>(sizeof(void*)) * 2 + 1;
+        char                 name[k_len]       = {};
+        const char*          continuation_name = nullptr;
     };
 
     // Stub used when tracy_enabled=false. Must expose the same member names and
@@ -34,11 +34,18 @@ namespace plexdb::coroutine {
     struct EmptyTracyFiber {
         char        name[1]           = {};
         const char* continuation_name = nullptr;
-        EmptyTracyFiber() = default;
-        EmptyTracyFiber(const char*) noexcept {}
-        EmptyTracyFiber& operator=(const char*) noexcept { return *this; }
-        operator const char*() const noexcept { return nullptr; }
-        explicit operator bool() const noexcept { return false; }
+        EmptyTracyFiber()             = default;
+        EmptyTracyFiber(const char*) noexcept {
+        }
+        EmptyTracyFiber& operator=(const char*) noexcept {
+            return *this;
+        }
+        operator const char*() const noexcept {
+            return nullptr;
+        }
+        explicit operator bool() const noexcept {
+            return false;
+        }
     };
 
 #ifdef PLEXDB_ENABLE_TRACY_PROFILER
@@ -47,9 +54,10 @@ namespace plexdb::coroutine {
     }
 
     inline void write_hex_ptr(char* buf, const void* ptr) noexcept {
-        auto v = reinterpret_cast<uintptr_t>(ptr);
+        auto          v = reinterpret_cast<uintptr_t>(ptr);
         constexpr int n = static_cast<int>(sizeof(void*)) * 2;
-        buf[0] = '0'; buf[1] = 'x';
+        buf[0]          = '0';
+        buf[1]          = 'x';
         for (int i = n - 1; i >= 0; --i) {
             buf[2 + i] = k_hex_chars[v & 0xf];
             v >>= 4;
@@ -57,7 +65,8 @@ namespace plexdb::coroutine {
         buf[2 + n] = '\0';
     }
 #else
-    inline void write_hex_ptr(char*, const void*) noexcept {}
+    inline void write_hex_ptr(char*, const void*) noexcept {
+    }
 #endif
 
     // Always declared so if constexpr(tracy_enabled) branches are well-formed.
@@ -71,7 +80,10 @@ export namespace plexdb::coroutine {
     //   Controls whether a Task suspends before its body executes (Lazy),
     //   or begins executing inline during construction (Eager).
     // ========================================================================
-    enum class Start { Lazy, Eager };
+    enum class Start {
+        Lazy,
+        Eager
+    };
 
     // ========================================================================
     // Task<T, S>
@@ -89,7 +101,7 @@ export namespace plexdb::coroutine {
         // built-in api (e.g. co_await)
         // ====================================================================
         struct promise_type {
-            Optional<T> result;
+            Optional<T>             result;
             std::coroutine_handle<> continuation = std::noop_coroutine();
 #ifdef PLEXDB_EXCEPTIONS
             std::exception_ptr exception;
@@ -115,13 +127,18 @@ export namespace plexdb::coroutine {
             }
 
             auto initial_suspend() noexcept {
-                if constexpr (S == Start::Lazy) return std::suspend_always{};
-                else return std::suspend_never{};
+                if constexpr (S == Start::Lazy) {
+                    return std::suspend_always{};
+                } else {
+                    return std::suspend_never{};
+                }
             }
 
             auto final_suspend() noexcept {
                 struct Awaiter {
-                    bool await_ready() noexcept { return false; }
+                    bool await_ready() noexcept {
+                        return false;
+                    }
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
                         debug::pop_frame(h.promise().debug_frame);
 
@@ -135,12 +152,15 @@ export namespace plexdb::coroutine {
 
                         return h.promise().continuation;
                     }
-                    void await_resume() noexcept {}
+                    void await_resume() noexcept {
+                    }
                 };
                 return Awaiter{};
             }
 
-            void return_value(T value) { result.emplace(move(value)); }
+            void return_value(T value) {
+                result.emplace(move(value));
+            }
             void unhandled_exception() {
 #ifdef PLEXDB_EXCEPTIONS
                 exception = std::current_exception();
@@ -152,7 +172,9 @@ export namespace plexdb::coroutine {
             }
         };
 
-        bool await_ready() const noexcept { return handle.done(); }
+        bool await_ready() const noexcept {
+            return handle.done();
+        }
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
             debug::push_frame(handle.promise().debug_frame);
@@ -167,8 +189,9 @@ export namespace plexdb::coroutine {
 
         T await_resume() {
 #ifdef PLEXDB_EXCEPTIONS
-            if (handle.promise().exception)
+            if (handle.promise().exception) {
                 std::rethrow_exception(handle.promise().exception);
+            }
 #endif
             return move(handle.promise().result.value());
         }
@@ -183,18 +206,26 @@ export namespace plexdb::coroutine {
             }
             handle.resume();
         }
-        bool done() const { return handle.done(); }
-        bool has_value() const { return handle.promise().result.has_value(); }
+        bool done() const {
+            return handle.done();
+        }
+        bool has_value() const {
+            return handle.promise().result.has_value();
+        }
         T& value() & {
 #ifdef PLEXDB_EXCEPTIONS
-            if (handle.promise().exception) std::rethrow_exception(handle.promise().exception);
+            if (handle.promise().exception) {
+                std::rethrow_exception(handle.promise().exception);
+            }
 #endif
             assert_true(has_value(), "coroutine result is not ready");
             return handle.promise().result.value();
         }
-        const T& value() const & {
+        const T& value() const& {
 #ifdef PLEXDB_EXCEPTIONS
-            if (handle.promise().exception) std::rethrow_exception(handle.promise().exception);
+            if (handle.promise().exception) {
+                std::rethrow_exception(handle.promise().exception);
+            }
 #endif
             assert_true(has_value(), "coroutine result is not ready");
             return handle.promise().result.value();
@@ -203,25 +234,37 @@ export namespace plexdb::coroutine {
         // ====================================================================
         // constructors/destructors
         // ====================================================================
-        Task(Task&& other) noexcept : handle(other.handle) { other.handle = nullptr; }
+        Task(Task&& other) noexcept
+            : handle(other.handle) {
+            other.handle = nullptr;
+        }
 
         Task& operator=(Task&& other) noexcept {
             if (this != &other) {
                 destroy();
-                handle = other.handle;
+                handle       = other.handle;
                 other.handle = nullptr;
             }
             return *this;
         }
 
-        Task(const Task&) = delete;
+        Task(const Task&)            = delete;
         Task& operator=(const Task&) = delete;
-        ~Task() { destroy(); }
+        ~Task() {
+            destroy();
+        }
 
     private:
         std::coroutine_handle<promise_type> handle;
-        explicit Task(std::coroutine_handle<promise_type> h) noexcept : handle(h) {}
-        void destroy() { if (handle) { handle.destroy(); handle = nullptr; } }
+        explicit Task(std::coroutine_handle<promise_type> h) noexcept
+            : handle(h) {
+        }
+        void destroy() {
+            if (handle) {
+                handle.destroy();
+                handle = nullptr;
+            }
+        }
     };
 
     template<Start S>
@@ -256,14 +299,19 @@ export namespace plexdb::coroutine {
             }
 
             auto initial_suspend() noexcept {
-                if constexpr (S == Start::Lazy) return std::suspend_always{};
-                else return std::suspend_never{};
+                if constexpr (S == Start::Lazy) {
+                    return std::suspend_always{};
+                } else {
+                    return std::suspend_never{};
+                }
             }
 
             auto final_suspend() noexcept {
                 struct Awaiter {
                     // @note coroutine pauses after final_suspend, meaning ~Task needs to call destroy
-                    bool await_ready() noexcept { return false; }
+                    bool await_ready() noexcept {
+                        return false;
+                    }
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
                         debug::pop_frame(h.promise().debug_frame);
 
@@ -277,12 +325,14 @@ export namespace plexdb::coroutine {
 
                         return h.promise().continuation;
                     }
-                    void await_resume() noexcept {}
+                    void await_resume() noexcept {
+                    }
                 };
                 return Awaiter{};
             }
 
-            void return_void() noexcept {}
+            void return_void() noexcept {
+            }
             void unhandled_exception() {
 #ifdef PLEXDB_EXCEPTIONS
                 exception = std::current_exception();
@@ -294,7 +344,9 @@ export namespace plexdb::coroutine {
             }
         };
 
-        bool await_ready() const noexcept { return handle.done(); }
+        bool await_ready() const noexcept {
+            return handle.done();
+        }
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
             debug::push_frame(handle.promise().debug_frame);
@@ -309,8 +361,9 @@ export namespace plexdb::coroutine {
 
         void await_resume() {
 #ifdef PLEXDB_EXCEPTIONS
-            if (handle.promise().exception)
+            if (handle.promise().exception) {
                 std::rethrow_exception(handle.promise().exception);
+            }
 #endif
         }
 
@@ -325,30 +378,44 @@ export namespace plexdb::coroutine {
 
             handle.resume();
         }
-        bool done() const { return handle.done(); }
+        bool done() const {
+            return handle.done();
+        }
 
         // ====================================================================
         // constructors/destructors
         // ====================================================================
-        Task(Task&& other) noexcept : handle(other.handle) { other.handle = nullptr; }
+        Task(Task&& other) noexcept
+            : handle(other.handle) {
+            other.handle = nullptr;
+        }
 
         Task& operator=(Task&& other) noexcept {
             if (this != &other) {
                 destroy();
-                handle = other.handle;
+                handle       = other.handle;
                 other.handle = nullptr;
             }
             return *this;
         }
 
-        Task(const Task&) = delete;
+        Task(const Task&)            = delete;
         Task& operator=(const Task&) = delete;
-        ~Task() { destroy(); }
+        ~Task() {
+            destroy();
+        }
 
     private:
         std::coroutine_handle<promise_type> handle;
-        explicit Task(std::coroutine_handle<promise_type> h) noexcept : handle(h) {}
-        void destroy() { if (handle) { handle.destroy(); handle = nullptr; } }
+        explicit Task(std::coroutine_handle<promise_type> h) noexcept
+            : handle(h) {
+        }
+        void destroy() {
+            if (handle) {
+                handle.destroy();
+                handle = nullptr;
+            }
+        }
     };
 
     // ========================================================================
@@ -368,7 +435,10 @@ export namespace plexdb::coroutine {
     //     whatever on_suspend registered. Capture pointers, not references —
     //     the TriviallyCopyable constraint enforces this at compile time.
     // ========================================================================
-    struct NoOp { void operator()() const noexcept {} };
+    struct NoOp {
+        void operator()() const noexcept {
+        }
+    };
 
     template<typename OnSuspend, typename OnResume, typename OnDelete = NoOp>
         requires TriviallyCopyable<OnDelete>
@@ -378,10 +448,19 @@ export namespace plexdb::coroutine {
         OnDelete  on_delete;
         bool      _resumed = false;
 
-        Awaitable(OnSuspend s, OnResume r)              : on_suspend(move(s)), on_resume(move(r))               {}
-        Awaitable(OnSuspend s, OnResume r, OnDelete d)  : on_suspend(move(s)), on_resume(move(r)), on_delete(move(d)) {}
+        Awaitable(OnSuspend s, OnResume r)
+            : on_suspend(move(s))
+            , on_resume(move(r)) {
+        }
+        Awaitable(OnSuspend s, OnResume r, OnDelete d)
+            : on_suspend(move(s))
+            , on_resume(move(r))
+            , on_delete(move(d)) {
+        }
 
-        bool await_ready() noexcept { return false; }
+        bool await_ready() noexcept {
+            return false;
+        }
 
         void await_suspend(std::coroutine_handle<> h) noexcept {
             debug::save_frame(_saved_frame);
@@ -412,7 +491,11 @@ export namespace plexdb::coroutine {
             return on_resume();
         }
 
-        ~Awaitable() { if (!_resumed) on_delete(); }
+        ~Awaitable() {
+            if (!_resumed) {
+                on_delete();
+            }
+        }
 
         [[no_unique_address]]
         Conditional<debug::enabled, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
@@ -443,16 +526,22 @@ export namespace plexdb::coroutine {
                 return Generator{std::coroutine_handle<promise_type>::from_promise(*this)};
             }
 
-            std::suspend_always initial_suspend() noexcept { return {}; }
-            std::suspend_always final_suspend() noexcept { return {}; }
+            std::suspend_always initial_suspend() noexcept {
+                return {};
+            }
+            std::suspend_always final_suspend() noexcept {
+                return {};
+            }
 
             std::suspend_always yield_value(T value) {
                 current.emplace(move(value));
                 return {};
             }
 
-            void return_void() noexcept {}
-            void unhandled_exception() { }
+            void return_void() noexcept {
+            }
+            void unhandled_exception() {
+            }
         };
 
         struct Iterator {
@@ -461,12 +550,18 @@ export namespace plexdb::coroutine {
             Iterator& operator++() {
                 assert_true(handle && !handle.done(), "incremented past-end generator iterator");
                 handle.resume();
-                if (handle.done()) handle = nullptr;
+                if (handle.done()) {
+                    handle = nullptr;
+                }
                 return *this;
             }
 
-            T& operator*() const { return handle.promise().current.value(); }
-            T* operator->() const { return &handle.promise().current.value(); }
+            T& operator*() const {
+                return handle.promise().current.value();
+            }
+            T* operator->() const {
+                return &handle.promise().current.value();
+            }
 
             bool operator==(const Iterator& other) const noexcept {
                 return handle == other.handle;
@@ -478,44 +573,66 @@ export namespace plexdb::coroutine {
         };
 
         Iterator begin() {
-            if (handle) handle.resume();
-            if (!handle || handle.done()) return end();
+            if (handle) {
+                handle.resume();
+            }
+            if (!handle || handle.done()) {
+                return end();
+            }
             return Iterator{handle};
         }
 
-        Iterator end() noexcept { return Iterator{nullptr}; }
+        Iterator end() noexcept {
+            return Iterator{nullptr};
+        }
 
         // ====================================================================
         // manual api
         // ====================================================================
         Optional<T> next() {
-            if (!handle || handle.done()) return {};
+            if (!handle || handle.done()) {
+                return {};
+            }
             handle.resume();
-            if (handle.done()) return {};
+            if (handle.done()) {
+                return {};
+            }
             return Optional<T>{move(handle.promise().current.value())};
         }
 
         // ====================================================================
         // constructors/destructors
         // ====================================================================
-        Generator(Generator&& other) noexcept : handle(other.handle) { other.handle = nullptr; }
+        Generator(Generator&& other) noexcept
+            : handle(other.handle) {
+            other.handle = nullptr;
+        }
 
         Generator& operator=(Generator&& other) noexcept {
             if (this != &other) {
                 destroy();
-                handle = other.handle;
+                handle       = other.handle;
                 other.handle = nullptr;
             }
             return *this;
         }
 
-        Generator(const Generator&) = delete;
+        Generator(const Generator&)            = delete;
         Generator& operator=(const Generator&) = delete;
-        ~Generator() { destroy(); }
+        ~Generator() {
+            destroy();
+        }
 
     private:
         std::coroutine_handle<promise_type> handle;
-        explicit Generator(std::coroutine_handle<promise_type> h) noexcept : handle(h) {}
-        void destroy() { if (handle) { handle.destroy(); handle = nullptr; } }
+        explicit Generator(std::coroutine_handle<promise_type> h) noexcept
+            : handle(h) {
+        }
+        void destroy() {
+            if (handle) {
+                handle.destroy();
+                handle = nullptr;
+            }
+        }
     };
 }

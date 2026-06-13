@@ -16,37 +16,135 @@ namespace plexdb {
     // ========================================================================
     // private helper types
     // ========================================================================
-    template<typename T> struct CVHelper                   { using removed = T; static constexpr bool is = false; };
-    template<typename T> struct CVHelper<const T>          { using removed = T; static constexpr bool is = false; };
-    template<typename T> struct CVHelper<volatile T>       { using removed = T; static constexpr bool is = false; };
-    template<typename T> struct CVHelper<const volatile T> { using removed = T; static constexpr bool is = true;  };
+    template<typename T>
+    struct CVHelper {
+        using removed            = T;
+        static constexpr bool is = false;
+    };
+    template<typename T>
+    struct CVHelper<const T> {
+        using removed            = T;
+        static constexpr bool is = false;
+    };
+    template<typename T>
+    struct CVHelper<volatile T> {
+        using removed            = T;
+        static constexpr bool is = false;
+    };
+    template<typename T>
+    struct CVHelper<const volatile T> {
+        using removed            = T;
+        static constexpr bool is = true;
+    };
 
-    template<typename T> struct ConstHelper                   { using removed = T; static constexpr bool is = false; };
-    template<typename T> struct ConstHelper<const T>          { using removed = T; static constexpr bool is = true;  };
+    template<typename T>
+    struct ConstHelper {
+        using removed            = T;
+        static constexpr bool is = false;
+    };
+    template<typename T>
+    struct ConstHelper<const T> {
+        using removed            = T;
+        static constexpr bool is = true;
+    };
 
-    template<typename T> struct VolatileHelper                { using removed = T; static constexpr bool is = false; };
-    template<typename T> struct VolatileHelper<volatile T>    { using removed = T; static constexpr bool is = true;  };
+    template<typename T>
+    struct VolatileHelper {
+        using removed            = T;
+        static constexpr bool is = false;
+    };
+    template<typename T>
+    struct VolatileHelper<volatile T> {
+        using removed            = T;
+        static constexpr bool is = true;
+    };
 
-    template<typename T> struct LValueRefHelper                        { using removed = T; using added = T&; static constexpr bool is = false; };
-    template<typename T> struct LValueRefHelper<T&>                    { using removed = T; using added = T&; static constexpr bool is = true; };
-    template<>           struct LValueRefHelper<void>                  { using removed = void; using added = void; static constexpr bool is = false; };
-    template<>           struct LValueRefHelper<const void>            { using removed = const void; using added = const void; static constexpr bool is = false; };
-    template<>           struct LValueRefHelper<volatile void>         { using removed = volatile void; using added = volatile void; static constexpr bool is = false; };
-    template<>           struct LValueRefHelper<const volatile void>   { using removed = const volatile void; static constexpr bool is = false; };
+    template<typename T>
+    struct LValueRefHelper {
+        using removed            = T;
+        using added              = T&;
+        static constexpr bool is = false;
+    };
+    template<typename T>
+    struct LValueRefHelper<T&> {
+        using removed            = T;
+        using added              = T&;
+        static constexpr bool is = true;
+    };
+    template<>
+    struct LValueRefHelper<void> {
+        using removed            = void;
+        using added              = void;
+        static constexpr bool is = false;
+    };
+    template<>
+    struct LValueRefHelper<const void> {
+        using removed            = const void;
+        using added              = const void;
+        static constexpr bool is = false;
+    };
+    template<>
+    struct LValueRefHelper<volatile void> {
+        using removed            = volatile void;
+        using added              = volatile void;
+        static constexpr bool is = false;
+    };
+    template<>
+    struct LValueRefHelper<const volatile void> {
+        using removed            = const volatile void;
+        static constexpr bool is = false;
+    };
 
-    template<typename T> struct RefHelper      { using removed = T; static constexpr bool is = false; };
-    template<typename T> struct RefHelper<T&>  { using removed = T; static constexpr bool is = true;  };
-    template<typename T> struct RefHelper<T&&> { using removed = T; static constexpr bool is = true;  };
+    template<typename T>
+    struct RefHelper {
+        using removed            = T;
+        static constexpr bool is = false;
+    };
+    template<typename T>
+    struct RefHelper<T&> {
+        using removed            = T;
+        static constexpr bool is = true;
+    };
+    template<typename T>
+    struct RefHelper<T&&> {
+        using removed            = T;
+        static constexpr bool is = true;
+    };
 
-    template<typename T> struct ArrayHelper                 { using removed = T; static constexpr bool is = false; };
-    template<typename T, size_t N> struct ArrayHelper<T[N]> { using removed = T; static constexpr bool is = true; };
+    template<typename T>
+    struct ArrayHelper {
+        using removed            = T;
+        static constexpr bool is = false;
+    };
+    template<typename T, size_t N>
+    struct ArrayHelper<T[N]> {
+        using removed            = T;
+        static constexpr bool is = true;
+    };
 
-    template<typename T>                       struct FunctionHelper                    { static constexpr bool is = false; };
-    template<typename Ret, typename... Args>   struct FunctionHelper<Ret(Args...)>      { using ret = Ret; static constexpr bool is = true; };
-    template<typename Ret, typename... Args>   struct FunctionHelper<Ret(Args..., ...)> { using ret = Ret; static constexpr bool is = true; };
+    template<typename T>
+    struct FunctionHelper {
+        static constexpr bool is = false;
+    };
+    template<typename Ret, typename... Args>
+    struct FunctionHelper<Ret(Args...)> {
+        using ret                = Ret;
+        static constexpr bool is = true;
+    };
+    template<typename Ret, typename... Args>
+    struct FunctionHelper<Ret(Args..., ...)> {
+        using ret                = Ret;
+        static constexpr bool is = true;
+    };
 
-    template<bool b, typename T, typename F> struct ConditionalHelper               { using type = T; };
-    template<typename T, typename F>         struct ConditionalHelper<false, T, F>  { using type = F; };
+    template<bool b, typename T, typename F>
+    struct ConditionalHelper {
+        using type = T;
+    };
+    template<typename T, typename F>
+    struct ConditionalHelper<false, T, F> {
+        using type = F;
+    };
 }
 
 export namespace plexdb {
@@ -64,7 +162,7 @@ export namespace plexdb {
     using U16 = std::uint16_t;
     using U32 = std::uint32_t;
     using U64 = std::uint64_t;
-    static_assert(sizeof(U8)  == 1);
+    static_assert(sizeof(U8) == 1);
     static_assert(sizeof(U16) == 2);
     static_assert(sizeof(U32) == 4);
     static_assert(sizeof(U64) == 8);
@@ -73,7 +171,7 @@ export namespace plexdb {
     using S16 = std::int16_t;
     using S32 = std::int32_t;
     using S64 = std::int64_t;
-    static_assert(sizeof(S8)  == 1);
+    static_assert(sizeof(S8) == 1);
     static_assert(sizeof(S16) == 2);
     static_assert(sizeof(S32) == 4);
     static_assert(sizeof(S64) == 8);
@@ -88,17 +186,17 @@ export namespace plexdb {
     static_assert(sizeof(F32) == 4);
     static_assert(sizeof(F64) == 8);
 
-    constexpr U8  MAX_U8  = std::numeric_limits<U8 >::max();
+    constexpr U8  MAX_U8  = std::numeric_limits<U8>::max();
     constexpr U16 MAX_U16 = std::numeric_limits<U16>::max();
     constexpr U32 MAX_U32 = std::numeric_limits<U32>::max();
     constexpr U64 MAX_U64 = std::numeric_limits<U64>::max();
 
-    constexpr S8  MAX_S8  = std::numeric_limits<S8 >::max();
+    constexpr S8  MAX_S8  = std::numeric_limits<S8>::max();
     constexpr S16 MAX_S16 = std::numeric_limits<S16>::max();
     constexpr S32 MAX_S32 = std::numeric_limits<S32>::max();
     constexpr S64 MAX_S64 = std::numeric_limits<S64>::max();
 
-    constexpr S8  MIN_S8  = std::numeric_limits<S8 >::min();
+    constexpr S8  MIN_S8  = std::numeric_limits<S8>::min();
     constexpr S16 MIN_S16 = std::numeric_limits<S16>::min();
     constexpr S32 MIN_S32 = std::numeric_limits<S32>::min();
     constexpr S64 MIN_S64 = std::numeric_limits<S64>::min();
@@ -109,12 +207,12 @@ export namespace plexdb {
     constexpr F32 MIN_F32 = std::numeric_limits<F32>::min();
     constexpr F64 MIN_F64 = std::numeric_limits<F64>::min();
 
-    constexpr B8  MAX_B8  = std::numeric_limits<B8 >::max();
+    constexpr B8  MAX_B8  = std::numeric_limits<B8>::max();
     constexpr B16 MAX_B16 = std::numeric_limits<B16>::max();
     constexpr B32 MAX_B32 = std::numeric_limits<B32>::max();
     constexpr B64 MAX_B64 = std::numeric_limits<B64>::max();
 
-    constexpr B8  MIN_B8  = std::numeric_limits<B8 >::min();
+    constexpr B8  MIN_B8  = std::numeric_limits<B8>::min();
     constexpr B16 MIN_B16 = std::numeric_limits<B16>::min();
     constexpr B32 MIN_B32 = std::numeric_limits<B32>::min();
     constexpr B64 MIN_B64 = std::numeric_limits<B64>::min();
@@ -160,19 +258,23 @@ export namespace plexdb {
     }
 
     constexpr U64 operator""_kb(unsigned long long value) {
-        return static_cast<U64>(1024_u64*value);
+        return static_cast<U64>(1024_u64 * value);
     }
     constexpr U64 operator""_mb(unsigned long long value) {
-        return static_cast<U64>(1024_u64*1024_u64*value);
+        return static_cast<U64>(1024_u64 * 1024_u64 * value);
     }
     constexpr U64 operator""_gb(unsigned long long value) {
-        return static_cast<U64>(1024_u64*1024_u64*1024_u64*value);
+        return static_cast<U64>(1024_u64 * 1024_u64 * 1024_u64 * value);
     }
 
     // ========================================================================
     // ordering
     // ========================================================================
-    enum class Ordering : S8 { Less = -1, Equal = 0, Greater = 1 };
+    enum class Ordering : S8 {
+        Less    = -1,
+        Equal   = 0,
+        Greater = 1
+    };
 
     // ========================================================================
     // branch prediction
@@ -189,16 +291,16 @@ export namespace plexdb {
         return PLEXDB_UNLIKELY(static_cast<bool>(expr));
     }
 
-    // ========================================================================
-    // asserts
-    // ========================================================================
-    #if PLEXDB_DEBUG
-        constexpr bool k_assert_enabled = true;
-    #else
-        constexpr bool k_assert_enabled = false;
-    #endif
+// ========================================================================
+// asserts
+// ========================================================================
+#if PLEXDB_DEBUG
+    constexpr bool k_assert_enabled = true;
+#else
+    constexpr bool k_assert_enabled = false;
+#endif
 
-    using AssertHandler = void(*)(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
+    using AssertHandler                   = void (*)(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
     inline AssertHandler g_assert_handler = nullptr;
 
     // @note not noexcept: the custom assert handler (e.g. Catch2 FAIL) may throw
@@ -217,7 +319,8 @@ export namespace plexdb {
     }
     constexpr inline void assert_true(bool expr, const char* msg, std::source_location loc = std::source_location::current()) {
         if constexpr (!k_assert_enabled) {
-            if consteval {} else {
+            if consteval {
+            } else {
                 return;
             }
         }
@@ -343,7 +446,7 @@ export namespace plexdb {
     template<typename... Types>
     concept AllNoThrowMoveAssignable = (NoThrowMoveAssignable<Types> && ...);
 
-    template<typename T, typename ... U>
+    template<typename T, typename... U>
     concept Either = (SameAs<T, U> || ...);
 
     // ========================================================================
@@ -351,18 +454,27 @@ export namespace plexdb {
     // ========================================================================
     template<typename A, typename B>
     struct Pair {
-        using First = A;
+        using First  = A;
         using Second = B;
 
         A first{};
         B second{};
 
         Pair() = default;
-        Pair(A first, B second) : first(plexdb::move(first)), second(plexdb::move(second)) {}
+        Pair(A first, B second)
+            : first(plexdb::move(first))
+            , second(plexdb::move(second)) {
+        }
     };
 
-    template<typename T> struct IsPairHelper                        { static constexpr bool is = false; };
-    template<typename U, typename V> struct IsPairHelper<Pair<U,V>> { static constexpr bool is = true;  };
+    template<typename T>
+    struct IsPairHelper {
+        static constexpr bool is = false;
+    };
+    template<typename U, typename V>
+    struct IsPairHelper<Pair<U, V>> {
+        static constexpr bool is = true;
+    };
 
     template<typename T>
     concept IsPair = IsPairHelper<T>::is;
@@ -371,28 +483,22 @@ export namespace plexdb {
     // exchange and swap
     // ========================================================================
     template<class T, class U = T>
-    constexpr T exchange(T& obj, U&& new_value)
-        noexcept(
-            NoThrowMoveConstructible<T> &&
-            NoThrowAssignable<T&, U>
-        )
-    {
+    constexpr T exchange(T& obj, U&& new_value) noexcept(
+        NoThrowMoveConstructible<T> &&
+        NoThrowAssignable<T&, U>) {
         T old_value = move(obj);
-        obj = forward<U>(new_value);
+        obj         = forward<U>(new_value);
         return old_value;
     }
 
     template<typename T>
-    constexpr void swap(T& a, T& b)
-        noexcept(
-            noexcept(T(move(a)))  &&
-            noexcept(a = move(b)) &&
-            noexcept(b = move(a))
-        )
-    {
+    constexpr void swap(T& a, T& b) noexcept(
+        noexcept(T(move(a))) &&
+        noexcept(a = move(b)) &&
+        noexcept(b = move(a))) {
         T tmp = move(a);
-        a = move(b);
-        b = move(tmp);
+        a     = move(b);
+        b     = move(tmp);
     }
 
     // ========================================================================
@@ -400,20 +506,25 @@ export namespace plexdb {
     // ========================================================================
     template<typename F, typename T>
     concept ScopeStartFunction = requires(F f) {
-        {f()} -> SameAs<T>;
+        { f() } -> SameAs<T>;
     };
     template<typename F, typename T>
     concept ScopeEndFunction = requires(F f, T& t) {
-        {f(t)} -> SameAs<void>;
+        { f(t) } -> SameAs<void>;
     };
 
     template<typename T, typename Start, typename End>
         requires ScopeStartFunction<Start, T> && ScopeEndFunction<End, T>
     struct Scope {
-        T t;
+        T   t;
         End end;
-        explicit Scope(Start start, End end) noexcept : t(start()), end(end) {}
-        ~Scope() { end(t); }
+        explicit Scope(Start start, End end) noexcept
+            : t(start())
+            , end(end) {
+        }
+        ~Scope() {
+            end(t);
+        }
     };
 
     // ========================================================================
@@ -421,29 +532,54 @@ export namespace plexdb {
     // ========================================================================
     template<typename T, typename Length = size_t>
     struct TArrayView {
-        T* ptr;
+        T*     ptr;
         Length length;
 
-        TArrayView(T* ptr, Length length): ptr(ptr), length(length) {}
-        explicit TArrayView(): ptr(nullptr), length(0) {}
+        TArrayView(T* ptr, Length length)
+            : ptr(ptr)
+            , length(length) {
+        }
+        explicit TArrayView()
+            : ptr(nullptr)
+            , length(0) {
+        }
 
         template<size_t N>
-        TArrayView(T (&arr)[N]) : ptr(arr), length(N) {}
+        TArrayView(T (&arr)[N])
+            : ptr(arr)
+            , length(N) {
+        }
 
         template<typename U = T>
-        TArrayView(const TArrayView<RemoveCV<T>, Length>& other) requires (IsConst<U>): ptr(other.ptr), length(other.length) {}
+        TArrayView(const TArrayView<RemoveCV<T>, Length>& other)
+            requires(IsConst<U>)
+            : ptr(other.ptr)
+            , length(other.length) {
+        }
 
-        using Iterator = T*;
+        using Iterator      = T*;
         using ConstIterator = const T*;
 
-        Iterator begin() noexcept { return ptr; }
-        ConstIterator begin() const noexcept { return ptr; }
-        ConstIterator cbegin() const noexcept { return ptr; }
+        Iterator begin() noexcept {
+            return ptr;
+        }
+        ConstIterator begin() const noexcept {
+            return ptr;
+        }
+        ConstIterator cbegin() const noexcept {
+            return ptr;
+        }
 
         // @note allows iterator for zero length views
-        Iterator end() noexcept { return length > 0 ? ptr + length : ptr; }
-        ConstIterator end() const noexcept { return length > 0 ? ptr + length : ptr; }
-        ConstIterator cend() const noexcept { return length > 0 ? ptr + length : ptr; }
+        Iterator end() noexcept {
+            return length > 0 ? ptr + length : ptr;
+        }
+        ConstIterator end() const noexcept {
+            return length > 0 ? ptr + length : ptr;
+        }
+        ConstIterator cend() const noexcept {
+            return length > 0 ? ptr + length : ptr;
+        }
 
         AddLValueReference<T> operator[](Length i) const noexcept {
             assert_true(i >= 0 && i < this->length, "out of range");
@@ -451,29 +587,31 @@ export namespace plexdb {
         }
 
         template<typename U = T>
-        bool operator==(const TArrayView<U,Length>& b) const {
-            if (b.length != this->length)
+        bool operator==(const TArrayView<U, Length>& b) const {
+            if (b.length != this->length) {
                 return false;
+            }
             for (Length idx = 0; idx < this->length; idx++) {
-                if (this->ptr[idx] != b.ptr[idx])
+                if (this->ptr[idx] != b.ptr[idx]) {
                     return false;
+                }
             }
             return true;
         }
     };
     template<typename T, typename Length>
-    TArrayView<T,Length> view_shift_up(const TArrayView<T,Length>& in, Length offset=static_cast<Length>(1)) {
+    TArrayView<T, Length> view_shift_up(const TArrayView<T, Length>& in, Length offset = static_cast<Length>(1)) {
         assert_true(in.length > 0 || offset == 0, "avoid underflow in view shift.");
-        return TArrayView<T,Length>{in.ptr + offset, static_cast<Length>(in.length - offset)};
+        return TArrayView<T, Length>{in.ptr + offset, static_cast<Length>(in.length - offset)};
     }
     template<typename T, typename Length>
-    TArrayView<T,Length> view_shift_down(const TArrayView<T,Length>& in, Length offset=static_cast<Length>(1)) {
+    TArrayView<T, Length> view_shift_down(const TArrayView<T, Length>& in, Length offset = static_cast<Length>(1)) {
         // @todo overflow assert
-        return TArrayView<T,Length>{in.ptr - offset, static_cast<Length>(in.length + offset)};
+        return TArrayView<T, Length>{in.ptr - offset, static_cast<Length>(in.length + offset)};
     }
 
     template<typename T, typename Length>
-    void append_in_place(TArrayView<T,Length>& in, T value) {
+    void append_in_place(TArrayView<T, Length>& in, T value) {
         assert_true(in.ptr != nullptr, "cannot append to empty view");
         in.length++;
         in[in.length - 1] = value;
@@ -485,20 +623,39 @@ export namespace plexdb {
 
         Length cap;
 
-        CappedTArrayView(T* ptr, Length length, Length cap): Base(ptr, length), cap(cap) {}
+        CappedTArrayView(T* ptr, Length length, Length cap)
+            : Base(ptr, length)
+            , cap(cap) {
+        }
 
-        explicit CappedTArrayView(): Base(), cap(0) {}
+        explicit CappedTArrayView()
+            : Base()
+            , cap(0) {
+        }
 
         template<size_t N>
-        CappedTArrayView(T (&arr)[N]): Base(arr), cap(sizeof(T) * N) {}
+        CappedTArrayView(T (&arr)[N])
+            : Base(arr)
+            , cap(sizeof(T) * N) {
+        }
 
         template<typename U = T>
-        CappedTArrayView(const CappedTArrayView<RemoveCV<T>, Length>& other) requires (IsConst<U>): Base(other.ptr, other.length), cap(other.cap) {}
+        CappedTArrayView(const CappedTArrayView<RemoveCV<T>, Length>& other)
+            requires(IsConst<U>)
+            : Base(other.ptr, other.length)
+            , cap(other.cap) {
+        }
 
         // @note allows iterator for zero cap views
-        Base::Iterator end() noexcept { return this->cap > 0 ? this->ptr + this->cap : this->ptr; }
-        Base::ConstIterator end() const noexcept { return this->cap > 0 ? this->ptr + this->cap : this->ptr; }
-        Base::ConstIterator cend() const noexcept { return this->cap > 0 ? this->ptr + this->cap : this->ptr; }
+        Base::Iterator end() noexcept {
+            return this->cap > 0 ? this->ptr + this->cap : this->ptr;
+        }
+        Base::ConstIterator end() const noexcept {
+            return this->cap > 0 ? this->ptr + this->cap : this->ptr;
+        }
+        Base::ConstIterator cend() const noexcept {
+            return this->cap > 0 ? this->ptr + this->cap : this->ptr;
+        }
 
         AddLValueReference<T> operator[](Length i) const noexcept {
             assert_true(i >= 0 && i < this->cap, "out of range");
@@ -506,12 +663,14 @@ export namespace plexdb {
         }
 
         template<typename U = T>
-        bool operator==(const CappedTArrayView<U,Length>& b) const {
-            if (b.cap != this->cap)
+        bool operator==(const CappedTArrayView<U, Length>& b) const {
+            if (b.cap != this->cap) {
                 return false;
+            }
             for (Length idx = 0; idx < this->cap; idx++) {
-                if (this->ptr[idx] != b.ptr[idx])
+                if (this->ptr[idx] != b.ptr[idx]) {
                     return false;
+                }
             }
             return true;
         }
@@ -520,116 +679,182 @@ export namespace plexdb {
     template<typename Length = size_t, typename Size = size_t, typename Byte = U8>
         requires Either<Byte, U8, const U8, S8, const S8>
     struct ArrayView {
-        Byte* ptr;
+        Byte*  ptr;
         Length length;
-        Size el_size;
+        Size   el_size;
 
-        explicit ArrayView(Byte* ptr, Size el_size, Length length) : ptr(ptr), length(length), el_size(el_size) {}
+        explicit ArrayView(Byte* ptr, Size el_size, Length length)
+            : ptr(ptr)
+            , length(length)
+            , el_size(el_size) {
+        }
 
         template<size_t N>
-        explicit ArrayView(Byte (&arr)[N]) : ptr(arr), length(N), el_size(1) {}
+        explicit ArrayView(Byte (&arr)[N])
+            : ptr(arr)
+            , length(N)
+            , el_size(1) {
+        }
 
         template<typename B = Byte>
-        ArrayView(const ArrayView<Length, Size, RemoveConst<B>>& other) requires (IsConst<B>): ptr(other.ptr), length(other.length), el_size(other.el_size) {}
+        ArrayView(const ArrayView<Length, Size, RemoveConst<B>>& other)
+            requires(IsConst<B>)
+            : ptr(other.ptr)
+            , length(other.length)
+            , el_size(other.el_size) {
+        }
 
         struct Iterator {
             Byte* current;
-            Size el_size;
+            Size  el_size;
 
-            Iterator(Byte* p, Size s) : current(p), el_size(s) {}
+            Iterator(Byte* p, Size s)
+                : current(p)
+                , el_size(s) {
+            }
 
-            Iterator& operator++() { current += el_size; return *this; }
-            Iterator operator++(int) { Iterator tmp = *this; ++(*this); return tmp; }
+            Iterator& operator++() {
+                current += el_size;
+                return *this;
+            }
+            Iterator operator++(int) {
+                Iterator tmp = *this;
+                ++(*this);
+                return tmp;
+            }
 
-            Byte* operator*() const { return current; }
+            Byte* operator*() const {
+                return current;
+            }
 
-            bool operator==(const Iterator& other) const { return current == other.current; }
-            bool operator!=(const Iterator& other) const { return !(*this == other); }
+            bool operator==(const Iterator& other) const {
+                return current == other.current;
+            }
+            bool operator!=(const Iterator& other) const {
+                return !(*this == other);
+            }
         };
 
         struct ConstIterator {
             const Byte* current;
-            Size el_size;
+            Size        el_size;
 
-            ConstIterator(const Byte* p, Size s) : current(p), el_size(s) {}
+            ConstIterator(const Byte* p, Size s)
+                : current(p)
+                , el_size(s) {
+            }
 
-            ConstIterator& operator++() { current += el_size; return *this; }
-            ConstIterator operator++(int) { ConstIterator tmp = *this; ++(*this); return tmp; }
+            ConstIterator& operator++() {
+                current += el_size;
+                return *this;
+            }
+            ConstIterator operator++(int) {
+                ConstIterator tmp = *this;
+                ++(*this);
+                return tmp;
+            }
 
-            const Byte* operator*() const { return current; }
+            const Byte* operator*() const {
+                return current;
+            }
 
-            bool operator==(const ConstIterator& other) const { return current == other.current; }
-            bool operator!=(const ConstIterator& other) const { return !(*this == other); }
+            bool operator==(const ConstIterator& other) const {
+                return current == other.current;
+            }
+            bool operator!=(const ConstIterator& other) const {
+                return !(*this == other);
+            }
         };
 
-        Iterator begin() noexcept { return Iterator{ptr, el_size}; }
-        ConstIterator begin() const noexcept { return ConstIterator{ptr, el_size}; }
-        ConstIterator cbegin() const noexcept { return ConstIterator{ptr, el_size}; }
+        Iterator begin() noexcept {
+            return Iterator{ptr, el_size};
+        }
+        ConstIterator begin() const noexcept {
+            return ConstIterator{ptr, el_size};
+        }
+        ConstIterator cbegin() const noexcept {
+            return ConstIterator{ptr, el_size};
+        }
 
-        Iterator end() noexcept { return Iterator{ptr + length * el_size, el_size}; }
-        ConstIterator end() const noexcept { return ConstIterator{ptr + length * el_size, el_size}; }
-        ConstIterator cend() const noexcept { return ConstIterator{ptr + length * el_size, el_size}; }
+        Iterator end() noexcept {
+            return Iterator{ptr + length * el_size, el_size};
+        }
+        ConstIterator end() const noexcept {
+            return ConstIterator{ptr + length * el_size, el_size};
+        }
+        ConstIterator cend() const noexcept {
+            return ConstIterator{ptr + length * el_size, el_size};
+        }
 
         Byte* operator[](Length i) noexcept {
             assert_true(i >= 0 && i < this->length, "out of range");
-            return ptr + i*el_size;
+            return ptr + i * el_size;
         }
         const Byte* operator[](Length i) const noexcept {
             assert_true(i >= 0 && i < this->length, "out of range");
-            return ptr + i*el_size;
+            return ptr + i * el_size;
         }
 
-        using Idx = decltype(length*el_size);
+        using Idx = decltype(length * el_size);
 
         template<typename L = Length, typename S = Size, typename B = Byte>
-        bool operator==(const ArrayView<L,S,B>& b) const {
-            if (b.length*b.el_size != this->length*this->el_size)
+        bool operator==(const ArrayView<L, S, B>& b) const {
+            if (b.length * b.el_size != this->length * this->el_size) {
                 return false;
-            for (Idx idx = 0; idx < this->length*this->el_size; idx++) {
-                if (this->ptr[idx] != b->ptr[idx])
+            }
+            for (Idx idx = 0; idx < this->length * this->el_size; idx++) {
+                if (this->ptr[idx] != b->ptr[idx]) {
                     return false;
+                }
             }
             return true;
         }
 
         bool operator==(const U8* b) const { // @note obviously
-            for (Idx idx = 0; idx < this->length*this->el_size; idx++) {
-                if (this->ptr[idx] != b[idx])
+            for (Idx idx = 0; idx < this->length * this->el_size; idx++) {
+                if (this->ptr[idx] != b[idx]) {
                     return false;
+                }
             }
             return true;
         }
     };
     template<typename Length, typename Size, typename Byte>
-    ArrayView<Length,Size,Byte> view_shift_up(const ArrayView<Length,Size,Byte>& in, Length offset=static_cast<Length>(1)) {
+    ArrayView<Length, Size, Byte> view_shift_up(const ArrayView<Length, Size, Byte>& in, Length offset = static_cast<Length>(1)) {
         assert_true(in.length > 0 || offset == 0, "avoid underflow in view shift.");
-        return ArrayView<Length,Size,Byte>{in.ptr + offset*in.el_size, in.el_size, static_cast<Length>(in.length - offset)};
+        return ArrayView<Length, Size, Byte>{in.ptr + offset * in.el_size, in.el_size, static_cast<Length>(in.length - offset)};
     }
     template<typename Length, typename Size, typename Byte>
-    ArrayView<Length,Size,Byte> view_shift_down(const ArrayView<Length,Size,Byte>& in, Length offset=static_cast<Length>(1)) {
+    ArrayView<Length, Size, Byte> view_shift_down(const ArrayView<Length, Size, Byte>& in, Length offset = static_cast<Length>(1)) {
         // @todo overflow assert
-        return ArrayView<Length,Size,Byte>{in.ptr - offset*in.el_size, in.el_size, static_cast<Length>(in.length + offset)};
+        return ArrayView<Length, Size, Byte>{in.ptr - offset * in.el_size, in.el_size, static_cast<Length>(in.length + offset)};
     }
 
     template<typename F, typename T, typename Length = size_t>
-    concept TArrayFlushFunction = requires(F f, TArrayView<T,Length>& buffer, Length& length) {
+    concept TArrayFlushFunction = requires(F f, TArrayView<T, Length>& buffer, Length& length) {
         f(buffer, length);
     };
 
     template<typename F, typename T, typename Length = size_t>
         requires TArrayFlushFunction<F, T, Length>
     struct FlushableTArray {
-        TArrayView<T,Length> buffer;
-        Length length;
-        F flush;
+        TArrayView<T, Length> buffer;
+        Length                length;
+        F                     flush;
 
-        FlushableTArray(TArrayView<T,Length> b, F f) : buffer(b), length(0), flush(f) {}
-        ~FlushableTArray() { this->flush(this->buffer, this->length); }
+        FlushableTArray(TArrayView<T, Length> b, F f)
+            : buffer(b)
+            , length(0)
+            , flush(f) {
+        }
+        ~FlushableTArray() {
+            this->flush(this->buffer, this->length);
+        }
     };
 
     template<typename F, typename T, typename Length = size_t>
         requires TArrayFlushFunction<F, T, Length>
-    void flush_if_needed(FlushableTArray<F,T,Length>& arr) {
+    void flush_if_needed(FlushableTArray<F, T, Length>& arr) {
         assert_true(arr.length <= arr.buffer.length, "invalid flush state, length overflows buffer");
 
         if (arr.length == arr.buffer.length) {
@@ -640,7 +865,7 @@ export namespace plexdb {
 
     template<typename F, typename T, typename Length = size_t>
         requires TArrayFlushFunction<F, T, Length>
-    void append(FlushableTArray<F,T,Length>& arr, const TArrayView<T,Length>& postfix) {
+    void append(FlushableTArray<F, T, Length>& arr, const TArrayView<T, Length>& postfix) {
         const T* src = postfix.ptr;
         const T* end = postfix.ptr + postfix.length;
 
@@ -662,13 +887,16 @@ export namespace plexdb {
     // ========================================================================
     // binary search
     // ========================================================================
-    enum class BinarySearchPolicy { GreaterEqual, Greater };
+    enum class BinarySearchPolicy {
+        GreaterEqual,
+        Greater
+    };
 
     template<typename It, typename Offset, typename Key>
     concept BinarySearchIterator = requires(It a, IterValue<It> v, Offset n, Key k) {
         { a + n } -> SameAs<It>;
         { *a };
-        { v <  k } -> ConvertibleTo<bool>;
+        { v < k } -> ConvertibleTo<bool>;
         { v <= k } -> ConvertibleTo<bool>;
     };
 
@@ -679,19 +907,21 @@ export namespace plexdb {
         CountType R = count;
 
         while (L < R) {
-            CountType M = L + (R - L) / 2;
+            CountType   M   = L + (R - L) / 2;
             const auto& mid = *(begin + M);
 
             if constexpr (Type == BinarySearchPolicy::GreaterEqual) {
-                if (mid < key)
+                if (mid < key) {
                     L = M + 1;
-                else
+                } else {
                     R = M;
+                }
             } else if constexpr (Type == BinarySearchPolicy::Greater) {
-                if (mid <= key)
+                if (mid <= key) {
                     L = M + 1;
-                else
+                } else {
                     R = M;
+                }
             } else {
                 static_assert(false);
             }
@@ -701,26 +931,26 @@ export namespace plexdb {
     }
 
     template<typename T, typename Length>
-    constexpr Length binary_search_first_geq(const TArrayView<T,Length>& view, const RemoveCV<T>& key) noexcept {
+    constexpr Length binary_search_first_geq(const TArrayView<T, Length>& view, const RemoveCV<T>& key) noexcept {
         return binary_search<BinarySearchPolicy::GreaterEqual>(view.cbegin(), view.length, key);
     }
 
     template<typename T, typename Length>
-    constexpr Length binary_search_first_gt(const TArrayView<T,Length>& view, const RemoveCV<T>& key) noexcept {
+    constexpr Length binary_search_first_gt(const TArrayView<T, Length>& view, const RemoveCV<T>& key) noexcept {
         return binary_search<BinarySearchPolicy::Greater>(view.cbegin(), view.length, key);
     }
 
     // not strictly necessary but can be clearer
     template<typename T, typename Length>
-    constexpr Length binary_search_last_leq(const TArrayView<T,Length>& view,
-                                            const RemoveCV<T>& key) noexcept {
+    constexpr Length binary_search_last_leq(const TArrayView<T, Length>& view,
+                                            const RemoveCV<T>&           key) noexcept {
         auto idx = binary_search_first_gt(view, key);
         return idx == 0 ? 0 : idx - 1;
     }
 
     template<typename T, typename Length>
-    constexpr Length binary_search_last_lt(const TArrayView<T,Length>& view,
-                                           const RemoveCV<T>& key) noexcept {
+    constexpr Length binary_search_last_lt(const TArrayView<T, Length>& view,
+                                           const RemoveCV<T>&           key) noexcept {
         auto idx = binary_search_first_geq(view, key);
         return idx == 0 ? 0 : idx - 1;
     }
@@ -828,7 +1058,7 @@ export namespace plexdb {
             return *ptr();
         }
 
-        constexpr const T& value() const & noexcept {
+        constexpr const T& value() const& noexcept {
             return *ptr();
         }
 
@@ -836,10 +1066,18 @@ export namespace plexdb {
             return move(*ptr());
         }
 
-        constexpr T& operator*() & noexcept { return *ptr(); }
-        constexpr const T& operator*() const & noexcept { return *ptr(); }
-        constexpr T* operator->() noexcept { return ptr(); }
-        constexpr const T* operator->() const noexcept { return ptr(); }
+        constexpr T& operator*() & noexcept {
+            return *ptr();
+        }
+        constexpr const T& operator*() const& noexcept {
+            return *ptr();
+        }
+        constexpr T* operator->() noexcept {
+            return ptr();
+        }
+        constexpr const T* operator->() const noexcept {
+            return ptr();
+        }
     };
 
     // ========================================================================
@@ -850,19 +1088,21 @@ export namespace plexdb {
     struct Tag {
         V* value;
 
-        Tag(V* in_value): value(in_value) {}
+        Tag(V* in_value)
+            : value(in_value) {
+        }
     };
 
     template<typename T, typename V>
-    Tag<T,V> create_tag(V* in_value) {
-        return Tag<T,V>(in_value);
+    Tag<T, V> create_tag(V* in_value) {
+        return Tag<T, V>(in_value);
     }
 
     // ========================================================================
     // array placement new
     //   @note builtin placement new may store the length requiring extra allocation
     // ========================================================================
-    template <typename T>
+    template<typename T>
     T* default_construct_placement_array(T* array, size_t count) {
         for (size_t i = 0; i < count; ++i) {
             new (&array[i]) T();
@@ -939,9 +1179,7 @@ namespace plexdb {
             Conditional<
                 IsFunction<U>,
                 U*,
-                RemoveCV<U>
-            >
-        >;
+                RemoveCV<U>>>;
     };
 
     export template<typename T>

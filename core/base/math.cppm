@@ -12,15 +12,39 @@ namespace plexdb {
     template<typename T>
     struct UnsignedHelper;
 
-    template<> struct UnsignedHelper<S8>  { using type = U8;  };
-    template<> struct UnsignedHelper<S16> { using type = U16; };
-    template<> struct UnsignedHelper<S32> { using type = U32; };
-    template<> struct UnsignedHelper<S64> { using type = U64; };
+    template<>
+    struct UnsignedHelper<S8> {
+        using type = U8;
+    };
+    template<>
+    struct UnsignedHelper<S16> {
+        using type = U16;
+    };
+    template<>
+    struct UnsignedHelper<S32> {
+        using type = U32;
+    };
+    template<>
+    struct UnsignedHelper<S64> {
+        using type = U64;
+    };
 
-    template<> struct UnsignedHelper<U8>  { using type = U8;  };
-    template<> struct UnsignedHelper<U16> { using type = U16; };
-    template<> struct UnsignedHelper<U32> { using type = U32; };
-    template<> struct UnsignedHelper<U64> { using type = U64; };
+    template<>
+    struct UnsignedHelper<U8> {
+        using type = U8;
+    };
+    template<>
+    struct UnsignedHelper<U16> {
+        using type = U16;
+    };
+    template<>
+    struct UnsignedHelper<U32> {
+        using type = U32;
+    };
+    template<>
+    struct UnsignedHelper<U64> {
+        using type = U64;
+    };
 }
 
 export namespace plexdb {
@@ -49,7 +73,7 @@ export namespace plexdb {
         U64 start;
         U64 end;
     };
-    static_assert(sizeof(Rng1U64) == sizeof(U64)*2);
+    static_assert(sizeof(Rng1U64) == sizeof(U64) * 2);
 
     // ========================================================================
     // helpers
@@ -72,24 +96,36 @@ export namespace plexdb {
 
     template<typename T>
         requires IsUnsigned<T> && Integer<T>
-    inline constexpr T ceil_div(const T& a, const T& b) { return (a  + b - 1) / b; }
+    inline constexpr T ceil_div(const T& a, const T& b) {
+        return (a + b - 1) / b;
+    }
 
     template<typename T>
         requires IsSigned<T> && Integer<T>
-    inline constexpr T ceil_div(const T& a, const T& b) { return 1 + (a - 1) / b; }
+    inline constexpr T ceil_div(const T& a, const T& b) {
+        return 1 + (a - 1) / b;
+    }
 
     template<typename T>
-    inline constexpr T align_pow2(T x, T b) { return (x + b - 1)&(~(b - 1)); }
+    inline constexpr T align_pow2(T x, T b) {
+        return (x + b - 1) & (~(b - 1));
+    }
 
     template<typename T>
         requires Integer<T>
-    inline constexpr T align_down(const T& x, const T& align) { return (x / align) * align; }
+    inline constexpr T align_down(const T& x, const T& align) {
+        return (x / align) * align;
+    }
 
     template<typename T>
         requires Integer<T>
-    inline constexpr T align_up(const T& x, const T& align) { return ceil_div(x, align)*align; }
+    inline constexpr T align_up(const T& x, const T& align) {
+        return ceil_div(x, align) * align;
+    }
 
-    inline constexpr U64 hash(U64 x) { return 1 + x; }
+    inline constexpr U64 hash(U64 x) {
+        return 1 + x;
+    }
 
 #if PLEXDB_COMPILER_GCC || PLEXDB_COMPILER_CLANG
     inline constexpr U64 bit_count(U64 x) {
@@ -116,7 +152,7 @@ export namespace plexdb {
         }
     }
 #else
-    #error Compiler instrinsics not implemented.
+#error Compiler instrinsics not implemented.
 #endif
 
     inline constexpr bool has_single_bit(U64 x) {

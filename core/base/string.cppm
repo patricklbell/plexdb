@@ -19,27 +19,44 @@ export namespace plexdb {
 
     struct String8 {
         const char* data;
-        U64 length;
+        U64         length;
 
         constexpr String8() = default;
 
-        String8(const char* in_buffer, U64 in_length) : data(in_buffer), length(in_length) {}
+        String8(const char* in_buffer, U64 in_length)
+            : data(in_buffer)
+            , length(in_length) {
+        }
 
-        String8(const U8* in_buffer, U64 in_length) : data(reinterpret_cast<const char*>(in_buffer)), length(in_length) {}
+        String8(const U8* in_buffer, U64 in_length)
+            : data(reinterpret_cast<const char*>(in_buffer))
+            , length(in_length) {
+        }
 
         template<U64 N>
-        constexpr String8(const char (&lit)[N]) : data(lit), length(N - 1) {}
+        constexpr String8(const char (&lit)[N])
+            : data(lit)
+            , length(N - 1) {
+        }
 
         template<typename Length>
-        constexpr String8(const TArrayView<char,Length>& view) : data(view.ptr), length(static_cast<U64>(view.length)) {}
+        constexpr String8(const TArrayView<char, Length>& view)
+            : data(view.ptr)
+            , length(static_cast<U64>(view.length)) {
+        }
 
         template<typename Length>
-        constexpr String8(const CappedTArrayView<char,Length>& view) : data(view.ptr), length(static_cast<U64>(view.cap)) {}
+        constexpr String8(const CappedTArrayView<char, Length>& view)
+            : data(view.ptr)
+            , length(static_cast<U64>(view.cap)) {
+        }
 
         String8(const char* in_c_str);
         String8(const AutoString8& str);
 
-        constexpr operator const char*() const { return this->data; }
+        constexpr operator const char*() const {
+            return this->data;
+        }
 
         const char* c_str() const;
     };
@@ -48,11 +65,11 @@ export namespace plexdb {
     bool operator==(const char* a, const String8& b);
 
     Optional<U64> find(const String8& str, char c);
-    bool contains(String8 haystack, String8 needle);
+    bool          contains(String8 haystack, String8 needle);
 
     struct AutoString8 {
         char* c_str;
-        U64 length;
+        U64   length;
 
         AutoString8();
         explicit AutoString8(U64 length);
@@ -123,34 +140,34 @@ export namespace plexdb {
 
     bool bool_from_str(String8 x);
 
-    template <typename... Args>
+    template<typename... Args>
     U64 fmt_length(const char* fmt, Args&&... args) {
         return stbsp_snprintf(nullptr, 0, fmt, forward<Args>(args)...);
     }
 
-    template <typename... Args>
+    template<typename... Args>
     void fmt_raw(String8& inout, const char* fmt, Args&&... args) {
         inout.length = fmt_raw_impl(const_cast<char*>(inout.data), inout.length, fmt, forward<Args>(args)...);
     }
 
-    template <typename... Args>
+    template<typename... Args>
     AutoString8 fmt(const char* fmt_str, Args&&... args) {
-        U64 length = fmt_length(fmt_str, forward<Args>(args)...);
+        U64         length = fmt_length(fmt_str, forward<Args>(args)...);
         AutoString8 result(length);
-        String8 view{result.c_str, length};
+        String8     view{result.c_str, length};
         fmt_raw(view, fmt_str, forward<Args>(args)...);
         return result;
     }
 
     void print(const String8& str);
 
-    template <typename... Args>
+    template<typename... Args>
     void print(const String8& first, const Args&... rest) {
         print(first);
         (print(rest), ...);
     }
 
-    template <typename... Args>
+    template<typename... Args>
     void println(const Args&... args) {
         print(args...);
         print("\n");
@@ -173,7 +190,7 @@ export namespace plexdb {
 
 namespace plexdb {
     template<BufferedString8Flush F>
-    void buffered_string_flush_wrapper(void* ctx, const char*, U64 ) {
+    void buffered_string_flush_wrapper(void* ctx, const char*, U64) {
         auto* str = static_cast<BufferedString8<F>*>(ctx);
         flush_if_needed(*str);
     }
@@ -185,8 +202,7 @@ export namespace plexdb {
         append_fmt_impl(
             str.buffer.ptr, str.buffer.length, &str.length,
             &str, buffered_string_flush_wrapper<F>,
-            fmt, forward<Args>(args)...
-        );
+            fmt, forward<Args>(args)...);
     }
 
     template<BufferedString8Flush F>
@@ -230,8 +246,7 @@ export namespace plexdb {
     }
 
     template<BufferedString8Flush F, typename First, typename... Rest>
-    void append(BufferedString8<F>& str, const First& first, const Rest&... rest)
-    {
+    void append(BufferedString8<F>& str, const First& first, const Rest&... rest) {
         append(str, first);
         if constexpr (sizeof...(rest) > 0) {
             append(str, rest...);

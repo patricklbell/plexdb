@@ -14,7 +14,7 @@ export {
     // server is accepting, and stop when signal_consumer fires.
     template<typename ClientFn, typename ServerFn>
     void run_server_test(const char* thread_name, ClientFn&& client_fn, ServerFn&& server_fn) {
-        os::Notifier interrupt{};
+        os::Notifier       interrupt{};
         threads::Semaphore ready{0};
 
         threads::Thread client_thread = threads::launch(thread_name, [&]() {
@@ -23,7 +23,7 @@ export {
         });
 
         os::Poll poll{};
-        auto signal_consumer = aio::create_notifier_consumer(interrupt, poll);
+        auto     signal_consumer = aio::create_notifier_consumer(interrupt, poll);
         server_fn([&ready]() { ready.signal(); }, signal_consumer, poll);
     }
 }

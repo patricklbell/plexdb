@@ -8,20 +8,20 @@ import plexdb.coroutine;
 import plexdb.pager.types;
 
 export namespace plexdb::wal {
-    constexpr Array<U8,8> MAGIC{'p','X','W','A','L',1,0,0};
-    constexpr Array<U8,2> CURRENT_VERSION{ 0, 1 };
+    constexpr Array<U8, 8> MAGIC{'p', 'X', 'W', 'A', 'L', 1, 0, 0};
+    constexpr Array<U8, 2> CURRENT_VERSION{0, 1};
 
     struct Header {
-        Array<U8,sizeof(MAGIC)> magic;
-        Array<U8,sizeof(CURRENT_VERSION)> version;
-        U64 page_size;
-        U64 salt;
-        U64 frame_count;  // 0 = not committed
+        Array<U8, sizeof(MAGIC)>           magic;
+        Array<U8, sizeof(CURRENT_VERSION)> version;
+        U64                                page_size;
+        U64                                salt;
+        U64                                frame_count; // 0 = not committed
     };
 
     struct Frame {
-        U64 page_idx;   // MAX_U64 = pager header frame
-        U64 checksum;   // salt ^ page_idx ^ first-8-bytes-of-data
+        U64 page_idx; // MAX_U64 = pager header frame
+        U64 checksum; // salt ^ page_idx ^ first-8-bytes-of-data
     };
 
     // WAL file layout:
@@ -31,9 +31,9 @@ export namespace plexdb::wal {
     // frame_count in the header is the atomic commit point.
     // Writing frame_count > 0 commits the WAL; frame_count == 0 means no committed data.
     struct Wal {
-        os::Handle file = os::zero_handle();
-        Header header   = {};
-        DynamicMap<U64,U64> wal_index; // page_idx → latest frame_idx; MAX_U64 = header frame
+        os::Handle           file   = os::zero_handle();
+        Header               header = {};
+        DynamicMap<U64, U64> wal_index; // page_idx → latest frame_idx; MAX_U64 = header frame
 
         Wal() = default;
         explicit Wal(os::Handle file);
@@ -45,7 +45,9 @@ export namespace plexdb::wal {
         Wal(const Wal&)            = delete;
         Wal& operator=(const Wal&) = delete;
 
-        operator bool() const { return !os::is_zero_handle(this->file); }
+        operator bool() const {
+            return !os::is_zero_handle(this->file);
+        }
     };
 
     coroutine::Task<Header> create(aio::FileIOContext& ctx, os::Handle file, U64 page_size);

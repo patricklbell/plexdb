@@ -27,8 +27,7 @@ namespace cql::native {
     S64 read_be_s64(const U8* p) {
         return S64(
             (U64(p[0]) << 56) | (U64(p[1]) << 48) | (U64(p[2]) << 40) | (U64(p[3]) << 32) |
-            (U64(p[4]) << 24) | (U64(p[5]) << 16) | (U64(p[6]) << 8)  | U64(p[7])
-        );
+            (U64(p[4]) << 24) | (U64(p[5]) << 16) | (U64(p[6]) << 8) | U64(p[7]));
     }
 
     String8 read_cql_long_string(const U8*& p, const U8* end) {
@@ -65,30 +64,37 @@ namespace cql::native {
         assert_true(p + 4 <= end, "truncated value length");
         S32 len = read_be_s32(p);
         p += 4;
-        if (len < 0) return Constant{.value = Null{}};
+        if (len < 0) {
+            return Constant{.value = Null{}};
+        }
         assert_true(p + len <= end, "value body truncated");
         const U8* val = p;
         p += len;
 
         switch (dtype) {
-            case type::Basic::text: case type::Basic::ascii: case type::Basic::varchar:
+            case type::Basic::text:
+            case type::Basic::ascii:
+            case type::Basic::varchar:
                 return Constant{.value = AutoString8(val, U64(len))};
-            case type::Basic::int_:{
+            case type::Basic::int_: {
                 assert_true(len == 4, "int value must be 4 bytes");
                 S64 v = S64(S32((U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3])));
                 return Constant{.value = v};
             }
-            case type::Basic::bigint: case type::Basic::timestamp: case type::Basic::counter: case type::Basic::time:{
+            case type::Basic::bigint:
+            case type::Basic::timestamp:
+            case type::Basic::counter:
+            case type::Basic::time: {
                 assert_true(len == 8, "bigint value must be 8 bytes");
                 S64 v = read_be_s64(val);
                 return Constant{.value = v};
             }
-            case type::Basic::smallint:{
+            case type::Basic::smallint: {
                 assert_true(len == 2, "smallint value must be 2 bytes");
                 S64 v = S64(S16((U16(val[0]) << 8) | U16(val[1])));
                 return Constant{.value = v};
             }
-            case type::Basic::double_:{
+            case type::Basic::double_: {
                 assert_true(len == 8, "double value must be 8 bytes");
                 U64 bits = (U64(val[0]) << 56) | (U64(val[1]) << 48) | (U64(val[2]) << 40) | (U64(val[3]) << 32) |
                            (U64(val[4]) << 24) | (U64(val[5]) << 16) | (U64(val[6]) << 8) | U64(val[7]);
@@ -96,47 +102,49 @@ namespace cql::native {
                 os::memory_copy(&d, &bits, sizeof(d));
                 return Constant{.value = d};
             }
-            case type::Basic::float_:{
+            case type::Basic::float_: {
                 assert_true(len == 4, "float value must be 4 bytes");
                 U32 bits = (U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3]);
                 F32 fv;
                 os::memory_copy(&fv, &bits, sizeof(fv));
                 return Constant{.value = F64(fv)};
             }
-            case type::Basic::boolean:{
+            case type::Basic::boolean: {
                 assert_true(len == 1, "boolean value must be 1 byte");
                 return Constant{.value = bool(val[0])};
             }
-            case type::Basic::uuid:{
+            case type::Basic::uuid: {
                 assert_true(len == 16, "uuid value must be 16 bytes");
                 UUID uuid{};
                 os::memory_copy(&uuid.value[0], val, 16);
                 return Constant{.value = uuid};
             }
-            case type::Basic::timeuuid:{
+            case type::Basic::timeuuid: {
                 assert_true(len == 16, "timeuuid value must be 16 bytes");
                 UUID uuid{};
                 os::memory_copy(&uuid.value[0], val, 16);
                 return Constant{.value = uuid};
             }
-            case type::Basic::tinyint:{
+            case type::Basic::tinyint: {
                 S64 v = S64(S8(val[0]));
                 return Constant{.value = v};
             }
-            case type::Basic::date:{
+            case type::Basic::date: {
                 assert_true(len == 4, "date value must be 4 bytes");
                 S64 v = S64(read_be_s32(val));
                 return Constant{.value = v};
             }
-            case type::Basic::blob:{
+            case type::Basic::blob: {
                 Blob b{};
                 resize(b.value, U64(len));
                 os::memory_copy(b.value.ptr, val, U64(len));
                 return Constant{.value = move(b)};
             }
             case type::Basic::decimal:
-            case type::Basic::duration: case type::Basic::inet:
-            case type::Basic::varint: case type::Basic::hex:{
+            case type::Basic::duration:
+            case type::Basic::inet:
+            case type::Basic::varint:
+            case type::Basic::hex: {
                 return Constant{.value = AutoString8(val, U64(len))};
             }
             default:
@@ -154,23 +162,28 @@ namespace cql::native {
                 assert_true(p + 4 <= end, "truncated list bind value length");
                 S32 outer_len = read_be_s32(p);
                 p += 4;
-                if (outer_len < 0) return Term{.value = Constant{.value = Null{}}};
+                if (outer_len < 0) {
+                    return Term{.value = Constant{.value = Null{}}};
+                }
                 const U8* coll_end = p + U64(outer_len);
                 assert_true(coll_end <= end, "list bind value body truncated");
                 assert_true(p + 4 <= coll_end, "truncated list element count");
                 S32 count = read_be_s32(p);
                 p += 4;
-                type::Type elem_type = v.element;
+                type::Type          elem_type = v.element;
                 ListOrVectorLiteral lit{};
-                for (S32 i = 0; i < count && p < coll_end; i++)
+                for (S32 i = 0; i < count && p < coll_end; i++) {
                     push_back(lit.elements, read_cql_value_as_term(p, coll_end, elem_type));
+                }
                 p = coll_end;
                 return Term{.value = move(lit)};
             } else if constexpr (SameAs<T, type::Set>) {
                 assert_true(p + 4 <= end, "truncated set bind value length");
                 S32 outer_len = read_be_s32(p);
                 p += 4;
-                if (outer_len < 0) return Term{.value = Constant{.value = Null{}}};
+                if (outer_len < 0) {
+                    return Term{.value = Constant{.value = Null{}}};
+                }
                 const U8* coll_end = p + U64(outer_len);
                 assert_true(coll_end <= end, "set bind value body truncated");
                 assert_true(p + 4 <= coll_end, "truncated set element count");
@@ -178,15 +191,18 @@ namespace cql::native {
                 p += 4;
                 type::Type key_type = v.key;
                 SetLiteral lit{};
-                for (S32 i = 0; i < count && p < coll_end; i++)
+                for (S32 i = 0; i < count && p < coll_end; i++) {
                     push_back(lit.keys, read_cql_value_as_term(p, coll_end, key_type));
+                }
                 p = coll_end;
                 return Term{.value = move(lit)};
             } else if constexpr (SameAs<T, type::Map>) {
                 assert_true(p + 4 <= end, "truncated map bind value length");
                 S32 outer_len = read_be_s32(p);
                 p += 4;
-                if (outer_len < 0) return Term{.value = Constant{.value = Null{}}};
+                if (outer_len < 0) {
+                    return Term{.value = Constant{.value = Null{}}};
+                }
                 const U8* coll_end = p + U64(outer_len);
                 assert_true(coll_end <= end, "map bind value body truncated");
                 assert_true(p + 4 <= coll_end, "truncated map element count");
@@ -227,7 +243,9 @@ namespace cql::native {
     template<U8 Version>
     DynamicArray<Term> read_query_parameter_values(const U8*& p, const U8* end, const DynamicArray<engine::BindVariableSpec>& bind_specs) {
         DynamicArray<Term> bound_values;
-        if (p + 2 > end) return bound_values;
+        if (p + 2 > end) {
+            return bound_values;
+        }
         p += 2; // consistency [short] @todo
 
         U32 flags;
@@ -236,7 +254,9 @@ namespace cql::native {
             flags = U32(read_be_s32(p));
             p += 4;
         } else {
-            if (p >= end) return bound_values;
+            if (p >= end) {
+                return bound_values;
+            }
             flags = U32(*p++);
         }
 
@@ -246,11 +266,12 @@ namespace cql::native {
             p += 2;
 
             if (flags & 0x40u) {
-                for (U64 bi = 0; bi < bind_specs.length; bi++)
+                for (U64 bi = 0; bi < bind_specs.length; bi++) {
                     push_back(bound_values, Term{.value = Constant{.value = Null{}}});
+                }
                 for (U16 value_idx = 0; value_idx < n_values && p < end; value_idx++) {
-                    String8 name = read_cql_string(p, end);
-                    U64 bind_spec_idx = bind_specs.length;
+                    String8 name          = read_cql_string(p, end);
+                    U64     bind_spec_idx = bind_specs.length;
                     for (U64 idx = 0; idx < bind_specs.length; idx++) {
                         if (bind_specs[idx].name == name) {
                             bind_spec_idx = idx;
@@ -269,15 +290,24 @@ namespace cql::native {
         }
 
         // Skip optional fields that precede the v5-only fields
-        if ((flags & 0x04u) && p + 4 <= end) p += 4;               // result_page_size [int]
-        if (flags & 0x08u) {                                          // paging_state [bytes]
+        if ((flags & 0x04u) && p + 4 <= end) {
+            p += 4; // result_page_size [int]
+        }
+        if (flags & 0x08u) { // paging_state [bytes]
             if (p + 4 <= end) {
-                S32 ps_len = read_be_s32(p); p += 4;
-                if (ps_len > 0 && p + ps_len <= end) p += ps_len;
+                S32 ps_len = read_be_s32(p);
+                p += 4;
+                if (ps_len > 0 && p + ps_len <= end) {
+                    p += ps_len;
+                }
             }
         }
-        if ((flags & 0x10u) && p + 2 <= end) p += 2;               // serial_consistency [short]
-        if ((flags & 0x20u) && p + 8 <= end) p += 8;               // timestamp [long]
+        if ((flags & 0x10u) && p + 2 <= end) {
+            p += 2; // serial_consistency [short]
+        }
+        if ((flags & 0x20u) && p + 8 <= end) {
+            p += 8; // timestamp [long]
+        }
 
         if constexpr (Version >= 5) {
             if ((flags & 0x0080u) && p < end) {
@@ -286,7 +316,9 @@ namespace cql::native {
             }
             if (flags & 0x0100u) {
                 log::native_info("now_in_seconds flag set in V5 frame but TTL is not implemented; skipping field");
-                if (p + 4 <= end) p += 4;
+                if (p + 4 <= end) {
+                    p += 4;
+                }
             }
         }
 
@@ -298,42 +330,41 @@ namespace cql::native {
     // ========================================================================
     coroutine::Task<> send_block(const tcp::Request& req, const U8* data, U64 len) {
         while (len > 0) {
-            auto buf = co_await tcp::acquire(req);
-            U64 chunk = min(len, static_cast<U64>(buf.length));
+            auto buf   = co_await tcp::acquire(req);
+            U64  chunk = min(len, static_cast<U64>(buf.length));
             os::memory_copy(buf.view.ptr, data, chunk);
             buf.view.length = chunk;
             co_await tcp::write(req, &buf);
             tcp::release(req, &buf);
 
             data += chunk;
-            len  -= chunk;
+            len -= chunk;
         }
     }
 
     template<U8 Version, bool Compressed>
-    coroutine::Task<> send_native_frame(Frame& f) { ZoneScopedN("send_native_frame")
-        assert_true(f.body.length <= MAX_U32, "body length too large");
+    coroutine::Task<> send_native_frame(Frame& f) {
+        ZoneScopedN("send_native_frame")
+            assert_true(f.body.length <= MAX_U32, "body length too large");
         U32 body_len = U32(f.body.length);
 
-        constexpr U8 resp_flags = (Version >= 5) ? 0x10u : 0x00u;
-        U8 envelope_header[V4_FRAME_HEADER_BYTE_COUNT] = {
+        constexpr U8 resp_flags                                  = (Version >= 5) ? 0x10u : 0x00u;
+        U8           envelope_header[V4_FRAME_HEADER_BYTE_COUNT] = {
             U8(0x80u | Version), resp_flags,
             U8(U16(f.stream) >> 8), U8(f.stream),
             f.op,
-            U8(body_len >> 24), U8(body_len >> 16), U8(body_len >> 8), U8(body_len)
-        };
+            U8(body_len >> 24), U8(body_len >> 16), U8(body_len >> 8), U8(body_len)};
 
         log::native_info(fmt(
             "TX frame: op=%02x stream=%d body_len=%u hdr=%02x%02x%02x%02x%02x%02x%02x%02x%02x body[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x",
             f.op, (int)f.stream, body_len,
-            envelope_header[0],envelope_header[1],envelope_header[2],envelope_header[3],
-            envelope_header[4],envelope_header[5],envelope_header[6],envelope_header[7],
+            envelope_header[0], envelope_header[1], envelope_header[2], envelope_header[3],
+            envelope_header[4], envelope_header[5], envelope_header[6], envelope_header[7],
             envelope_header[8],
-            body_len>0?f.body.ptr[0]:0u, body_len>1?f.body.ptr[1]:0u,
-            body_len>2?f.body.ptr[2]:0u, body_len>3?f.body.ptr[3]:0u,
-            body_len>4?f.body.ptr[4]:0u, body_len>5?f.body.ptr[5]:0u,
-            body_len>6?f.body.ptr[6]:0u, body_len>7?f.body.ptr[7]:0u
-        ));
+            body_len > 0 ? f.body.ptr[0] : 0u, body_len > 1 ? f.body.ptr[1] : 0u,
+            body_len > 2 ? f.body.ptr[2] : 0u, body_len > 3 ? f.body.ptr[3] : 0u,
+            body_len > 4 ? f.body.ptr[4] : 0u, body_len > 5 ? f.body.ptr[5] : 0u,
+            body_len > 6 ? f.body.ptr[6] : 0u, body_len > 7 ? f.body.ptr[7] : 0u));
 
         if constexpr (Version < 5) {
             co_await send_block(*f.req, envelope_header, V4_FRAME_HEADER_BYTE_COUNT);
@@ -345,8 +376,9 @@ namespace cql::native {
             DynamicArray<U8> env{};
             resize(env, env_len);
             os::memory_copy(env.ptr, envelope_header, V4_FRAME_HEADER_BYTE_COUNT);
-            if (body_len > 0)
+            if (body_len > 0) {
                 os::memory_copy(env.ptr + V4_FRAME_HEADER_BYTE_COUNT, f.body.ptr, body_len);
+            }
             co_await send_v5_outer_frames<Compressed>(*f.req, env.ptr, env_len);
         }
 
@@ -367,7 +399,9 @@ namespace cql::native {
         U64 pos = f.body.length;
         if (pos + n > f.body.capacity) {
             U64 new_cap = f.body.capacity == 0 ? 64 : f.body.capacity * 2;
-            if (new_cap < pos + n) new_cap = pos + n;
+            if (new_cap < pos + n) {
+                new_cap = pos + n;
+            }
             reserve(f.body, new_cap);
         }
         os::memory_copy(f.body.ptr + pos, data, n);
@@ -398,8 +432,9 @@ namespace cql::native {
 
     void append_cql_bytes_raw(Frame& f, const U8* data, S32 n) {
         append_be_s32(f, n);
-        if (n > 0)
+        if (n > 0) {
             append_bytes(f, data, U64(n));
+        }
     }
 
     void append_type_codes_option(Frame& f, type::Type cdtype) {
@@ -434,43 +469,48 @@ namespace cql::native {
                 append_cql_basic_element(f, get<type::Basic>(cdtype.value), v);
             } else if constexpr (IsCqlDM<T>) {
                 assert_true(type_matches_tag<type::Map>(cdtype.value), "static value type requires ctype map, this should never happen");
-                const auto& m = get<type::Map>(cdtype.value);
-                U64 pair_count = length(v);
-                S32 body = 4;
+                const auto& m          = get<type::Map>(cdtype.value);
+                U64         pair_count = length(v);
+                S32         body       = 4;
                 for (auto& it : v) {
-                    visit(it.first.value,  [&](const auto& k)   { body += 4 + basic_element_byte_size(get<type::Basic>(m.key.value),   k); });
+                    visit(it.first.value, [&](const auto& k) { body += 4 + basic_element_byte_size(get<type::Basic>(m.key.value), k); });
                     visit(it.second.value, [&](const auto& val) { body += 4 + basic_element_byte_size(get<type::Basic>(m.value.value), val); });
                 }
                 append_be_s32(f, body);
                 append_be_s32(f, S32(pair_count));
                 for (auto& it : v) {
-                    visit(it.first.value,  [&](const auto& k)   { append_cql_basic_element(f, get<type::Basic>(m.key.value),   k); });
+                    visit(it.first.value, [&](const auto& k) { append_cql_basic_element(f, get<type::Basic>(m.key.value), k); });
                     visit(it.second.value, [&](const auto& val) { append_cql_basic_element(f, get<type::Basic>(m.value.value), val); });
                 }
             } else if constexpr (IsCqlDS<T>) {
                 assert_true(type_matches_tag<type::Set>(cdtype.value), "static value type requires ctype set, this should never happen");
-                const auto key_dtype = get<type::Basic>(get<type::Set>(cdtype.value).key.value);
-                U64 elem_count = length(v);
-                S32 body = 4;
-                for (auto& e : v) visit(e.value, [&](const auto& el) { body += 4 + basic_element_byte_size(key_dtype, el); });
+                const auto key_dtype  = get<type::Basic>(get<type::Set>(cdtype.value).key.value);
+                U64        elem_count = length(v);
+                S32        body       = 4;
+                for (auto& e : v) {
+                    visit(e.value, [&](const auto& el) { body += 4 + basic_element_byte_size(key_dtype, el); });
+                }
                 append_be_s32(f, body);
                 append_be_s32(f, S32(elem_count));
-                for (auto& e : v) visit(e.value, [&](const auto& el) { append_cql_basic_element(f, key_dtype, el); });
+                for (auto& e : v) {
+                    visit(e.value, [&](const auto& el) { append_cql_basic_element(f, key_dtype, el); });
+                }
             } else if constexpr (IsCqlDA<T>) {
                 bool is_vec = type_matches_tag<type::Vector>(cdtype.value);
                 assert_true(
                     type_matches_tag<type::List>(cdtype.value) || is_vec,
-                    "static value type requires ctype list/vector, this should never happen"
-                );
-                U64 elem_count = is_vec ? get<type::Vector>(cdtype.value).count : v.length;
+                    "static value type requires ctype list/vector, this should never happen");
+                U64        elem_count = is_vec ? get<type::Vector>(cdtype.value).count : v.length;
                 const auto elem_dtype = is_vec ? get<type::Basic>(get<type::Vector>(cdtype.value).element.value) : get<type::Basic>(get<type::List>(cdtype.value).element.value);
-                S32 body = 4;
-                for (U64 i = 0; i < elem_count; ++i)
+                S32        body       = 4;
+                for (U64 i = 0; i < elem_count; ++i) {
                     visit(v[i].value, [&](const auto& el) { body += 4 + basic_element_byte_size(elem_dtype, el); });
+                }
                 append_be_s32(f, body);
                 append_be_s32(f, S32(elem_count));
-                for (U64 i = 0; i < elem_count; ++i)
+                for (U64 i = 0; i < elem_count; ++i) {
                     visit(v[i].value, [&](const auto& el) { append_cql_basic_element(f, elem_dtype, el); });
+                }
             } else {
                 static_assert(!SameAs<T, T>, "missing implementation for read value");
             }
@@ -496,31 +536,39 @@ namespace cql::native {
         append_cql_string(f, change_type);
         append_cql_string(f, target);
         append_cql_string(f, keyspace);
-        if (table.length > 0)
+        if (table.length > 0) {
             append_cql_string(f, table);
+        }
     }
 
     coroutine::Task<> append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl) {
         append_be_s32(f, result_codes::ROWS);
 
-        bool has_select = result.select_col_indices.length > 0;
+        bool              has_select = result.select_col_indices.length > 0;
         DynamicArray<U64> effective_cols;
         if (has_select) {
-            for (U64 i = 0; i < result.select_col_indices.length; i++)
+            for (U64 i = 0; i < result.select_col_indices.length; i++) {
                 push_back(effective_cols, result.select_col_indices[i]);
+            }
         } else {
-            for (U64 ci = 0; ci < tbl->cols.length; ci++)
-                if (!tbl->cols[ci].tombstone) push_back(effective_cols, ci);
+            for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                if (!tbl->cols[ci].tombstone) {
+                    push_back(effective_cols, ci);
+                }
+            }
         }
         U64 col_count = effective_cols.length;
 
         auto is_selected = [&](U64 ci) -> bool {
-            for (U64 i = 0; i < effective_cols.length; i++)
-                if (effective_cols[i] == ci) return true;
+            for (U64 i = 0; i < effective_cols.length; i++) {
+                if (effective_cols[i] == ci) {
+                    return true;
+                }
+            }
             return false;
         };
 
-        append_be_s32(f, 0x0001);  // Global_tables_spec flag
+        append_be_s32(f, 0x0001); // Global_tables_spec flag
         append_be_s32(f, S32(col_count));
         append_cql_string(f, result.keyspace);
         append_cql_string(f, result.table);
@@ -536,11 +584,11 @@ namespace cql::native {
 
         S32 row_count = 0;
         if (result.rows.has_value()) {
-            auto& rows = *result.rows;
-            U64 row_limit = result.row_limit_count;
-            RowIterator& row_it  = rows.start;
-            RowIterator& row_end = rows.stop;
-            const bool has_filter = result.filter_predicates.length > 0;
+            auto&        rows       = *result.rows;
+            U64          row_limit  = result.row_limit_count;
+            RowIterator& row_it     = rows.start;
+            RowIterator& row_end    = rows.stop;
+            const bool   has_filter = result.filter_predicates.length > 0;
 
             while (row_it != row_end && U64(row_count) < row_limit) {
                 ColumnRange col_range = co_await row_it.deref();
@@ -554,8 +602,8 @@ namespace cql::native {
                     }
 
                     EvalContext row_ctx = result.filter_ctx;
-                    row_ctx.table      = result.resolved_table;
-                    row_ctx.row_values = row_values.ptr;
+                    row_ctx.table       = result.resolved_table;
+                    row_ctx.row_values  = row_values.ptr;
 
                     if (evaluate_where(result.filter_predicates, row_ctx)) {
                         for (U64 i = 0; i < col_count; i++) {
@@ -595,7 +643,7 @@ namespace cql::native {
     void append_result_virtual_rows(Frame& f, engine::VirtualRows& vr) {
         append_be_s32(f, result_codes::ROWS);
 
-        append_be_s32(f, 0x0001);  // Global_tables_spec flag
+        append_be_s32(f, 0x0001); // Global_tables_spec flag
         append_be_s32(f, S32(vr.columns.length));
         append_cql_string(f, vr.keyspace);
         append_cql_string(f, vr.table);
@@ -608,8 +656,9 @@ namespace cql::native {
         append_be_s32(f, S32(vr.rows.length));
 
         for (U64 ri = 0; ri < vr.rows.length; ri++) {
-            for (U64 ci = 0; ci < vr.columns.length; ci++)
+            for (U64 ci = 0; ci < vr.columns.length; ci++) {
                 append_cql_value(f, vr.rows[ri].values[ci], vr.columns[ci].type);
+            }
         }
     }
 
@@ -617,9 +666,12 @@ namespace cql::native {
     void append_result_prepared(Frame& f, U64 id, engine::PreparedEntry& entry) {
         append_be_s32(f, result_codes::PREPARED);
 
-        U8 id_bytes[8];
+        U8  id_bytes[8];
         U64 id_val = id;
-        for (int i = 7; i >= 0; i--) { id_bytes[i] = U8(id_val); id_val >>= 8; }
+        for (int i = 7; i >= 0; i--) {
+            id_bytes[i] = U8(id_val);
+            id_val >>= 8;
+        }
         append_cql_short_bytes(f, id_bytes, 8);
 
         if constexpr (Version >= 5) {
@@ -631,8 +683,11 @@ namespace cql::native {
             h.add(entry.keyspace.c_str, entry.keyspace.length);
             h.add(entry.table.c_str, entry.table.length);
             U64 rmi = h.hash();
-            U8 rmi_bytes[8];
-            for (int i = 7; i >= 0; i--) { rmi_bytes[i] = U8(rmi); rmi >>= 8; }
+            U8  rmi_bytes[8];
+            for (int i = 7; i >= 0; i--) {
+                rmi_bytes[i] = U8(rmi);
+                rmi >>= 8;
+            }
             append_cql_short_bytes(f, rmi_bytes, 8);
         }
 
@@ -662,7 +717,7 @@ namespace cql::native {
     template<U8 Version, bool Compressed>
     coroutine::Task<bool> send_error_if_failed(engine::ExecutionResult& result, const tcp::Request* req, S16 stream) {
         if (result.status != engine::ExecutionStatus::Success) {
-            Frame frame{.body = {}, .req = req, .op = op_codes::ERROR, .stream = stream};
+            Frame   frame{.body = {}, .req = req, .op = op_codes::ERROR, .stream = stream};
             String8 msg = result.message.length ? result.message : engine::to_str(result.status);
             append_error_body(frame, result.status, msg);
             co_await send_native_frame<Version, Compressed>(frame);
@@ -674,32 +729,33 @@ namespace cql::native {
     template<U8 Version, bool Compressed>
     coroutine::Task<> send_execution_result(engine::ExecutionResult& result, Engine& engine, const tcp::Request* req, S16 stream) {
         switch (result.kind) {
-            case engine::ResultKind::Void:{
+            case engine::ResultKind::Void: {
                 Frame frame{.body = {}, .req = req, .op = op_codes::RESULT, .stream = stream};
                 append_result_void(frame);
                 co_await send_native_frame<Version, Compressed>(frame);
-            }break;
-            case engine::ResultKind::SchemaChange:{
+            } break;
+            case engine::ResultKind::SchemaChange: {
                 String8 change_type = result.message.length ? result.message : "UPDATED";
-                String8 target      = result.table.length   ? "TABLE"        : "KEYSPACE";
-                Frame frame{.body = {}, .req = req, .op = op_codes::RESULT, .stream = stream};
+                String8 target      = result.table.length ? "TABLE" : "KEYSPACE";
+                Frame   frame{.body = {}, .req = req, .op = op_codes::RESULT, .stream = stream};
                 append_result_schema_change(frame, change_type, target, result.keyspace, result.table);
                 co_await send_native_frame<Version, Compressed>(frame);
-            }break;
-            case engine::ResultKind::UseKeyspace:{
+            } break;
+            case engine::ResultKind::UseKeyspace: {
                 Frame frame{.body = {}, .req = req, .op = op_codes::RESULT, .stream = stream};
                 append_result_set_keyspace(frame, result.keyspace);
                 co_await send_native_frame<Version, Compressed>(frame);
-            }break;
-            case engine::ResultKind::Rows:{
+            } break;
+            case engine::ResultKind::Rows: {
                 auto ks = schema::read_keyspace(engine.schema, result.keyspace).value;
                 assert_true(ks != nullptr, "keyspace not found for rows result");
                 auto tbl = schema::read_table(engine.schema, *ks, result.table).value;
                 assert_true(tbl != nullptr, "table not found for rows result");
                 Frame frame{.body = {}, .req = req, .op = op_codes::RESULT, .stream = stream};
                 co_await append_result_rows(frame, result, tbl);
-                if (result.deferred_tx.started_transaction)
+                if (result.deferred_tx.started_transaction) {
                     co_await result.deferred_tx.commit();
+                }
                 co_await send_native_frame<Version, Compressed>(frame);
                 {
                     pager::Transaction tx{engine.pager};
@@ -708,14 +764,14 @@ namespace cql::native {
                     co_await tx.commit();
                     cql::log::db_response_returned_rows(tbl_size);
                 }
-            }break;
-            case engine::ResultKind::VirtualRows:{
+            } break;
+            case engine::ResultKind::VirtualRows: {
                 assert_true(result.virtual_rows.has_value(), "virtual rows missing");
                 Frame frame{.body = {}, .req = req, .op = op_codes::RESULT, .stream = stream};
                 append_result_virtual_rows(frame, *result.virtual_rows);
                 co_await send_native_frame<Version, Compressed>(frame);
                 cql::log::db_response_returned_rows(result.virtual_rows->rows.length);
-            }break;
+            } break;
         }
     }
 
@@ -730,45 +786,47 @@ namespace cql::native {
         // Helper: send an unframed response envelope (STARTUP/OPTIONS responses
         // must never be wrapped in v5 outer frames per spec)
         const auto send_unframed_response = [&](
-            U8 resp_op, U8 resp_ver, U8 resp_flags, S16 stream,
-            const U8* body, U32 body_len
-        ) -> coroutine::Task<> {
+                                                U8 resp_op, U8 resp_ver, U8 resp_flags, S16 stream,
+                                                const U8* body, U32 body_len) -> coroutine::Task<> {
             log::native_info(fmt(
                 "TX negotiate: op=%02x(%s) flags=%02x stream=%d",
-                resp_op, (const char*)op_codes_to_str(resp_op), resp_flags, (int)stream
-            ));
+                resp_op, (const char*)op_codes_to_str(resp_op), resp_flags, (int)stream));
 
             U8 hdr[V4_FRAME_HEADER_BYTE_COUNT] = {
                 U8(0x80u | resp_ver), resp_flags,
                 U8(U16(stream) >> 8), U8(stream),
                 resp_op,
-                U8(body_len >> 24), U8(body_len >> 16), U8(body_len >> 8), U8(body_len)
-            };
+                U8(body_len >> 24), U8(body_len >> 16), U8(body_len >> 8), U8(body_len)};
             co_await send_block(req, hdr, V4_FRAME_HEADER_BYTE_COUNT);
-            if (body_len > 0) co_await send_block(req, body, body_len);
+            if (body_len > 0) {
+                co_await send_block(req, body, body_len);
+            }
         };
 
         while (true) {
             while (buf.length < V4_FRAME_HEADER_BYTE_COUNT) {
-                if (!co_await try_append_tcp_read(req, buf)) co_return false;
+                if (!co_await try_append_tcp_read(req, buf)) {
+                    co_return false;
+                }
             }
 
             S32 body_len  = read_be_s32(&buf[5]);
             U64 frame_len = V4_FRAME_HEADER_BYTE_COUNT + U64(body_len < 0 ? 0 : body_len);
             while (buf.length < frame_len) {
-                if (!co_await try_append_tcp_read(req, buf)) co_return false;
+                if (!co_await try_append_tcp_read(req, buf)) {
+                    co_return false;
+                }
             }
 
-            U8  version = buf[0] & 0x7Fu;
-            S16 stream  = read_be_s16(&buf[2]);
-            U8  op      = buf[4];
+            U8        version  = buf[0] & 0x7Fu;
+            S16       stream   = read_be_s16(&buf[2]);
+            U8        op       = buf[4];
             const U8* body     = buf.ptr + V4_FRAME_HEADER_BYTE_COUNT;
             const U8* body_end = body + (body_len > 0 ? body_len : 0);
 
             log::native_info(fmt(
                 "RX negotiate: op=%02x(%s) version=%d stream=%d",
-                op, (const char*)op_codes_to_str(op), (int)version, (int)stream
-            ));
+                op, (const char*)op_codes_to_str(op), (int)version, (int)stream));
 
             if (op == op_codes::OPTIONS) {
                 // Advertise supported CQL_VERSION and COMPRESSION options.
@@ -795,12 +853,14 @@ namespace cql::native {
                 bool want_lz4 = false;
                 if (body + 2 <= body_end) {
                     const U8* p = body;
-                    U16 n = read_be_u16(p); p += 2;
+                    U16       n = read_be_u16(p);
+                    p += 2;
                     for (U16 i = 0; i < n && p < body_end; i++) {
                         String8 key = read_cql_string(p, body_end);
                         String8 val = read_cql_string(p, body_end);
-                        if (key == "COMPRESSION" && val == "lz4")
+                        if (key == "COMPRESSION" && val == "lz4") {
                             want_lz4 = true;
+                        }
                         // @todo unsupported options
                         // @todo CQL_VERSION, DRIVER_NAME, DRIVER_VERSION
                     }
@@ -822,7 +882,9 @@ namespace cql::native {
 
             // Consume the processed envelope from buf
             U64 rem = buf.length - frame_len;
-            if (rem > 0) os::memory_copy(buf.ptr, buf.ptr + frame_len, rem);
+            if (rem > 0) {
+                os::memory_copy(buf.ptr, buf.ptr + frame_len, rem);
+            }
             resize(buf, rem);
         }
     }
@@ -835,36 +897,35 @@ namespace cql::native {
     // ========================================================================
     template<U8 Version, bool Compressed>
     coroutine::Task<void> frame_handler(
-        Engine& engine,
+        Engine&             engine,
         const tcp::Request& req,
-        const U8* header,
-        const U8* body,
-        S32 body_length,
-        AutoString8& conn_keyspace
-    ) { ZoneScopedN("frame_handler");
-        S16 stream  = read_be_s16(header + 2);
-        U8  op      = header[4];
+        const U8*           header,
+        const U8*           body,
+        S32                 body_length,
+        AutoString8&        conn_keyspace) {
+        ZoneScopedN("frame_handler");
+        S16 stream = read_be_s16(header + 2);
+        U8  op     = header[4];
 
         const U8* body_end = body + body_length;
 
         log::native_info(fmt(
             "RX frame: op=%02x(%s) stream=%d body_len=%d hdr=%02x%02x%02x%02x%02x%02x%02x%02x%02x",
             op, (const char*)op_codes_to_str(op), (int)(S16)stream, body_length,
-            header[0],header[1],header[2],header[3],header[4],
-            header[5],header[6],header[7],header[8]
-        ));
+            header[0], header[1], header[2], header[3], header[4],
+            header[5], header[6], header[7], header[8]));
 
         switch (op) {
-            case op_codes::STARTUP:{
+            case op_codes::STARTUP: {
                 // STARTUP is handled in negotiate_connection before post_startup_loop.
                 // A re-sent STARTUP post-negotiation is an error.
                 Frame frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
                 append_be_s32(frame, error_codes::PROTOCOL_ERROR);
                 append_cql_string(frame, "STARTUP sent after connection was already negotiated");
                 co_await send_native_frame<Version, Compressed>(frame);
-            }break;
+            } break;
 
-            case op_codes::OPTIONS:{
+            case op_codes::OPTIONS: {
                 Frame frame{.body = {}, .req = &req, .op = op_codes::SUPPORTED, .stream = stream};
                 append_be_u16(frame, 2);
                 append_cql_string(frame, "CQL_VERSION");
@@ -874,12 +935,12 @@ namespace cql::native {
                 append_be_u16(frame, 1);
                 append_cql_string(frame, "lz4");
                 co_await send_native_frame<Version, Compressed>(frame);
-            }break;
+            } break;
 
-            case op_codes::QUERY:{
-                S64 t0 = os::monotonic_us();
-                const U8* p = body;
-                String8 query = read_cql_long_string(p, body_end);
+            case op_codes::QUERY: {
+                S64       t0    = os::monotonic_us();
+                const U8* p     = body;
+                String8   query = read_cql_long_string(p, body_end);
 
                 if (auto specific_err = parsers::check_specific_errors(query)) {
                     Frame frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
@@ -902,26 +963,28 @@ namespace cql::native {
                 auto bound_values = read_query_parameter_values<Version>(p, body_end, bind_specs);
 
                 engine::ExecutionResult result = co_await engine::execute(engine, *cql_opt, move(bound_values), conn_keyspace);
-                if (!co_await send_error_if_failed<Version, Compressed>(result, &req, stream))
+                if (!co_await send_error_if_failed<Version, Compressed>(result, &req, stream)) {
                     co_await send_execution_result<Version, Compressed>(result, engine, &req, stream);
+                }
 
                 cql::log::db_operation_duration(os::monotonic_us() - t0);
-            }break;
+            } break;
 
-            case op_codes::REGISTER:{
+            case op_codes::REGISTER: {
                 Frame frame{.body = {}, .req = &req, .op = op_codes::READY, .stream = stream};
                 co_await send_native_frame<Version, Compressed>(frame);
-            }break;
+            } break;
 
-            case op_codes::PREPARE:{
-                S64 t0 = os::monotonic_us();
-                const U8* p = body;
-                String8 query = read_cql_long_string(p, body_end);
+            case op_codes::PREPARE: {
+                S64       t0    = os::monotonic_us();
+                const U8* p     = body;
+                String8   query = read_cql_long_string(p, body_end);
 
                 // v5 adds a flags [int] field and optional keyspace [string]
                 if constexpr (Version >= 5) {
                     if (p + 4 <= body_end) {
-                        U32 prepare_flags = U32(read_be_s32(p)); p += 4;
+                        U32 prepare_flags = U32(read_be_s32(p));
+                        p += 4;
                         if ((prepare_flags & 0x01u) && p < body_end) {
                             String8 keyspace = read_cql_string(p, body_end);
                             (void)keyspace; // @todo use for per-query keyspace context
@@ -931,7 +994,7 @@ namespace cql::native {
 
                 auto result = engine::prepare(engine, query, String8(conn_keyspace));
                 if (result.status != engine::ExecutionStatus::Success) {
-                    Frame frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
+                    Frame   frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
                     String8 msg = result.message.length ? result.message : engine::to_str(result.status);
                     append_error_body(frame, result.status, msg);
                     co_await send_native_frame<Version, Compressed>(frame);
@@ -943,17 +1006,18 @@ namespace cql::native {
                 append_result_prepared<Version>(frame, result.id, *result.entry);
                 co_await send_native_frame<Version, Compressed>(frame);
                 cql::log::db_operation_duration(os::monotonic_us() - t0);
-            }break;
+            } break;
 
-            case op_codes::EXECUTE:{
-                S64 t0 = os::monotonic_us();
-                const U8* p = body;
+            case op_codes::EXECUTE: {
+                S64       t0 = os::monotonic_us();
+                const U8* p  = body;
 
-                const U8* id_data = nullptr;
-                U16 id_len = read_cql_short_bytes(p, body_end, id_data);
-                U64 prepared_id = 0;
-                for (U16 i = 0; i < id_len && i < 8; i++)
+                const U8* id_data     = nullptr;
+                U16       id_len      = read_cql_short_bytes(p, body_end, id_data);
+                U64       prepared_id = 0;
+                for (U16 i = 0; i < id_len && i < 8; i++) {
                     prepared_id = (prepared_id << 8) | U64(id_data[i]);
+                }
 
                 // v5 includes result_metadata_id [short bytes] after the prepared id
                 if constexpr (Version >= 5) {
@@ -973,27 +1037,28 @@ namespace cql::native {
                 auto bound_values = read_query_parameter_values<Version>(p, body_end, entry->bind_variables);
 
                 engine::ExecutionResult result = co_await engine::execute(engine, prepared_id, move(bound_values), conn_keyspace);
-                if (!co_await send_error_if_failed<Version, Compressed>(result, &req, stream))
+                if (!co_await send_error_if_failed<Version, Compressed>(result, &req, stream)) {
                     co_await send_execution_result<Version, Compressed>(result, engine, &req, stream);
+                }
 
                 cql::log::db_operation_duration(os::monotonic_us() - t0);
-            }break;
+            } break;
 
-            case op_codes::BATCH:{
+            case op_codes::BATCH: {
                 assert_true_not_implemented(false, "BATCH not implemented");
-            }break;
+            } break;
 
-            default:{
+            default: {
                 Frame frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
                 append_error_body(frame, engine::ExecutionStatus::Invalid, "Unknown op code");
                 co_await send_native_frame<Version, Compressed>(frame);
-            }break;
+            } break;
         }
 
         co_return;
     }
 
-    template coroutine::Task<void> frame_handler<5u, true> (Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
+    template coroutine::Task<void> frame_handler<5u, true>(Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
     template coroutine::Task<void> frame_handler<5u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
     template coroutine::Task<void> frame_handler<4u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
 }

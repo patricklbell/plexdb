@@ -31,15 +31,15 @@ export namespace cql::engine {
     // ========================================================================
     struct BindVariableSpec {
         AutoString8 name;
-        type::Type type;
+        type::Type  type;
     };
 
     struct PreparedEntry {
-        AutoString8 query_string;
-        AutoString8 keyspace;
-        AutoString8 table;
+        AutoString8                    query_string;
+        AutoString8                    keyspace;
+        AutoString8                    table;
         DynamicArray<BindVariableSpec> bind_variables;
-        S32 pk_index = -1;
+        S32                            pk_index = -1;
     };
 
     // @todo determine what the correct strategy is here
@@ -49,69 +49,76 @@ export namespace cql::engine {
     // engine
     // ========================================================================
     struct Engine {
-        Pager* pager = nullptr;
+        Pager*         pager = nullptr;
         schema::Schema schema;
-        AutoString8 current_keyspace{""};
+        AutoString8    current_keyspace{""};
+        bool           single_node = true;
+        U16            port        = 9042;
+
         MapFixedSentinel<U64, PreparedEntry, MAX_PREPARED_STATEMENTS> prepared_cache;
-        bool single_node = true;
-        U16 port = 9042;
     };
 
-    coroutine::Task<> init(Engine& engine, Pager* in_pager);
+    coroutine::Task<>     init(Engine& engine, Pager* in_pager);
     coroutine::Task<void> create_database(Pager& pager);
 
     enum class ExecutionStatus : U16 {
-        Success         = 0x0000,
-        ServerError     = 0x0001,  // Unexpected server-side error
-        SyntaxError     = 0x2000,  // Query has syntax error
-        Unauthorized    = 0x2100,  // No permission
-        Invalid         = 0x2200,  // Syntactically correct but invalid
-        ConfigError     = 0x2300,  // Configuration issue
-        AlreadyExists   = 0x2400,  // Keyspace/table already exists
+        Success       = 0x0000,
+        ServerError   = 0x0001, // Unexpected server-side error
+        SyntaxError   = 0x2000, // Query has syntax error
+        Unauthorized  = 0x2100, // No permission
+        Invalid       = 0x2200, // Syntactically correct but invalid
+        ConfigError   = 0x2300, // Configuration issue
+        AlreadyExists = 0x2400, // Keyspace/table already exists
     };
 
     constexpr String8 to_str(ExecutionStatus status) {
         switch (status) {
-            case ExecutionStatus::Success:        return "SUCCESS";
-            case ExecutionStatus::ServerError:    return "SERVER_ERROR";
-            case ExecutionStatus::SyntaxError:    return "SYNTAX_ERROR";
-            case ExecutionStatus::Unauthorized:   return "UNAUTHORIZED";
-            case ExecutionStatus::Invalid:        return "INVALID";
-            case ExecutionStatus::ConfigError:    return "CONFIG_ERROR";
-            case ExecutionStatus::AlreadyExists:  return "ALREADY_EXISTS";
+            case ExecutionStatus::Success:
+                return "SUCCESS";
+            case ExecutionStatus::ServerError:
+                return "SERVER_ERROR";
+            case ExecutionStatus::SyntaxError:
+                return "SYNTAX_ERROR";
+            case ExecutionStatus::Unauthorized:
+                return "UNAUTHORIZED";
+            case ExecutionStatus::Invalid:
+                return "INVALID";
+            case ExecutionStatus::ConfigError:
+                return "CONFIG_ERROR";
+            case ExecutionStatus::AlreadyExists:
+                return "ALREADY_EXISTS";
         }
         return "UNKNOWN";
     }
 
-
     enum class ResultKind : U8 {
-        Void = 0,       // No result (INSERT, UPDATE, DELETE)
-        Rows,           // SELECT result
-        VirtualRows,    // Virtual/system table result (not backed by storage)
-        SchemaChange,   // CREATE/DROP/ALTER result
-        UseKeyspace,    // USE keyspace
+        Void = 0,     // No result (INSERT, UPDATE, DELETE)
+        Rows,         // SELECT result
+        VirtualRows,  // Virtual/system table result (not backed by storage)
+        SchemaChange, // CREATE/DROP/ALTER result
+        UseKeyspace,  // USE keyspace
     };
 
     // ========================================================================
     // execution result
     // ========================================================================
     struct ExecutionResult {
-        ExecutionStatus status = ExecutionStatus::Success;
-        ResultKind kind = ResultKind::Void;
-        String8 message = "";
-        AutoString8 message_storage = {};  // @note owns message string when dynamic (message.data points here)
-        AutoString8 keyspace = {};
-        AutoString8 table = {};
+        ExecutionStatus status          = ExecutionStatus::Success;
+        ResultKind      kind            = ResultKind::Void;
+        String8         message         = "";
+        AutoString8     message_storage = {}; // @note owns message string when dynamic (message.data points here)
+        AutoString8     keyspace        = {};
+        AutoString8     table           = {};
 
-        U64 row_limit_count = MAX_U64;
-        Optional<RowRange> rows = {};
-        Optional<VirtualRows> virtual_rows = {};
+        U64                   row_limit_count = MAX_U64;
+        Optional<RowRange>    rows            = {};
+        Optional<VirtualRows> virtual_rows    = {};
 
-        const schema::Table* resolved_table = nullptr;
-        DynamicArray<U64> select_col_indices = {};
+        const schema::Table* resolved_table     = nullptr;
+        DynamicArray<U64>    select_col_indices = {};
 
         DynamicArray<cql::WhereClause::Relation> filter_predicates = {};
-        cql::EvalContext filter_ctx = {};
+        cql::EvalContext                         filter_ctx        = {};
 
         // For SELECT results: holds the open execute-transaction so that row iteration
         // (which uses the own_tx borrowing pattern) always sees a stable active transaction
@@ -140,13 +147,13 @@ export namespace cql::engine {
     // prepared statements
     // ========================================================================
     struct PrepareResult {
-        ExecutionStatus status = ExecutionStatus::Success;
-        String8 message = "";
-        U64 id = 0;
-        PreparedEntry* entry = nullptr;
+        ExecutionStatus status  = ExecutionStatus::Success;
+        String8         message = "";
+        U64             id      = 0;
+        PreparedEntry*  entry   = nullptr;
     };
 
-    PrepareResult prepare(Engine& engine, String8 query, String8 current_keyspace);
+    PrepareResult  prepare(Engine& engine, String8 query, String8 current_keyspace);
     PreparedEntry* try_get_prepared(Engine& engine, U64 prepared_id);
 }
 

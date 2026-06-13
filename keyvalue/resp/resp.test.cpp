@@ -18,7 +18,7 @@ using namespace plexdb;
 using namespace keyvalue;
 
 namespace {
-    constexpr int RESP_TEST_PORT_BASE = 25000;
+    constexpr int    RESP_TEST_PORT_BASE = 25000;
     std::atomic<int> port_counter{0};
 
     int get_unique_port() {
@@ -50,12 +50,14 @@ namespace {
 
     AutoString8 recv_line(os::Socket& sock) {
         AutoString8 buf;
-        char c = 0;
+        char        c = 0;
         while (true) {
             auto res = os::socket_receive(sock, &c, 1);
-            if (res.byte_count <= 0) break;
+            if (res.byte_count <= 0) {
+                break;
+            }
             push_back(buf, c);
-            if (buf.length >= 2 && buf[buf.length-2] == '\r' && buf[buf.length-1] == '\n') {
+            if (buf.length >= 2 && buf[buf.length - 2] == '\r' && buf[buf.length - 1] == '\n') {
                 resize(buf, buf.length - 2);
                 break;
             }
@@ -65,46 +67,63 @@ namespace {
 
     AutoString8 recv_n(os::Socket& sock, size_t n) {
         AutoString8 buf(n);
-        size_t got = 0;
+        size_t      got = 0;
         while (got < n) {
             auto res = os::socket_receive(sock, &buf.c_str[got], (int)(n - got));
-            if (res.byte_count <= 0) break;
+            if (res.byte_count <= 0) {
+                break;
+            }
             got += bounds_checked_cast<size_t>(res.byte_count);
         }
         return buf;
     }
 
     struct Resp {
-        char type = 0;
-        AutoString8 str;
-        S64 integer = 0;
+        char               type = 0;
+        AutoString8        str;
+        S64                integer = 0;
         DynamicArray<Resp> array;
-        bool is_null = false;
+        bool               is_null = false;
     };
 
     Resp recv_resp(os::Socket& sock) {
-        Resp r;
+        Resp        r;
         AutoString8 line = recv_line(sock);
-        if (line.length == 0) return r;
+        if (line.length == 0) {
+            return r;
+        }
         r.type = line[0];
         String8 body{line.c_str + 1, line.length - 1};
 
         switch (r.type) {
-            case '+': r.str = body; break;
-            case '-': r.str = body; break;
-            case ':': r.integer = s64_from_str(body); break;
+            case '+':
+                r.str = body;
+                break;
+            case '-':
+                r.str = body;
+                break;
+            case ':':
+                r.integer = s64_from_str(body);
+                break;
             case '$': {
                 S64 n = s64_from_str(body);
-                if (n < 0) { r.is_null = true; break; }
+                if (n < 0) {
+                    r.is_null = true;
+                    break;
+                }
                 r.str = recv_n(sock, (size_t)n);
                 recv_line(sock);
                 break;
             }
             case '*': {
                 S64 count = s64_from_str(body);
-                if (count < 0) { r.is_null = true; break; }
-                for (S64 i = 0; i < count; i++)
+                if (count < 0) {
+                    r.is_null = true;
+                    break;
+                }
+                for (S64 i = 0; i < count; i++) {
                     push_back(r.array, recv_resp(sock));
+                }
                 break;
             }
         }
@@ -119,8 +138,7 @@ namespace {
             forward<ClientFn>(client_fn),
             [&](auto on_ready, auto& signal_consumer, auto& poll) {
                 resp::run((U16)port, eng, on_ready, false, signal_consumer, poll);
-            }
-        );
+            });
     }
 }
 
@@ -135,13 +153,13 @@ TEST_CASE("RESP PING", "[keyvalue.resp]") {
         send_cmd(client, cmd);
         auto r = recv_resp(client);
         CHECK(r.type == '+');
-        CHECK(r.str  == "PONG");
+        CHECK(r.str == "PONG");
 
         cmd = make_resp({"PING", "hello"});
         send_cmd(client, cmd);
         r = recv_resp(client);
         CHECK(r.type == '$');
-        CHECK(r.str  == "hello");
+        CHECK(r.str == "hello");
 
         os::signal_notify_safe(interrupt);
     });
@@ -157,12 +175,12 @@ TEST_CASE("RESP SET and GET", "[keyvalue.resp]") {
         send_cmd(client, make_resp({"SET", "foo", "bar"}));
         auto r = recv_resp(client);
         CHECK(r.type == '+');
-        CHECK(r.str  == "OK");
+        CHECK(r.str == "OK");
 
         send_cmd(client, make_resp({"GET", "foo"}));
         r = recv_resp(client);
         CHECK(r.type == '$');
-        CHECK(r.str  == "bar");
+        CHECK(r.str == "bar");
 
         send_cmd(client, make_resp({"GET", "nosuchkey"}));
         r = recv_resp(client);
@@ -214,7 +232,7 @@ TEST_CASE("RESP MSET and MGET", "[keyvalue.resp]") {
         send_cmd(client, make_resp({"MSET", "a", "1", "b", "2", "c", "3"}));
         auto r = recv_resp(client);
         CHECK(r.type == '+');
-        CHECK(r.str  == "OK");
+        CHECK(r.str == "OK");
 
         send_cmd(client, make_resp({"MGET", "a", "b", "missing", "c"}));
         r = recv_resp(client);
@@ -248,7 +266,7 @@ TEST_CASE("RESP KEYS and SCAN", "[keyvalue.resp]") {
         r = recv_resp(client);
         CHECK(r.type == '*');
         REQUIRE(r.array.length == 2);
-        CHECK(r.array[0].str  == "0");
+        CHECK(r.array[0].str == "0");
         CHECK(r.array[1].array.length == 3);
 
         os::signal_notify_safe(interrupt);
@@ -265,7 +283,7 @@ TEST_CASE("RESP SET NX and XX flags", "[keyvalue.resp]") {
         send_cmd(client, make_resp({"SET", "nx_key", "first", "NX"}));
         auto r = recv_resp(client);
         CHECK(r.type == '+');
-        CHECK(r.str  == "OK");
+        CHECK(r.str == "OK");
 
         send_cmd(client, make_resp({"SET", "nx_key", "second", "NX"}));
         r = recv_resp(client);
@@ -295,7 +313,7 @@ TEST_CASE("RESP QUIT closes connection", "[keyvalue.resp]") {
         send_cmd(client, make_resp({"QUIT"}));
         auto r = recv_resp(client);
         CHECK(r.type == '+');
-        CHECK(r.str  == "OK");
+        CHECK(r.str == "OK");
 
         os::signal_notify_safe(interrupt);
     });
@@ -338,7 +356,7 @@ TEST_CASE("RESP inline command", "[keyvalue.resp]") {
         send_cmd(client, "PING\r\n");
         auto r = recv_resp(client);
         CHECK(r.type == '+');
-        CHECK(r.str  == "PONG");
+        CHECK(r.str == "PONG");
 
         os::signal_notify_safe(interrupt);
     });
