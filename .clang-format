@@ -1,0 +1,94 @@
+---
+Language: Cpp
+Standard: c++20
+BasedOnStyle: LLVM
+
+# --- Indentation ---
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+
+# Access modifiers flush with the class brace, not indented into the body.
+AccessModifierOffset: -4
+IndentAccessModifiers: false
+
+NamespaceIndentation: All
+IndentCaseLabels: true
+
+# requires clause on its own line, indented under the template<>
+IndentRequiresClause: true
+RequiresClausePosition: OwnLine
+BreakBeforeConceptDeclarations: Always
+
+# --- Line length ---
+ColumnLimit: 0
+
+# --- Braces ---
+# K&R everywhere: opening brace on the same line.
+BreakBeforeBraces: Attach
+# Insert braces around single-statement control flow bodies.
+InsertBraces: true
+
+# --- No short constructs ---
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+# Allow lambdas to stay on one line only when used as function arguments.
+AllowShortLambdasOnASingleLine: Inline
+
+# --- Pointer and reference alignment ---
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+# --- Templates ---
+SpaceAfterTemplateKeyword: false
+
+# --- Spacing ---
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpacesInAngles: Never
+
+# --- Constructor initialiser lists ---
+# Always one member per line, comma before each member (mirrors : indent).
+BreakConstructorInitializers: BeforeComma
+PackConstructorInitializers: Never
+ConstructorInitializerIndentWidth: 4
+
+# --- Alignment ---
+# Align = in consecutive variable declarations and assignments so that
+# differences between copy-pasted lines are immediately visible.
+AlignConsecutiveAssignments:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+  AlignCompound: false
+  PadOperators: true
+AlignConsecutiveDeclarations:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+AlignConsecutiveMacros:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+AlignConsecutiveBitFields:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+# Align fields column-by-column in arrays of structs / designated initialisers.
+AlignArrayOfStructures: Right
+# Align trailing // comments within a block.
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+AlignOperands: Align
+
+# --- Miscellaneous ---
+ReflowComments: false
+SortIncludes: Never
+FixNamespaceComments: false
+Cpp11BracedListStyle: true
