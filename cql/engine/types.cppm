@@ -181,9 +181,10 @@ export namespace cql {
         struct Set;
         struct Map;
         struct Vector;
+        struct Tuple;
 
         struct Type {
-            HybridTaggedUnion<TypeList<Basic>, TypeList<List, Set, Map, Vector>> value;
+            HybridTaggedUnion<TypeList<Basic>, TypeList<List, Set, Map, Vector, Tuple>> value;
         };
 
         struct List {
@@ -208,12 +209,23 @@ export namespace cql {
             bool frozen;
         };
 
+        struct Tuple {
+            DynamicArray<Type> elements;
+            bool frozen;
+        };
+
         bool operator==(const Type& a, const Type& b);
 
         inline bool operator==(const List&   a, const List&   b) { return a.element == b.element && a.frozen == b.frozen; }
         inline bool operator==(const Set&    a, const Set&    b) { return a.key == b.key && a.frozen == b.frozen; }
         inline bool operator==(const Map&    a, const Map&    b) { return a.key == b.key && a.value == b.value && a.frozen == b.frozen; }
         inline bool operator==(const Vector& a, const Vector& b) { return a.element == b.element && a.count == b.count && a.frozen == b.frozen; }
+        inline bool operator==(const Tuple&  a, const Tuple&  b) {
+            if (a.frozen != b.frozen || a.elements.length != b.elements.length) return false;
+            for (U64 i = 0; i < a.elements.length; i++)
+                if (!(a.elements[i] == b.elements[i])) return false;
+            return true;
+        }
 
         inline bool operator==(const Type& a, const Type& b) { return a.value == b.value; }
 
@@ -226,6 +238,7 @@ export namespace cql {
         inline Type create_map(Type key, Type val, bool frozen=false) { return Type{Map{move(key), move(val), frozen}}; }
         inline Type create_vector(Basic el, U64 count, bool frozen=false) { return Type{Vector{Type{el}, count, frozen}}; }
         inline Type create_vector(Type el, U64 count, bool frozen=false) { return Type{Vector{move(el), count, frozen}}; }
+        inline Type create_tuple(DynamicArray<Type> elements, bool frozen=false) { return Type{Tuple{move(elements), frozen}}; }
     }
 }
 
@@ -259,6 +272,13 @@ export namespace plexdb {
 
     U64 hash(const cql::type::Vector& t) {
         return mix(mix(hash(t.element), static_cast<U64>(t.frozen)), static_cast<U64>(t.count));
+    }
+
+    U64 hash(const cql::type::Tuple& t) {
+        U64 h = static_cast<U64>(t.frozen);
+        for (U64 i = 0; i < t.elements.length; i++)
+            h = mix(h, hash(t.elements[i]));
+        return h;
     }
 
     U64 hash(const cql::type::Type& t) {
@@ -307,9 +327,17 @@ export namespace plexdb {
                 return "set<"_as + to_str(v.key) + ">";
             else if constexpr (SameAs<T, cql::type::Map>)
                 return "map<"_as + to_str(v.key) + ", " + to_str(v.value) + ">";
-            else {
-                static_assert(SameAs<T, cql::type::Vector>, "unhandled Type variant in to_str");
+            else if constexpr (SameAs<T, cql::type::Vector>)
                 return "vector["_as + to_str(v.element) + "]";
+            else {
+                static_assert(SameAs<T, cql::type::Tuple>, "unhandled Type variant in to_str");
+                AutoString8 result = "tuple<"_as;
+                for (U64 i = 0; i < v.elements.length; i++) {
+                    if (i > 0) result += ", ";
+                    result += String8(to_str(v.elements[i]));
+                }
+                result += ">";
+                return result;
             }
         });
     }

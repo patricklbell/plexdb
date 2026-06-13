@@ -331,6 +331,35 @@ export namespace cql {
         TableName table;
     };
 
+    struct CreateIndex {
+        bool custom;
+        bool if_not_exists;
+        Optional<AutoString8> index_name;
+        TableName table;
+    };
+
+    struct CreateType {
+        bool if_not_exists;
+        TableName name;
+        DynamicArray<ColumnDefinition> fields;
+    };
+
+    struct DropType {
+        bool if_exists;
+        TableName name;
+    };
+
+    struct AlterType {
+        struct AddFieldInstruction {
+            DynamicArray<ColumnDefinition> fields;
+        };
+        struct RenameFieldInstruction {
+            DynamicArray<Pair<ColumnName, ColumnName>> old_to_new_fields;
+        };
+        TableName name;
+        TaggedUnion<AddFieldInstruction, RenameFieldInstruction> instruction;
+    };
+
     // ========================================================================
     // Data manipulation (DML)
     // ========================================================================
@@ -461,6 +490,10 @@ export namespace cql {
             AlterTable,
             DropTable,
             TruncateTable,
+            CreateIndex,
+            CreateType,
+            AlterType,
+            DropType,
             Select,
             Insert,
             Update,

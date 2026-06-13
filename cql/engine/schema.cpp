@@ -39,7 +39,10 @@ namespace cql::schema {
                 return {TypeRegistryKind::Map, pack_type(schema, v.key), pack_type(schema, v.value), 0, v.frozen};
             else if constexpr (SameAs<T, type::Vector>)
                 return {TypeRegistryKind::Vector, pack_type(schema, v.element), 0, v.count, v.frozen};
-            else {
+            else if constexpr (SameAs<T, type::Tuple>) {
+                assert_not_implemented("tuple column type is not implemented");
+                return {};
+            } else {
                 static_assert(!SameAs<T, T>, "unhandled Type variant in register_type");
                 return {};
             }
@@ -692,7 +695,7 @@ namespace cql::schema {
 
     coroutine::Task<Result<void>> delete_column(Schema& schema, Table& tbl, String8 name) {
         auto col_res = read_column_impl(schema, tbl, name);
-        if (col_res.error != Error::None) {
+        if (col_res.error == Error::None) {
             const auto& col = col_res.value;
             col->tombstone = true;
 
