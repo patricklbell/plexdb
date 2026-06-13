@@ -50,10 +50,13 @@ namespace cql {
             pager::Transaction tx{pager};
             if (own_tx) co_await tx.begin();
 
-            it.row_cursor = co_await blob::create_cursor(pager, page_idx);
-            U64 data_offset = co_await read_blob_header(
-                it.row_cursor.blob, it.row_column_count, it.masks);
-            it.row_cursor.offset = data_offset;
+            it.row_column_count = table->cols.length;
+            if (page_idx != 0) {
+                it.row_cursor = co_await blob::create_cursor(pager, page_idx);
+                U64 data_offset = co_await read_blob_header(
+                    it.row_cursor.blob, it.row_column_count, it.masks);
+                it.row_cursor.offset = data_offset;
+            }
 
             if (static_page_idx != 0 && table->static_col_indices.length > 0) {
                 it.static_cursor = co_await blob::create_cursor(pager, static_page_idx);
@@ -121,9 +124,12 @@ namespace cql {
 
     coroutine::Task<ColumnRange> RowIterator::deref() {
         auto partition_entry = *partition_it;
-        U64 row_page = schema::has_clustering_keys(*table)
-            ? *clustering_it
-            : partition_entry.data_page;
+        U64 row_page;
+        if (schema::has_clustering_keys(*table)) {
+            row_page = static_only_row ? 0 : *clustering_it;
+        } else {
+            row_page = partition_entry.data_page;
+        }
         ColumnIterator col_it;
         co_await load(col_it, this->pager, this->table, row_page, partition_entry.static_page);
         co_return ColumnRange{
@@ -132,12 +138,31 @@ namespace cql {
         };
     }
 
+    static coroutine::Task<void> setup_clustering_for_partition(RowIterator& it, Pager* pager, const schema::PartitionEntry& entry) {
+        it.clustering_btree = ClusteringBTree{
+            pager, entry.data_page,
+            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+        };
+        it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
+        it.clustering_end_it = btree::end<U64>(it.clustering_btree);
+        it.static_only_row   = (it.clustering_it == it.clustering_end_it && entry.static_page != 0);
+    }
+
     coroutine::Task<void> RowIterator::advance() {
         bool own_tx = !this->pager->transaction_active;
         pager::Transaction tx{this->pager};
         if (own_tx) co_await tx.begin();
         if (!schema::has_clustering_keys(*table)) {
             co_await this->partition_it.advance();
+        } else if (this->static_only_row) {
+            // Consumed a static-only row; move directly to the next partition.
+            this->static_only_row = false;
+            co_await this->partition_it.advance();
+            auto end_it = btree::end<schema::PartitionEntry>(table->btree);
+            if (partition_it != end_it) {
+                auto entry = *partition_it;
+                co_await setup_clustering_for_partition(*this, pager, entry);
+            }
         } else {
             co_await this->clustering_it.advance();
             if (clustering_it == clustering_end_it) {
@@ -145,12 +170,7 @@ namespace cql {
                 auto end_it = btree::end<schema::PartitionEntry>(table->btree);
                 if (partition_it != end_it) {
                     auto entry = *partition_it;
-                    clustering_btree = ClusteringBTree{
-                        pager, entry.data_page,
-                        btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
-                    };
-                    clustering_it     = co_await btree::begin<U64>(clustering_btree);
-                    clustering_end_it = btree::end<U64>(clustering_btree);
+                    co_await setup_clustering_for_partition(*this, pager, entry);
                 }
             }
         }
@@ -161,12 +181,7 @@ namespace cql {
         if (schema::has_clustering_keys(*table) &&
             it.partition_it != btree::end<schema::PartitionEntry>(table->btree)) {
             auto entry = *it.partition_it;
-            it.clustering_btree = ClusteringBTree{
-                pager, entry.data_page,
-                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
-            };
-            it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
-            it.clustering_end_it = btree::end<U64>(it.clustering_btree);
+            co_await setup_clustering_for_partition(it, pager, entry);
         }
     }
 

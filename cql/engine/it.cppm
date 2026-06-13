@@ -89,6 +89,8 @@ export namespace cql {
         btree::Iterator<ClusteringBTree, U64> clustering_it;
         btree::Iterator<ClusteringBTree, U64> clustering_end_it;
 
+        bool static_only_row = false;  // @note true when partition has static data but no clustering rows
+
         RowIterator() = default;
 
         RowIterator(const RowIterator&) = delete;
