@@ -99,6 +99,7 @@ export namespace cql::engine {
         ExecutionStatus status = ExecutionStatus::Success;
         ResultKind kind = ResultKind::Void;
         String8 message = "";
+        AutoString8 message_storage = {};  // @note owns message string when dynamic (message.data points here)
         AutoString8 keyspace = {};
         AutoString8 table = {};
 

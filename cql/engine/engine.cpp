@@ -88,11 +88,12 @@ namespace cql::engine {
         };
     }
     static ExecutionResult create_keyspace_not_found(const String8& keyspace_name) {
-        return {
-            .status = ExecutionStatus::Invalid,
-            .message = "Keyspace does not exist",
-            .keyspace = AutoString8(keyspace_name),
-        };
+        ExecutionResult r;
+        r.status = ExecutionStatus::Invalid;
+        r.keyspace = AutoString8(keyspace_name);
+        r.message_storage = "Keyspace '" + r.keyspace + "' does not exist";
+        r.message = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
     }
     static ExecutionResult create_use_keyspace(const String8& keyspace_name) {
         return {.status = ExecutionStatus::Success, .kind = ResultKind::UseKeyspace, .keyspace = AutoString8(keyspace_name)};
@@ -106,12 +107,13 @@ namespace cql::engine {
         };
     }
     static ExecutionResult create_table_not_found(const String8& keyspace_name, const String8& table_name) {
-        return {
-            .status = ExecutionStatus::Invalid,
-            .message = "Table does not exist",
-            .keyspace = AutoString8(keyspace_name),
-            .table = AutoString8(table_name),
-        };
+        ExecutionResult r;
+        r.status = ExecutionStatus::Invalid;
+        r.keyspace = AutoString8(keyspace_name);
+        r.table = AutoString8(table_name);
+        r.message_storage = "Table '" + r.keyspace + "." + r.table + "' does not exist";
+        r.message = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
     }
     static ExecutionResult create_table_created(const String8& keyspace_name, const String8& table_name) {
         return {
@@ -145,21 +147,24 @@ namespace cql::engine {
             .table = AutoString8(table_name),
         };
     }
-    static ExecutionResult create_insert_into_deleted_column(const String8& keyspace_name, const String8& table_name) {
-        return {
-            .status = ExecutionStatus::Invalid,
-            .message = "Cannot insert into deleted column",
-            .keyspace = AutoString8(keyspace_name),
-            .table = AutoString8(table_name),
-        };
+
+    static ExecutionResult create_insert_into_unknown_column(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
+        ExecutionResult r;
+        r.status = ExecutionStatus::Invalid;
+        r.keyspace = AutoString8(keyspace_name);
+        r.table = AutoString8(table_name);
+        r.message_storage = "Undefined column name " + AutoString8(col_name);
+        r.message = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
     }
-    [[maybe_unused]] static ExecutionResult create_insert_into_unknown_column(const String8& keyspace_name, const String8& table_name) {
-        return {
-            .status = ExecutionStatus::Invalid,
-            .message = "Too many values or unknown column",
-            .keyspace = AutoString8(keyspace_name),
-            .table = AutoString8(table_name),
-        };
+    static ExecutionResult create_insert_duplicate_column(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
+        ExecutionResult r;
+        r.status = ExecutionStatus::Invalid;
+        r.keyspace = AutoString8(keyspace_name);
+        r.table = AutoString8(table_name);
+        r.message_storage = "Multiple definitions of identifier " + AutoString8(col_name);
+        r.message = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
     }
     static ExecutionResult create_insert_incompatible_literal(const String8& keyspace_name, const String8& table_name) {
         return {
@@ -169,21 +174,23 @@ namespace cql::engine {
             .table = AutoString8(table_name),
         };
     }
-    static ExecutionResult create_insert_missing_pk(const String8& keyspace_name, const String8& table_name) {
-        return {
-            .status = ExecutionStatus::Invalid,
-            .message = "Insert is missing a value for a primary key",
-            .keyspace = AutoString8(keyspace_name),
-            .table = AutoString8(table_name),
-        };
+    static ExecutionResult create_insert_missing_pk(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
+        ExecutionResult r;
+        r.status = ExecutionStatus::Invalid;
+        r.keyspace = AutoString8(keyspace_name);
+        r.table = AutoString8(table_name);
+        r.message_storage = "Missing mandatory PRIMARY KEY part " + AutoString8(col_name);
+        r.message = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
     }
-    static ExecutionResult create_insert_missing_ck(const String8& keyspace_name, const String8& table_name) {
-        return {
-            .status = ExecutionStatus::Invalid,
-            .message = "Insert is missing a value for a clustering key",
-            .keyspace = AutoString8(keyspace_name),
-            .table = AutoString8(table_name),
-        };
+    static ExecutionResult create_insert_missing_ck(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
+        ExecutionResult r;
+        r.status = ExecutionStatus::Invalid;
+        r.keyspace = AutoString8(keyspace_name);
+        r.table = AutoString8(table_name);
+        r.message_storage = "Missing mandatory PRIMARY KEY part " + AutoString8(col_name);
+        r.message = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
     }
     static ExecutionResult create_where_invalid_type(const String8& keyspace_name, const String8& table_name) {
         return {
@@ -566,11 +573,23 @@ namespace cql::engine {
                             return {};
                         };
 
-                        // validate columns
+                        for (U64 ni = 0; ni < v.names.length; ni++) {
+                            bool found = false;
+                            for (const auto& col : tbl->cols) {
+                                if (!col.tombstone && col.name == v.names[ni].identifier) { found = true; break; }
+                            }
+                            if (!found)
+                                co_return create_insert_into_unknown_column(ks->name, tbl->name, v.names[ni].identifier);
+                            for (U64 nj = 0; nj < ni; nj++) {
+                                if (v.names[nj].identifier == v.names[ni].identifier)
+                                    co_return create_insert_duplicate_column(ks->name, tbl->name, v.names[ni].identifier);
+                            }
+                        }
+
                         for (const auto& col : tbl->cols) {
                             auto names_idx_opt = try_get_names_idx(col.name);
                             if (names_idx_opt) {
-                                if (col.tombstone) co_return create_insert_into_deleted_column(ks->name, tbl->name);
+                                if (col.tombstone) continue; // shadowed by re-added column later in the list
                                 const auto& eval = evaluate(v.values[*names_idx_opt], ctx);
                                 if (!io::can_cast_write_evaluated_as_column_value(eval, col.type))
                                     co_return create_insert_incompatible_literal(ks->name, tbl->name);
@@ -579,31 +598,48 @@ namespace cql::engine {
 
                         for (U64 pk_ci : tbl->partition_key_col_indices) {
                             if (!try_get_names_idx(tbl->cols[pk_ci].name))
-                                co_return create_insert_missing_pk(ks->name, tbl->name);
+                                co_return create_insert_missing_pk(ks->name, tbl->name, tbl->cols[pk_ci].name);
                         }
-                        for (U64 ck_ci : tbl->clustering_key_col_indices) {
-                            if (!try_get_names_idx(tbl->cols[ck_ci].name))
-                                co_return create_insert_missing_ck(ks->name, tbl->name);
-                        }
-
-                        assert_true_not_implemented(!stmt.if_not_exists, "INSERT IF NOT EXISTS is not implemented");
 
                         auto is_static_col = [tbl](U64 ci) -> bool {
                             for (U64 si : tbl->static_col_indices) if (si == ci) return true;
                             return false;
                         };
+                        auto is_pk_col = [tbl](U64 ci) -> bool {
+                            for (U64 pk_ci : tbl->partition_key_col_indices) if (pk_ci == ci) return true;
+                            return false;
+                        };
+
+                        bool needs_clustering_row = false;
+                        if (schema::has_clustering_keys(*tbl)) {
+                            for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                                if (!is_pk_col(ci) && !is_static_col(ci) && try_get_names_idx(tbl->cols[ci].name)) {
+                                    needs_clustering_row = true;
+                                    break;
+                                }
+                            }
+                            if (needs_clustering_row) {
+                                for (U64 ck_ci : tbl->clustering_key_col_indices) {
+                                    if (!try_get_names_idx(tbl->cols[ck_ci].name))
+                                        co_return create_insert_missing_ck(ks->name, tbl->name, tbl->cols[ck_ci].name);
+                                }
+                            }
+                        }
+
+                        assert_true_not_implemented(!stmt.if_not_exists, "INSERT IF NOT EXISTS is not implemented");
 
                         // collect regular (non-static) row bytes into buffer (sync)
                         DynamicArray<U8> row_buffer;
                         auto write_fn = create_buffer_writer(row_buffer);
                         auto write = io::to_writer(write_fn);
                         auto row_is_active = [&](U64 col_idx) {
-                            return static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name))
+                            return !tbl->cols[col_idx].tombstone
+                                && static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name))
                                 && !is_static_col(col_idx);
                         };
                         io::write_column_mask(write, io::to_checker(row_is_active), tbl->cols.length);
                         for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                            if (!is_static_col(ci)) {
+                            if (!is_static_col(ci) && !tbl->cols[ci].tombstone) {
                                 auto names_idx_opt = try_get_names_idx(tbl->cols[ci].name);
                                 if (names_idx_opt) {
                                     const auto& eval = evaluate(v.values[*names_idx_opt], ctx);
@@ -616,7 +652,7 @@ namespace cql::engine {
                         DynamicArray<U8> static_buffer;
                         bool any_static_in_insert = false;
                         for (U64 si : tbl->static_col_indices) {
-                            if (try_get_names_idx(tbl->cols[si].name)) {
+                            if (!tbl->cols[si].tombstone && try_get_names_idx(tbl->cols[si].name)) {
                                 any_static_in_insert = true;
                                 break;
                             }
@@ -625,12 +661,13 @@ namespace cql::engine {
                             auto write_static_fn = create_buffer_writer(static_buffer);
                             auto write_static = io::to_writer(write_static_fn);
                             auto static_is_active = [&](U64 col_idx) {
-                                return is_static_col(col_idx)
+                                return !tbl->cols[col_idx].tombstone
+                                    && is_static_col(col_idx)
                                     && static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name));
                             };
                             io::write_column_mask(write_static, io::to_checker(static_is_active), tbl->cols.length);
                             for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                                if (is_static_col(ci)) {
+                                if (is_static_col(ci) && !tbl->cols[ci].tombstone) {
                                     auto names_idx_opt = try_get_names_idx(tbl->cols[ci].name);
                                     if (names_idx_opt) {
                                         const auto& eval = evaluate(v.values[*names_idx_opt]);
@@ -641,10 +678,14 @@ namespace cql::engine {
                         }
 
                         // write regular row buffer to new blob (async)
-                        U64 row_page = co_await blob::create_paged_dynamic(*engine.pager);
-                        blob::BlobDynamicPaged row_blob;
-                        co_await blob::load(row_blob, engine.pager, row_page);
-                        co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
+                        bool needs_row_blob = !schema::has_clustering_keys(*tbl) || needs_clustering_row;
+                        U64 row_page = 0;
+                        if (needs_row_blob) {
+                            row_page = co_await blob::create_paged_dynamic(*engine.pager);
+                            blob::BlobDynamicPaged row_blob;
+                            co_await blob::load(row_blob, engine.pager, row_page);
+                            co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
+                        }
 
                         // build partition key and insert into btree(s)
                         DynamicArray<Evaluated> partition_evals;
@@ -694,16 +735,18 @@ namespace cql::engine {
                                 co_await btree::tupdate(tbl->btree, pk_bytes, entry);
                             }
 
-                            schema::ClusteringBTree clustering_btree{
-                                engine.pager, entry.data_page,
-                                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
-                            };
-                            DynamicArray<Evaluated> clustering_evals;
-                            for (U64 ck_ci : tbl->clustering_key_col_indices) {
-                                push_back(clustering_evals, evaluate(v.values[*try_get_names_idx(tbl->cols[ck_ci].name)], ctx));
+                            if (needs_clustering_row) {
+                                schema::ClusteringBTree clustering_btree{
+                                    engine.pager, entry.data_page,
+                                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+                                };
+                                DynamicArray<Evaluated> clustering_evals;
+                                for (U64 ck_ci : tbl->clustering_key_col_indices) {
+                                    push_back(clustering_evals, evaluate(v.values[*try_get_names_idx(tbl->cols[ck_ci].name)], ctx));
+                                }
+                                DynamicArray<U8> ck_bytes = key::serialize_clustering(*tbl, clustering_evals);
+                                co_await btree::tinsert(clustering_btree, ck_bytes, row_page);
                             }
-                            DynamicArray<U8> ck_bytes = key::serialize_clustering(*tbl, clustering_evals);
-                            co_await btree::tinsert(clustering_btree, ck_bytes, row_page);
                         } else {
                             co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{row_page, 0});
                         }
@@ -972,9 +1015,24 @@ namespace cql::engine {
                                 if (instr.if_not_exists) continue;
                                 co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Column already exists"};
                             }
+                            bool found_tombstoned = false;
+                            for (const auto& col : tbl->cols) {
+                                if (col.tombstone && col.name == col_def.name.identifier) {
+                                    found_tombstoned = true;
+                                    bool same_type   = col.type == col_def.type;
+                                    bool same_static = col.is_static == col_def._static;
+                                    if (!same_type || !same_static) {
+                                        if (instr.if_not_exists) goto next_col;
+                                        co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Cannot re-add previously dropped column"};
+                                    }
+                                    break;
+                                }
+                            }
+                            if (found_tombstoned && instr.if_not_exists) goto next_col;
                             if (auto res = co_await schema::create_column(engine.schema, *tbl, col_def); res.error != schema::Error::None) {
                                 co_return create_server_error("Failed to add column");
                             }
+                            next_col:;
                         }
                         co_return create_schema_changed(ks_name, stmt.table.table_name);
                     } else if constexpr (SameAs<I, AlterTable::DropColumnInstruction>) {
@@ -1004,6 +1062,18 @@ namespace cql::engine {
                         co_return ExecutionResult{};
                     }
                 });
+            } else if constexpr (SameAs<T, CreateIndex>) {
+                assert_not_implemented("Secondary indexes are not implemented");
+                co_return ExecutionResult{};
+            } else if constexpr (SameAs<T, CreateType>) {
+                assert_not_implemented("User-defined types are not implemented");
+                co_return ExecutionResult{};
+            } else if constexpr (SameAs<T, AlterType>) {
+                assert_not_implemented("User-defined types are not implemented");
+                co_return ExecutionResult{};
+            } else if constexpr (SameAs<T, DropType>) {
+                assert_not_implemented("User-defined types are not implemented");
+                co_return ExecutionResult{};
             } else if constexpr (SameAs<T, Batch>) {
                 assert_not_implemented("BATCH is not implemented");
                 co_return ExecutionResult{};
@@ -1290,6 +1360,10 @@ namespace cql::engine {
         auto* existing = find(engine.prepared_cache, query_hash);
         if (existing != nullptr) {
             return { .status = ExecutionStatus::Success, .id = query_hash, .entry = existing };
+        }
+
+        if (auto specific_err = parsers::check_specific_errors(query)) {
+            return { .status = ExecutionStatus::SyntaxError, .message = *specific_err };
         }
 
         auto cql_opt = parsers::parse(query);
