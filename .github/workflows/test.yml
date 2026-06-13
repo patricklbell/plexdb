@@ -7,7 +7,26 @@ on:
     branches: [master]
 
 jobs:
+  format-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format-19
+
+      - name: Check formatting
+        run: |
+          find . \
+            -not -path '*/build/*' \
+            -not -path '*/third_party/stb/*' \
+            -not -path '*/tools/*' \
+            \( -name '*.cpp' -o -name '*.cppm' -o -name '*.h' \) \
+            -print0 \
+            | xargs -0 clang-format-19 --dry-run --Werror
+
   test:
+    needs: format-check
     runs-on: ubuntu-24.04
 
     steps:

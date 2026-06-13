@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+staged=$(git diff --cached --name-only --diff-filter=ACM \
+    | grep -E '\.(cpp|cppm|h)$' \
+    | grep -Ev '(third_party/stb|/tools/)' \
+    || true)
+[[ -z "$staged" ]] && exit 0
+
+bad=()
+while IFS= read -r f; do
+    if ! clang-format --dry-run --Werror "$f" 2>/dev/null; then
+        bad+=("$f")
+    fi
+done <<< "$staged"
+
+if [[ ${#bad[@]} -gt 0 ]]; then
+    echo "clang-format: the following staged files need formatting:"
+    printf '  %s\n' "${bad[@]}"
+    echo ""
+    echo "  Run: clang-format -i ${bad[*]}"
+    exit 1
+fi

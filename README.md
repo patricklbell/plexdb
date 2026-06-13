@@ -23,3 +23,17 @@ ninja -C build
 ### Plugins
 
 See the README.md files under `plugins`.
+
+## Development setup
+
+After cloning, activate the pre-commit formatting hook:
+
+```sh
+git config core.hooksPath .hooks
+```
+
+The hook runs `clang-format --dry-run --Werror` on staged `.cpp`/`.cppm`/`.h` files and rejects the commit if any file needs reformatting. To fix, run:
+
+```sh
+clang-format -i <file>
+```
