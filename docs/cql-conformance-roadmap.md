@@ -18,640 +18,517 @@ evaluator.cppm/cpp  — expression evaluation: Terms, TermWithIdentifiers,
                       predicate evaluation, aggregate accumulators
 ─────────────────────────────────────────────────────────────────
 schema.cppm/cpp     — schema persistence: keyspaces, tables, columns, indexes
+parsers/            — CQL text → Statement AST (lexy grammar)
 ```
 
-### Key design principles (inspired by ScyllaDB's cql3 layer)
+### Key design principles
 
 **The planner is shared across all DML.** `build_row_locator(where, tbl, ctx)` is called
 identically for SELECT, UPDATE, and DELETE. It produces a `RowLocator` describing partition
 key bounds, clustering key bounds, and residual filter predicates. What the statement *does*
 with the located rows is separate (`ProjectionPlan` for SELECT, `MutationSpec` for mutations).
-This mirrors how ScyllaDB's `cql3::restrictions` is shared between read and mutation paths.
 
 **plan → validate → execute are three separate steps.**
 - `plan_*` functions do pure analysis (no I/O, no error message strings).
 - `validate_plan` converts plan-level error codes into protocol `ExecutionResult` values.
-  Only this layer knows about CQL error messages, status codes, and string formatting.
-- `execute_plan` trusts the plan is valid and does only I/O.
+- `execute` trusts the plan is valid and does only I/O.
+
+**`apply_mutation` is the single mutation entry point.** INSERT, UPDATE, DELETE, and BATCH
+child statements all funnel through one function:
+`apply_mutation(engine, tbl, locator, spec, ctx)`.
+This is the only place that reads existing rows, applies updates, writes new blobs, and
+maintains secondary indexes. Counter evaluation (Phase 7) and index maintenance (Phase 4)
+are added to this function without altering its callers.
 
 **Column-level DELETE is a mutation with null assignments.**
-`DELETE col1, col2 FROM t WHERE pk = ?` is identical to
-`UPDATE t SET col1 = null, col2 = null WHERE pk = ?` at the storage level.
-The row blob's null mask already encodes absent columns (bit = 0, no data bytes).
-Both statements produce the same `MutationSpec` and share the entire execution path.
+`DELETE col1, col2 WHERE pk = ?` produces `MutationSpec{updates=[{col1,Null},{col2,Null}]}`.
+This flows through the same `apply_mutation` path as UPDATE.
 
-**Aggregation sits above iteration.**
-`SELECT COUNT(*)` consumes the `RowIterator` without returning a `RowRange` to the caller.
-The result is a single synthesized `VirtualRows` row, avoiding deferred-tx complexity.
+**needed_cols avoids deserializing unreferenced columns.** Every plan computes a
+`needed_cols: Array<U64>` — the union of columns referenced in SELECT, WHERE filter
+predicates, and assignment RHS expressions. `ColumnIterator::load` skips bytes for columns
+outside this set. This is important for counter updates (`col = col + n`) and aggregates.
 
-**Unimplemented features are `assert_not_implemented`.**
-Partially-implemented engine paths that accept unsupported client input call
-`assert_not_implemented`. Nothing is stubbed with a no-op.
+**Aggregation sits above iteration.** `SELECT COUNT(*)` consumes `RowIterator` inside
+the engine and returns a synthesized `VirtualRows` row, avoiding deferred-tx lifetime issues.
 
----
-
-## Phase 1 — Query Planner Module + Plan/Validate/Execute Separation
-
-### New module: `cql.engine.planner` (planner.cppm / planner.cpp)
-
-The planner owns all query analysis. No I/O, no coroutines, no error message strings.
-
-#### Core types
-
-```
-// ── Row location ───────────────────────────────────────────────────────────
-struct RowLocator:
-    pk_begin:             Optional<bytes>
-    pk_end:               Optional<bytes>
-    pk_begin_inclusive:   bool = true
-    pk_end_inclusive:     bool = true
-    pk_is_equality:       bool = false   // pk_begin == pk_end; point lookup
-
-    ck_begin:             Optional<bytes>
-    ck_end:               Optional<bytes>
-    ck_begin_inclusive:   bool = true
-    ck_end_inclusive:     bool = true
-    ck_is_equality:       bool = false
-
-    reverse_partitions:   bool = false
-    reverse_clustering:   bool = false
-
-    index:                *Index = null  // non-null → use index BTree
-
-// ── Iteration-time filter (post-locator) ───────────────────────────────────
-struct FilterPlan:
-    predicates:           Array<WhereClause::Relation>
-    needs_allow_filtering: bool          // true if predicates non-empty and no index
-
-// ── SELECT projection ──────────────────────────────────────────────────────
-struct SelectOp:
-    variant:
-        ColumnRef { col_idx }
-        CountStar {}
-        FunctionCall { name, arg_col_indices: Array<U64> }
-        Cast { col_idx, to_type }
-
-struct ProjectionPlan:
-    ops:             Array<SelectOp>
-    is_aggregate:    bool              // true if any op is CountStar or aggregate function
-    needed_cols:     Array<U64>        // union of col_indices referenced by ops + filter
-
-// ── Mutation spec (UPDATE / DELETE / INSERT) ───────────────────────────────
-struct ColumnUpdate:
-    col_idx:    U64
-    new_value:  Evaluated              // Null means clear this column (delete it)
-
-struct MutationSpec:
-    updates:        Array<ColumnUpdate>
-    is_full_delete: bool               // true if entire row/partition is deleted
-
-// ── Plan error (protocol-agnostic) ─────────────────────────────────────────
-enum PlanError:
-    None
-    RequiresAllowFiltering
-    MissingPartitionKey            // UPDATE/DELETE WHERE clause has no pk equality
-    OrderByOnNonClusteringColumn
-    ColumnNotFound { name }
-    TypeMismatch { col_name }
-
-struct PlanResult:
-    error:   PlanError = None
-    context: String8 = ""          // static storage only (column/option name, etc.)
-```
-
-#### Planner functions
-
-```
-// Shared WHERE-clause analysis — called by plan_select, plan_mutation
-build_row_locator(where, tbl, ctx) → (RowLocator, FilterPlan):
-    for each relation in where.relations:
-        if relation is ColumnExpressionRelation:
-            col = relation.column
-            if col is partition key column:
-                map operator to pk_begin/pk_end bounds
-                set pk_is_equality if operator == eq
-            elif col is clustering key column:
-                map operator to ck_begin/ck_end bounds
-                set ck_is_equality if operator == eq
-            elif tbl has index on col and operator == eq:
-                locator.index = &tbl.indexes[i]
-                locator.pk_is_equality = true
-            else:
-                filter.predicates.push(relation)
-                filter.needs_allow_filtering = true
-        elif relation is TupleExpressionRelation:
-            assert_not_implemented("tuple expression relations")
-        elif relation is TokenRelation:
-            assert_not_implemented("token relations")
-    return (locator, filter)
-
-
-plan_select(stmt: Select, tbl, ctx) → (RowLocator, FilterPlan, ProjectionPlan, PlanResult):
-    if stmt.allow_filtering == false and filter.needs_allow_filtering:
-        result.error = RequiresAllowFiltering
-    if stmt.order_by:
-        for each col_order in stmt.order_by.columns:
-            if col_order.column is not a clustering key:
-                result.error = OrderByOnNonClusteringColumn
-            locator.reverse_clustering = (col_order.sort == DESC)
-    build projection from stmt.select.clauses
-    compute projection.needed_cols = union(select_col_indices, filter_predicate_col_indices)
-    return (locator, filter, projection, result)
-
-
-plan_mutation(stmt: Update|Delete, tbl, ctx) → (RowLocator, FilterPlan, MutationSpec, PlanResult):
-    (locator, filter) = build_row_locator(stmt.where, tbl, ctx)
-    if not locator.pk_is_equality:
-        result.error = MissingPartitionKey
-
-    if stmt is Update:
-        for each assignment in stmt.assignments:
-            idx = find_col_idx(tbl, assignment.target.column)
-            if assignment.target.access != null:
-                assert_not_implemented("subscript/field access in UPDATE SET")
-            spec.updates.push(ColumnUpdate{ idx, evaluate_toi(assignment.value, ctx) })
-            // NOTE: evaluate_toi handles column refs (counter: col = col + n)
-            //       by resolving AutoString8 → Null at plan time; the actual
-            //       current value is substituted at execution time with row_ctx
-
-    elif stmt is Delete:
-        if stmt.selections is empty:
-            spec.is_full_delete = true
-        else:
-            // column-level delete: same as UPDATE SET col = null
-            for each selection in stmt.selections:
-                idx = find_col_idx(tbl, selection.column)
-                spec.updates.push(ColumnUpdate{ idx, Null })
-
-    return (locator, filter, spec, result)
-```
-
-#### Validation layer (in engine.cpp, not in planner)
-
-```
-validate_plan(result: PlanResult) → Optional<ExecutionResult>:
-    switch result.error:
-        None                     → return nullopt
-        RequiresAllowFiltering   → return ExecutionResult{Invalid,
-                                     "Cannot execute this query as it might involve data
-                                     filtering and thus may have unpredictable performance.
-                                     If you want to execute this query despite the
-                                     performance unpredictability, use ALLOW FILTERING"}
-        MissingPartitionKey      → return ExecutionResult{Invalid,
-                                     "UPDATE/DELETE requires partition key equality in WHERE"}
-        OrderByOnNonClusteringColumn → return ExecutionResult{Invalid, ...}
-        ColumnNotFound           → return ExecutionResult{Invalid, "Column ... not found"}
-        TypeMismatch             → return ExecutionResult{Invalid, "Incompatible type for column ..."}
-```
-
-#### Engine integration (SELECT path rewritten)
-
-```
-execute SELECT:
-    (locator, filter, projection, plan_err) = plan_select(stmt, *tbl, ctx)
-    if err = validate_plan(plan_err): co_return err
-
-    if projection.is_aggregate:
-        // aggregate: consume iterator immediately, return VirtualRows
-        it = co_await build_iterator(locator, pager, tbl)
-        count = 0
-        while it != end_it:
-            col_range = co_await it.deref()
-            // materialize only needed_cols via ColumnIterator
-            if evaluate_where(filter.predicates, row_ctx): count += 1
-            co_await it.advance()
-        co_return ExecutionResult{ VirtualRows = synthesize_count_row(count) }
-
-    // non-aggregate: return live iterator to caller
-    (start_it, stop_it) = co_await build_iterator_range(locator, pager, tbl)
-    co_return ExecutionResult{
-        Rows, start=start_it, stop=stop_it,
-        filter=filter.predicates, projection=projection.ops,
-        needed_cols=projection.needed_cols
-    }
-
-
-execute UPDATE / DELETE:
-    (locator, filter, spec, plan_err) = plan_mutation(stmt, *tbl, ctx)
-    if err = validate_plan(plan_err): co_return err
-    co_await apply_mutation(engine, tbl, locator, spec, ctx)
-    co_return create_void_success()
-```
-
-The existing column-resolve and key-serialization code moves from engine.cpp into planner.cpp.
-The assert_not_implemented calls for non-PK relations and ORDER BY are removed from engine.cpp;
-the planner handles these cases through PlanError.
+**Parser and engine are equally critical.** Many tests fail at CREATE TABLE setup before the
+engine is reached. Parser gaps block entire test files and must be fixed systematically.
+Unknown table/keyspace/index options must be silently ignored (Cassandra behavior).
 
 ---
 
-## Phase 2 — Reverse Iterator (ORDER BY)
+## Phase 1 — Query Planner Module ✓ COMPLETE
 
-### btree::Iterator direction
-
-The existing `btree::Iterator<BTree, V>` advances forward (`btree::next`). To support reverse
-without duplicating the iterator struct, add a `bool reverse` field and branch in `advance()`:
-
-```
-Iterator<BTree, V>::advance():
-    if reverse:
-        btree::prev(this)   // walk to the previous key
-    else:
-        btree::next(this)   // existing behavior
-
-// New factory functions in btree:
-rbegin_it<BTree, V>(btree) → Iterator   // positioned at last key, reverse=true
-rend_it<BTree, V>(btree)   → Iterator   // sentinel (same shape as begin sentinel)
-```
-
-Templates over direction should be preferred if the btree layer supports it without undue
-complexity; otherwise a runtime bool is acceptable here since the branch has negligible cost
-compared to the page I/O.
-
-### RowIterator direction
-
-Add `reverse_partition: bool` and `reverse_clustering: bool` to `RowIterator`.
-
-```
-RowIterator::advance():
-    if table has clustering keys:
-        advance clustering_it (respecting reverse_clustering)
-        if clustering_it == clustering_end_it:
-            advance partition_it (respecting reverse_partition)
-            if partition_it != end: reload clustering_it for new partition
-    else:
-        advance partition_it (respecting reverse_partition)
-```
-
-### New factory functions (it.cppm)
-
-```
-create_table_rbegin_it(pager, tbl) → Task<RowIterator>
-// Bounds-aware reverse factories (used by planner integration):
-create_table_range_it(pager, tbl, locator) → Task<(RowIterator start, RowIterator stop)>
-```
-
-`create_table_range_it` replaces the six `create_table_{eq,lt,le,gt,ge,begin}_it` call sites in
-engine.cpp with a single call driven by the planner's `RowLocator`.
+**Delivered (2026-06-14):** `cql.engine.planner` module; `build_row_locator`, `plan_select`,
+`plan_update`, `plan_delete`; `validate_plan` in engine; `RowLocator`, `FilterPlan`,
+`SelectPlan`, `MutationPlan` structs; compound PK equality; non-PK WHERE → RequiresAllowFiltering
+error instead of crash; column-level DELETE for non-clustering tables; ORDER BY on non-CK
+column → proper error. Score: 24/313 passing (was 23).
 
 ---
 
-## Phase 3 — DELETE / UPDATE on Clustering Tables + Column-Level DELETE
+## Phase 2 — Parser & Engine Option Handling
 
-All paths share `apply_mutation` (new function in engine.cpp), which centralizes:
-- row read, mutation application, row rewrite, static column handling, index maintenance.
+**Impact: ~20 unique tests, unblocks cascading fixture failures across all test files.**
 
-### apply_mutation (pseudocode)
+Many test functions fail at `CREATE TABLE` or `CREATE KEYSPACE` setup before the DML under test
+is reached. Fixing the parser and option handling unblocks entire fixture chains.
+
+### Items (approximately by fire count)
+
+**Composite partition key syntax** (`engine.cpp`/parser, 17 fires). Parser does not produce
+a `Table` with `partition_key_col_indices.length > 1` for `PRIMARY KEY ((a, b), c)`.
+Update the grammar to accept the compound `(col, col, ...)` form inside PRIMARY KEY and
+populate `partition_key_col_indices` accordingly. No engine change needed beyond this.
+
+**Ignore unknown `CREATE TABLE WITH` options** (`engine.cpp`, 15 fires). Currently asserts.
+Replace with a loop that skips unknown option keys and warns. Cassandra accepts (and ignores)
+compaction, compression, caching, gc_grace_seconds, etc. The `Options` visitor in the ALTER
+TABLE handler already tolerates unknown options via `handle_table_option_pair`; apply the same
+tolerance in CREATE TABLE.
+
+**Frozen collection types** (parser, 16 fires). `FROZEN<LIST<INT>>` is parsed as a distinct
+type in some grammars. The schema layer already stores frozen and non-frozen identically
+(invariant documented in AGENTS.md). Ensure the parser maps `frozen<T>` to the same
+`TypeDescriptor` as `T` before creating the column.
+
+**Collection literal INSERT values** (parser + io, 8+ fires for list/set/map writes).
+`INSERT INTO t (col) VALUES ([1, 2, 3])` fails parse. Grammar needs `collection_literal`
+production. `io.cpp` needs `write_list_literal`, `write_set_literal`, `write_map_literal`
+that serialize via the existing collection byte format (size-prefixed elements).
+
+**Ignore `ALTER TABLE/KEYSPACE WITH` options** (2 fires each). Same pattern as CREATE TABLE.
+
+**`default_time_to_live`** (4 fires). Silently skip at table creation; defer storage to
+Phase 10. Currently asserts.
+
+### What this does NOT touch
+
+Engine DML paths, `RowIterator`, `io.cpp` column value read/write for non-collection types,
+`planner.cpp`. These changes are grammar + option-handling only.
+
+---
+
+## Phase 3 — `apply_mutation` + Clustering-Table DELETE/UPDATE + Static Columns
+
+**Impact: ~54 unique tests directly; also unblocks ALLOW FILTERING tests that were blocked
+only because their fixtures use clustering-table mutations (~20 additional).**
+
+This is the largest single unlock in the roadmap. The conformance log shows 78+30 = 108
+assert fires from CK DELETE/UPDATE alone.
+
+### Design: `apply_mutation`
+
+Replace the `execute Update` and `execute Delete` branches in engine.cpp (≈200 lines each)
+with:
+
+```
+(locator, filter, spec, plan_err) = plan_mutation(stmt, *tbl, ctx)
+if err = validate_plan(plan_err): co_return err
+co_await apply_mutation(engine, tbl, locator, spec, ctx)
+co_return create_void_success()
+```
+
+`apply_mutation` is a new free function in engine.cpp (not exported, not in planner):
 
 ```
 apply_mutation(engine, tbl, locator, spec, ctx):
-    pk_bytes = locator.pk_begin  // guaranteed equality by validate_plan
-
-    partition_entry = co_await btree::tfind<PartitionEntry>(tbl.btree, pk_bytes)
+    pk_bytes = locator.pk_begin   // always an equality; validated by plan_mutation
 
     if tbl has clustering keys:
-        if not partition_entry: co_return  // nothing to mutate
-        ck_bytes = locator.ck_begin        // equality required for single-row mutations
+        partition_entry = co_await btree::tfind<PartitionEntry>(tbl.btree, pk_bytes)
+        if not partition_entry: co_return  // non-existent partition: no-op
 
-        clustering_bt = ClusteringBTree(pager, partition_entry.data_page)
-        row_page = co_await btree::tfind<U64>(clustering_bt, ck_bytes)
+        clustering_bt = load ClusteringBTree from partition_entry.data_page
+        ck_bytes = locator.ck_begin   // equality required by plan_mutation
 
         if spec.is_full_delete:
+            row_page = co_await btree::tfind<U64>(clustering_bt, ck_bytes)
             if row_page:
-                co_await blob::remove(load_blob(row_page))
+                co_await blob::remove(load_blob(*row_page))
                 co_await btree::remove(clustering_bt, ck_bytes)
-            // if clustering BTree is now empty: remove partition entry + static blob
             if btree::is_empty(clustering_bt):
                 if partition_entry.static_page != 0:
                     co_await blob::remove(load_blob(partition_entry.static_page))
                 co_await btree::remove(tbl.btree, pk_bytes)
         else:
-            // read-modify-write (shared by UPDATE and column-level DELETE)
+            // read-modify-write (UPDATE and column-level DELETE share this path)
+            row_page = co_await btree::tfind<U64>(clustering_bt, ck_bytes)
             col_values, col_present = co_await read_row(pager, tbl, row_page,
                                                          partition_entry.static_page,
                                                          needed_cols)
-            apply_updates(col_values, col_present, spec.updates, row_ctx)
-            // row_ctx = ctx with table=tbl, row_values=col_values.ptr
-            // (enables counter: col = col + n via evaluate_toi)
+            apply_updates(col_values, col_present, spec.updates)
 
             new_row_page = co_await write_row(pager, tbl, col_values, col_present)
-            co_await blob::remove(load_blob(row_page))
-            co_await btree::remove(clustering_bt, ck_bytes)
+            if row_page:
+                co_await blob::remove(load_blob(*row_page))
+                co_await btree::remove(clustering_bt, ck_bytes)
             co_await btree::tinsert(clustering_bt, ck_bytes, new_row_page)
 
-            if any update targets a static column:
-                co_await rewrite_static(pager, partition_entry, tbl,
+            if any static column was updated:
+                co_await rewrite_static(pager, *partition_entry, tbl,
                                         col_values, col_present)
-                co_await btree::tupdate(tbl.btree, pk_bytes, partition_entry)
+                co_await btree::tupdate(tbl.btree, pk_bytes, *partition_entry)
 
-    else:  // non-clustering table
+    else:  // non-clustering table (also covers the existing UPDATE/DELETE code)
+        partition_entry = co_await btree::tfind<PartitionEntry>(tbl.btree, pk_bytes)
+
         if spec.is_full_delete:
             if partition_entry:
                 co_await blob::remove(load_blob(partition_entry.data_page))
                 co_await btree::remove(tbl.btree, pk_bytes)
         else:
-            // same read-modify-write path
-            existing = partition_entry ?? PartitionEntry{ new empty row_page, 0 }
+            existing = partition_entry ?? {new empty blob, static_page=0}
             col_values, col_present = co_await read_row(pager, tbl,
                                                          existing.data_page,
                                                          existing.static_page,
                                                          needed_cols)
-            apply_updates(col_values, col_present, spec.updates, row_ctx)
+            apply_updates(col_values, col_present, spec.updates)
             new_row_page = co_await write_row(pager, tbl, col_values, col_present)
 
-            co_await btree::remove(tbl.btree, pk_bytes)   // remove old if present
-            new_entry = PartitionEntry{ new_row_page, existing.static_page }
-
-            if any update targets a static column:
-                co_await rewrite_static(pager, new_entry, tbl,
-                                        col_values, col_present)
+            if partition_entry:
+                co_await blob::remove(load_blob(partition_entry.data_page))
+                co_await btree::remove(tbl.btree, pk_bytes)
+            new_entry = PartitionEntry{new_row_page, existing.static_page}
+            if any static column was updated:
+                co_await rewrite_static(pager, new_entry, tbl, col_values, col_present)
             co_await btree::tinsert(tbl.btree, pk_bytes, new_entry)
 ```
 
-### apply_updates (sync helper, no I/O)
+### needed_cols
+
+Both `MutationSpec` and `ProjectionPlan` gain a `needed_cols: DynamicArray<U64>` field.
+The planner computes it as the union of:
+- Column indices referenced in `spec.updates` (for mutations)
+- Column indices referenced in filter predicates
+- Column indices referenced in SELECT ops (for queries)
+
+`ColumnIterator::load` receives `needed_cols`. When non-empty, it returns `Null` for
+columns outside the set, skipping their blob bytes. Pass `{}` (empty = all) for cases where
+the full row must be materialized (e.g., `SELECT *`, full-column UPDATE).
+
+### apply_updates
 
 ```
-apply_updates(col_values, col_present, updates, row_ctx):
+apply_updates(col_values, col_present, updates):
     for each ColumnUpdate(col_idx, new_value) in updates:
-        evaluated = evaluate_toi_with_row(new_value, row_ctx)
-        // row_ctx.row_values = col_values.ptr so column refs resolve to current values
-        if evaluated is Null:
+        if new_value is Null:
             col_present[col_idx] = false
         else:
-            col_values[col_idx] = evaluated
+            col_values[col_idx] = cast_to_column_value(new_value, tbl.cols[col_idx].type)
             col_present[col_idx] = true
 ```
 
-### Column-level DELETE reuse
+Phase 7 (counters) adds `row_ctx` to this function so column references in `new_value`
+can be resolved against the just-read `col_values`. No other callers change.
 
-`DELETE col1, col2 FROM t WHERE pk = ?` goes through `plan_mutation` which produces a
-`MutationSpec` with `updates = [{col1, Null}, {col2, Null}]` and `is_full_delete = false`.
-The execution follows the exact same `apply_mutation` path as UPDATE. No separate code path.
-The row blob's null mask (bit = 0 means column absent, no bytes in blob) handles the storage
-representation — clearing col_present[idx] in `apply_updates` and then calling `write_row`
-produces the correct mask and packed column data.
+### Static column handling
 
-### Existing UPDATE code removal
+`rewrite_static(pager, entry, tbl, col_values, col_present)` updates the static blob:
+reads any existing static row, merges in updated static columns, writes a new blob,
+updates `entry.static_page`.
 
-The current `execute Update` and `execute Delete` branches in `engine.cpp` (≈200 lines each)
-are replaced by:
+### Index maintenance placeholder
+
+Add to `apply_mutation` at the end (no-op for now, filled in by Phase 4):
+
 ```
-(locator, filter, spec, plan_err) = plan_mutation(stmt, *tbl, ctx)
-if err = validate_plan(plan_err): co_return err
-co_await apply_mutation(engine, tbl, locator, spec, ctx)
+// co_await update_indexes(engine, tbl, pk_bytes, old_col_values, col_values, col_present)
 ```
+
+### INSERT update
+
+`execute Insert` currently duplicates read-modify-write logic. After Phase 3, restructure it
+to produce a `MutationSpec` (all value-columns as ColumnUpdates) and call `apply_mutation`.
+
+### Planner update
+
+`plan_mutation` currently handles only single-row equality (pk_is_equality required).
+For clustering tables, add: if `ck_is_equality` is also false, return
+`PlanError::MissingClusteringKey`. `validate_plan` returns the appropriate message.
 
 ---
 
 ## Phase 4 — Secondary Indexes
 
+**Impact: ~22 unique tests (secondary index scans, CREATE/DROP INDEX). Must come before
+any optimization pass; no dependencies on Phase 5 or later.**
+
 ### Schema changes
 
-Add to `schema.cppm`:
-
 ```
-// Index BTree: indexed_col_bytes (varlen key) → pk_bytes (varlen value)
-using IndexBTree = btree::BTreePaged<VarlenKeyPolicy, VarlenValuePolicy>
-
+// Index BTree key: indexed_col_bytes ++ pk_bytes (length-prefixed if variable-length)
+// Index BTree value: empty (key encodes everything needed)
 struct Index:
-    idx:        U64
-    tombstone:  bool
-    name:       String8
-    col_idx:    U64          // column index in owning Table (name derivable from tbl.cols[col_idx])
-    btree:      IndexBTree
+    idx:         U64
+    tombstone:   bool
+    name:        String8
+    col_idx:     U64          // column this index covers
+    btree:       IndexBTree   // BTreePaged<VarlenKeyPolicy, EmptyValuePolicy>
 
 Table gains:
-    indexes: Array<Index>
+    indexes:     DynamicArray<Index>
 ```
 
-`SchemaHeader` gains an `indexes_page: U64`. Schema `create` and `load` persist/reload indexes
-alongside the existing keyspaces/tables/columns blobs. A packed `IndexHeader` struct:
+**Index key format.** Variable-length column values (text, blob) need a length prefix to
+avoid ambiguous prefix boundaries: `[len: U16][col_bytes][pk_bytes]`. Fixed-length types
+(int, bigint, uuid, etc.) need no prefix since their width is known from the column type.
+The planner's `index_lookup` strips the prefix to extract pk_bytes.
 
-```
-IndexHeader:
-    tombstone:    bool
-    col_idx:      U64
-    table_idx:    U64
-    btree_page:   U64
-    name_length:  U64
-```
+`SchemaHeader` gains `indexes_page: U64`. `schema::create_index` and `schema::load` persist
+and reload the index catalog alongside keyspaces/tables/columns.
 
-Schema functions:
-```
-create_index(schema, tbl, stmt: CreateIndex) → Task<Result<Index*>>
-delete_index(schema, tbl, name) → Task<Result<void>>
-```
+### Parser + engine
 
-### Parser update for CREATE INDEX
+The `CreateIndex` AST node gains `column_name`. The parser handles
+`CREATE INDEX [name] ON table (column)`. The engine handler calls `schema::create_index`,
+then backfills the index by walking the table BTree and calling `update_indexes`.
 
-`CreateIndex` in `statements.cppm` gains `column_name: AutoString8`.
-The parser is updated to parse `ON table_name (column_name)`.
+`DropIndex` follows the tombstone pattern from `DROP TABLE`.
 
-### Engine: CREATE INDEX / DROP INDEX
-
-Replace the `assert_not_implemented` at the `CreateIndex` handler with:
-```
-validate table and column exist
-co_await schema::create_index(engine.schema, *tbl, stmt)
-co_return create_schema_changed(ks_name, tbl_name)
-```
-
-Add `DropIndex` statement (if not in AST) and a symmetrical handler.
-
-### DML index maintenance
-
-A helper called from `apply_mutation` and the INSERT path:
+### DML index maintenance (fills the Phase 3 placeholder)
 
 ```
 update_indexes(engine, tbl, pk_bytes,
                old_col_values, old_col_present,
                new_col_values, new_col_present):
-    for each index in tbl.indexes:
-        old_present = old_col_present[index.col_idx]
-        new_present = new_col_present[index.col_idx]
-        if old_present:
-            old_key = serialize_col_value(old_col_values[index.col_idx])
-            co_await btree::remove(index.btree, old_key + pk_bytes)
-        if new_present:
-            new_key = serialize_col_value(new_col_values[index.col_idx])
-            co_await btree::insert(index.btree, new_key + pk_bytes, empty_value)
-```
-
-Note: the index BTree key is `indexed_col_bytes ++ pk_bytes` concatenated, with an empty
-value. This allows prefix range scans (all entries for a given indexed value) without needing
-a separate varlen value policy. The planner extracts pk_bytes by stripping the index key's
-leading indexed_col_bytes length.
-
-### INSERT index maintenance
-
-After writing the row blob and inserting into `tbl.btree`, call:
-```
-update_indexes(engine, tbl, pk_bytes,
-               empty (no old values), new_col_values, new_col_present)
+    for each Index in tbl.indexes where not tombstone:
+        old_key = make_index_key(old_col_values[idx.col_idx], pk_bytes)  if old_col_present
+        new_key = make_index_key(new_col_values[idx.col_idx], pk_bytes)  if new_col_present
+        if old_present and old_key != new_key:
+            co_await btree::remove(idx.btree, old_key)
+        if new_present and old_key != new_key:
+            co_await btree::insert(idx.btree, new_key, empty_value)
 ```
 
 ### Planner integration
 
-`build_row_locator` already sets `locator.index = &tbl.indexes[i]` when a non-PK equality
-relation matches an indexed column. Execution path for index lookup:
-
-```
-if locator.index != null:
-    indexed_val_bytes = serialize_col_value(evaluate(eq_relation.value, ctx))
-    // prefix scan: all keys starting with indexed_val_bytes
-    pk_bytes = co_await index_lookup(locator.index->btree, indexed_val_bytes)
-    // then do a pk equality lookup using pk_bytes
-```
+`build_row_locator` already has the `locator.index` slot (currently unused). Fill it when
+an equality relation on a non-PK column matches an indexed column, and `!needs_allow_filtering`.
+Engine SELECT path: if `locator.index != null`, do a prefix range scan on the index BTree
+to collect pk_bytes, then run pk equality lookups.
 
 ---
 
-## Phase 5 — Aggregation / SELECT COUNT
+## Phase 5 — ORDER BY (Reverse Iterator)
 
-### ProjectionPlan aggregation flag
+**Impact: ~14 unique tests in select_order_by_test.py. Depends on Phase 3 (clustering
+tables) since all valid ORDER BY columns are clustering keys.**
 
-`plan_select` sets `projection.is_aggregate = true` when any `SelectOp` is `CountStar` or
-an aggregating function. When `is_aggregate` is true, the engine consumes all rows before
-returning rather than handing a live `RowRange` to the caller.
+### btree::Iterator reverse flag
+
+Add `bool reverse` to `Iterator`. In `advance()`:
+
+```
+if reverse: btree::prev(this)
+else:        btree::next(this)    // existing behavior
+```
+
+Factory functions:
+```
+rbegin_it<BTree, V>(btree) → Iterator   // last key, reverse=true
+rend_it<BTree, V>(btree)   → Iterator   // sentinel
+```
+
+A runtime bool is acceptable; the branch cost is negligible vs page I/O.
+
+### RowIterator direction
+
+`RowIterator` gains `reverse_partitions: bool` and `reverse_clustering: bool` (both default
+false). `advance()` branches on these flags identically to the scalar iterator case.
+The existing `fix_clustering_btree_ptr` invariant is unaffected — it applies on copy/move
+regardless of direction.
+
+### Planner integration
+
+`plan_select` sets `locator.reverse_clustering = (col_order.sort == DESC)` instead of
+`assert_not_implemented`. The existing `assert_not_implemented("ORDER BY on clustering key")`
+becomes dead code and is removed.
+
+### create_table_range_it refactor (can be done in Phase 3 or 5)
+
+Replace the six `create_table_{eq,lt,le,gt,ge,begin}_it` call sites in engine.cpp with:
+
+```
+create_table_range_it(pager, tbl, locator) → Task<pair<RowIterator, RowIterator>>
+```
+
+This function consults `locator.{pk,ck}_{has_begin,has_end,begin_inclusive,...}` and
+`locator.{reverse_partitions,reverse_clustering}` to build both ends of the range in
+one place. Callers become a single call per SELECT path.
+
+---
+
+## Phase 6 — Aggregation / SELECT COUNT
+
+**Impact: ~10 unique tests (COUNT, simple scalar functions). No dependency on Phase 5.**
 
 ### Execution path
 
+When `projection.is_aggregate`:
+
 ```
-if projection.is_aggregate:
-    count = 0
-    (start_it, stop_it) = co_await build_iterator_range(locator, pager, tbl)
-    it = start_it
-    while it != stop_it:
-        col_range = co_await it.deref()
-        row_ctx = build_row_ctx(tbl, col_range, projection.needed_cols)
-        if evaluate_where(filter.predicates, row_ctx):
-            accumulate(projection.ops, row_ctx, &count)
-        co_await it.advance()
-    co_return ExecutionResult{ VirtualRows = synthesize_aggregate_row(projection.ops, count) }
+(start_it, stop_it) = co_await create_table_range_it(locator, pager, tbl)
+count = 0U64
+it = start_it
+while it != stop_it:
+    col_range = co_await it.deref()
+    row_ctx = build_row_ctx(tbl, col_range, projection.needed_cols)
+    if evaluate_where(filter.predicates, row_ctx): count += 1
+    co_await it.advance()
+co_return ExecutionResult{VirtualRows = synthesize_count_row(count)}
 ```
 
-`synthesize_aggregate_row` builds a single-row `VirtualRows` result with the aggregate
-values, using the same `VirtualRows` infrastructure already used for system tables.
+The transaction closes before returning (no deferred-tx). `synthesize_count_row` builds
+a single-row `VirtualRows` matching the existing system table helper signature.
 
-### Supported aggregations
+### Supported operations
 
-- `COUNT(*)` → row count.
-- `COUNT(col)` → count of non-null values.
+- `COUNT(*)` → `needed_cols = {}` (no column deserialization needed, just advance iterator)
+- `COUNT(col)` → `needed_cols = {col_idx}`, increment only when `col_present[col_idx]`
+- Other aggregate functions (`SUM`, `AVG`, `MIN`, `MAX`) → `assert_not_implemented`
+- Scalar functions in SELECT (`writetime`, `ttl`, `now`, `token`, type casts) → `assert_not_implemented`
 
-Function calls in SELECT (e.g., `writetime`, `ttl`, `now`) are handled by the existing
-`evaluate_function_call` in `evaluator.cpp`. `writetime` and `ttl` return 0 until Phase 7
-adds per-row TTL metadata; use `assert_not_implemented` until then.
-
-`TOKEN(col)` is `assert_not_implemented` — deferred until multi-node sharding is designed.
+The SelectOp types `FunctionCall` and `Cast` from the end-state spec are added to
+`ProjectionPlan` but branch to `assert_not_implemented` until dedicated phases address them.
 
 ---
 
-## Phase 6 — Counter Columns (non-constant/non-bind UPDATE assignments)
+## Phase 7 — Counter Columns (non-constant/non-bind UPDATE assignments)
+
+**Impact: ~7 unique tests in counters_test.py. Depends on Phase 3 (`apply_mutation`).**
 
 The parser already produces `TermWithIdentifiers` with `TOIArithmeticOperation` for
-`col = col + n`. The evaluator already handles `AutoString8` in `evaluate_toi` via
-`lookup_column_value(col_name, ctx)`. The blocker is that `apply_mutation` must provide
-a `row_ctx` with `ctx.table = tbl` and `ctx.row_values = col_values.ptr`.
+`col = col + n`. The evaluator's `evaluate_toi` already resolves `AutoString8` column refs
+via `ctx.row_values`. The only missing piece: `apply_mutation` must provide a row context.
 
-### Changes to apply_mutation
+### Changes to MutationSpec / ColumnUpdate
 
 ```
-// After reading col_values from existing row:
+struct ColumnUpdate:
+    col_idx:   U64
+    new_value: TaggedUnion<Evaluated, TermWithIdentifiers>
+    // Evaluated  → constant/bind; applied directly
+    // TermWithIdentifiers → counter expression; resolved at apply time with row_ctx
+```
+
+`plan_mutation` stores `TermWithIdentifiers` in `new_value` when the assignment RHS has
+column references (detected by `type_matches_tag<AutoString8>` anywhere in the term).
+`needed_cols` is extended to include the source column of the counter expression.
+
+### Changes to apply_updates
+
+```
+apply_updates(col_values, col_present, updates, row_ctx):
+    for each ColumnUpdate(col_idx, new_value) in updates:
+        if type_matches_tag<TermWithIdentifiers>(new_value):
+            evaluated = evaluate_toi(get<TermWithIdentifiers>(new_value), row_ctx)
+        else:
+            evaluated = get<Evaluated>(new_value)
+        // then same as before
+```
+
+`row_ctx` is built inside `apply_mutation` after reading `col_values`:
+```
 row_ctx = ctx
-row_ctx.table = tbl
 row_ctx.row_values = col_values.ptr
-// Pass row_ctx to apply_updates so evaluate_toi resolves column refs to current values
-apply_updates(col_values, col_present, spec.updates, row_ctx)
 ```
-
-The `plan_mutation` function currently evaluates `TermWithIdentifiers` at plan time
-(producing `Null` for column refs since no row context is available). Instead, for
-`TermWithIdentifiers` values containing column references, store the `TermWithIdentifiers`
-unevaluated in `ColumnUpdate.new_value` and defer evaluation to `apply_updates` where
-`row_ctx` is available:
-
-```
-ColumnUpdate:
-    col_idx:       U64
-    new_value:     TermWithIdentifiers   // evaluated at apply time with row_ctx
-```
-
-`plan_mutation` sets `needed_cols` to include any column referenced in `TermWithIdentifiers`
-values (so `ColumnIterator` materializes them).
-
-### Column determination optimization
-
-Both `ProjectionPlan.needed_cols` (for SELECT) and `MutationSpec.needed_cols` (for
-UPDATE/DELETE, derived from column refs in assignments and filter predicates) are passed
-to the ColumnIterator load function:
-
-```
-load(col_it, pager, tbl, row_page, static_page, needed_cols: Array<U64>)
-```
-
-When `needed_cols` is non-empty, `ColumnIterator::deref()` returns `Null` for columns not
-in the set, skipping their blob bytes. This avoids deserializing columns the statement
-does not reference.
 
 ---
 
-## Phase 7 — TTL / Row Blob Metadata
+## Phase 8 — Collection DML
 
-This is a **breaking on-disk format change**. The database must be recreated after this
-phase is merged (consistent with existing project policy).
+**Impact: ~22 unique tests in collections_test.py. Complex; isolated from other phases.**
+
+Two independent sub-problems:
+
+**Sub-problem A: collection literals in INSERT/UPDATE** (~8 fires for list, ~5 for set, ~1 for map).
+Parser produces a literal constant (e.g., `[1, 2, 3]`). `io.cpp` needs writers:
+`write_list_value`, `write_set_value`, `write_map_value` that serialise element count +
+element bytes using the same format that `read_column_value` already expects.
+
+**Sub-problem B: collection subscript update** (`col[k] = v`, `col = col + {…}`, 8+ fires).
+`planner.cpp` currently asserts when `assign.target.access != null`. Handling:
+- `col[k] = v` → read existing collection blob, find element at key k, overwrite it, rewrite blob.
+- `col = col + {1, 2}` → read existing, append new elements (list) or merge (set/map), rewrite.
+
+**Storage decision.** Keep collections in the row blob as a contiguous byte range.
+Element-level update is O(collection_size) read-modify-write, which matches the correctness
+requirement. A side-table per-element design (Cassandra's wide-row SSTable model) would give
+O(1) updates but is a major storage-layer change; defer unless profiling shows it is needed.
+
+`ColumnUpdate.new_value` gains a third variant: `CollectionPatch` describing the delta
+(subscript set, append, merge). `apply_updates` materializes the existing collection value,
+applies the patch, and writes back.
+
+---
+
+## Phase 9 — BATCH
+
+**Impact: ~11 unique tests in batch_test.py. Depends on Phase 3 (`apply_mutation`).**
+
+### Execution model
+
+BATCH is a single `execute_inside_transaction` call that dispatches each child statement:
+
+```
+execute BATCH:
+    assert_true_not_implemented(!stmt.if_, "conditional BATCH (LWT) not implemented")
+    for each child in stmt.statements:
+        mp = plan_mutation(child, *tbl, ctx)   // child is Update|Delete|Insert
+        if err = validate_plan(mp.result): co_return err
+        co_await apply_mutation(engine, tbl, mp.locator, mp.spec, ctx)
+    co_return create_void_success()
+```
+
+The outer transaction wraps all child mutations atomically; no per-child commit.
+
+### Limitation
+
+Conditional BATCH (`IF` clauses, light-weight transactions) requires compare-and-swap
+semantics that interact with Cassandra's Paxos protocol. Mark with `assert_not_implemented`
+and defer indefinitely.
+
+---
+
+## Phase 10 — TTL / Row Blob Metadata
+
+**Impact: ~6 unique tests. Breaking on-disk format change — database must be recreated.**
 
 ### New row blob layout
 
-Current layout:
-```
-[ col_count: U64 ][ mask_words: U64... ][ packed column data ]
-```
-
-New layout:
-```
-[ row_flags: U8 ][ expiry_unix_ms: S64 ][ col_count: U64 ][ mask_words: U64... ][ packed column data ]
-```
-
-`row_flags` bit 0 = `HAS_TTL`. `expiry_unix_ms` is only meaningful when `HAS_TTL` is set.
-The header is always present (12 bytes) for all rows, even those without TTL, to keep
-the reader uniform. `io.cppm` exposes:
+Prefix every row blob with a metadata header:
 
 ```
-struct RowMetadata:
-    flags:           U8 = 0
-    expiry_unix_ms:  S64 = 0
-
-ROW_FLAG_HAS_TTL: U8 = 0x01
-
-write_row_metadata(writer, metadata)   // called before write_column_mask
-read_row_metadata(reader) → RowMetadata  // called before read_column_mask
+[ row_flags: U8 ][ expiry_unix_ms: S64 ][ col_count: U64 ][ mask_words... ][ column data ]
 ```
 
-All blob writers (INSERT, `write_row` in `apply_mutation`) write the metadata header.
-`ColumnIterator::load` reads and skips past it. `blob::create_cursor` offset is adjusted
-by `sizeof(RowMetadata)`.
+`row_flags` bit 0 = `HAS_TTL`. The header is always present (9 bytes) for uniform reading.
+`io.cppm` adds `RowMetadata` struct and `write_row_metadata` / `read_row_metadata`.
+All blob writers (`write_row`, INSERT path) write the header. `ColumnIterator::load` reads
+and skips it before the existing column mask.
 
 ### INSERT USING TTL
 
-Remove the `ExecutionResult::Invalid` return for TTL in the INSERT handler.
+Remove the `ExecutionResult::Invalid` return for TTL in the INSERT handler:
+
 ```
-if using_param.kind == TTL:
+if param.kind == TTL:
     metadata.flags |= ROW_FLAG_HAS_TTL
     metadata.expiry_unix_ms = os::unix_ms_now() + ttl_seconds * 1000
 ```
 
 Pass metadata to `write_row`.
 
-### Compaction (deferred)
+### `default_time_to_live`
 
-Add to `docs/todo.md`:
+Add `default_ttl_ms: S64 = 0` to `TableHeader`. Set from `CREATE TABLE ... WITH default_time_to_live = N`
+(removes the Phase 2 silent-skip). Apply to every INSERT on that table that doesn't supply
+explicit USING TTL.
 
-```
-TTL expiry sweep:
-  - Walk all rows, read RowMetadata from each row blob.
-  - If HAS_TTL and expiry_unix_ms < now: delete the row via apply_mutation.
-  - For clustering tables: delete all expired rows; if partition empties, delete partition.
-  - Trigger candidates: (a) on database open, (b) after N mutations per table,
-    (c) explicit COMPACT TABLE statement.
-  - static blobs and partition entries must be consistent after expiry sweep.
-  - default_time_to_live: store as a field in TableHeader; apply to every INSERT
-    on that table that does not supply an explicit USING TTL.
-```
+### TTL sweep (deferred, not in this phase)
+
+TTL expiry is a scan+tombstone operation. Trigger candidates: on open, after N mutations,
+or on explicit COMPACT statement. Design separately; the row blob format change here is
+the prerequisite.

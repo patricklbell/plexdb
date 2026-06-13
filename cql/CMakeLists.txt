@@ -56,6 +56,7 @@ target_sources(plexbd_cql
             engine/io.cppm
             engine/it.cppm
             engine/key.cppm
+            engine/planner.cppm
             engine/schema.cppm
             engine/system_schema.cppm
             engine/statements.cppm
@@ -72,6 +73,7 @@ target_sources(plexbd_cql
         engine/evaluator.cpp
         engine/io.cpp
         engine/it.cpp
+        engine/planner.cpp
         engine/schema.cpp
         engine/system_schema.cpp
         log/log.cpp

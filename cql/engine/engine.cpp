@@ -13,6 +13,7 @@ import cql.engine.column_value;
 import cql.engine.evaluator;
 import cql.engine.it;
 import cql.engine.key;
+import cql.engine.planner;
 
 namespace cql::engine {
     coroutine::Task<> init(Engine& engine, Pager* in_pager) {
@@ -218,13 +219,38 @@ namespace cql::engine {
         r.message         = String8(r.message_storage.c_str, r.message_storage.length);
         return r;
     }
-    static ExecutionResult create_where_invalid_type(const String8& keyspace_name, const String8& table_name) {
-        return {
-            .status   = ExecutionStatus::Invalid,
-            .message  = "Invalid type",
-            .keyspace = AutoString8(keyspace_name),
-            .table    = AutoString8(table_name),
-        };
+    static Optional<ExecutionResult> validate_plan(const planner::PlanResult& result) {
+        switch (result.error) {
+            case planner::PlanError::None:
+                return {};
+            case planner::PlanError::RequiresAllowFiltering:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "Cannot execute this query as it might involve data filtering and thus may have unpredictable performance. If you want to execute this query despite the performance unpredictability, use ALLOW FILTERING",
+                };
+            case planner::PlanError::MissingPartitionKey:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "UPDATE/DELETE requires partition key equality in WHERE clause",
+                };
+            case planner::PlanError::OrderByOnNonClusteringColumn: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Order by is currently only supported on the clustered columns of the PRIMARY KEY, got " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::ColumnNotFound: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Undefined column name " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::TypeMismatch:
+                return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Type mismatch for key column"};
+        }
+        return {};
     }
 
     // append bytes sync into a DynamicArray buffer — used for write-buffering before async blob writes
@@ -439,144 +465,63 @@ namespace cql::engine {
                 assert_true_not_implemented(!stmt.transform, "SELECT DISTINCT/JSON is not implemented");
                 assert_true_not_implemented(!stmt.group_by, "GROUP BY is not implemented");
                 assert_true_not_implemented(!stmt.per_partition_limit.value, "PER PARTITION LIMIT is not implemented");
-                assert_true_not_implemented(!stmt.order_by, "ORDER BY is not implemented");
 
                 U64 limit_count = MAX_U64;
                 if (type_matches_tag<S64>(stmt.limit.value)) {
                     limit_count = U64(get<S64>(stmt.limit.value));
                 }
 
-                bool                                is_equality = false, is_begin_inclusive = true, is_end_inclusive = true;
-                Optional<Evaluated>                 pk_begin, pk_end;
-                DynamicArray<WhereClause::Relation> filter_predicates;
-                if (stmt.where) {
-                    for (const auto& rel : stmt.where->relations) {
-                        bool is_pk_bound = false;
-                        visit(rel.value, [&](const auto& value) {
-                            using T = Decay<decltype(value)>;
-                            if constexpr (SameAs<T, WhereClause::ColumnExpressionRelation>) {
-                                const auto& cer = value;
-                                if (
-                                    tbl->partition_key_col_indices.length > 0 &&
-                                    cer.column.identifier == tbl->cols[tbl->partition_key_col_indices[0]].name) {
-                                    is_pk_bound = true;
-                                    switch (cer.operator_) {
-                                        case Operator::eq: {
-                                            pk_begin           = evaluate(cer.value, ctx);
-                                            is_equality        = true;
-                                            is_begin_inclusive = true;
-                                            is_end_inclusive   = true;
-                                        } break;
-                                        case Operator::lt: {
-                                            pk_end           = evaluate(cer.value, ctx);
-                                            is_end_inclusive = false;
-                                        } break;
-                                        case Operator::le: {
-                                            pk_end           = evaluate(cer.value, ctx);
-                                            is_end_inclusive = true;
-                                        } break;
-                                        case Operator::gt: {
-                                            pk_begin           = evaluate(cer.value, ctx);
-                                            is_begin_inclusive = false;
-                                        } break;
-                                        case Operator::ge: {
-                                            pk_begin           = evaluate(cer.value, ctx);
-                                            is_begin_inclusive = true;
-                                        } break;
-                                        default: {
-                                            assert_not_implemented("column expression relation operator not implemented for PK");
-                                        } break;
-                                    }
-                                } else {
-                                    assert_not_implemented("non-PK column expression relations are not implemented");
-                                }
-                            } else if constexpr (SameAs<T, WhereClause::TupleExpressionRelation>) {
-                                assert_not_implemented("tuple expression relations are not implemented");
-                            } else if constexpr (SameAs<T, WhereClause::TokenRelation>) {
-                                assert_not_implemented("token relations are not implemented");
-                            } else {
-                                static_assert(!SameAs<T, T>, "missing type case");
-                            }
-                        });
-                        if (!is_pk_bound) {
-                            push_back(filter_predicates, rel);
-                        }
-                    }
+                planner::SelectPlan sp = planner::plan_select(stmt, *tbl, ctx);
+                if (auto err = validate_plan(sp.result)) {
+                    co_return move(*err);
                 }
+                assert_true_not_implemented(!sp.projection.is_aggregate, "aggregate SELECT (COUNT, etc.) requires Phase 5");
 
-                // resolve select column indices from SELECT clause
+                // Extract column indices for native layer from projection ops.
                 DynamicArray<U64> select_col_indices;
-                if (stmt.select.clauses.length > 0) {
-                    for (const auto& sc : stmt.select.clauses) {
-                        visit(sc.column.value, [&](const auto& sel) {
-                            using ST = RemoveCVRef<decltype(sel)>;
-                            if constexpr (SameAs<ST, ColumnName>) {
-                                for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                                    if (tbl->cols[ci].name == sel.identifier) {
-                                        push_back(select_col_indices, ci);
-                                        break;
-                                    }
-                                }
-                            } else {
-                                assert_not_implemented("SELECT clause type (count/function/cast/term) is not implemented");
-                            }
-                        });
+                for (const auto& op : sp.projection.ops) {
+                    if (type_matches_tag<planner::SelectOp::ColumnRef>(op.value)) {
+                        push_back(select_col_indices, get<planner::SelectOp::ColumnRef>(op.value).col_idx);
                     }
                 }
 
-                if (is_equality) {
-                    DynamicArray<U8> pk_bytes = key::serialize_partition_single(*tbl, *pk_begin);
-                    auto             start_it = co_await create_table_eq_it(engine.pager, tbl, pk_bytes);
-                    auto             stop_it  = create_table_end_it(engine.pager, tbl);
+                if (sp.locator.pk_is_equality) {
+                    auto start_it = co_await create_table_eq_it(engine.pager, tbl, sp.locator.pk_begin);
+                    auto stop_it  = create_table_end_it(engine.pager, tbl);
                     if (start_it != stop_it) {
-                        stop_it = co_await create_table_le_it(engine.pager, tbl, pk_bytes);
+                        stop_it = co_await create_table_le_it(engine.pager, tbl, sp.locator.pk_begin);
                     }
                     co_return ExecutionResult{
-                        .status          = ExecutionStatus::Success,
-                        .kind            = ResultKind::Rows,
-                        .keyspace        = AutoString8(ks_name),
-                        .table           = AutoString8(stmt.from.table_name),
-                        .row_limit_count = limit_count,
-                        .rows            = RowRange{
-                                                    .start = move(start_it),
-                                                    .stop  = move(stop_it),
-                                                    },
+                        .status             = ExecutionStatus::Success,
+                        .kind               = ResultKind::Rows,
+                        .keyspace           = AutoString8(ks_name),
+                        .table              = AutoString8(stmt.from.table_name),
+                        .row_limit_count    = limit_count,
+                        .rows               = RowRange{.start = move(start_it), .stop = move(stop_it)},
                         .resolved_table     = tbl,
                         .select_col_indices = move(select_col_indices),
-                        .filter_predicates  = move(filter_predicates),
+                        .filter_predicates  = move(sp.filter.predicates),
                         .filter_ctx         = ctx,
                     };
                 }
 
-                if (tbl->partition_key_col_indices.length > 0) {
-                    const auto& pk_col = tbl->cols[tbl->partition_key_col_indices[0]];
-                    if (static_cast<bool>(pk_begin) && !io::can_cast_write_evaluated_as_column_value(*pk_begin, pk_col.type)) {
-                        co_return create_where_invalid_type(ks->name, tbl->name);
-                    }
-                    if (static_cast<bool>(pk_end) && !io::can_cast_write_evaluated_as_column_value(*pk_end, pk_col.type)) {
-                        co_return create_where_invalid_type(ks->name, tbl->name);
-                    }
-                }
-
                 RowIterator start_it;
-                if (static_cast<bool>(pk_begin)) {
-                    DynamicArray<U8> begin_bytes = key::serialize_partition_single(*tbl, *pk_begin);
-                    if (is_begin_inclusive) {
-                        start_it = co_await create_table_ge_it(engine.pager, tbl, begin_bytes);
+                if (sp.locator.pk_has_begin) {
+                    if (sp.locator.pk_begin_inclusive) {
+                        start_it = co_await create_table_ge_it(engine.pager, tbl, sp.locator.pk_begin);
                     } else {
-                        start_it = co_await create_table_gt_it(engine.pager, tbl, begin_bytes);
+                        start_it = co_await create_table_gt_it(engine.pager, tbl, sp.locator.pk_begin);
                     }
                 } else {
                     start_it = co_await create_table_begin_it(engine.pager, tbl);
                 }
 
                 RowIterator stop_it;
-                if (static_cast<bool>(pk_end)) {
-                    DynamicArray<U8> end_bytes = key::serialize_partition_single(*tbl, *pk_end);
-                    if (is_end_inclusive) {
-                        stop_it = co_await create_table_le_it(engine.pager, tbl, end_bytes);
+                if (sp.locator.pk_has_end) {
+                    if (sp.locator.pk_end_inclusive) {
+                        stop_it = co_await create_table_le_it(engine.pager, tbl, sp.locator.pk_end);
                     } else {
-                        stop_it = co_await create_table_lt_it(engine.pager, tbl, end_bytes);
+                        stop_it = co_await create_table_lt_it(engine.pager, tbl, sp.locator.pk_end);
                     }
                 } else {
                     stop_it = create_table_end_it(engine.pager, tbl);
@@ -591,7 +536,7 @@ namespace cql::engine {
                     .rows               = RowRange{.start = move(start_it), .stop = move(stop_it)},
                     .resolved_table     = tbl,
                     .select_col_indices = move(select_col_indices),
-                    .filter_predicates  = move(filter_predicates),
+                    .filter_predicates  = move(sp.filter.predicates),
                     .filter_ctx         = ctx,
                 };
             } else if constexpr (SameAs<T, Insert>) {
@@ -861,22 +806,13 @@ namespace cql::engine {
 
                 assert_true_not_implemented(tbl->clustering_key_col_indices.length == 0, "UPDATE on table with clustering key is not implemented");
 
-                // find partition key from WHERE clause
-                Optional<Evaluated> pk_val;
-                for (const auto& rel : stmt.where.relations) {
-                    if (type_matches_tag<WhereClause::ColumnExpressionRelation>(rel.value)) {
-                        auto& cer = get<WhereClause::ColumnExpressionRelation>(rel.value);
-                        if (tbl->partition_key_col_indices.length > 0 &&
-                            cer.column.identifier == tbl->cols[tbl->partition_key_col_indices[0]].name &&
-                            cer.operator_ == Operator::eq) {
-                            pk_val = evaluate(cer.value, ctx);
-                        }
-                    }
+                planner::MutationPlan mp = planner::plan_update(stmt, *tbl, ctx);
+                if (auto err = validate_plan(mp.result)) {
+                    co_return move(*err);
                 }
-                assert_true(static_cast<bool>(pk_val), "UPDATE requires partition key equality in WHERE clause");
 
-                DynamicArray<U8> pk_bytes           = key::serialize_partition_single(*tbl, *pk_val);
-                auto             existing_entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
+                DynamicArray<U8>& pk_bytes           = mp.locator.pk_begin;
+                auto              existing_entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
 
                 auto col_idx_for = [&](String8 name) -> Optional<U64> {
                     for (U64 i = 0; i < tbl->cols.length; i++) {
@@ -990,8 +926,21 @@ namespace cql::engine {
 
                     DynamicArray<Evaluated> assign_evals;
                     resize(assign_evals, tbl->cols.length);
-                    for (U64 pk_ci : tbl->partition_key_col_indices) {
-                        assign_evals[pk_ci] = Evaluated{get<Constant>(pk_val->value)};
+                    for (const auto& rel : stmt.where.relations) {
+                        visit(rel.value, [&](const auto& r) {
+                            using R = RemoveCVRef<decltype(r)>;
+                            if constexpr (SameAs<R, WhereClause::ColumnExpressionRelation>) {
+                                if (r.operator_ == Operator::eq) {
+                                    String8 rname(r.column.identifier.c_str, r.column.identifier.length);
+                                    for (U64 pk_ci : tbl->partition_key_col_indices) {
+                                        if (tbl->cols[pk_ci].name == rname) {
+                                            assign_evals[pk_ci] = evaluate(r.value, ctx);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        });
                     }
 
                     for (const auto& assign : stmt.assignments) {
@@ -1052,7 +1001,6 @@ namespace cql::engine {
                     }
                 }
                 assert_true_not_implemented(!stmt.if_, "DELETE IF is not implemented");
-                assert_true_not_implemented(stmt.selections.length == 0, "column-level DELETE is not implemented");
 
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
                 assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace DELETE is not implemented");
@@ -1069,25 +1017,63 @@ namespace cql::engine {
 
                 assert_true_not_implemented(tbl->clustering_key_col_indices.length == 0, "DELETE on table with clustering key is not implemented");
 
-                Optional<Evaluated> pk_val;
-                for (const auto& rel : stmt.where.relations) {
-                    if (type_matches_tag<WhereClause::ColumnExpressionRelation>(rel.value)) {
-                        auto& cer = get<WhereClause::ColumnExpressionRelation>(rel.value);
-                        if (tbl->partition_key_col_indices.length > 0 &&
-                            cer.column.identifier == tbl->cols[tbl->partition_key_col_indices[0]].name &&
-                            cer.operator_ == Operator::eq) {
-                            pk_val = evaluate(cer.value, ctx);
-                        }
-                    }
+                planner::MutationPlan mp = planner::plan_delete(stmt, *tbl, ctx);
+                if (auto err = validate_plan(mp.result)) {
+                    co_return move(*err);
                 }
-                assert_true_not_implemented(static_cast<bool>(pk_val), "DELETE for non-partition key equality in WHERE clause is not implemented");
 
-                DynamicArray<U8> pk_bytes = key::serialize_partition_single(*tbl, *pk_val);
-                if (auto opt_entry = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes); static_cast<bool>(opt_entry)) {
-                    blob::BlobDynamicPaged row_blob;
-                    co_await blob::load(row_blob, engine.pager, opt_entry->data_page);
-                    co_await blob::remove(row_blob);
-                    co_await btree::remove(tbl->btree, pk_bytes);
+                DynamicArray<U8>& pk_bytes = mp.locator.pk_begin;
+
+                if (mp.spec.is_full_delete) {
+                    if (auto opt_entry = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes)) {
+                        blob::BlobDynamicPaged row_blob;
+                        co_await blob::load(row_blob, engine.pager, opt_entry->data_page);
+                        co_await blob::remove(row_blob);
+                        co_await btree::remove(tbl->btree, pk_bytes);
+                    }
+                } else {
+                    // Column-level delete: null specified columns via read-modify-write.
+                    if (auto opt_entry = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes)) {
+                        auto                      existing_entry = *opt_entry;
+                        DynamicArray<ColumnValue> col_values;
+                        DynamicArray<bool>        col_present;
+                        resize(col_values, tbl->cols.length);
+                        resize(col_present, tbl->cols.length);
+                        {
+                            ColumnIterator col_it;
+                            co_await load(col_it, engine.pager, tbl, existing_entry.data_page, existing_entry.static_page);
+                            ColumnIterator col_end{};
+                            U64            ci = 0;
+                            while (col_it != col_end && ci < tbl->cols.length) {
+                                ColumnValue val = co_await col_it.deref();
+                                col_present[ci] = !type_matches_tag<Null>(val);
+                                col_values[ci]  = move(val);
+                                co_await col_it.advance();
+                                ++ci;
+                            }
+                        }
+                        for (const auto& upd : mp.spec.updates) {
+                            col_present[upd.col_idx] = false;
+                        }
+                        DynamicArray<U8> row_buffer;
+                        auto             write_fn        = create_buffer_writer(row_buffer);
+                        auto             write           = io::to_writer(write_fn);
+                        auto             updated_present = [&col_present](U64 idx) {
+                            return idx < col_present.length && col_present[idx];
+                        };
+                        io::write_column_mask(write, io::to_checker(updated_present), tbl->cols.length);
+                        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                            if (col_present[ci]) {
+                                io::write_column_value(write, col_values[ci], tbl->cols[ci].type);
+                            }
+                        }
+                        co_await btree::remove(tbl->btree, pk_bytes);
+                        U64                    new_row_page = co_await blob::create_paged_dynamic(*engine.pager);
+                        blob::BlobDynamicPaged row_blob;
+                        co_await blob::load(row_blob, engine.pager, new_row_page);
+                        co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
+                        co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{new_row_page, existing_entry.static_page});
+                    }
                 }
 
                 co_return create_void_success();
