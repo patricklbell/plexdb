@@ -48,8 +48,6 @@ CQL_NATIVE_TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[cql.native]"
     co_return;
 }
 
-
-
 CQL_NATIVE_TEST_CASE("Native protocol CQL DDL and DML operations", "[cql.native]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
         CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);

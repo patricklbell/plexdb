@@ -504,12 +504,19 @@ namespace cql::native {
         append_be_s32(f, result_codes::ROWS);
 
         bool has_select = result.select_col_indices.length > 0;
-        U64 col_count = has_select ? result.select_col_indices.length : tbl->cols.length;
+        DynamicArray<U64> effective_cols;
+        if (has_select) {
+            for (U64 i = 0; i < result.select_col_indices.length; i++)
+                push_back(effective_cols, result.select_col_indices[i]);
+        } else {
+            for (U64 ci = 0; ci < tbl->cols.length; ci++)
+                if (!tbl->cols[ci].tombstone) push_back(effective_cols, ci);
+        }
+        U64 col_count = effective_cols.length;
 
         auto is_selected = [&](U64 ci) -> bool {
-            if (!has_select) return true;
-            for (U64 i = 0; i < result.select_col_indices.length; i++)
-                if (result.select_col_indices[i] == ci) return true;
+            for (U64 i = 0; i < effective_cols.length; i++)
+                if (effective_cols[i] == ci) return true;
             return false;
         };
 
@@ -519,7 +526,7 @@ namespace cql::native {
         append_cql_string(f, result.table);
 
         for (U64 i = 0; i < col_count; i++) {
-            U64 ci = has_select ? result.select_col_indices[i] : i;
+            U64 ci = effective_cols[i];
             append_cql_string(f, tbl->cols[ci].name);
             append_type_codes_option(f, tbl->cols[ci].type);
         }
@@ -533,7 +540,8 @@ namespace cql::native {
             U64 row_limit = result.row_limit_count;
             RowIterator& row_it  = rows.start;
             RowIterator& row_end = rows.stop;
-            bool has_filter = result.filter_predicates.length > 0;
+            const bool has_filter = result.filter_predicates.length > 0;
+
             while (row_it != row_end && U64(row_count) < row_limit) {
                 ColumnRange col_range = co_await row_it.deref();
 
@@ -551,19 +559,24 @@ namespace cql::native {
 
                     if (evaluate_where(result.filter_predicates, row_ctx)) {
                         for (U64 i = 0; i < col_count; i++) {
-                            U64 ci2 = has_select ? result.select_col_indices[i] : i;
+                            U64 ci2 = effective_cols[i];
                             append_cql_value(f, row_values.ptr[ci2], tbl->cols[ci2].type);
                         }
                         row_count++;
                     }
                 } else {
                     U64 ci = 0;
-                    while (col_range.start != col_range.stop && ci < tbl->cols.length) {
-                        if (is_selected(ci)) {
-                            ColumnValue v = co_await col_range.start.deref();
-                            append_cql_value(f, v, tbl->cols[ci].type);
+                    while (ci < tbl->cols.length) {
+                        if (col_range.start != col_range.stop) {
+                            if (is_selected(ci)) {
+                                ColumnValue v = co_await col_range.start.deref();
+                                append_cql_value(f, v, tbl->cols[ci].type);
+                            }
+                            co_await col_range.start.advance();
+                        } else if (is_selected(ci)) {
+                            // Row predates this column; emit null.
+                            append_cql_value(f, ColumnValue{Null{}}, tbl->cols[ci].type);
                         }
-                        co_await col_range.start.advance();
                         ++ci;
                     }
                     row_count++;
@@ -867,6 +880,14 @@ namespace cql::native {
                 S64 t0 = os::monotonic_us();
                 const U8* p = body;
                 String8 query = read_cql_long_string(p, body_end);
+
+                if (auto specific_err = parsers::check_specific_errors(query)) {
+                    Frame frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
+                    append_error_body(frame, engine::ExecutionStatus::SyntaxError, *specific_err);
+                    co_await send_native_frame<Version, Compressed>(frame);
+                    cql::log::db_operation_duration(os::monotonic_us() - t0);
+                    break;
+                }
 
                 auto cql_opt = parsers::parse(query);
                 if (!cql_opt) {
