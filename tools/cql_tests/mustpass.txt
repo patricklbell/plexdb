@@ -1,16 +1,28 @@
 # Mustpass list — tests that must pass to prevent regressions.
-# Generated: 2026-05-31
+# Generated: 2026-06-14
 # Regenerate: tools/cql_tests/run.sh -o tools/cql_tests/mustpass.txt
 #
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testAlterCollections
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testCollectionFlush
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testDropAndReaddCollection
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testDropAndReaddDroppedCollection
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testNonPureFunctionCollection
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/timestamp_test.py::testInsertTimestampWithUnset
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAddList
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAlterDropEmptySSTable
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testChangeStrategyWithUnquotedAgrument
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testDowngradeToCompact
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testDropColumnAsPreparedStatement
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testDropListAndAddMapWithSameName
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/create_test.py::testCreateKeyspaceWithNetworkTopologyStrategyNoOptions
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteColumnNoClustering
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testRemoveRangeSlice
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/drop_test.py::testDropTableWithDroppedColumns
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/drop_test.py::testNonExistingOnes
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testInsertWithTwoClusteringColumns[False]
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testInsertWithTwoClusteringColumns[True]
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testInsert[False]
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testInsert[True]
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_limit_test.py::testSparseTable
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testRangeQuery
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/use_test.py::testUseStatementWithBindVariable

@@ -6,6 +6,7 @@
 import plexdb.base;
 import plexdb.tagged_union;
 import plexdb.dynamic.tagged_union;
+import plexdb.dynamic.containers;
 
 import cql.parsers;
 import cql.engine.statements;
@@ -1494,5 +1495,109 @@ TEST_CASE("ALTER TYPE", "[cql.cql]") {
         REQUIRE(type_matches_tag<AlterType>(r->value));
         auto& s = get<AlterType>(r->value);
         REQUIRE(type_matches_tag<AlterType::RenameFieldInstruction>(s.instruction));
+    }
+}
+
+TEST_CASE("composite partition key parsing", "[cql.parser]") {
+    SECTION("compound partition key with single clustering column") {
+        auto r = parse("CREATE TABLE ks.t (a int, b text, c int, PRIMARY KEY ((a, b), c));");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.primary_key.has_value());
+        REQUIRE(type_matches_tag<DynamicArray<ColumnName>>(s.primary_key->partition_key.column_or_columns));
+        auto& pk_cols = get<DynamicArray<ColumnName>>(s.primary_key->partition_key.column_or_columns);
+        REQUIRE(pk_cols.length == 2);
+        REQUIRE(pk_cols[0].identifier == "a");
+        REQUIRE(pk_cols[1].identifier == "b");
+        REQUIRE(s.primary_key->clustering_columns.length == 1);
+        REQUIRE(s.primary_key->clustering_columns[0].identifier == "c");
+    }
+    SECTION("compound partition key only (no clustering)") {
+        auto r = parse("CREATE TABLE ks.t (a int, b int, PRIMARY KEY ((a, b)));");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.primary_key.has_value());
+        REQUIRE(type_matches_tag<DynamicArray<ColumnName>>(s.primary_key->partition_key.column_or_columns));
+        auto& pk_cols = get<DynamicArray<ColumnName>>(s.primary_key->partition_key.column_or_columns);
+        REQUIRE(pk_cols.length == 2);
+        REQUIRE(s.primary_key->clustering_columns.length == 0);
+    }
+    SECTION("three-column compound partition key") {
+        auto r = parse("CREATE TABLE ks.t (a int, b int, c int, PRIMARY KEY ((a, b, c)));");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.primary_key.has_value());
+        auto& pk_cols = get<DynamicArray<ColumnName>>(s.primary_key->partition_key.column_or_columns);
+        REQUIRE(pk_cols.length == 3);
+    }
+    SECTION("single partition key (non-compound) is still a ColumnName not array") {
+        auto r = parse("CREATE TABLE ks.t (k int, PRIMARY KEY (k));");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.primary_key.has_value());
+        REQUIRE(type_matches_tag<ColumnName>(s.primary_key->partition_key.column_or_columns));
+    }
+}
+
+TEST_CASE("frozen collection type parsing", "[cql.parser]") {
+    SECTION("FROZEN<LIST<INT>>") {
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v frozen<list<int>>);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.column_definitions.length == 2);
+        auto& col = s.column_definitions[1];
+        REQUIRE(type_matches_tag<type::List>(col.type.value));
+        REQUIRE(get<type::List>(col.type.value).frozen == true);
+        REQUIRE(type_matches_tag<type::Basic>(get<type::List>(col.type.value).element.value));
+        REQUIRE(get<type::Basic>(get<type::List>(col.type.value).element.value) == type::Basic::int_);
+    }
+    SECTION("FROZEN<SET<TEXT>>") {
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v frozen<set<text>>);");
+        REQUIRE(r.has_value());
+        auto& s   = get<CreateTable>(r->value);
+        auto& col = s.column_definitions[1];
+        REQUIRE(type_matches_tag<type::Set>(col.type.value));
+        REQUIRE(get<type::Set>(col.type.value).frozen == true);
+    }
+    SECTION("FROZEN<MAP<TEXT, INT>>") {
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v frozen<map<text, int>>);");
+        REQUIRE(r.has_value());
+        auto& s   = get<CreateTable>(r->value);
+        auto& col = s.column_definitions[1];
+        REQUIRE(type_matches_tag<type::Map>(col.type.value));
+        REQUIRE(get<type::Map>(col.type.value).frozen == true);
+    }
+    SECTION("non-frozen list parses with frozen=false") {
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v list<int>);");
+        REQUIRE(r.has_value());
+        auto& s   = get<CreateTable>(r->value);
+        auto& col = s.column_definitions[1];
+        REQUIRE(type_matches_tag<type::List>(col.type.value));
+        REQUIRE(get<type::List>(col.type.value).frozen == false);
+    }
+}
+
+TEST_CASE("CREATE TABLE WITH options parsing", "[cql.parser]") {
+    SECTION("unknown option key is parsed without error") {
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY) WITH some_future_option = 'value';");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.options.value.length == 1);
+    }
+    SECTION("default_time_to_live option is parsed") {
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY) WITH default_time_to_live = 3600;");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.options.value.length == 1);
+    }
+    SECTION("multiple mixed options are all parsed") {
+        auto r = parse(
+            "CREATE TABLE ks.t (k int PRIMARY KEY) "
+            "WITH compaction = {'class': 'SizeTieredCompactionStrategy'} "
+            "AND compression = {'sstable_compression': 'LZ4Compressor'} "
+            "AND gc_grace_seconds = 864000;");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.options.value.length == 3);
     }
 }

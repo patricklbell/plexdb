@@ -262,8 +262,8 @@ namespace cql::engine {
         };
     }
 
-    // Returns false if the option key is not a recognized Cassandra table property.
-    static bool handle_table_option_pair(const OptionPair& opt, Engine& engine) {
+    // Silently ignores all recognized and unknown Cassandra table properties (single-node mode).
+    static void handle_table_option_pair(const OptionPair& opt, Engine& engine) {
         String8 key = opt.first;
         if (key == "comment") {
             // metadata only, no behavioral effect
@@ -273,47 +273,39 @@ namespace cql::engine {
             assert_true(engine.single_node, "multi-node table option not supported");
             log::native_info("ignoring multi-node table option (single-node no-op)");
         } else if (key == "default_time_to_live") {
-            assert_not_implemented("default_time_to_live is not implemented");
+            // @todo TTL enforcement deferred; storage not yet implemented
+            log::native_info("ignoring default_time_to_live (TTL not yet implemented)");
         } else if (key == "bloom_filter_fp_chance" || key == "caching" || key == "compaction" ||
                    key == "compression" || key == "crc_check_chance" ||
                    key == "memtable_flush_period_in_ms" ||
                    key == "min_index_interval" || key == "max_index_interval" ||
                    key == "extensions") {
-            // known single-node-relevant tuning options — pending implementation
+            // @todo compaction strategy, compression, and bloom filter configuration
             assert_true(engine.single_node, "table option not supported in non-single-node mode");
             log::native_info("warning: table option not yet implemented, ignoring");
         } else {
-            return false;
+            log::native_info("warning: unknown table option, ignoring");
         }
-        return true;
     }
 
-    // Returns false if any option is unrecognized.
-    static bool handle_table_options(const CreateTable::TableOptions& opts, Engine& engine) {
-        bool valid = true;
+    static void handle_table_options(const CreateTable::TableOptions& opts, Engine& engine) {
         for (const auto& opt : opts.value) {
-            visit(opt, [&engine, &valid](const auto& o) {
+            visit(opt, [&engine](const auto& o) {
                 using O = RemoveCVRef<decltype(o)>;
                 if constexpr (SameAs<O, CreateTable::CompactStorage>) {
-                    // deprecated legacy wire format, no data model meaning
+                    // @todo COMPACT STORAGE affects the wire format for Cassandra 2.x compat
                     assert_true(engine.single_node, "COMPACT STORAGE not supported in non-single-node mode");
                     log::native_info("ignoring COMPACT STORAGE (single-node no-op)");
                 } else if constexpr (SameAs<O, CreateTable::ClusteringOrder>) {
-                    // affects on-disk clustering key sort direction — needs implementation
+                    // @todo store per-column sort direction in schema and use it in RowIterator
                     log::native_info("warning: CLUSTERING ORDER BY not yet implemented, using default ASC");
                 } else if constexpr (SameAs<O, OptionPair>) {
-                    if (!handle_table_option_pair(o, engine)) {
-                        valid = false;
-                    }
+                    handle_table_option_pair(o, engine);
                 } else {
                     static_assert(!SameAs<O, O>, "unhandled table option variant");
                 }
             });
-            if (!valid) {
-                break;
-            }
         }
-        return valid;
     }
 
     static coroutine::Task<ExecutionResult> execute_inside_transaction(Engine& engine, const Statement& statement, EvalContext ctx, AutoString8& current_keyspace) {
@@ -348,9 +340,7 @@ namespace cql::engine {
                     co_return (stmt.if_not_exists) ? create_void_success() : create_table_already_exists(ks_name, stmt.name.table_name);
                 }
 
-                if (!handle_table_options(stmt.options, engine)) {
-                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Unknown table option"};
-                }
+                handle_table_options(stmt.options, engine);
 
                 auto tbl = (co_await schema::create_table(engine.schema, *ks, stmt)).value;
                 if (tbl == nullptr) {
@@ -386,7 +376,7 @@ namespace cql::engine {
                         assert_true(engine.single_node, "ALTER KEYSPACE WITH option not supported in non-single-node mode");
                         log::native_info("ignoring keyspace option (single-node no-op)");
                     } else {
-                        co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Unknown keyspace option"};
+                        log::native_info("warning: unknown keyspace option, ignoring");
                     }
                 }
 
@@ -475,7 +465,7 @@ namespace cql::engine {
                 if (auto err = validate_plan(sp.result)) {
                     co_return move(*err);
                 }
-                assert_true_not_implemented(!sp.projection.is_aggregate, "aggregate SELECT (COUNT, etc.) requires Phase 5");
+                assert_true_not_implemented(!sp.projection.is_aggregate, "aggregate SELECT (COUNT(*), etc.) is not implemented");
 
                 // Extract column indices for native layer from projection ops.
                 DynamicArray<U64> select_col_indices;
@@ -546,6 +536,7 @@ namespace cql::engine {
                         assert_true(engine.single_node, "INSERT USING TIMESTAMP not supported in non-single-node mode");
                         log::native_info("ignoring INSERT USING TIMESTAMP (single-node no-op)");
                     } else if (param.kind == UpdateParameter::Kind::TTL) {
+                        // @todo TTL enforcement requires row blob metadata header
                         co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "INSERT USING TTL is not implemented"};
                     }
                 }
@@ -786,6 +777,7 @@ namespace cql::engine {
                         assert_true(engine.single_node, "UPDATE USING TIMESTAMP not supported in non-single-node mode");
                         log::native_info("ignoring UPDATE USING TIMESTAMP (single-node no-op)");
                     } else if (param.kind == UpdateParameter::Kind::TTL) {
+                        // @todo TTL enforcement requires row blob metadata header
                         co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "UPDATE USING TTL is not implemented"};
                     }
                 }
@@ -853,38 +845,13 @@ namespace cql::engine {
                         U64 idx = *idx_opt;
 
                         assert_true_not_implemented(!assign.target.access, "subscript/field access in UPDATE SET is not implemented");
-                        Term rhs_term;
-                        if (type_matches_tag<Constant>(assign.value.value)) {
-                            rhs_term.value = get<Constant>(assign.value.value);
-                        } else if (type_matches_tag<BindMarker>(assign.value.value)) {
-                            rhs_term.value = get<BindMarker>(assign.value.value);
-                        } else {
-                            assert_true_not_implemented(false, "non-constant/non-bind UPDATE assignment is not implemented");
-                        }
+                        assert_true_not_implemented(!type_matches_tag<TOIArithmeticOperation>(assign.value.value),
+                                                    "counter column expressions (col = col + n) are not implemented");
+                        assert_true_not_implemented(!type_matches_tag<AutoString8>(assign.value.value),
+                                                    "column reference in UPDATE assignment is not implemented");
 
-                        auto eval = evaluate(move(rhs_term), ctx);
-                        if (type_matches_tag<Constant>(eval.value)) {
-                            auto& c = get<Constant>(eval.value);
-                            if (type_matches_tag<Null>(c.value)) {
-                                col_present[idx] = false;
-                            } else {
-                                if (io::can_cast_write_evaluated_as_column_value(eval, tbl->cols[idx].type)) {
-                                    col_present[idx] = true;
-                                    DynamicArray<U8> tmp_buffer;
-                                    auto             w_fn = create_buffer_writer(tmp_buffer);
-                                    io::cast_write_evaluated_as_column_value(io::to_writer(w_fn), eval, tbl->cols[idx].type);
-                                    U64  read_offset = 0;
-                                    auto r_fn        = [&tmp_buffer, &read_offset](U8* out_value, U64 size) -> coroutine::Task<void> {
-                                        if (out_value != nullptr) {
-                                            os::memory_copy(out_value, tmp_buffer.ptr + read_offset, size);
-                                        }
-                                        read_offset += size;
-                                        co_return;
-                                    };
-                                    col_values[idx] = co_await io::read_column_value(io::to_reader(r_fn), tbl->cols[idx].type);
-                                }
-                            }
-                        } else if (type_matches_tag<ColumnValue>(eval.value)) {
+                        Evaluated eval = evaluate(assign.value, ctx);
+                        if (type_matches_tag<ColumnValue>(eval.value)) {
                             ColumnValue& cv = get<ColumnValue>(eval.value);
                             if (type_matches_tag<Null>(cv)) {
                                 col_present[idx] = false;
@@ -892,6 +859,22 @@ namespace cql::engine {
                                 col_present[idx] = true;
                                 col_values[idx]  = move(cv);
                             }
+                        } else if (type_matches_tag<Constant>(eval.value) && type_matches_tag<Null>(get<Constant>(eval.value).value)) {
+                            col_present[idx] = false;
+                        } else if (io::can_cast_write_evaluated_as_column_value(eval, tbl->cols[idx].type)) {
+                            col_present[idx] = true;
+                            DynamicArray<U8> tmp_buffer;
+                            auto             w_fn = create_buffer_writer(tmp_buffer);
+                            io::cast_write_evaluated_as_column_value(io::to_writer(w_fn), eval, tbl->cols[idx].type, ctx);
+                            U64  read_offset = 0;
+                            auto r_fn        = [&tmp_buffer, &read_offset](U8* out_value, U64 size) -> coroutine::Task<void> {
+                                if (out_value != nullptr) {
+                                    os::memory_copy(out_value, tmp_buffer.ptr + read_offset, size);
+                                }
+                                read_offset += size;
+                                co_return;
+                            };
+                            col_values[idx] = co_await io::read_column_value(io::to_reader(r_fn), tbl->cols[idx].type);
                         }
                     }
 
@@ -950,18 +933,16 @@ namespace cql::engine {
                         }
                         U64 idx = *idx_opt;
                         assert_true_not_implemented(!assign.target.access, "subscript/field access in UPDATE SET is not implemented");
+                        assert_true_not_implemented(!type_matches_tag<TOIArithmeticOperation>(assign.value.value),
+                                                    "counter column expressions (col = col + n) are not implemented");
+                        assert_true_not_implemented(!type_matches_tag<AutoString8>(assign.value.value),
+                                                    "column reference in UPDATE assignment is not implemented");
 
-                        Term rhs_term;
-                        if (type_matches_tag<Constant>(assign.value.value)) {
-                            rhs_term.value = get<Constant>(assign.value.value);
-                        } else if (type_matches_tag<BindMarker>(assign.value.value)) {
-                            rhs_term.value = get<BindMarker>(assign.value.value);
-                        } else {
-                            assert_true_not_implemented(false, "non-constant/non-bind UPDATE assignment is not implemented");
-                        }
-
-                        auto eval = evaluate(move(rhs_term), ctx);
-                        if (type_matches_tag<Constant>(eval.value) && type_matches_tag<Null>(get<Constant>(eval.value).value)) {
+                        Evaluated eval = evaluate(assign.value, ctx);
+                        bool      is_null =
+                            (type_matches_tag<Constant>(eval.value) && type_matches_tag<Null>(get<Constant>(eval.value).value)) ||
+                            (type_matches_tag<ColumnValue>(eval.value) && type_matches_tag<Null>(get<ColumnValue>(eval.value)));
+                        if (is_null) {
                             col_present[idx] = false;
                         } else {
                             col_present[idx]  = true;
@@ -978,7 +959,7 @@ namespace cql::engine {
                     io::write_column_mask(write, io::to_checker(new_present), tbl->cols.length);
                     for (U64 ci = 0; ci < tbl->cols.length; ci++) {
                         if (col_present[ci]) {
-                            io::cast_write_evaluated_as_column_value(write, assign_evals[ci], tbl->cols[ci].type);
+                            io::cast_write_evaluated_as_column_value(write, assign_evals[ci], tbl->cols[ci].type, ctx);
                         }
                     }
 
@@ -1146,9 +1127,7 @@ namespace cql::engine {
                         co_return ExecutionResult{};
                     } else if constexpr (SameAs<I, Options>) {
                         for (const auto& opt : instr.identifier_values) {
-                            if (!handle_table_option_pair(opt, engine)) {
-                                co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Unknown table option"};
-                            }
+                            handle_table_option_pair(opt, engine);
                         }
                         co_return create_schema_changed(ks_name, stmt.table.table_name);
                     } else {

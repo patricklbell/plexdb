@@ -68,55 +68,52 @@ column → proper error. Score: 24/313 passing (was 23).
 
 ---
 
-## Phase 2 — Parser & Engine Option Handling
+## Phase 2 — Parser & Engine Option Handling ✓ COMPLETE
 
-**Impact: ~20 unique tests, unblocks cascading fixture failures across all test files.**
+**Delivered (2026-06-14):** `handle_table_option_pair` / `handle_table_options` converted to `void`
+(warn-and-ignore); `default_time_to_live` logs and returns instead of asserting; unknown CREATE TABLE /
+ALTER TABLE / ALTER KEYSPACE WITH options all warn-and-ignore; collection literal assignment in UPDATE fixed
+(`plan_update` and engine UPDATE handler now call `evaluate(assign.value, ctx)` directly, supporting
+`ListOrVectorLiteral`, `SetLiteral`, `MapLiteral`); `assert_true_not_implemented` guards added for
+`TOIArithmeticOperation` and `AutoString8` in UPDATE assignments. Score: still 24/313 — Phase 2 eliminated
+~160 assert fires per run but the tests also require clustering-key mutations (Phase 3) to actually pass.
 
-Many test functions fail at `CREATE TABLE` or `CREATE KEYSPACE` setup before the DML under test
-is reached. Fixing the parser and option handling unblocks entire fixture chains.
-
-### Items (approximately by fire count)
-
-**Composite partition key syntax** (`engine.cpp`/parser, 17 fires). Parser does not produce
-a `Table` with `partition_key_col_indices.length > 1` for `PRIMARY KEY ((a, b), c)`.
-Update the grammar to accept the compound `(col, col, ...)` form inside PRIMARY KEY and
-populate `partition_key_col_indices` accordingly. No engine change needed beyond this.
-
-**Ignore unknown `CREATE TABLE WITH` options** (`engine.cpp`, 15 fires). Currently asserts.
-Replace with a loop that skips unknown option keys and warns. Cassandra accepts (and ignores)
-compaction, compression, caching, gc_grace_seconds, etc. The `Options` visitor in the ALTER
-TABLE handler already tolerates unknown options via `handle_table_option_pair`; apply the same
-tolerance in CREATE TABLE.
-
-**Frozen collection types** (parser, 16 fires). `FROZEN<LIST<INT>>` is parsed as a distinct
-type in some grammars. The schema layer already stores frozen and non-frozen identically
-(invariant documented in AGENTS.md). Ensure the parser maps `frozen<T>` to the same
-`TypeDescriptor` as `T` before creating the column.
-
-**Collection literal INSERT values** (parser + io, 8+ fires for list/set/map writes).
-`INSERT INTO t (col) VALUES ([1, 2, 3])` fails parse. Grammar needs `collection_literal`
-production. `io.cpp` needs `write_list_literal`, `write_set_literal`, `write_map_literal`
-that serialize via the existing collection byte format (size-prefixed elements).
-
-**Ignore `ALTER TABLE/KEYSPACE WITH` options** (2 fires each). Same pattern as CREATE TABLE.
-
-**`default_time_to_live`** (4 fires). Silently skip at table creation; defer storage to
-Phase 10. Currently asserts.
-
-### What this does NOT touch
-
-Engine DML paths, `RowIterator`, `io.cpp` column value read/write for non-collection types,
-`planner.cpp`. These changes are grammar + option-handling only.
+Notes on pre-existing items: composite partition key grammar and frozen collection type parsing were already
+implemented before Phase 2; collection literal writes in INSERT were already working via `io.cpp`. The fire
+counts listed in the original Phase 2 spec were accurate for the pre-Phase-1 codebase but overstated the
+Phase 2 delta.
 
 ---
 
 ## Phase 3 — `apply_mutation` + Clustering-Table DELETE/UPDATE + Static Columns
 
-**Impact: ~54 unique tests directly; also unblocks ALLOW FILTERING tests that were blocked
-only because their fixtures use clustering-table mutations (~20 additional).**
+**Impact: ~37 unique tests directly (39+15=54 assert fires after Phase 2); also unblocks ALLOW
+FILTERING tests blocked by clustering-table mutations (~20 additional).**
 
-This is the largest single unlock in the roadmap. The conformance log shows 78+30 = 108
-assert fires from CK DELETE/UPDATE alone.
+This is the largest single unlock remaining. Note: Phase 2's CREATE TABLE fixes caused some tests
+to fail earlier, reducing CK fire counts from 78+30=108 to 39+15=54, but the unique test impact
+is similar.
+
+### Design flags
+
+**`needed_cols` deferred.** The original design couples a `needed_cols` optimization into Phase 3.
+This significantly increases scope and is not needed for correctness. Implement `apply_mutation`
+without `needed_cols` first — pass an empty set (meaning "all columns") everywhere, add the
+optimization later. The `needed_cols: DynamicArray<U64>` fields on `MutationSpec` and
+`ProjectionPlan` can be added when the optimization is implemented.
+
+**`locator.index` slot does not exist yet.** Phase 4 refers to "`build_row_locator` already has
+the `locator.index` slot (currently unused)." The actual `RowLocator` struct has no such field.
+Phase 4 must add it.
+
+**Static columns can be split.** Static column writes are independent of CK mutation correctness
+and add significant complexity. Can be deferred to a Phase 3b if needed: Phase 3 delivers CK
+DELETE/UPDATE without static-column write support, Phase 3b adds `rewrite_static`.
+
+**`plan_mutation` extension for clustering tables.** Currently `plan_mutation` asserts if
+`pk_is_equality` is false. For clustering tables, add: if `ck_is_equality` is also false,
+return `PlanError::MissingClusteringKey`. The planner already captures CK equality in
+`ck_begin` via the `all_ck_eq` path in `build_row_locator`.
 
 ### Design: `apply_mutation`
 
@@ -304,10 +301,10 @@ update_indexes(engine, tbl, pk_bytes,
 
 ### Planner integration
 
-`build_row_locator` already has the `locator.index` slot (currently unused). Fill it when
-an equality relation on a non-PK column matches an indexed column, and `!needs_allow_filtering`.
-Engine SELECT path: if `locator.index != null`, do a prefix range scan on the index BTree
-to collect pk_bytes, then run pk equality lookups.
+Add `Optional<U64> index_col_idx` to `RowLocator`. `build_row_locator` sets it when an equality
+relation on a non-PK column matches an indexed column and `!needs_allow_filtering`. Engine SELECT
+path: if `locator.index_col_idx` is set, do a prefix range scan on the index BTree to collect
+pk_bytes, then run pk equality lookups.
 
 ---
 

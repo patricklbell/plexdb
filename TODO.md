@@ -33,8 +33,12 @@
         - Schema recovery from leader's committed log
 - avoid allocation in iterator
 - immutability check for cql frozen type
-- CLUSTERING ORDER BY: implement on-disk sort direction for clustering columns (currently accepted and logged as warning)
-- TTL: implement per-row/column expiry via USING TTL and default_time_to_live table property (currently hard-asserts)
+- CLUSTERING ORDER BY: store per-column sort direction in schema; use it in RowIterator to select forward/reverse scan (currently accepted and ignored, always uses ASC)
+- TTL: implement per-row expiry — requires row blob metadata header (row_flags + expiry_unix_ms prefix); affects io.cpp write_row/read_row and all blob writers
+    - USING TTL in INSERT/UPDATE/DELETE: currently returns an error response to the client
+    - default_time_to_live table property: currently parsed and silently ignored at CREATE/ALTER TABLE
+- Table options silently ignored (logged as warnings): compaction strategy, compression codec, bloom_filter_fp_chance, caching, crc_check_chance, min/max_index_interval, memtable_flush_period_in_ms, extensions
+- COMPACT STORAGE: deprecated Cassandra 2.x wire format; currently accepted and ignored
 
 # Dev notes
 - aio proper separation between ownership, caller passes ring/ctx and arena

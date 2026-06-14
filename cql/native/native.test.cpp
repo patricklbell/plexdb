@@ -797,3 +797,131 @@ PAGER_TEST_CASE("crash consistency after SIGKILL during writes", "[cql.native]")
     file_delete(db_path);
     file_delete(wal_path);
 }
+
+CQL_NATIVE_TEST_CASE("CREATE TABLE WITH: unknown options are ignored", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t (id int PRIMARY KEY, val text) "
+                         "WITH default_time_to_live = 0 "
+                         "AND compaction = {'class': 'LeveledCompactionStrategy'} "
+                         "AND gc_grace_seconds = 864000 "
+                         "AND unknown_option = 'ignored';")
+                  .opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, val) VALUES (1, 'a');").opcode == op::RESULT);
+        Frame sel = send_query(client, "SELECT * FROM ks.t;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "a"));
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("ALTER TABLE WITH: unknown options are ignored", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, val text);").opcode == op::RESULT);
+        CHECK(send_query(client, "ALTER TABLE ks.t WITH gc_grace_seconds = 0 AND default_time_to_live = 0;")
+                  .opcode == op::RESULT);
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("ALTER KEYSPACE WITH: unknown options are ignored", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "ALTER KEYSPACE ks WITH replication = {'class': 'SimpleStrategy'} "
+                         "AND durable_writes = true;")
+                  .opcode == op::RESULT);
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("INSERT: collection literal values (list, set, map)", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t ("
+                         "  id int PRIMARY KEY,"
+                         "  tags list<text>,"
+                         "  codes set<int>,"
+                         "  meta map<text, text>"
+                         ");")
+                  .opcode == op::RESULT);
+
+        CHECK(send_query(client,
+                         "INSERT INTO ks.t (id, tags, codes, meta) "
+                         "VALUES (1, ['a', 'b'], {10, 20}, {'k': 'v'});")
+                  .opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT * FROM ks.t WHERE id = 1;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "a"));
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("UPDATE: collection literal assignment", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t ("
+                         "  id int PRIMARY KEY,"
+                         "  tags list<text>"
+                         ");")
+                  .opcode == op::RESULT);
+
+        CHECK(send_query(client, "INSERT INTO ks.t (id, tags) VALUES (1, ['old']);").opcode == op::RESULT);
+        CHECK(send_query(client, "UPDATE ks.t SET tags = ['new', 'val'] WHERE id = 1;").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT * FROM ks.t WHERE id = 1;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "new"));
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("CREATE TABLE: frozen collection column", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t ("
+                         "  id int PRIMARY KEY,"
+                         "  nums frozen<list<int>>"
+                         ");")
+                  .opcode == op::RESULT);
+
+        CHECK(send_query(client, "INSERT INTO ks.t (id, nums) VALUES (1, [10, 20, 30]);").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT * FROM ks.t WHERE id = 1;");
+        CHECK(result_kind(sel) == result::ROWS);
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("CREATE TABLE: composite partition key", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t ("
+                         "  a int,"
+                         "  b text,"
+                         "  val int,"
+                         "  PRIMARY KEY ((a, b))"
+                         ");")
+                  .opcode == op::RESULT);
+
+        CHECK(send_query(client, "INSERT INTO ks.t (a, b, val) VALUES (1, 'x', 42);").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT * FROM ks.t WHERE a = 1 AND b = 'x';");
+        CHECK(result_kind(sel) == result::ROWS);
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}

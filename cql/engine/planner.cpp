@@ -289,18 +289,12 @@ namespace cql::planner {
                 return plan;
             }
 
-            // @todo counter columns: col = col + n (TermWithIdentifiers with column ref)
-            if (!type_matches_tag<Constant>(assign.value.value) && !type_matches_tag<BindMarker>(assign.value.value)) {
-                assert_not_implemented("non-constant/non-bind UPDATE assignment (counter columns)");
-            }
-
-            Term rhs_term;
-            if (type_matches_tag<Constant>(assign.value.value)) {
-                rhs_term.value = get<Constant>(assign.value.value);
-            } else {
-                rhs_term.value = get<BindMarker>(assign.value.value);
-            }
-            push_back(plan.spec.updates, ColumnUpdate{*col_idx, evaluate(move(rhs_term), ctx)});
+            // @todo counter columns (col = col + n) need row context at apply time
+            assert_true_not_implemented(!type_matches_tag<TOIArithmeticOperation>(assign.value.value),
+                                        "counter column expressions (col = col + n) are not implemented");
+            assert_true_not_implemented(!type_matches_tag<AutoString8>(assign.value.value),
+                                        "column reference in UPDATE assignment is not implemented");
+            push_back(plan.spec.updates, ColumnUpdate{*col_idx, evaluate(assign.value, ctx)});
         }
 
         return plan;
