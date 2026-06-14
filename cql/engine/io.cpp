@@ -145,14 +145,14 @@ namespace {
         } else if constexpr (SameAs<T, Hex>) {
             assert_true(dtype == type::Basic::hex, "hex value written to non-hex column");
             w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
-            w(&src.value[0], src.value.length);
+            w(src.value.ptr, src.value.length);
         } else if constexpr (SameAs<T, Blob>) {
             assert_true(dtype == type::Basic::blob || dtype == type::Basic::inet || dtype == type::Basic::varint ||
                             dtype == type::Basic::decimal || dtype == type::Basic::duration ||
                             dtype == type::Basic::hex,
                         "blob value written to incompatible column dtype");
             w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
-            w(&src.value[0], src.value.length);
+            w(src.value.ptr, src.value.length);
         } else if constexpr (SameAs<T, Duration>) {
             assert_true(dtype == type::Basic::duration, "Duration value written to non-duration column");
             w(reinterpret_cast<const U8*>(&src.months), sizeof(src.months));

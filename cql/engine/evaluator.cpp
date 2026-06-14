@@ -1,3 +1,6 @@
+module;
+#include <string.h>
+
 module cql.engine.evaluator;
 
 import plexdb.base;
@@ -261,6 +264,71 @@ namespace cql {
                 return Evaluated{Constant{Null{}}};
             }
             return Evaluated{Constant{timeuuid_to_unix_ms(*uuid)}};
+        });
+
+        // Type-conversion functions: textAsBlob, blobAsText, intAsBlob, blobAsInt, bigintAsBlob, blobAsBigint
+        add("textasblob"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
+            if (args.length != 1) {
+                return Evaluated{Constant{Null{}}};
+            }
+            const AutoString8* s = as_value<AutoString8>(args[0]);
+            if (!s) {
+                return Evaluated{Constant{Null{}}};
+            }
+            Blob b{};
+            resize(b.value, s->length);
+            if (s->length > 0) {
+                memcpy(b.value.ptr, s->c_str, s->length);
+            }
+            return Evaluated{Constant{move(b)}};
+        });
+        add("blobastext"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
+            if (args.length != 1) {
+                return Evaluated{Constant{Null{}}};
+            }
+            if (const Blob* b = as_value<Blob>(args[0])) {
+                AutoString8 s(reinterpret_cast<const U8*>(b->value.ptr), b->value.length);
+                return Evaluated{Constant{move(s)}};
+            }
+            if (const Hex* h = as_value<Hex>(args[0])) {
+                AutoString8 s(reinterpret_cast<const U8*>(h->value.ptr), h->value.length);
+                return Evaluated{Constant{move(s)}};
+            }
+            return Evaluated{Constant{Null{}}};
+        });
+        add("intasblob"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
+            if (args.length != 1) {
+                return Evaluated{Constant{Null{}}};
+            }
+            const S64* v = as_value<S64>(args[0]);
+            if (!v) {
+                return Evaluated{Constant{Null{}}};
+            }
+            Blob b{};
+            resize(b.value, 4_u64);
+            U32 be = __builtin_bswap32(static_cast<U32>(*v));
+            memcpy(b.value.ptr, &be, 4);
+            return Evaluated{Constant{move(b)}};
+        });
+        add("blobasint"_as, [](TArrayView<const Evaluated>, const EvalContext&) -> Evaluated {
+            return Evaluated{Constant{Null{}}};
+        });
+        add("bigintasblob"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
+            if (args.length != 1) {
+                return Evaluated{Constant{Null{}}};
+            }
+            const S64* v = as_value<S64>(args[0]);
+            if (!v) {
+                return Evaluated{Constant{Null{}}};
+            }
+            Blob b{};
+            resize(b.value, 8_u64);
+            U64 be = __builtin_bswap64(static_cast<U64>(*v));
+            memcpy(b.value.ptr, &be, 8);
+            return Evaluated{Constant{move(b)}};
+        });
+        add("blobasbigint"_as, [](TArrayView<const Evaluated>, const EvalContext&) -> Evaluated {
+            return Evaluated{Constant{Null{}}};
         });
 
         return registry;
@@ -665,6 +733,31 @@ namespace cql {
 
     static bool evaluate_column_relation(const WhereClause::ColumnExpressionRelation& cer, const EvalContext& ctx) {
         Evaluated lhs = lookup_column_value(cer.column.identifier, ctx);
+
+        if (cer.operator_ == Operator::in) {
+            // Check membership: rhs is a TupleLiteral or ListOrVectorLiteral.
+            Evaluated rhs     = evaluate_term(cer.value, ctx);
+            bool      matched = visit(rhs.value, [&](const auto& list) -> bool {
+                using LT = RemoveCVRef<decltype(list)>;
+                if constexpr (SameAs<LT, TupleLiteral> || SameAs<LT, ListOrVectorLiteral>) {
+                    for (const Term& elem : list.elements) {
+                        Evaluated elem_val = evaluate_term(elem, ctx);
+                        bool      comparable;
+                        S64       cmp = compare_evaluated(lhs, elem_val, comparable);
+                        if (comparable && cmp == 0) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                // Single bound value (e.g. IN ?)
+                bool comparable;
+                S64  cmp = compare_evaluated(lhs, rhs, comparable);
+                return comparable && cmp == 0;
+            });
+            return matched;
+        }
+
         Evaluated rhs = evaluate_term(cer.value, ctx);
         bool      comparable;
         S64       cmp = compare_evaluated(lhs, rhs, comparable);
@@ -680,9 +773,46 @@ namespace cql {
                 using T = Decay<decltype(value)>;
                 if constexpr (SameAs<T, WhereClause::ColumnExpressionRelation>) {
                     return evaluate_column_relation(value, ctx);
+                } else if constexpr (SameAs<T, WhereClause::TupleExpressionRelation>) {
+                    if (value.operator_ == Operator::in) {
+                        // (col1 [, col2]) IN ((v0a [, v0b]), (v1a [, v1b]))
+                        // Each value-tuple in value.values must be compared against row columns.
+                        for (const Term& val_term : value.values) {
+                            bool tuple_matches = visit(val_term.value, [&](const auto& v) -> bool {
+                                using VT = RemoveCVRef<decltype(v)>;
+                                if constexpr (SameAs<VT, TupleLiteral>) {
+                                    for (U64 ci = 0; ci < v.elements.length && ci < value.columns.length; ci++) {
+                                        Evaluated lhs  = lookup_column_value(value.columns[ci].identifier, ctx);
+                                        Evaluated rhs  = evaluate_term(v.elements[ci], ctx);
+                                        bool      comp = false;
+                                        if (compare_evaluated(lhs, rhs, comp) != 0 || !comp) {
+                                            return false;
+                                        }
+                                    }
+                                    return true;
+                                } else {
+                                    if (value.columns.length == 0) {
+                                        return false;
+                                    }
+                                    Evaluated lhs  = lookup_column_value(value.columns[0].identifier, ctx);
+                                    Evaluated rhs  = evaluate_term(val_term, ctx);
+                                    bool      comp = false;
+                                    return compare_evaluated(lhs, rhs, comp) == 0 && comp;
+                                }
+                            });
+                            if (tuple_matches) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                    return true; // non-IN tuple relations pass through (not filtering)
+                } else if constexpr (SameAs<T, WhereClause::TokenRelation>) {
+                    return true; // token relations not evaluated in filter
+                } else {
+                    static_assert(!SameAs<T, T>, "missing WHERE relation type");
+                    return false;
                 }
-                assert_not_implemented("TupleExpressionRelation and TokenRelation in WHERE are not implemented");
-                return false;
             });
             if (!passes) {
                 return false;

@@ -84,7 +84,12 @@ namespace cql::key {
 
     static S64 eval_as_s64(const Evaluated& eval) {
         if (type_matches_tag<Constant>(eval.value)) {
-            return get<S64>(get<Constant>(eval.value).value);
+            const auto& cv = get<Constant>(eval.value).value;
+            if (type_matches_tag<S64>(cv)) return get<S64>(cv);
+            if (type_matches_tag<S32>(cv)) return S64(get<S32>(cv));
+            if (type_matches_tag<S16>(cv)) return S64(get<S16>(cv));
+            if (type_matches_tag<U8>(cv)) return S64(get<U8>(cv));
+            return 0;
         }
         const ColumnValue& cv = get<ColumnValue>(eval.value);
         if (type_matches_tag<S64>(cv)) {
@@ -227,6 +232,182 @@ namespace cql::key {
                 break;
         }
     }
+
+    // Decode one key component from `src` starting at `*pos`. Advances *pos past the component.
+    static ColumnValue decode_component(const U8* src, U16 total_len, U16* pos,
+                                        type::Basic dtype, bool composite) {
+        if (composite) {
+            switch (dtype) {
+                // Fixed-width composite components: 2-byte length prefix + data
+                case type::Basic::bigint:
+                case type::Basic::timestamp:
+                case type::Basic::counter: {
+                    *pos += 2;
+                    U64 bits = 0;
+                    for (int b = 0; b < 8; b++) {
+                        bits = (bits << 8) | src[*pos + b];
+                    }
+                    *pos += 8;
+                    return ColumnValue{static_cast<S64>(bits ^ 0x8000000000000000ULL)};
+                }
+                case type::Basic::int_: {
+                    *pos += 2;
+                    U32 bits = (U32(src[*pos]) << 24) | (U32(src[*pos + 1]) << 16) |
+                               (U32(src[*pos + 2]) << 8) | U32(src[*pos + 3]);
+                    *pos += 4;
+                    return ColumnValue{static_cast<S32>(bits ^ 0x80000000U)};
+                }
+                case type::Basic::smallint: {
+                    *pos += 2;
+                    U16 bits = (U16(src[*pos]) << 8) | U16(src[*pos + 1]);
+                    *pos += 2;
+                    return ColumnValue{static_cast<S16>(bits ^ 0x8000U)};
+                }
+                case type::Basic::tinyint: {
+                    *pos += 2;
+                    U8 bits = src[*pos] ^ 0x80U;
+                    *pos += 1;
+                    return ColumnValue{bits};
+                }
+                case type::Basic::boolean: {
+                    *pos += 2;
+                    U8 v = src[*pos];
+                    *pos += 1;
+                    return ColumnValue{v};
+                }
+                case type::Basic::double_: {
+                    *pos += 2;
+                    U64 bits = 0;
+                    for (int b = 0; b < 8; b++) {
+                        bits = (bits << 8) | src[*pos + b];
+                    }
+                    *pos += 8;
+                    bits = (bits & 0x8000000000000000ULL) ? (bits ^ 0x8000000000000000ULL) : ~bits;
+                    F64 v;
+                    os::memory_copy(&v, &bits, 8);
+                    return ColumnValue{v};
+                }
+                case type::Basic::float_: {
+                    *pos += 2;
+                    U32 bits = (U32(src[*pos]) << 24) | (U32(src[*pos + 1]) << 16) |
+                               (U32(src[*pos + 2]) << 8) | U32(src[*pos + 3]);
+                    *pos += 4;
+                    bits = (bits & 0x80000000U) ? (bits ^ 0x80000000U) : ~bits;
+                    F32 v;
+                    os::memory_copy(&v, &bits, 4);
+                    return ColumnValue{v};
+                }
+                case type::Basic::uuid:
+                case type::Basic::timeuuid: {
+                    *pos += 2;
+                    UUID u;
+                    os::memory_copy(&u.value[0], src + *pos, UUID::length);
+                    *pos += static_cast<U16>(UUID::length);
+                    return ColumnValue{u};
+                }
+                // Variable-width composite components: escaped-terminated
+                case type::Basic::text:
+                case type::Basic::varchar:
+                case type::Basic::ascii: {
+                    DynamicArray<U8> buf;
+                    while (*pos + 1 < total_len) {
+                        U8 c = src[*pos];
+                        *pos += 1;
+                        if (c == 0x00) {
+                            if (src[*pos] == 0xFF) {
+                                *pos += 1;
+                                push_back(buf, U8(0x00));
+                            } else {
+                                *pos += 1;
+                                break;
+                            }
+                        } else {
+                            push_back(buf, c);
+                        }
+                    }
+                    AutoString8 s{buf.length};
+                    os::memory_copy(s.c_str, buf.ptr, buf.length);
+                    return ColumnValue{move(s)};
+                }
+                default:
+                    assert_not_implemented("key deserialization not implemented for this type");
+                    return ColumnValue{Null{}};
+            }
+        } else {
+            switch (dtype) {
+                case type::Basic::bigint:
+                case type::Basic::timestamp:
+                case type::Basic::counter: {
+                    U64 bits = 0;
+                    for (int b = 0; b < 8; b++) {
+                        bits = (bits << 8) | src[*pos + b];
+                    }
+                    *pos += 8;
+                    return ColumnValue{static_cast<S64>(bits ^ 0x8000000000000000ULL)};
+                }
+                case type::Basic::int_: {
+                    U32 bits = (U32(src[*pos]) << 24) | (U32(src[*pos + 1]) << 16) |
+                               (U32(src[*pos + 2]) << 8) | U32(src[*pos + 3]);
+                    *pos += 4;
+                    return ColumnValue{static_cast<S32>(bits ^ 0x80000000U)};
+                }
+                case type::Basic::smallint: {
+                    U16 bits = (U16(src[*pos]) << 8) | U16(src[*pos + 1]);
+                    *pos += 2;
+                    return ColumnValue{static_cast<S16>(bits ^ 0x8000U)};
+                }
+                case type::Basic::tinyint: {
+                    U8 bits = src[*pos] ^ 0x80U;
+                    *pos += 1;
+                    return ColumnValue{bits};
+                }
+                case type::Basic::boolean: {
+                    U8 v = src[*pos];
+                    *pos += 1;
+                    return ColumnValue{v};
+                }
+                case type::Basic::double_: {
+                    U64 bits = 0;
+                    for (int b = 0; b < 8; b++) {
+                        bits = (bits << 8) | src[*pos + b];
+                    }
+                    *pos += 8;
+                    bits = (bits & 0x8000000000000000ULL) ? (bits ^ 0x8000000000000000ULL) : ~bits;
+                    F64 v;
+                    os::memory_copy(&v, &bits, 8);
+                    return ColumnValue{v};
+                }
+                case type::Basic::float_: {
+                    U32 bits = (U32(src[*pos]) << 24) | (U32(src[*pos + 1]) << 16) |
+                               (U32(src[*pos + 2]) << 8) | U32(src[*pos + 3]);
+                    *pos += 4;
+                    bits = (bits & 0x80000000U) ? (bits ^ 0x80000000U) : ~bits;
+                    F32 v;
+                    os::memory_copy(&v, &bits, 4);
+                    return ColumnValue{v};
+                }
+                case type::Basic::uuid:
+                case type::Basic::timeuuid: {
+                    UUID u;
+                    os::memory_copy(&u.value[0], src + *pos, UUID::length);
+                    *pos += static_cast<U16>(UUID::length);
+                    return ColumnValue{u};
+                }
+                case type::Basic::text:
+                case type::Basic::varchar:
+                case type::Basic::ascii: {
+                    U16         slen = static_cast<U16>(total_len - *pos);
+                    AutoString8 s{slen};
+                    os::memory_copy(s.c_str, src + *pos, slen);
+                    *pos += slen;
+                    return ColumnValue{move(s)};
+                }
+                default:
+                    assert_not_implemented("key deserialization not implemented for this type");
+                    return ColumnValue{Null{}};
+            }
+        }
+    }
 }
 
 export namespace cql::key {
@@ -258,14 +439,17 @@ export namespace cql::key {
         return out;
     }
 
-    // Serialize clustering key bytes from one evaluated value (single-column clustering key).
+    // Serialize the first clustering key column as a range-bound prefix.
+    // Uses composite encoding when the table has multiple CK columns so the bound
+    // bytes match the composite key format stored in the BTree.
     DynamicArray<U8> serialize_clustering_single(const schema::Table& tbl, const Evaluated& val) {
         assert_true(tbl.clustering_key_col_indices.length >= 1, "table has no clustering key");
         U64                   col_idx = tbl.clustering_key_col_indices[0];
         const schema::Column& col     = tbl.cols[col_idx];
         assert_true(type_matches_tag<type::Basic>(col.type.value), "clustering key must be a basic type");
+        bool             is_composite = tbl.clustering_key_col_indices.length > 1;
         DynamicArray<U8> out;
-        append_component(out, val, get<type::Basic>(col.type.value), false);
+        append_component(out, val, get<type::Basic>(col.type.value), is_composite);
         return out;
     }
 
@@ -280,6 +464,21 @@ export namespace cql::key {
             const schema::Column& col     = tbl.cols[col_idx];
             assert_true(type_matches_tag<type::Basic>(col.type.value), "clustering key must be a basic type");
             append_component(out, clustering_vals[i], get<type::Basic>(col.type.value), composite);
+        }
+        return out;
+    }
+
+    // Deserialize partition key bytes back into ColumnValues.
+    // Returns one ColumnValue per tbl.partition_key_col_indices entry.
+    DynamicArray<ColumnValue> deserialize_partition(const schema::Table& tbl, TArrayView<const U8, U16> key_bytes) {
+        DynamicArray<ColumnValue> out;
+        bool                      composite = tbl.partition_key_col_indices.length > 1;
+        U16                       pos       = 0;
+        for (U64 i = 0; i < tbl.partition_key_col_indices.length; i++) {
+            U64                   col_idx = tbl.partition_key_col_indices[i];
+            const schema::Column& col     = tbl.cols[col_idx];
+            type::Basic           dtype   = get<type::Basic>(col.type.value);
+            push_back(out, decode_component(key_bytes.ptr, key_bytes.length, &pos, dtype, composite));
         }
         return out;
     }

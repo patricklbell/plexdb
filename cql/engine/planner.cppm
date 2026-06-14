@@ -24,6 +24,14 @@ export namespace cql::planner {
         bool             pk_end_inclusive   = true;
         bool             pk_is_equality     = false;
 
+        // Non-empty when WHERE uses IN on the partition key.
+        // Each entry is a fully serialized partition key to mutate.
+        DynamicArray<DynamicArray<U8>> pk_in_values{};
+
+        // Non-empty when WHERE uses IN on the clustering key.
+        // Each entry is a fully serialized clustering key to mutate.
+        DynamicArray<DynamicArray<U8>> ck_in_values{};
+
         DynamicArray<U8> ck_begin{};
         DynamicArray<U8> ck_end{};
         bool             ck_has_begin       = false;
@@ -31,6 +39,14 @@ export namespace cql::planner {
         bool             ck_begin_inclusive = true;
         bool             ck_end_inclusive   = true;
         bool             ck_is_equality     = false;
+
+        bool pk_has_in = false;
+        bool ck_has_in = false;
+
+        // Set when the begin/end bound covers only the first CK column of a multi-column CK.
+        // The bound bytes are composite-encoded; the range delete loop must use prefix comparison.
+        bool ck_begin_is_partial = false;
+        bool ck_end_is_partial   = false;
 
         bool reverse_partitions = false;
         bool reverse_clustering = false;
@@ -69,9 +85,17 @@ export namespace cql::planner {
         None,
         RequiresAllowFiltering,
         MissingPartitionKey,
+        MissingClusteringKey,
         OrderByOnNonClusteringColumn,
         ColumnNotFound,
         TypeMismatch,
+        StaticOnlyUpdateWithCK,
+        StaticOnlyDeleteWithCK,
+        TokenFunctionInMutation,
+        DuplicateColumnInMutation,
+        NonKeyColumnInMutationWhere,
+        NonEqInOnPartitionKeyMutation,
+        CounterOperationOnNonCounter,
     };
 
     struct PlanResult {

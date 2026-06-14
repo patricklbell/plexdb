@@ -5,6 +5,7 @@ module;
 module cql.engine;
 
 import plexdb.os;
+import plexdb.btree.types;
 import plexdb.dynamic.tagged_union;
 
 import cql.parsers;
@@ -228,10 +229,29 @@ namespace cql::engine {
                     .status  = ExecutionStatus::Invalid,
                     .message = "Cannot execute this query as it might involve data filtering and thus may have unpredictable performance. If you want to execute this query despite the performance unpredictability, use ALLOW FILTERING",
                 };
-            case planner::PlanError::MissingPartitionKey:
+            case planner::PlanError::MissingPartitionKey: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Some partition key parts are missing: " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::MissingClusteringKey: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Some clustering keys are missing: " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::StaticOnlyUpdateWithCK:
                 return ExecutionResult{
                     .status  = ExecutionStatus::Invalid,
-                    .message = "UPDATE/DELETE requires partition key equality in WHERE clause",
+                    .message = "Invalid restrictions on clustering columns since the UPDATE statement modifies only static columns",
+                };
+            case planner::PlanError::StaticOnlyDeleteWithCK:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "Invalid restrictions on clustering columns since the DELETE statement modifies only static columns",
                 };
             case planner::PlanError::OrderByOnNonClusteringColumn: {
                 ExecutionResult r;
@@ -249,6 +269,43 @@ namespace cql::engine {
             }
             case planner::PlanError::TypeMismatch:
                 return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Type mismatch for key column"};
+            case planner::PlanError::TokenFunctionInMutation:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "The token function cannot be used in WHERE clauses for UPDATE",
+                };
+            case planner::PlanError::DuplicateColumnInMutation: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Column " + result.context + " is assigned twice in UPDATE";
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::NonKeyColumnInMutationWhere: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Non PRIMARY KEY columns found in where clause: " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::NonEqInOnPartitionKeyMutation: {
+                ExecutionResult r;
+                r.status = ExecutionStatus::Invalid;
+                if (result.context.length > 0) {
+                    r.message_storage = AutoString8("Only EQ and IN relation are supported on the partition key (unless you use the token() function) — ") + result.context + " is not supported";
+                } else {
+                    r.message_storage = AutoString8("Only EQ and IN relation are supported on the partition key (unless you use the token() function)");
+                }
+                r.message = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::CounterOperationOnNonCounter: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Cannot apply counter operations on non-counter column " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
         }
         return {};
     }
@@ -305,6 +362,388 @@ namespace cql::engine {
                     static_assert(!SameAs<O, O>, "unhandled table option variant");
                 }
             });
+        }
+    }
+
+    // ========================================================================
+    // mutation helpers
+    // ========================================================================
+
+    // Read a row blob (and optional static blob) into parallel col_values/col_present arrays.
+    // If page_idx == 0 and static_page_idx == 0, leaves all entries as Null/absent.
+    static coroutine::Task<void> read_row_into(Engine& engine, const schema::Table* tbl,
+                                               U64 page_idx, U64 static_page_idx,
+                                               DynamicArray<ColumnValue>& col_values,
+                                               DynamicArray<bool>&        col_present) {
+        resize(col_values, tbl->cols.length);
+        resize(col_present, tbl->cols.length);
+        if (page_idx == 0 && static_page_idx == 0) {
+            co_return;
+        }
+        ColumnIterator col_it;
+        co_await load(col_it, engine.pager, tbl, page_idx, static_page_idx);
+        ColumnIterator col_end{};
+        U64            ci = 0;
+        while (col_it != col_end && ci < tbl->cols.length) {
+            ColumnValue val = co_await col_it.deref();
+            col_present[ci] = !type_matches_tag<Null>(val);
+            col_values[ci]  = move(val);
+            co_await col_it.advance();
+            ++ci;
+        }
+    }
+
+    // Serialise non-static columns (or all columns for non-clustering tables) from
+    // col_values/col_present into a new dynamic-paged blob; returns the new page index.
+    static coroutine::Task<U64> write_row_blob(Engine& engine, const schema::Table* tbl,
+                                               const DynamicArray<ColumnValue>& col_values,
+                                               const DynamicArray<bool>&        col_present) {
+        bool             has_ck = schema::has_clustering_keys(*tbl);
+        DynamicArray<U8> buf;
+        auto             write_fn  = create_buffer_writer(buf);
+        auto             write     = io::to_writer(write_fn);
+        auto             is_active = [&](U64 idx) {
+            return idx < col_present.length && col_present[idx] &&
+                   !(has_ck && tbl->cols[idx].is_static);
+        };
+        io::write_column_mask(write, io::to_checker(is_active), tbl->cols.length);
+        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+            if (is_active(ci)) {
+                io::write_column_value(write, col_values[ci], tbl->cols[ci].type);
+            }
+        }
+        U64                    page = co_await blob::create_paged_dynamic(*engine.pager);
+        blob::BlobDynamicPaged b;
+        co_await blob::load(b, engine.pager, page);
+        co_await blob::insert(b, buf.ptr, buf.length);
+        co_return page;
+    }
+
+    // Apply a MutationSpec's updates to col_values/col_present in place.
+    static coroutine::Task<void> apply_updates_to_row(const schema::Table*         tbl,
+                                                      DynamicArray<ColumnValue>&   col_values,
+                                                      DynamicArray<bool>&          col_present,
+                                                      const planner::MutationSpec& spec,
+                                                      const EvalContext&           ctx) {
+        for (const auto& upd : spec.updates) {
+            U64              idx  = upd.col_idx;
+            const Evaluated& eval = upd.new_value;
+            if (type_matches_tag<ColumnValue>(eval.value)) {
+                const ColumnValue& cv = get<ColumnValue>(eval.value);
+                if (type_matches_tag<Null>(cv)) {
+                    col_present[idx] = false;
+                } else if (io::can_write_column_value(cv, tbl->cols[idx].type)) {
+                    col_present[idx] = true;
+                    col_values[idx]  = cv;
+                }
+            } else if (type_matches_tag<Constant>(eval.value) &&
+                       type_matches_tag<Null>(get<Constant>(eval.value).value)) {
+                col_present[idx] = false;
+            } else if (io::can_cast_write_evaluated_as_column_value(eval, tbl->cols[idx].type)) {
+                col_present[idx] = true;
+                DynamicArray<U8> tmp;
+                auto             w_fn = create_buffer_writer(tmp);
+                io::cast_write_evaluated_as_column_value(io::to_writer(w_fn), eval, tbl->cols[idx].type, ctx);
+                U64  off  = 0;
+                auto r_fn = [&tmp, &off](U8* dst, U64 sz) -> coroutine::Task<void> {
+                    if (dst) {
+                        os::memory_copy(dst, tmp.ptr + off, sz);
+                    }
+                    off += sz;
+                    co_return;
+                };
+                col_values[idx] = co_await io::read_column_value(io::to_reader(r_fn), tbl->cols[idx].type);
+            }
+        }
+    }
+
+    // Rewrite the static-column blob for a partition entry.
+    // Removes the existing static blob (if any), writes a new one from col_values/col_present,
+    // and updates entry.static_page in place.
+    static coroutine::Task<void> rewrite_static(Engine& engine, schema::PartitionEntry& entry,
+                                                const schema::Table*             tbl,
+                                                const DynamicArray<ColumnValue>& col_values,
+                                                const DynamicArray<bool>&        col_present) {
+        if (entry.static_page != 0) {
+            blob::BlobDynamicPaged old_blob;
+            co_await blob::load(old_blob, engine.pager, entry.static_page);
+            co_await blob::remove(old_blob);
+            entry.static_page = 0;
+        }
+
+        bool any_static = false;
+        for (U64 si : tbl->static_col_indices) {
+            if (si < col_present.length && col_present[si]) {
+                any_static = true;
+                break;
+            }
+        }
+        if (!any_static) {
+            co_return;
+        }
+
+        DynamicArray<U8> buf;
+        auto             write_fn  = create_buffer_writer(buf);
+        auto             write     = io::to_writer(write_fn);
+        auto             is_active = [&](U64 idx) {
+            return idx < col_present.length && col_present[idx] && tbl->cols[idx].is_static;
+        };
+        io::write_column_mask(write, io::to_checker(is_active), tbl->cols.length);
+        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+            if (tbl->cols[ci].is_static && ci < col_present.length && col_present[ci]) {
+                io::write_column_value(write, col_values[ci], tbl->cols[ci].type);
+            }
+        }
+        entry.static_page = co_await blob::create_paged_dynamic(*engine.pager);
+        blob::BlobDynamicPaged b;
+        co_await blob::load(b, engine.pager, entry.static_page);
+        co_await blob::insert(b, buf.ptr, buf.length);
+    }
+
+    static int compare_ck_bytes(TArrayView<const U8, U16> a, const DynamicArray<U8>& b) {
+        U64 min_len = min(U64(a.length), b.length);
+        int cmp     = min_len > 0 ? memcmp(a.ptr, b.ptr, min_len) : 0;
+        if (cmp != 0) return cmp;
+        return a.length < b.length ? -1 : (a.length > b.length ? 1 : 0);
+    }
+
+    // Unified mutation entry point for INSERT, UPDATE, and DELETE.
+    // Precondition: locator.pk_is_equality is true.
+    static coroutine::Task<void> apply_mutation(Engine& engine, schema::Table* tbl,
+                                                const planner::RowLocator&   locator,
+                                                const planner::MutationSpec& spec,
+                                                const EvalContext&           ctx) {
+        const DynamicArray<U8>& pk_bytes = locator.pk_begin;
+
+        if (schema::has_clustering_keys(*tbl)) {
+            auto                    entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
+            const DynamicArray<U8>& ck_bytes  = locator.ck_begin;
+
+            if (spec.is_full_delete) {
+                if (!entry_opt) {
+                    co_return;
+                }
+                auto                    entry = *entry_opt;
+                schema::ClusteringBTree ck_btree{
+                    engine.pager, entry.data_page,
+                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
+
+                if (locator.ck_is_equality) {
+                    auto row_page_opt = co_await btree::tfind<U64>(ck_btree, ck_bytes);
+                    if (row_page_opt) {
+                        blob::BlobDynamicPaged row_blob;
+                        co_await blob::load(row_blob, engine.pager, *row_page_opt);
+                        co_await blob::remove(row_blob);
+                        co_await btree::remove(ck_btree, ck_bytes);
+                    }
+                } else {
+                    // Range or full-partition delete: collect all matching (ck_key, page) pairs.
+                    struct CkEntry {
+                        DynamicArray<U8> key;
+                        U64              page;
+                    };
+                    DynamicArray<CkEntry> to_delete;
+
+                    // Returns true if key starts with the bytes of a partial bound prefix.
+                    auto key_has_prefix = [](TArrayView<const U8, U16> key, const DynamicArray<U8>& bound) -> bool {
+                        if (key.length < static_cast<U16>(bound.length)) return false;
+                        return bound.length == 0 || memcmp(key.ptr, bound.ptr, bound.length) == 0;
+                    };
+
+                    auto collect_range = [&](auto&& it, const auto& end_it) -> coroutine::Task<void> {
+                        // For a partial exclusive lower bound (c1 > X), skip past all keys in the c1==X group.
+                        if (locator.ck_begin_is_partial && !locator.ck_begin_inclusive) {
+                            while (it != end_it && key_has_prefix(it.key(), locator.ck_begin)) {
+                                co_await it.advance();
+                            }
+                        }
+                        while (it != end_it) {
+                            auto key_view = it.key();
+                            if (locator.ck_has_end) {
+                                if (locator.ck_end_is_partial && locator.ck_end_inclusive) {
+                                    // Partial inclusive upper bound (c1 <= X): stop when the key's first-component
+                                    // bytes are strictly greater than the bound prefix.
+                                    U16 B   = static_cast<U16>(locator.ck_end.length);
+                                    int cmp = memcmp(key_view.ptr, locator.ck_end.ptr, min(key_view.length, B));
+                                    if (cmp > 0) break;
+                                } else {
+                                    int cmp = compare_ck_bytes(key_view, locator.ck_end);
+                                    if (cmp > 0 || (cmp == 0 && !locator.ck_end_inclusive)) break;
+                                }
+                            }
+                            CkEntry e;
+                            e.page = *it;
+                            resize(e.key, U64(key_view.length));
+                            memcpy(e.key.ptr, key_view.ptr, key_view.length);
+                            push_back(to_delete, move(e));
+                            co_await it.advance();
+                        }
+                    };
+
+                    auto end_it = btree::end<U64>(ck_btree);
+                    if (locator.ck_has_begin) {
+                        auto ck_begin_view = TArrayView<const U8, U16>(locator.ck_begin.ptr, static_cast<U16>(locator.ck_begin.length));
+                        if (locator.ck_begin_inclusive) {
+                            auto it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(ck_btree, ck_begin_view);
+                            co_await collect_range(move(it), end_it);
+                        } else {
+                            auto it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(ck_btree, ck_begin_view);
+                            co_await collect_range(move(it), end_it);
+                        }
+                    } else {
+                        auto it = co_await btree::begin<U64>(ck_btree);
+                        co_await collect_range(move(it), end_it);
+                    }
+
+                    for (auto& e : to_delete) {
+                        blob::BlobDynamicPaged row_blob;
+                        co_await blob::load(row_blob, engine.pager, e.page);
+                        co_await blob::remove(row_blob);
+                        auto key_view = TArrayView<const U8, U16>(e.key.ptr, static_cast<U16>(e.key.length));
+                        co_await btree::remove(ck_btree, key_view);
+                    }
+                }
+
+                // Remove the partition entry if clustering tree is now empty.
+                auto ck_begin_it = co_await btree::begin<U64>(ck_btree);
+                if (ck_begin_it == btree::end<U64>(ck_btree)) {
+                    if (entry.static_page != 0) {
+                        blob::BlobDynamicPaged static_blob;
+                        co_await blob::load(static_blob, engine.pager, entry.static_page);
+                        co_await blob::remove(static_blob);
+                    }
+                    co_await btree::remove(tbl->btree, pk_bytes);
+                }
+            } else if (!locator.ck_is_equality) {
+                // Static-only UPDATE: all SET columns are static; no CK provided or required.
+                bool                   new_partition = !entry_opt;
+                schema::PartitionEntry entry;
+                if (entry_opt) {
+                    entry = *entry_opt;
+                } else {
+                    entry.data_page = co_await btree::create_paged(
+                        *engine.pager,
+                        btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{});
+                    entry.static_page = 0;
+                }
+
+                DynamicArray<ColumnValue> col_values;
+                DynamicArray<bool>        col_present;
+                co_await read_row_into(engine, tbl, 0, entry.static_page, col_values, col_present);
+                co_await apply_updates_to_row(tbl, col_values, col_present, spec, ctx);
+                co_await rewrite_static(engine, entry, tbl, col_values, col_present);
+
+                if (new_partition) {
+                    co_await btree::tinsert(tbl->btree, pk_bytes, entry);
+                } else {
+                    co_await btree::tupdate(tbl->btree, pk_bytes, entry);
+                }
+            } else {
+                // Read-modify-write: shared path for UPDATE and column-level DELETE.
+                bool                   new_partition = !entry_opt;
+                schema::PartitionEntry entry;
+                if (entry_opt) {
+                    entry = *entry_opt;
+                } else {
+                    entry.data_page = co_await btree::create_paged(
+                        *engine.pager,
+                        btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{});
+                    entry.static_page = 0;
+                }
+
+                schema::ClusteringBTree ck_btree{
+                    engine.pager, entry.data_page,
+                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
+                auto row_page_opt  = co_await btree::tfind<U64>(ck_btree, ck_bytes);
+                U64  existing_page = row_page_opt ? *row_page_opt : 0;
+
+                DynamicArray<ColumnValue> col_values;
+                DynamicArray<bool>        col_present;
+                co_await read_row_into(engine, tbl, existing_page, entry.static_page, col_values, col_present);
+
+                // Inject PK column values from key bytes for rows that don't have them yet
+                // (e.g. upsert via UPDATE ... WHERE pk IN (...)).
+                {
+                    auto                      pk_view = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                    DynamicArray<ColumnValue> pk_vals = key::deserialize_partition(*tbl, pk_view);
+                    for (U64 i = 0; i < tbl->partition_key_col_indices.length; i++) {
+                        U64 ci = tbl->partition_key_col_indices[i];
+                        if (ci < col_values.length && !col_present[ci]) {
+                            col_values[ci] = move(pk_vals[i]);
+                            col_present[ci] = true;
+                        }
+                    }
+                }
+
+                co_await apply_updates_to_row(tbl, col_values, col_present, spec, ctx);
+
+                bool any_static_updated = false;
+                for (const auto& upd : spec.updates) {
+                    if (upd.col_idx < tbl->cols.length && tbl->cols[upd.col_idx].is_static) {
+                        any_static_updated = true;
+                        break;
+                    }
+                }
+
+                U64 new_row_page = co_await write_row_blob(engine, tbl, col_values, col_present);
+                if (row_page_opt) {
+                    blob::BlobDynamicPaged old_blob;
+                    co_await blob::load(old_blob, engine.pager, existing_page);
+                    co_await blob::remove(old_blob);
+                    co_await btree::remove(ck_btree, ck_bytes);
+                }
+                co_await btree::tinsert(ck_btree, ck_bytes, new_row_page);
+
+                if (any_static_updated) {
+                    co_await rewrite_static(engine, entry, tbl, col_values, col_present);
+                }
+                if (new_partition) {
+                    co_await btree::tinsert(tbl->btree, pk_bytes, entry);
+                } else if (any_static_updated) {
+                    co_await btree::tupdate(tbl->btree, pk_bytes, entry);
+                }
+            }
+        } else {
+            // Non-clustering table: data_page is the row blob directly.
+            auto entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
+
+            if (spec.is_full_delete) {
+                if (entry_opt) {
+                    blob::BlobDynamicPaged row_blob;
+                    co_await blob::load(row_blob, engine.pager, entry_opt->data_page);
+                    co_await blob::remove(row_blob);
+                    co_await btree::remove(tbl->btree, pk_bytes);
+                }
+            } else {
+                schema::PartitionEntry entry = entry_opt ? *entry_opt : schema::PartitionEntry{0, 0};
+
+                DynamicArray<ColumnValue> col_values;
+                DynamicArray<bool>        col_present;
+                co_await read_row_into(engine, tbl, entry.data_page, entry.static_page, col_values, col_present);
+
+                {
+                    auto                      pk_view = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                    DynamicArray<ColumnValue> pk_vals = key::deserialize_partition(*tbl, pk_view);
+                    for (U64 i = 0; i < tbl->partition_key_col_indices.length; i++) {
+                        U64 ci = tbl->partition_key_col_indices[i];
+                        if (ci < col_values.length && !col_present[ci]) {
+                            col_values[ci] = move(pk_vals[i]);
+                            col_present[ci] = true;
+                        }
+                    }
+                }
+
+                co_await apply_updates_to_row(tbl, col_values, col_present, spec, ctx);
+
+                U64 new_row_page = co_await write_row_blob(engine, tbl, col_values, col_present);
+                if (entry_opt) {
+                    blob::BlobDynamicPaged old_blob;
+                    co_await blob::load(old_blob, engine.pager, entry.data_page);
+                    co_await blob::remove(old_blob);
+                    co_await btree::remove(tbl->btree, pk_bytes);
+                }
+                co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{new_row_page, entry.static_page});
+            }
         }
     }
 
@@ -452,7 +891,9 @@ namespace cql::engine {
                     co_return create_table_not_found(ks_name, stmt.from.table_name);
                 }
 
-                assert_true_not_implemented(!stmt.transform, "SELECT DISTINCT/JSON is not implemented");
+                if (stmt.transform && *stmt.transform == Select::Transform::JSON) {
+                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "SELECT JSON is not supported"};
+                }
                 assert_true_not_implemented(!stmt.group_by, "GROUP BY is not implemented");
                 assert_true_not_implemented(!stmt.per_partition_limit.value, "PER PARTITION LIMIT is not implemented");
 
@@ -487,6 +928,7 @@ namespace cql::engine {
                         .keyspace           = AutoString8(ks_name),
                         .table              = AutoString8(stmt.from.table_name),
                         .row_limit_count    = limit_count,
+                        .is_distinct        = static_cast<bool>(stmt.transform),
                         .rows               = RowRange{.start = move(start_it), .stop = move(stop_it)},
                         .resolved_table     = tbl,
                         .select_col_indices = move(select_col_indices),
@@ -523,6 +965,7 @@ namespace cql::engine {
                     .keyspace           = AutoString8(ks_name),
                     .table              = AutoString8(stmt.from.table_name),
                     .row_limit_count    = limit_count,
+                    .is_distinct        = static_cast<bool>(stmt.transform),
                     .rows               = RowRange{.start = move(start_it), .stop = move(stop_it)},
                     .resolved_table     = tbl,
                     .select_col_indices = move(select_col_indices),
@@ -796,180 +1239,32 @@ namespace cql::engine {
                     co_return create_table_not_found(ks_name, stmt.table.table_name);
                 }
 
-                assert_true_not_implemented(tbl->clustering_key_col_indices.length == 0, "UPDATE on table with clustering key is not implemented");
-
                 planner::MutationPlan mp = planner::plan_update(stmt, *tbl, ctx);
                 if (auto err = validate_plan(mp.result)) {
                     co_return move(*err);
                 }
-
-                DynamicArray<U8>& pk_bytes           = mp.locator.pk_begin;
-                auto              existing_entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
-
-                auto col_idx_for = [&](String8 name) -> Optional<U64> {
-                    for (U64 i = 0; i < tbl->cols.length; i++) {
-                        if (tbl->cols[i].name == name) {
-                            return i;
+                auto apply_for_ck = [&](planner::MutationPlan& mp_ref) -> coroutine::Task<void> {
+                    if (mp_ref.locator.ck_in_values.length > 0) {
+                        mp_ref.locator.ck_is_equality = true;
+                        for (const auto& ck_bytes : mp_ref.locator.ck_in_values) {
+                            mp_ref.locator.ck_begin = ck_bytes;
+                            co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, ctx);
                         }
+                    } else if (!mp_ref.locator.ck_has_in) {
+                        co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, ctx);
                     }
-                    return {};
+                    // else: empty CK IN → no-op
                 };
-
-                if (existing_entry_opt) {
-                    auto existing_entry = *existing_entry_opt;
-                    // read existing row into col_values
-                    DynamicArray<ColumnValue> col_values;
-                    DynamicArray<bool>        col_present;
-                    resize(col_values, tbl->cols.length);
-                    resize(col_present, tbl->cols.length);
-                    {
-                        ColumnIterator col_it;
-                        co_await load(col_it, engine.pager, tbl, existing_entry.data_page, existing_entry.static_page);
-                        ColumnIterator col_end{};
-                        U64            ci = 0;
-                        while (col_it != col_end && ci < tbl->cols.length) {
-                            ColumnValue val = co_await col_it.deref();
-                            col_present[ci] = !type_matches_tag<Null>(val);
-                            col_values[ci]  = move(val);
-                            co_await col_it.advance();
-                            ++ci;
-                        }
+                if (mp.locator.pk_in_values.length > 0) {
+                    mp.locator.pk_is_equality = true;
+                    for (const auto& pk_bytes : mp.locator.pk_in_values) {
+                        mp.locator.pk_begin = pk_bytes;
+                        co_await apply_for_ck(mp);
                     }
-
-                    // apply assignments
-                    for (const auto& assign : stmt.assignments) {
-                        auto idx_opt = col_idx_for(assign.target.column.identifier);
-                        if (!idx_opt) {
-                            continue;
-                        }
-                        U64 idx = *idx_opt;
-
-                        assert_true_not_implemented(!assign.target.access, "subscript/field access in UPDATE SET is not implemented");
-                        assert_true_not_implemented(!type_matches_tag<TOIArithmeticOperation>(assign.value.value),
-                                                    "counter column expressions (col = col + n) are not implemented");
-                        assert_true_not_implemented(!type_matches_tag<AutoString8>(assign.value.value),
-                                                    "column reference in UPDATE assignment is not implemented");
-
-                        Evaluated eval = evaluate(assign.value, ctx);
-                        if (type_matches_tag<ColumnValue>(eval.value)) {
-                            ColumnValue& cv = get<ColumnValue>(eval.value);
-                            if (type_matches_tag<Null>(cv)) {
-                                col_present[idx] = false;
-                            } else if (io::can_write_column_value(cv, tbl->cols[idx].type)) {
-                                col_present[idx] = true;
-                                col_values[idx]  = move(cv);
-                            }
-                        } else if (type_matches_tag<Constant>(eval.value) && type_matches_tag<Null>(get<Constant>(eval.value).value)) {
-                            col_present[idx] = false;
-                        } else if (io::can_cast_write_evaluated_as_column_value(eval, tbl->cols[idx].type)) {
-                            col_present[idx] = true;
-                            DynamicArray<U8> tmp_buffer;
-                            auto             w_fn = create_buffer_writer(tmp_buffer);
-                            io::cast_write_evaluated_as_column_value(io::to_writer(w_fn), eval, tbl->cols[idx].type, ctx);
-                            U64  read_offset = 0;
-                            auto r_fn        = [&tmp_buffer, &read_offset](U8* out_value, U64 size) -> coroutine::Task<void> {
-                                if (out_value != nullptr) {
-                                    os::memory_copy(out_value, tmp_buffer.ptr + read_offset, size);
-                                }
-                                read_offset += size;
-                                co_return;
-                            };
-                            col_values[idx] = co_await io::read_column_value(io::to_reader(r_fn), tbl->cols[idx].type);
-                        }
-                    }
-
-                    // write updated row to new blob
-                    DynamicArray<U8> row_buffer;
-                    auto             write_fn        = create_buffer_writer(row_buffer);
-                    auto             write           = io::to_writer(write_fn);
-                    auto             updated_present = [&col_present](U64 idx) {
-                        return idx < col_present.length && col_present[idx];
-                    };
-                    io::write_column_mask(write, io::to_checker(updated_present), tbl->cols.length);
-                    for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                        if (col_present[ci]) {
-                            io::write_column_value(write, col_values[ci], tbl->cols[ci].type);
-                        }
-                    }
-
-                    co_await btree::remove(tbl->btree, pk_bytes);
-                    U64                    new_row_page = co_await blob::create_paged_dynamic(*engine.pager);
-                    blob::BlobDynamicPaged row_blob;
-                    co_await blob::load(row_blob, engine.pager, new_row_page);
-                    co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
-                    co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{new_row_page, existing_entry.static_page});
-                } else {
-                    // insert new row with only assigned columns + PK
-                    DynamicArray<bool> col_present;
-                    resize(col_present, tbl->cols.length);
-
-                    for (U64 pk_ci : tbl->partition_key_col_indices) {
-                        col_present[pk_ci] = true;
-                    }
-
-                    DynamicArray<Evaluated> assign_evals;
-                    resize(assign_evals, tbl->cols.length);
-                    for (const auto& rel : stmt.where.relations) {
-                        visit(rel.value, [&](const auto& r) {
-                            using R = RemoveCVRef<decltype(r)>;
-                            if constexpr (SameAs<R, WhereClause::ColumnExpressionRelation>) {
-                                if (r.operator_ == Operator::eq) {
-                                    String8 rname(r.column.identifier.c_str, r.column.identifier.length);
-                                    for (U64 pk_ci : tbl->partition_key_col_indices) {
-                                        if (tbl->cols[pk_ci].name == rname) {
-                                            assign_evals[pk_ci] = evaluate(r.value, ctx);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-
-                    for (const auto& assign : stmt.assignments) {
-                        auto idx_opt = col_idx_for(assign.target.column.identifier);
-                        if (!idx_opt) {
-                            continue;
-                        }
-                        U64 idx = *idx_opt;
-                        assert_true_not_implemented(!assign.target.access, "subscript/field access in UPDATE SET is not implemented");
-                        assert_true_not_implemented(!type_matches_tag<TOIArithmeticOperation>(assign.value.value),
-                                                    "counter column expressions (col = col + n) are not implemented");
-                        assert_true_not_implemented(!type_matches_tag<AutoString8>(assign.value.value),
-                                                    "column reference in UPDATE assignment is not implemented");
-
-                        Evaluated eval = evaluate(assign.value, ctx);
-                        bool      is_null =
-                            (type_matches_tag<Constant>(eval.value) && type_matches_tag<Null>(get<Constant>(eval.value).value)) ||
-                            (type_matches_tag<ColumnValue>(eval.value) && type_matches_tag<Null>(get<ColumnValue>(eval.value)));
-                        if (is_null) {
-                            col_present[idx] = false;
-                        } else {
-                            col_present[idx]  = true;
-                            assign_evals[idx] = move(eval);
-                        }
-                    }
-
-                    DynamicArray<U8> row_buffer;
-                    auto             write_fn    = create_buffer_writer(row_buffer);
-                    auto             write       = io::to_writer(write_fn);
-                    auto             new_present = [&col_present](U64 idx) {
-                        return idx < col_present.length && col_present[idx];
-                    };
-                    io::write_column_mask(write, io::to_checker(new_present), tbl->cols.length);
-                    for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                        if (col_present[ci]) {
-                            io::cast_write_evaluated_as_column_value(write, assign_evals[ci], tbl->cols[ci].type, ctx);
-                        }
-                    }
-
-                    U64                    row_page = co_await blob::create_paged_dynamic(*engine.pager);
-                    blob::BlobDynamicPaged row_blob;
-                    co_await blob::load(row_blob, engine.pager, row_page);
-                    co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
-                    co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{row_page, 0});
+                } else if (!mp.locator.pk_has_in) {
+                    co_await apply_for_ck(mp);
                 }
-
+                // else: empty PK IN → no-op
                 co_return create_void_success();
             } else if constexpr (SameAs<T, Delete>) {
                 ZoneScopedN("engine::delete");
@@ -996,67 +1291,32 @@ namespace cql::engine {
                     co_return create_table_not_found(ks_name, stmt.table.table_name);
                 }
 
-                assert_true_not_implemented(tbl->clustering_key_col_indices.length == 0, "DELETE on table with clustering key is not implemented");
-
                 planner::MutationPlan mp = planner::plan_delete(stmt, *tbl, ctx);
                 if (auto err = validate_plan(mp.result)) {
                     co_return move(*err);
                 }
-
-                DynamicArray<U8>& pk_bytes = mp.locator.pk_begin;
-
-                if (mp.spec.is_full_delete) {
-                    if (auto opt_entry = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes)) {
-                        blob::BlobDynamicPaged row_blob;
-                        co_await blob::load(row_blob, engine.pager, opt_entry->data_page);
-                        co_await blob::remove(row_blob);
-                        co_await btree::remove(tbl->btree, pk_bytes);
+                auto apply_for_ck_del = [&](planner::MutationPlan& mp_ref) -> coroutine::Task<void> {
+                    if (mp_ref.locator.ck_in_values.length > 0) {
+                        mp_ref.locator.ck_is_equality = true;
+                        for (const auto& ck_bytes : mp_ref.locator.ck_in_values) {
+                            mp_ref.locator.ck_begin = ck_bytes;
+                            co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, ctx);
+                        }
+                    } else if (!mp_ref.locator.ck_has_in) {
+                        co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, ctx);
                     }
-                } else {
-                    // Column-level delete: null specified columns via read-modify-write.
-                    if (auto opt_entry = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes)) {
-                        auto                      existing_entry = *opt_entry;
-                        DynamicArray<ColumnValue> col_values;
-                        DynamicArray<bool>        col_present;
-                        resize(col_values, tbl->cols.length);
-                        resize(col_present, tbl->cols.length);
-                        {
-                            ColumnIterator col_it;
-                            co_await load(col_it, engine.pager, tbl, existing_entry.data_page, existing_entry.static_page);
-                            ColumnIterator col_end{};
-                            U64            ci = 0;
-                            while (col_it != col_end && ci < tbl->cols.length) {
-                                ColumnValue val = co_await col_it.deref();
-                                col_present[ci] = !type_matches_tag<Null>(val);
-                                col_values[ci]  = move(val);
-                                co_await col_it.advance();
-                                ++ci;
-                            }
-                        }
-                        for (const auto& upd : mp.spec.updates) {
-                            col_present[upd.col_idx] = false;
-                        }
-                        DynamicArray<U8> row_buffer;
-                        auto             write_fn        = create_buffer_writer(row_buffer);
-                        auto             write           = io::to_writer(write_fn);
-                        auto             updated_present = [&col_present](U64 idx) {
-                            return idx < col_present.length && col_present[idx];
-                        };
-                        io::write_column_mask(write, io::to_checker(updated_present), tbl->cols.length);
-                        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                            if (col_present[ci]) {
-                                io::write_column_value(write, col_values[ci], tbl->cols[ci].type);
-                            }
-                        }
-                        co_await btree::remove(tbl->btree, pk_bytes);
-                        U64                    new_row_page = co_await blob::create_paged_dynamic(*engine.pager);
-                        blob::BlobDynamicPaged row_blob;
-                        co_await blob::load(row_blob, engine.pager, new_row_page);
-                        co_await blob::insert(row_blob, row_buffer.ptr, row_buffer.length);
-                        co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{new_row_page, existing_entry.static_page});
+                    // else: empty CK IN → no-op
+                };
+                if (mp.locator.pk_in_values.length > 0) {
+                    mp.locator.pk_is_equality = true;
+                    for (const auto& pk_bytes : mp.locator.pk_in_values) {
+                        mp.locator.pk_begin = pk_bytes;
+                        co_await apply_for_ck_del(mp);
                     }
+                } else if (!mp.locator.pk_has_in) {
+                    co_await apply_for_ck_del(mp);
                 }
-
+                // else: empty PK IN → no-op
                 co_return create_void_success();
             } else if constexpr (SameAs<T, AlterTable>) {
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
@@ -1189,7 +1449,9 @@ namespace cql::engine {
                 return tbl.cols[ci].type;
             }
         }
-        return type::create_basic(type::Basic::text);
+        // Unknown column: use int as fallback so numeric test values serialize without driver error.
+        // The query will fail server-side with ColumnNotFound regardless of the type reported here.
+        return type::create_basic(type::Basic::int_);
     }
 
     static void collect_bind_in_term(const Term& term, type::Type hint_type, DynamicArray<BindVariableSpec>& out) {
@@ -1209,6 +1471,14 @@ namespace cql::engine {
                 for (U64 i = 0; i < v.key_values.length; i++) {
                     collect_bind_in_term(v.key_values[i].first, hint_type, out);
                     collect_bind_in_term(v.key_values[i].second, hint_type, out);
+                }
+            } else if constexpr (SameAs<V, TupleLiteral>) {
+                for (U64 i = 0; i < v.elements.length; i++) {
+                    collect_bind_in_term(v.elements[i], hint_type, out);
+                }
+            } else if constexpr (SameAs<V, FunctionCall>) {
+                for (U64 i = 0; i < v.arguments.length; i++) {
+                    collect_bind_in_term(v.arguments[i], hint_type, out);
                 }
             }
         });
@@ -1230,13 +1500,37 @@ namespace cql::engine {
             visit(where.relations[i].value, [&](const auto& rel) {
                 using R = RemoveCVRef<decltype(rel)>;
                 if constexpr (SameAs<R, WhereClause::ColumnExpressionRelation>) {
-                    type::Type t = col_type_in_table(tbl, String8(rel.column.identifier));
+                    type::Type elem_t = col_type_in_table(tbl, String8(rel.column.identifier));
+                    // For IN ?, the single bind marker holds the whole list.
+                    type::Type t = (rel.operator_ == Operator::in && type_matches_tag<BindMarker>(rel.value.value))
+                                       ? type::create_list(elem_t)
+                                       : elem_t;
                     collect_bind_in_term(rel.value, t, out);
                 } else if constexpr (SameAs<R, WhereClause::TupleExpressionRelation>) {
-                    for (U64 vi = 0; vi < rel.values.length; vi++) {
-                        String8    col = vi < rel.columns.length ? String8(rel.columns[vi].identifier) : String8{};
-                        type::Type t   = col.length ? col_type_in_table(tbl, col) : type::create_basic(type::Basic::text);
-                        collect_bind_in_term(rel.values[vi], t, out);
+                    if (rel.operator_ == Operator::in) {
+                        // (ck) IN ((?), (?)) — each value is a TupleLiteral matching rel.columns
+                        for (U64 vi = 0; vi < rel.values.length; vi++) {
+                            visit(rel.values[vi].value, [&](const auto& v) {
+                                using VT = RemoveCVRef<decltype(v)>;
+                                if constexpr (SameAs<VT, TupleLiteral>) {
+                                    for (U64 ei = 0; ei < v.elements.length && ei < rel.columns.length; ei++) {
+                                        String8    col = String8(rel.columns[ei].identifier);
+                                        type::Type t   = col_type_in_table(tbl, col);
+                                        collect_bind_in_term(v.elements[ei], t, out);
+                                    }
+                                } else {
+                                    String8    col = rel.columns.length > 0 ? String8(rel.columns[0].identifier) : String8{};
+                                    type::Type t   = col.length ? col_type_in_table(tbl, col) : type::create_basic(type::Basic::text);
+                                    collect_bind_in_term(rel.values[vi], t, out);
+                                }
+                            });
+                        }
+                    } else {
+                        for (U64 vi = 0; vi < rel.values.length; vi++) {
+                            String8    col = vi < rel.columns.length ? String8(rel.columns[vi].identifier) : String8{};
+                            type::Type t   = col.length ? col_type_in_table(tbl, col) : type::create_basic(type::Basic::text);
+                            collect_bind_in_term(rel.values[vi], t, out);
+                        }
                     }
                 } else if constexpr (SameAs<R, WhereClause::TokenRelation>) {
                     collect_bind_in_term(rel.value, type::create_basic(type::Basic::bigint), out);
@@ -1365,7 +1659,7 @@ namespace cql::engine {
         }
         visit(term.value, [&](auto& v) {
             using V = RemoveCVRef<decltype(v)>;
-            if constexpr (SameAs<V, ListOrVectorLiteral>) {
+            if constexpr (SameAs<V, ListOrVectorLiteral> || SameAs<V, TupleLiteral>) {
                 for (U64 i = 0; i < v.elements.length; i++) {
                     bind_in_term(v.elements[i], bv, idx);
                 }
@@ -1377,6 +1671,10 @@ namespace cql::engine {
                 for (U64 i = 0; i < v.key_values.length; i++) {
                     bind_in_term(v.key_values[i].first, bv, idx);
                     bind_in_term(v.key_values[i].second, bv, idx);
+                }
+            } else if constexpr (SameAs<V, FunctionCall>) {
+                for (U64 i = 0; i < v.arguments.length; i++) {
+                    bind_in_term(v.arguments[i], bv, idx);
                 }
             }
         });
