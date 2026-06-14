@@ -28,7 +28,7 @@ export namespace cql {
     // ========================================================================
     // constants
     // ========================================================================
-    using ConstantTypes = TypeList<AutoString8, S64, bool, F64, Null, UUID, Hex, Blob>;
+    using ConstantTypes = TypeList<AutoString8, S64, bool, F64, Null, UUID, Hex, Blob, Duration>;
     struct Constant {
         ExpandTaggedUnion<ConstantTypes> value;
     };

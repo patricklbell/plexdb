@@ -1601,3 +1601,690 @@ TEST_CASE("CREATE TABLE WITH options parsing", "[cql.parser]") {
         REQUIRE(s.options.value.length == 3);
     }
 }
+
+TEST_CASE("Conformance: CREATE TABLE static columns", "[cql.conformance.parser]") {
+    SECTION("single static column") {
+        auto r = parse("CREATE TABLE ks.t (pk int, ck int, v int, s text static, PRIMARY KEY (pk, ck));");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.column_definitions.length == 4);
+        REQUIRE(s.column_definitions[3]._static == true);
+        REQUIRE(s.column_definitions[0]._static == false);
+        REQUIRE(s.column_definitions[2]._static == false);
+    }
+    SECTION("multiple static columns") {
+        auto r = parse("CREATE TABLE ks.t (pk int, ck int, v int, s1 text static, s2 int static, PRIMARY KEY (pk, ck));");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.column_definitions.length == 5);
+        REQUIRE(s.column_definitions[3]._static == true);
+        REQUIRE(s.column_definitions[4]._static == true);
+    }
+    SECTION("partition key only table has no static columns") {
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v int);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        for (U64 i = 0; i < s.column_definitions.length; ++i) {
+            REQUIRE(s.column_definitions[i]._static == false);
+        }
+    }
+}
+
+TEST_CASE("Conformance: CREATE TABLE CLUSTERING ORDER BY", "[cql.conformance.parser]") {
+    SECTION("single clustering column DESC") {
+        auto r = parse("CREATE TABLE ks.t (p text, c text, v text, PRIMARY KEY (p, c)) WITH CLUSTERING ORDER BY (c DESC);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.options.value.length == 1);
+        REQUIRE(type_matches_tag<CreateTable::ClusteringOrder>(s.options.value[0]));
+        auto& co = get<CreateTable::ClusteringOrder>(s.options.value[0]);
+        REQUIRE(co.column_orders.length == 1);
+        REQUIRE(co.column_orders[0].column.identifier == "c");
+        REQUIRE(co.column_orders[0].sort == Sort::DESC);
+    }
+    SECTION("multiple clustering columns ASC and DESC") {
+        auto r = parse("CREATE TABLE ks.t (k int, c1 int, c2 int, PRIMARY KEY (k, c1, c2)) WITH CLUSTERING ORDER BY (c1 ASC, c2 DESC);");
+        REQUIRE(r.has_value());
+        auto& s     = get<CreateTable>(r->value);
+        bool  found = false;
+        for (U64 i = 0; i < s.options.value.length; ++i) {
+            if (type_matches_tag<CreateTable::ClusteringOrder>(s.options.value[i])) {
+                auto& co = get<CreateTable::ClusteringOrder>(s.options.value[i]);
+                REQUIRE(co.column_orders.length == 2);
+                REQUIRE(co.column_orders[0].column.identifier == "c1");
+                REQUIRE(co.column_orders[0].sort == Sort::ASC);
+                REQUIRE(co.column_orders[1].sort == Sort::DESC);
+                found = true;
+            }
+        }
+        REQUIRE(found);
+    }
+    SECTION("CLUSTERING ORDER BY combined with AND options") {
+        auto r = parse("CREATE TABLE ks.t (k int, c text, PRIMARY KEY (k, c)) WITH CLUSTERING ORDER BY (c DESC) AND default_time_to_live = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.options.value.length == 2);
+    }
+    SECTION("CLUSTERING ORDER BY with static column and composite PK") {
+        auto r = parse("CREATE TABLE ks.t (partitionKey int, clustering_1 int, clustering_2 int, value int, staticValue text static, PRIMARY KEY (partitionKey, clustering_1, clustering_2)) WITH CLUSTERING ORDER BY (clustering_1 DESC, clustering_2 ASC);");
+        REQUIRE(r.has_value());
+        auto& s = get<CreateTable>(r->value);
+        REQUIRE(s.column_definitions.length == 5);
+        REQUIRE(s.column_definitions[4]._static == true);
+        REQUIRE(s.options.value.length == 1);
+        REQUIRE(type_matches_tag<CreateTable::ClusteringOrder>(s.options.value[0]));
+    }
+}
+
+TEST_CASE("Conformance: SELECT COUNT and aggregate functions", "[cql.conformance.parser]") {
+    SECTION("COUNT(*)") {
+        auto r = parse("SELECT COUNT(*) FROM ks.t;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.select.clauses.length == 1);
+        REQUIRE(type_matches_tag<Select::Count>(s.select.clauses[0].column.value));
+    }
+    SECTION("COUNT(*) with WHERE") {
+        auto r = parse("SELECT COUNT(*) FROM ks.t WHERE k = 'ev1';");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(type_matches_tag<Select::Count>(s.select.clauses[0].column.value));
+        REQUIRE(s.where.has_value());
+    }
+    SECTION("COUNT(1)") {
+        auto r = parse("SELECT COUNT(1) FROM ks.t WHERE k IN ('ev1', 'ev2') AND time = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(type_matches_tag<Select::Count>(s.select.clauses[0].column.value));
+        REQUIRE(s.where.has_value());
+    }
+}
+
+TEST_CASE("Conformance: SELECT function calls in clause", "[cql.conformance.parser]") {
+    SECTION("writetime() in SELECT") {
+        auto r = parse("SELECT writetime(v) FROM ks.t WHERE k = 1;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.select.clauses.length == 1);
+        REQUIRE(type_matches_tag<Select::Function>(s.select.clauses[0].column.value));
+        auto& fn = get<Select::Function>(s.select.clauses[0].column.value);
+        REQUIRE(fn.function_name == "writetime");
+        REQUIRE(fn.arguments.length == 1);
+    }
+    SECTION("ttl() in SELECT") {
+        auto r = parse("SELECT ttl(c) FROM ks.t;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(type_matches_tag<Select::Function>(s.select.clauses[0].column.value));
+        auto& fn = get<Select::Function>(s.select.clauses[0].column.value);
+        REQUIRE(fn.function_name == "ttl");
+    }
+    SECTION("multiple function calls alongside column names") {
+        auto r = parse("SELECT k, c, writetime(c), ttl(c) FROM ks.t;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.select.clauses.length == 4);
+    }
+    SECTION("column alias with AS") {
+        auto r = parse("SELECT v AS value FROM ks.t;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.select.clauses.length == 1);
+        REQUIRE(s.select.clauses[0].as.has_value());
+        REQUIRE(*s.select.clauses[0].as == "value");
+    }
+    SECTION("function call with alias") {
+        auto r = parse("SELECT COUNT(*) AS cnt FROM ks.t;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.select.clauses[0].as.has_value());
+        REQUIRE(*s.select.clauses[0].as == "cnt");
+    }
+    SECTION("type conversion function toTimestamp()") {
+        auto r = parse("SELECT k, toTimestamp(now()) FROM ks.t;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.select.clauses.length == 2);
+    }
+}
+
+TEST_CASE("Conformance: SELECT WHERE operators", "[cql.conformance.parser]") {
+    SECTION("IN clause on partition key") {
+        auto r = parse("SELECT * FROM ks.t WHERE k IN (1, 2, 3);");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.where.has_value());
+        REQUIRE(s.where->relations.length == 1);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[0].value);
+        REQUIRE(rel.operator_ == Operator::in);
+        REQUIRE(rel.column.identifier == "k");
+    }
+    SECTION("IN clause on clustering key") {
+        auto r = parse("SELECT * FROM ks.t WHERE pk = 0 AND ck IN (1, 2, 3);");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.where->relations.length == 2);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[1].value);
+        REQUIRE(rel.operator_ == Operator::in);
+    }
+    SECTION("range >= on clustering key") {
+        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c >= 5;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.where->relations.length == 2);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[1].value);
+        REQUIRE(rel.operator_ == Operator::ge);
+    }
+    SECTION("range < on clustering key") {
+        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c < 10;");
+        REQUIRE(r.has_value());
+        auto& s   = get<Select>(r->value);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[1].value);
+        REQUIRE(rel.operator_ == Operator::lt);
+    }
+    SECTION("range > on clustering key") {
+        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c > 0;");
+        REQUIRE(r.has_value());
+        auto& s   = get<Select>(r->value);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[1].value);
+        REQUIRE(rel.operator_ == Operator::gt);
+    }
+    SECTION("range <= on clustering key") {
+        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c <= 10;");
+        REQUIRE(r.has_value());
+        auto& s   = get<Select>(r->value);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[1].value);
+        REQUIRE(rel.operator_ == Operator::le);
+    }
+    SECTION("CONTAINS on collection column") {
+        auto r = parse("SELECT * FROM ks.t WHERE categories CONTAINS 'foo' ALLOW FILTERING;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.where.has_value());
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[0].value);
+        REQUIRE(rel.operator_ == Operator::contains);
+        REQUIRE(rel.column.identifier == "categories");
+    }
+    SECTION("CONTAINS KEY on map column") {
+        auto r = parse("SELECT * FROM ks.t WHERE m CONTAINS KEY 'k1' ALLOW FILTERING;");
+        REQUIRE(r.has_value());
+        auto& s   = get<Select>(r->value);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[0].value);
+        REQUIRE(rel.operator_ == Operator::contains_key);
+    }
+    SECTION("token() relation") {
+        auto r = parse("SELECT k FROM ks.t WHERE token(k) >= ?;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.where.has_value());
+        REQUIRE(s.where->relations.length == 1);
+        REQUIRE(type_matches_tag<WhereClause::TokenRelation>(s.where->relations[0].value));
+        auto& tok = get<WhereClause::TokenRelation>(s.where->relations[0].value);
+        REQUIRE(tok.columns.length == 1);
+        REQUIRE(tok.columns[0].identifier == "k");
+        REQUIRE(tok.operator_ == Operator::ge);
+    }
+    SECTION("multi-column tuple IN") {
+        auto r = parse("SELECT * FROM ks.t WHERE (c1, c2) IN ((1, 1), (2, 2));");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(s.where.has_value());
+        REQUIRE(s.where->relations.length == 1);
+        REQUIRE(type_matches_tag<WhereClause::TupleExpressionRelation>(s.where->relations[0].value));
+        auto& tup = get<WhereClause::TupleExpressionRelation>(s.where->relations[0].value);
+        REQUIRE(tup.columns.length == 2);
+        REQUIRE(tup.operator_ == Operator::in);
+        REQUIRE(tup.values.length == 2);
+    }
+}
+
+TEST_CASE("Conformance: SELECT PER PARTITION LIMIT", "[cql.conformance.parser]") {
+    SECTION("PER PARTITION LIMIT literal") {
+        auto r = parse("SELECT * FROM ks.t PER PARTITION LIMIT 1;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(get<S64>(s.per_partition_limit.value) == 1);
+    }
+    SECTION("PER PARTITION LIMIT bind marker") {
+        auto r = parse("SELECT * FROM ks.t PER PARTITION LIMIT ?;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(type_matches_tag<BindMarker>(s.per_partition_limit.value));
+    }
+    SECTION("PER PARTITION LIMIT combined with WHERE and LIMIT") {
+        auto r = parse("SELECT * FROM ks.t WHERE k = 1 PER PARTITION LIMIT 5 LIMIT 50;");
+        REQUIRE(r.has_value());
+        auto& s = get<Select>(r->value);
+        REQUIRE(get<S64>(s.per_partition_limit.value) == 5);
+        REQUIRE(get<S64>(s.limit.value) == 50);
+    }
+}
+
+TEST_CASE("Conformance: UPDATE counter columns", "[cql.conformance.parser]") {
+    SECTION("increment counter") {
+        auto r = parse("UPDATE ks.t SET c = c + 1 WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(s.assignments.length == 1);
+        auto& assign = s.assignments[0];
+        REQUIRE(assign.target.column.identifier == "c");
+        REQUIRE(!assign.target.access.has_value());
+        REQUIRE(type_matches_tag<TOIArithmeticOperation>(assign.value.value));
+        auto& arith = get<TOIArithmeticOperation>(assign.value.value);
+        auto& bin   = get<TOIBinaryArithmetic>(arith.value);
+        REQUIRE(bin.op == ArithmeticOperator::plus);
+        REQUIRE(get<AutoString8>(bin.lhs.value) == "c");
+        REQUIRE(get<S64>(get<Constant>(bin.rhs.value).value) == 1);
+    }
+    SECTION("decrement counter") {
+        auto r = parse("UPDATE ks.t SET c = c - 1 WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s   = get<Update>(r->value);
+        auto& bin = get<TOIBinaryArithmetic>(get<TOIArithmeticOperation>(s.assignments[0].value.value).value);
+        REQUIRE(bin.op == ArithmeticOperator::minus);
+    }
+    SECTION("counter with bind marker operand") {
+        auto r = parse("UPDATE ks.t SET a = a - ? WHERE k = 1;");
+        REQUIRE(r.has_value());
+        auto& s   = get<Update>(r->value);
+        auto& bin = get<TOIBinaryArithmetic>(get<TOIArithmeticOperation>(s.assignments[0].value.value).value);
+        REQUIRE(bin.op == ArithmeticOperator::minus);
+        REQUIRE(type_matches_tag<BindMarker>(bin.rhs.value));
+    }
+}
+
+TEST_CASE("Conformance: UPDATE collection operations", "[cql.conformance.parser]") {
+    SECTION("list append (col = col + [v])") {
+        auto r = parse("UPDATE ks.t SET l = l + ['v'] WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(type_matches_tag<TOIArithmeticOperation>(s.assignments[0].value.value));
+        auto& bin = get<TOIBinaryArithmetic>(get<TOIArithmeticOperation>(s.assignments[0].value.value).value);
+        REQUIRE(bin.op == ArithmeticOperator::plus);
+    }
+    SECTION("list prepend ([v] + col)") {
+        auto r = parse("UPDATE ks.t SET l = ['v'] + l WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(type_matches_tag<TOIArithmeticOperation>(s.assignments[0].value.value));
+    }
+    SECTION("list remove (col = col - [v])") {
+        auto r = parse("UPDATE ks.t SET l = l - ['v'] WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s   = get<Update>(r->value);
+        auto& bin = get<TOIBinaryArithmetic>(get<TOIArithmeticOperation>(s.assignments[0].value.value).value);
+        REQUIRE(bin.op == ArithmeticOperator::minus);
+    }
+    SECTION("set add (col = col + {v})") {
+        auto r = parse("UPDATE ks.t SET s = s + {'v'} WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(type_matches_tag<TOIArithmeticOperation>(s.assignments[0].value.value));
+    }
+    SECTION("set remove (col = col - {v})") {
+        auto r = parse("UPDATE ks.t SET tags = tags - {'bar'} WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(type_matches_tag<TOIArithmeticOperation>(s.assignments[0].value.value));
+    }
+    SECTION("map add (col = col + {k: v})") {
+        auto r = parse("UPDATE ks.t SET m = m + {'foobar': 4} WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(type_matches_tag<TOIArithmeticOperation>(s.assignments[0].value.value));
+    }
+    SECTION("map subscript assignment") {
+        auto r = parse("UPDATE ks.t SET m['key'] = 3 WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(s.assignments.length == 1);
+        REQUIRE(s.assignments[0].target.access.has_value());
+        REQUIRE(type_matches_tag<SimpleSelection::Subscript>(*s.assignments[0].target.access));
+    }
+    SECTION("list subscript assignment by index") {
+        auto r = parse("UPDATE ks.t SET l[0] = 'v' WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(s.assignments[0].target.access.has_value());
+        REQUIRE(type_matches_tag<SimpleSelection::Subscript>(*s.assignments[0].target.access));
+    }
+    SECTION("full collection replacement") {
+        auto r = parse("UPDATE ks.t SET m = {'k1': 1, 'k2': 2} WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(type_matches_tag<MapLiteral>(s.assignments[0].value.value));
+    }
+    SECTION("multiple assignments in single UPDATE") {
+        auto r = parse("UPDATE ks.t SET m['v3'] = 3, m['v4'] = 4 WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(s.assignments.length == 2);
+    }
+}
+
+TEST_CASE("Conformance: UPDATE with IN and USING", "[cql.conformance.parser]") {
+    SECTION("IN on partition key") {
+        auto r = parse("UPDATE ks.t SET v = 9 WHERE k IN (0, 1);");
+        REQUIRE(r.has_value());
+        auto& s   = get<Update>(r->value);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where.relations[0].value);
+        REQUIRE(rel.operator_ == Operator::in);
+    }
+    SECTION("IN on clustering key") {
+        auto r = parse("UPDATE ks.t SET v = 10 WHERE pk = 0 AND ck IN (1, 0);");
+        REQUIRE(r.has_value());
+        auto& s   = get<Update>(r->value);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where.relations[1].value);
+        REQUIRE(rel.operator_ == Operator::in);
+    }
+    SECTION("tuple IN on composite clustering key") {
+        auto r = parse("UPDATE ks.t SET v = 20 WHERE pk = 0 AND (c1, c2) IN ((0, 2), (1, 2));");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(s.where.relations.length == 2);
+        REQUIRE(type_matches_tag<WhereClause::TupleExpressionRelation>(s.where.relations[1].value));
+        auto& tup = get<WhereClause::TupleExpressionRelation>(s.where.relations[1].value);
+        REQUIRE(tup.operator_ == Operator::in);
+        REQUIRE(tup.columns.length == 2);
+    }
+    SECTION("USING TIMESTAMP on UPDATE") {
+        auto r = parse("UPDATE ks.t USING TIMESTAMP 10 SET v = 1 WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(s.using_parameters.length == 1);
+        REQUIRE(s.using_parameters[0].kind == UpdateParameter::Kind::TIMESTAMP);
+    }
+    SECTION("USING TTL on UPDATE") {
+        auto r = parse("UPDATE ks.t USING TTL 5 SET v = 1 WHERE k = 1 AND c = 1;");
+        REQUIRE(r.has_value());
+        auto& s = get<Update>(r->value);
+        REQUIRE(s.using_parameters.length == 1);
+        REQUIRE(s.using_parameters[0].kind == UpdateParameter::Kind::TTL);
+    }
+}
+
+TEST_CASE("Conformance: DELETE range and subscript", "[cql.conformance.parser]") {
+    SECTION("DELETE with clustering key range >=") {
+        auto r = parse("DELETE FROM ks.t WHERE k = 0 AND c >= 1;");
+        REQUIRE(r.has_value());
+        auto& s   = get<Delete>(r->value);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where.relations[1].value);
+        REQUIRE(rel.operator_ == Operator::ge);
+    }
+    SECTION("DELETE with IN on partition key") {
+        auto r = parse("DELETE FROM ks.t WHERE k IN (0, 1);");
+        REQUIRE(r.has_value());
+        auto& s   = get<Delete>(r->value);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where.relations[0].value);
+        REQUIRE(rel.operator_ == Operator::in);
+    }
+    SECTION("DELETE with IN on clustering key") {
+        auto r = parse("DELETE FROM ks.t WHERE pk = 0 AND ck IN (4, 5);");
+        REQUIRE(r.has_value());
+        auto& s   = get<Delete>(r->value);
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where.relations[1].value);
+        REQUIRE(rel.operator_ == Operator::in);
+    }
+    SECTION("DELETE map element by key subscript") {
+        auto r = parse("DELETE m['foo'] FROM ks.t WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Delete>(r->value);
+        REQUIRE(s.selections.length == 1);
+        REQUIRE(s.selections[0].column.identifier == "m");
+        REQUIRE(s.selections[0].access.has_value());
+        REQUIRE(type_matches_tag<SimpleSelection::Subscript>(*s.selections[0].access));
+    }
+    SECTION("DELETE list element by index subscript") {
+        auto r = parse("DELETE l[0] FROM ks.t WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Delete>(r->value);
+        REQUIRE(s.selections.length == 1);
+        REQUIRE(s.selections[0].access.has_value());
+        REQUIRE(type_matches_tag<SimpleSelection::Subscript>(*s.selections[0].access));
+    }
+    SECTION("DELETE entire collection column") {
+        auto r = parse("DELETE m FROM ks.t WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Delete>(r->value);
+        REQUIRE(s.selections.length == 1);
+        REQUIRE(s.selections[0].column.identifier == "m");
+        REQUIRE(!s.selections[0].access.has_value());
+    }
+    SECTION("DELETE USING TIMESTAMP") {
+        auto r = parse("DELETE FROM ks.t USING TIMESTAMP 1000 WHERE k = 0;");
+        REQUIRE(r.has_value());
+        auto& s = get<Delete>(r->value);
+        REQUIRE(s.using_parameters.length == 1);
+        REQUIRE(s.using_parameters[0].kind == UpdateParameter::Kind::TIMESTAMP);
+    }
+}
+
+TEST_CASE("Conformance: BATCH statements", "[cql.conformance.parser]") {
+    SECTION("LOGGED BATCH (default kind)") {
+        auto r = parse("BEGIN BATCH INSERT INTO ks.t (k, v) VALUES (1, 1); UPDATE ks.t SET v = 2 WHERE k = 2; APPLY BATCH;");
+        REQUIRE(r.has_value());
+        auto& s = get<Batch>(r->value);
+        REQUIRE(s.kind == Batch::Kind::LOGGED);
+        REQUIRE(s.statements.length == 2);
+        REQUIRE(type_matches_tag<Insert>(s.statements[0].value));
+        REQUIRE(type_matches_tag<Update>(s.statements[1].value));
+    }
+    SECTION("UNLOGGED BATCH") {
+        auto r = parse("BEGIN UNLOGGED BATCH INSERT INTO ks.t (k, v) VALUES (1, 1); INSERT INTO ks.t (k, v) VALUES (2, 2); APPLY BATCH;");
+        REQUIRE(r.has_value());
+        auto& s = get<Batch>(r->value);
+        REQUIRE(s.kind == Batch::Kind::UNLOGGED);
+        REQUIRE(s.statements.length == 2);
+    }
+    SECTION("COUNTER BATCH") {
+        auto r = parse("BEGIN COUNTER BATCH UPDATE ks.t SET c = c + 1 WHERE k = 0; APPLY BATCH;");
+        REQUIRE(r.has_value());
+        auto& s = get<Batch>(r->value);
+        REQUIRE(s.kind == Batch::Kind::COUNTER);
+        REQUIRE(s.statements.length == 1);
+        REQUIRE(type_matches_tag<Update>(s.statements[0].value));
+    }
+    SECTION("BATCH USING TIMESTAMP") {
+        auto r = parse("BEGIN BATCH USING TIMESTAMP 1000 INSERT INTO ks.t (k, v) VALUES (1, 1); APPLY BATCH;");
+        REQUIRE(r.has_value());
+        auto& s = get<Batch>(r->value);
+        REQUIRE(s.using_parameters.length == 1);
+        REQUIRE(s.using_parameters[0].kind == UpdateParameter::Kind::TIMESTAMP);
+        REQUIRE(s.statements.length == 1);
+    }
+}
+
+TEST_CASE("Conformance: INSERT JSON clause", "[cql.conformance.parser]") {
+    SECTION("INSERT JSON basic") {
+        auto r = parse("INSERT INTO ks.t JSON '{\"k\": 1, \"v\": \"text\"}';");
+        REQUIRE(r.has_value());
+        auto& s = get<Insert>(r->value);
+        REQUIRE(type_matches_tag<Insert::JsonClause>(s.insert_clause));
+    }
+    SECTION("INSERT JSON DEFAULT NULL") {
+        auto r = parse("INSERT INTO ks.t JSON '{\"k\": 1}' DEFAULT NULL;");
+        REQUIRE(r.has_value());
+        auto& s  = get<Insert>(r->value);
+        auto& jc = get<Insert::JsonClause>(s.insert_clause);
+        REQUIRE(jc.default_ == Insert::JsonClause::Default::NUL);
+    }
+    SECTION("INSERT JSON DEFAULT UNSET") {
+        auto r = parse("INSERT INTO ks.t JSON '{\"k\": 1}' DEFAULT UNSET;");
+        REQUIRE(r.has_value());
+        auto& s  = get<Insert>(r->value);
+        auto& jc = get<Insert::JsonClause>(s.insert_clause);
+        REQUIRE(jc.default_ == Insert::JsonClause::Default::UNSET);
+    }
+}
+
+TEST_CASE("Conformance: INSERT USING TIMESTAMP negative value", "[cql.conformance.parser]") {
+    SECTION("negative TIMESTAMP literal") {
+        auto r = parse("INSERT INTO ks.t (k, v) VALUES (1, 1) USING TIMESTAMP -42;");
+        REQUIRE(r.has_value());
+        auto& s = get<Insert>(r->value);
+        REQUIRE(s.using_parameters.length == 1);
+        REQUIRE(s.using_parameters[0].kind == UpdateParameter::Kind::TIMESTAMP);
+    }
+}
+
+TEST_CASE("Conformance: CREATE INDEX column specifiers", "[cql.conformance.parser]") {
+    SECTION("values() specifier on map column") {
+        auto r = parse("CREATE INDEX ON ks.tbl(values(categories));");
+        REQUIRE(r.has_value());
+        REQUIRE(type_matches_tag<CreateIndex>(r->value));
+    }
+    SECTION("entries() specifier on map column") {
+        auto r = parse("CREATE INDEX ON ks.tbl(entries(categories));");
+        REQUIRE(r.has_value());
+        REQUIRE(type_matches_tag<CreateIndex>(r->value));
+    }
+    SECTION("full() specifier on frozen collection") {
+        auto r = parse("CREATE INDEX ON ks.tbl(full(categories));");
+        REQUIRE(r.has_value());
+        REQUIRE(type_matches_tag<CreateIndex>(r->value));
+    }
+}
+
+TEST_CASE("Conformance: INSERT UDT literal", "[cql.conformance.parser]") {
+    SECTION("UDT literal in named INSERT VALUES") {
+        auto r = parse("INSERT INTO ks.t (k, v) VALUES (1, {f1: 42, f2: 'text'});");
+        REQUIRE(r.has_value());
+        auto& s  = get<Insert>(r->value);
+        auto& nv = get<Insert::NamesValues>(s.insert_clause);
+        REQUIRE(type_matches_tag<UdtLiteral>(nv.values[1].value));
+        auto& udt = get<UdtLiteral>(nv.values[1].value);
+        REQUIRE(udt.identifier_values.length == 2);
+        REQUIRE(udt.identifier_values[0].first == "f1");
+        REQUIRE(udt.identifier_values[1].first == "f2");
+    }
+}
+
+TEST_CASE("Conformance: INSERT tuple literal", "[cql.conformance.parser]") {
+    SECTION("tuple literal in named INSERT VALUES") {
+        auto r = parse("INSERT INTO ks.t (k, t) VALUES (1, (42, 'text'));");
+        REQUIRE(r.has_value());
+        auto& s  = get<Insert>(r->value);
+        auto& nv = get<Insert::NamesValues>(s.insert_clause);
+        REQUIRE(type_matches_tag<TupleLiteral>(nv.values[1].value));
+        auto& tup = get<TupleLiteral>(nv.values[1].value);
+        REQUIRE(tup.elements.length == 2);
+    }
+    SECTION("nested tuple literal") {
+        auto r = parse("INSERT INTO ks.t (k, t) VALUES (1, (1, 'a', true));");
+        REQUIRE(r.has_value());
+        auto& s   = get<Insert>(r->value);
+        auto& nv  = get<Insert::NamesValues>(s.insert_clause);
+        auto& tup = get<TupleLiteral>(nv.values[1].value);
+        REQUIRE(tup.elements.length == 3);
+    }
+}
+
+TEST_CASE("Conformance: UUID literals", "[cql.conformance.parser]") {
+    SECTION("UUID in INSERT VALUES (digit-leading)") {
+        auto r = parse("INSERT INTO ks.t (k, u) VALUES (1, 4d481800-4c5f-11e1-82e0-3f484de45426);");
+        REQUIRE(r.has_value());
+        auto& nv   = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
+        auto& uuid = get<UUID>(get<Constant>(nv.values[1].value).value);
+        REQUIRE(uuid.value[0] == 0x4d);
+        REQUIRE(uuid.value[1] == 0x48);
+        REQUIRE(uuid.value[15] == 0x26);
+    }
+    SECTION("UUID in INSERT VALUES (letter-leading)") {
+        auto r = parse("INSERT INTO ks.t (k, u) VALUES (1, faceb00c-cafe-babe-dead-beefdeadbeef);");
+        REQUIRE(r.has_value());
+        auto& nv = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
+        REQUIRE(type_matches_tag<UUID>(get<Constant>(nv.values[1].value).value));
+    }
+    SECTION("UUID in WHERE clause") {
+        auto r = parse("SELECT * FROM ks.t WHERE u = 4d481800-4c5f-11e1-82e0-3f484de45426;");
+        REQUIRE(r.has_value());
+        auto& sel = get<Select>(r->value);
+        REQUIRE(sel.where.has_value());
+        REQUIRE(sel.where->relations.length == 1);
+        REQUIRE(type_matches_tag<UUID>(get<Constant>(get<WhereClause::ColumnExpressionRelation>(sel.where->relations[0].value).value.value).value));
+    }
+}
+
+TEST_CASE("Conformance: Duration literals", "[cql.conformance.parser]") {
+    SECTION("simple duration (seconds)") {
+        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1s);");
+        REQUIRE(r.has_value());
+        auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
+        auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
+        REQUIRE(dur.months == 0);
+        REQUIRE(dur.days == 0);
+        REQUIRE(dur.nanoseconds == 1'000'000'000LL);
+    }
+    SECTION("compound duration (hours and minutes)") {
+        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 2h30m);");
+        REQUIRE(r.has_value());
+        auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
+        auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
+        REQUIRE(dur.nanoseconds == 2 * 3'600'000'000'000LL + 30 * 60'000'000'000LL);
+    }
+    SECTION("compound duration (years, months, days)") {
+        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1y2mo3d);");
+        REQUIRE(r.has_value());
+        auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
+        auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
+        REQUIRE(dur.months == 12 + 2);
+        REQUIRE(dur.days == 3);
+        REQUIRE(dur.nanoseconds == 0);
+    }
+    SECTION("duration in collection literal") {
+        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, [1s, 2h30m]);");
+        REQUIRE(r.has_value());
+        auto& nv = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
+        REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[1].value));
+        auto& list = get<ListOrVectorLiteral>(nv.values[1].value);
+        REQUIRE(list.elements.length == 2);
+        REQUIRE(type_matches_tag<Duration>(get<Constant>(list.elements[0].value).value));
+        REQUIRE(type_matches_tag<Duration>(get<Constant>(list.elements[1].value).value));
+    }
+    SECTION("milliseconds and microseconds and nanoseconds") {
+        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1ms);");
+        REQUIRE(r.has_value());
+        auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
+        auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
+        REQUIRE(dur.nanoseconds == 1'000'000LL);
+    }
+}
+
+TEST_CASE("Conformance: Empty IN clause", "[cql.conformance.parser]") {
+    SECTION("SELECT with empty IN") {
+        auto r = parse("SELECT * FROM ks.t WHERE k IN ();");
+        REQUIRE(r.has_value());
+        auto& sel = get<Select>(r->value);
+        REQUIRE(sel.where.has_value());
+        auto& rel = get<WhereClause::ColumnExpressionRelation>(sel.where->relations[0].value);
+        REQUIRE(type_matches_tag<TupleLiteral>(rel.value.value));
+        auto& tup = get<TupleLiteral>(rel.value.value);
+        REQUIRE(tup.elements.length == 0);
+    }
+    SECTION("DELETE with empty IN") {
+        auto r = parse("DELETE FROM ks.t WHERE k IN ();");
+        REQUIRE(r.has_value());
+        REQUIRE(type_matches_tag<Delete>(r->value));
+    }
+    SECTION("UPDATE with empty IN") {
+        auto r = parse("UPDATE ks.t SET v = 1 WHERE k IN ();");
+        REQUIRE(r.has_value());
+        REQUIRE(type_matches_tag<Update>(r->value));
+    }
+}
+
+TEST_CASE("Conformance: Empty BATCH body", "[cql.conformance.parser]") {
+    SECTION("empty BATCH (no statements)") {
+        auto r = parse("BEGIN BATCH APPLY BATCH;");
+        REQUIRE(r.has_value());
+        auto& batch = get<Batch>(r->value);
+        REQUIRE(batch.statements.length == 0);
+    }
+    SECTION("empty UNLOGGED BATCH") {
+        auto r = parse("BEGIN UNLOGGED BATCH APPLY BATCH;");
+        REQUIRE(r.has_value());
+        auto& batch = get<Batch>(r->value);
+        REQUIRE(batch.kind == Batch::Kind::UNLOGGED);
+        REQUIRE(batch.statements.length == 0);
+    }
+}

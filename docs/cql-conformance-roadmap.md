@@ -85,9 +85,39 @@ Phase 2 delta.
 
 ---
 
+## Phase 2b — Parser Completion ✓ COMPLETE
+
+**Delivered (2026-06-14):** All remaining "Failed to parse CQL" errors eliminated (0 parse failures, down
+from ~70 before Phase 1 and ~15 after Phase 2). Score: 25/313 (+1 from testRandomDeletions).
+
+**Session 1 fixes (8 parser bugs):** BATCH termination whitespace (`APPLY BATCH` preceded by spaces);
+`function_selector` far-ahead lookahead → local `peek`; `COUNT(1)` alongside `COUNT(*)`; `(col,col) IN/=`
+tuple WHERE relations; LIMIT and PER PARTITION LIMIT bind markers; PER PARTITION LIMIT stored in wrong
+field (`s.limit` → `s.per_partition_limit`); UDT literal `{ident: val}` parsing with correct
+letter-vs-digit first-char disambiguation.
+
+**Session 2 fixes (4 remaining gaps):**
+- **UUID literals** — `uuid_literal` production using `n_digits<N, dsl::hex>` with five captures
+  (8-4-4-4-12 groups), peek condition verifies 8 hex chars + `-` before committing. `UUID` was already
+  in `ConstantTypes`; value callback decodes hex nibbles to `Array<U8, 16>`.
+- **Duration literals** — `duration_literal` with sub-productions per unit (`mo`/`ms`/`us`/`ns` before
+  single-char `m`/`s`), list-based component accumulation via `as_dyn_arr<Duration>`, fold to `Duration`.
+  `Duration` added to `ConstantTypes`; `write_typed_basic_as_column_value` gains Duration case.
+- **Empty IN clause** — `tuple_or_paren` wraps `term_args_list` in `dsl::opt(peek_not(')') >> ...)`;
+  `lexy::nullopt` branch yields empty `TupleLiteral`.
+- **Empty BATCH body** — `batch_modifications_list` split into `batch_modifications_inner` (sink-based
+  list) and `batch_modifications_list` (`dsl::opt(peek_not(APPLY) >> inner)` with callback), allowing
+  `BEGIN BATCH APPLY BATCH;`.
+
+**Baseline post-Phase-2b (2026-06-14):** 25/313 passing, 41 xfailed, 2 xpassed, 13 skipped.
+All remaining failures are engine asserts (1319 fires/run); zero parse failures. Fire counts are higher
+than post-Phase-2 because former silent parse failures now reach the engine.
+
+---
+
 ## Phase 3 — `apply_mutation` + Clustering-Table DELETE/UPDATE + Static Columns
 
-**Impact: ~37 unique tests directly (39+15=54 assert fires after Phase 2); also unblocks ALLOW
+**Impact: ~45 unique tests directly (389+132=521 assert fires post-Phase-2b); also unblocks ALLOW
 FILTERING tests blocked by clustering-table mutations (~20 additional).**
 
 This is the largest single unlock remaining. Note: Phase 2's CREATE TABLE fixes caused some tests

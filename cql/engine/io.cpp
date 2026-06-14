@@ -153,6 +153,11 @@ namespace {
                         "blob value written to incompatible column dtype");
             w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
             w(&src.value[0], src.value.length);
+        } else if constexpr (SameAs<T, Duration>) {
+            assert_true(dtype == type::Basic::duration, "Duration value written to non-duration column");
+            w(reinterpret_cast<const U8*>(&src.months), sizeof(src.months));
+            w(reinterpret_cast<const U8*>(&src.days), sizeof(src.days));
+            w(reinterpret_cast<const U8*>(&src.nanoseconds), sizeof(src.nanoseconds));
         } else if constexpr (SameAs<T, Null>) {
             assert_not_implemented("writing null column values is not implemented");
         } else {
