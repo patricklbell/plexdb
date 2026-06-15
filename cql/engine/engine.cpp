@@ -503,7 +503,9 @@ namespace cql::engine {
     static int compare_ck_bytes(TArrayView<const U8, U16> a, const DynamicArray<U8>& b) {
         U64 min_len = min(U64(a.length), b.length);
         int cmp     = min_len > 0 ? memcmp(a.ptr, b.ptr, min_len) : 0;
-        if (cmp != 0) return cmp;
+        if (cmp != 0) {
+            return cmp;
+        }
         return a.length < b.length ? -1 : (a.length > b.length ? 1 : 0);
     }
 
@@ -544,14 +546,14 @@ namespace cql::engine {
                     };
                     DynamicArray<CkEntry> to_delete;
 
-                    // Returns true if key starts with the bytes of a partial bound prefix.
                     auto key_has_prefix = [](TArrayView<const U8, U16> key, const DynamicArray<U8>& bound) -> bool {
-                        if (key.length < static_cast<U16>(bound.length)) return false;
+                        if (key.length < static_cast<U16>(bound.length)) {
+                            return false;
+                        }
                         return bound.length == 0 || memcmp(key.ptr, bound.ptr, bound.length) == 0;
                     };
 
                     auto collect_range = [&](auto&& it, const auto& end_it) -> coroutine::Task<void> {
-                        // For a partial exclusive lower bound (c1 > X), skip past all keys in the c1==X group.
                         if (locator.ck_begin_is_partial && !locator.ck_begin_inclusive) {
                             while (it != end_it && key_has_prefix(it.key(), locator.ck_begin)) {
                                 co_await it.advance();
@@ -565,10 +567,14 @@ namespace cql::engine {
                                     // bytes are strictly greater than the bound prefix.
                                     U16 B   = static_cast<U16>(locator.ck_end.length);
                                     int cmp = memcmp(key_view.ptr, locator.ck_end.ptr, min(key_view.length, B));
-                                    if (cmp > 0) break;
+                                    if (cmp > 0) {
+                                        break;
+                                    }
                                 } else {
                                     int cmp = compare_ck_bytes(key_view, locator.ck_end);
-                                    if (cmp > 0 || (cmp == 0 && !locator.ck_end_inclusive)) break;
+                                    if (cmp > 0 || (cmp == 0 && !locator.ck_end_inclusive)) {
+                                        break;
+                                    }
                                 }
                             }
                             CkEntry e;
@@ -669,7 +675,7 @@ namespace cql::engine {
                     for (U64 i = 0; i < tbl->partition_key_col_indices.length; i++) {
                         U64 ci = tbl->partition_key_col_indices[i];
                         if (ci < col_values.length && !col_present[ci]) {
-                            col_values[ci] = move(pk_vals[i]);
+                            col_values[ci]  = move(pk_vals[i]);
                             col_present[ci] = true;
                         }
                     }
@@ -727,7 +733,7 @@ namespace cql::engine {
                     for (U64 i = 0; i < tbl->partition_key_col_indices.length; i++) {
                         U64 ci = tbl->partition_key_col_indices[i];
                         if (ci < col_values.length && !col_present[ci]) {
-                            col_values[ci] = move(pk_vals[i]);
+                            col_values[ci]  = move(pk_vals[i]);
                             col_present[ci] = true;
                         }
                     }

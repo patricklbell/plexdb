@@ -541,6 +541,15 @@ namespace cql::native {
         }
     }
 
+    static bool col_in_list(const DynamicArray<U64>& list, U64 ci) {
+        for (U64 k : list) {
+            if (k == ci) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     coroutine::Task<> append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl) {
         append_be_s32(f, result_codes::ROWS);
 
@@ -551,22 +560,31 @@ namespace cql::native {
                 push_back(effective_cols, result.select_col_indices[i]);
             }
         } else {
-            for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+            for (U64 ci : tbl->partition_key_col_indices) {
                 if (!tbl->cols[ci].tombstone) {
+                    push_back(effective_cols, ci);
+                }
+            }
+            for (U64 ci : tbl->clustering_key_col_indices) {
+                if (!tbl->cols[ci].tombstone) {
+                    push_back(effective_cols, ci);
+                }
+            }
+            for (U64 ci : tbl->static_col_indices) {
+                if (!tbl->cols[ci].tombstone) {
+                    push_back(effective_cols, ci);
+                }
+            }
+            for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                if (!tbl->cols[ci].tombstone &&
+                    !col_in_list(tbl->partition_key_col_indices, ci) &&
+                    !col_in_list(tbl->clustering_key_col_indices, ci) &&
+                    !col_in_list(tbl->static_col_indices, ci)) {
                     push_back(effective_cols, ci);
                 }
             }
         }
         U64 col_count = effective_cols.length;
-
-        auto is_selected = [&](U64 ci) -> bool {
-            for (U64 i = 0; i < effective_cols.length; i++) {
-                if (effective_cols[i] == ci) {
-                    return true;
-                }
-            }
-            return false;
-        };
 
         append_be_s32(f, 0x0001); // Global_tables_spec flag
         append_be_s32(f, S32(col_count));
@@ -593,44 +611,37 @@ namespace cql::native {
             while (row_it != row_end && U64(row_count) < row_limit) {
                 ColumnRange col_range = co_await row_it.deref();
 
-                if (has_filter) {
-                    // Materialize all columns to evaluate filter predicates.
-                    DynamicArray<ColumnValue> row_values;
-                    while (col_range.start != col_range.stop && row_values.length < tbl->cols.length) {
-                        push_back(row_values, co_await col_range.start.deref());
-                        co_await col_range.start.advance();
-                    }
+                // Materialize all columns to support arbitrary output ordering and filter evaluation.
+                DynamicArray<ColumnValue> row_values;
+                while (col_range.start != col_range.stop && row_values.length < tbl->cols.length) {
+                    push_back(row_values, co_await col_range.start.deref());
+                    co_await col_range.start.advance();
+                }
+                while (row_values.length < tbl->cols.length) {
+                    push_back(row_values, ColumnValue{Null{}});
+                }
 
+                bool pass = true;
+                if (has_filter) {
                     EvalContext row_ctx = result.filter_ctx;
                     row_ctx.table       = result.resolved_table;
                     row_ctx.row_values  = row_values.ptr;
+                    pass                = evaluate_where(result.filter_predicates, row_ctx);
+                }
 
-                    if (evaluate_where(result.filter_predicates, row_ctx)) {
-                        for (U64 i = 0; i < col_count; i++) {
-                            U64 ci2 = effective_cols[i];
-                            append_cql_value(f, row_values.ptr[ci2], tbl->cols[ci2].type);
-                        }
-                        row_count++;
-                    }
-                } else {
-                    U64 ci = 0;
-                    while (ci < tbl->cols.length) {
-                        if (col_range.start != col_range.stop) {
-                            if (is_selected(ci)) {
-                                ColumnValue v = co_await col_range.start.deref();
-                                append_cql_value(f, v, tbl->cols[ci].type);
-                            }
-                            co_await col_range.start.advance();
-                        } else if (is_selected(ci)) {
-                            // Row predates this column; emit null.
-                            append_cql_value(f, ColumnValue{Null{}}, tbl->cols[ci].type);
-                        }
-                        ++ci;
+                if (pass) {
+                    for (U64 i = 0; i < col_count; i++) {
+                        U64 ci2 = effective_cols[i];
+                        append_cql_value(f, row_values.ptr[ci2], tbl->cols[ci2].type);
                     }
                     row_count++;
                 }
 
-                co_await row_it.advance();
+                if (result.is_distinct) {
+                    co_await row_it.advance_partition();
+                } else {
+                    co_await row_it.advance();
+                }
             }
         }
 

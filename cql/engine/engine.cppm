@@ -111,6 +111,7 @@ export namespace cql::engine {
         AutoString8     table           = {};
 
         U64                   row_limit_count = MAX_U64;
+        bool                  is_distinct     = false;
         Optional<RowRange>    rows            = {};
         Optional<VirtualRows> virtual_rows    = {};
 

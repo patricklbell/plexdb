@@ -43,8 +43,7 @@ export namespace cql::planner {
         bool pk_has_in = false;
         bool ck_has_in = false;
 
-        // Set when the begin/end bound covers only the first CK column of a multi-column CK.
-        // The bound bytes are composite-encoded; the range delete loop must use prefix comparison.
+        // @note set when bound covers only first CK column of a multi-column key; composite-encoded, requires prefix comparison
         bool ck_begin_is_partial = false;
         bool ck_end_is_partial   = false;
 

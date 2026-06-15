@@ -35,7 +35,8 @@ export namespace cql {
         }
 
         friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table,
-                                      U64 page_idx, U64 static_page_idx);
+                                      U64 page_idx, U64 static_page_idx,
+                                      DynamicArray<ColumnValue> injected_pk);
 
     private:
         const schema::Table* table = nullptr;
@@ -49,6 +50,9 @@ export namespace cql {
         // All mask words loaded upfront in load(); safe to hold across transactions.
         DynamicArray<U64> masks;
         DynamicArray<U64> static_masks;
+
+        // @note non-empty only for static-only rows; parallel to table->partition_key_col_indices.
+        DynamicArray<ColumnValue> injected_pk_values;
 
         // Set by deref() when it reads a non-null value, cleared by advance().
         // advance() skips bytes only when this is false (caller skipped deref).
@@ -69,7 +73,8 @@ export namespace cql {
     };
 
     coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table,
-                           U64 page_idx, U64 static_page_idx = 0);
+                           U64 page_idx, U64 static_page_idx = 0,
+                           DynamicArray<ColumnValue> injected_pk = {});
 
     struct ColumnRange {
         ColumnIterator start;
@@ -109,7 +114,8 @@ export namespace cql {
             , partition_it(move(other.partition_it))
             , clustering_btree(other.clustering_btree)
             , clustering_it(move(other.clustering_it))
-            , clustering_end_it(move(other.clustering_end_it)) {
+            , clustering_end_it(move(other.clustering_end_it))
+            , static_only_row(other.static_only_row) {
             fix_clustering_btree_ptr(other);
         }
 
@@ -121,6 +127,7 @@ export namespace cql {
                 clustering_btree  = other.clustering_btree;
                 clustering_it     = move(other.clustering_it);
                 clustering_end_it = move(other.clustering_end_it);
+                static_only_row   = other.static_only_row;
                 fix_clustering_btree_ptr(other);
             }
             return *this;
@@ -128,6 +135,7 @@ export namespace cql {
 
         coroutine::Task<ColumnRange> deref();
         coroutine::Task<void>        advance();
+        coroutine::Task<void>        advance_partition();
 
         bool operator==(const RowIterator& other) const {
             assert_true(table == other.table || table == nullptr || other.table == nullptr,

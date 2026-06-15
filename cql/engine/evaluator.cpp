@@ -266,7 +266,6 @@ namespace cql {
             return Evaluated{Constant{timeuuid_to_unix_ms(*uuid)}};
         });
 
-        // Type-conversion functions: textAsBlob, blobAsText, intAsBlob, blobAsInt, bigintAsBlob, blobAsBigint
         add("textasblob"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
                 return Evaluated{Constant{Null{}}};

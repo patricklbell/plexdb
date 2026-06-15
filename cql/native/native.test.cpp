@@ -525,6 +525,36 @@ CQL_NATIVE_TEST_CASE("Static columns: overwrite replaces value partition-wide", 
     co_return;
 }
 
+CQL_NATIVE_TEST_CASE("Static columns: static-only partition returns pk and static value", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t ("
+                         "  p text, c text, v text, s text STATIC,"
+                         "  PRIMARY KEY (p, c)"
+                         ");")
+                  .opcode == op::RESULT);
+
+        CHECK(send_query(client, "INSERT INTO ks.t(p, c, v, s) VALUES ('p1', 'k1', 'v1', 'sv1');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t(p, s) VALUES ('p2', 'sv2');").opcode == op::RESULT);
+
+        // Partition with clustering rows includes static value in each row.
+        Frame sel1 = send_query(client, "SELECT * FROM ks.t WHERE p='p1';");
+        CHECK(result_kind(sel1) == result::ROWS);
+        CHECK(body_contains(sel1, "p1"));
+        CHECK(body_contains(sel1, "sv1"));
+
+        // Static-only partition: returns one row with pk='p2', c=null, s='sv2', v=null.
+        Frame sel2 = send_query(client, "SELECT * FROM ks.t WHERE p='p2';");
+        CHECK(result_kind(sel2) == result::ROWS);
+        CHECK(body_contains(sel2, "p2"));
+        CHECK(body_contains(sel2, "sv2"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
 // DDL: static column on a table without clustering columns must be rejected.
 CQL_NATIVE_TEST_CASE("Static columns: rejected on table without clustering key", "[cql.native]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {

@@ -13,6 +13,7 @@ import plexdb.btree.types;
 import plexdb.blob;
 
 import cql.engine.io;
+import cql.engine.key;
 import cql.engine.schema;
 import cql.engine.types;
 import cql.engine.statements;
@@ -24,8 +25,7 @@ namespace cql {
 
     static coroutine::Task<U64> read_blob_header(
         blob::BlobDynamicPaged& b,
-        U64& out_col_count, DynamicArray<U64>& out_masks
-    ) {
+        U64& out_col_count, DynamicArray<U64>& out_masks) {
         co_await blob::get(b, reinterpret_cast<U8*>(&out_col_count),
                            io::COLUMN_COUNT_BYTE_COUNT, 0);
         U64 mask_words = ceil_div(out_col_count, io::MASK_BIT_COUNT);
@@ -38,7 +38,8 @@ namespace cql {
     }
 
     coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table,
-                           U64 page_idx, U64 static_page_idx) {
+                           U64 page_idx, U64 static_page_idx,
+                           DynamicArray<ColumnValue> injected_pk) {
         it.table = table;
         assert_true(it.table->cols.length != 0,
                     "column cannot be empty, it must at least have a PK");
@@ -73,6 +74,7 @@ namespace cql {
             }
         }
 
+        it.injected_pk_values     = move(injected_pk);
         it.current_column_idx     = 0;
         it.current_value_consumed = false;
     }
@@ -87,6 +89,14 @@ namespace cql {
         }
 
         if (this->current_is_null()) {
+            if (this->injected_pk_values.length > 0) {
+                for (U64 ki = 0; ki < this->table->partition_key_col_indices.length; ki++) {
+                    if (this->table->partition_key_col_indices[ki] == this->current_column_idx) {
+                        this->current_value_consumed = true;
+                        co_return this->injected_pk_values[ki];
+                    }
+                }
+            }
             co_return ColumnValue{Null{}};
         }
 
@@ -143,8 +153,14 @@ namespace cql {
         } else {
             row_page = partition_entry.data_page;
         }
-        ColumnIterator col_it;
-        co_await load(col_it, this->pager, this->table, row_page, partition_entry.static_page);
+        ColumnIterator            col_it;
+        DynamicArray<ColumnValue> injected_pk;
+        if (static_only_row) {
+            auto pk_key_bytes = partition_it.key();
+            injected_pk       = key::deserialize_partition(*table, pk_key_bytes);
+        }
+        co_await load(col_it, this->pager, this->table, row_page, partition_entry.static_page,
+                      move(injected_pk));
         co_return ColumnRange{
             .start = move(col_it),
             .stop  = ColumnIterator{},
@@ -169,7 +185,6 @@ namespace cql {
         if (!schema::has_clustering_keys(*table)) {
             co_await this->partition_it.advance();
         } else if (this->static_only_row) {
-            // Consumed a static-only row; move directly to the next partition.
             this->static_only_row = false;
             co_await this->partition_it.advance();
             auto end_it = btree::end<schema::PartitionEntry>(table->btree);
@@ -187,6 +202,23 @@ namespace cql {
                     co_await setup_clustering_for_partition(*this, pager, entry);
                 }
             }
+        }
+        if (own_tx) {
+            co_await tx.commit();
+        }
+    }
+
+    coroutine::Task<void> RowIterator::advance_partition() {
+        bool               own_tx = !this->pager->transaction_active;
+        pager::Transaction tx{this->pager};
+        if (own_tx) {
+            co_await tx.begin();
+        }
+        co_await this->partition_it.advance();
+        auto end_it = btree::end<schema::PartitionEntry>(table->btree);
+        if (partition_it != end_it) {
+            auto entry = *partition_it;
+            co_await setup_clustering_for_partition(*this, pager, entry);
         }
         if (own_tx) {
             co_await tx.commit();
