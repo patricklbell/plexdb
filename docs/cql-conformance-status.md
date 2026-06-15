@@ -1,6 +1,23 @@
 ## CQL conformance gaps
 
-Baseline: 25 / 313 passing, 41 xfailed, 2 xpassed, 13 skipped (scylladb ref: master, 2026-06-14, after parser fixes).
+Baseline: 73 / 313 passing, 40 xfailed, 3 xpassed, 13 skipped (scylladb ref: master, 2026-06-15, after Phase 3).
+
+Phase 3 (2026-06-15): +48 passes (73/313). Delivered: clustering-table DELETE (equality, range,
+partial-CK bounds, empty-value bounds); textAsBlob/blobAsText/intAsBlob/bigintAsBlob builtins;
+empty-blob crash fix in io.cpp; static-only partition SELECT (no clustering rows, static page
+non-null) with PK value injection; SELECT DISTINCT via advance_partition(); SELECT * column
+ordering (PK → CK → static → regular).
+
+Phase 3 gaps (not yet delivered):
+- Static column writes (rewrite_static) — INSERT/UPDATE to static cols in clustering tables.
+- CK prefix equality DELETE on 3-CK tables — `DELETE WHERE k=? AND c1=0` where c1 is the
+  first of three CK cols should range-delete all rows with c1=0; currently treated as full
+  equality (MissingClusteringKey when c2/c3 are absent).
+- Tuple-syntax range DELETE — `WHERE (ck_col) > (?)` sets only filter predicates, not
+  locator bounds; DELETE gets MissingClusteringKey.
+- USING TIMESTAMP on DELETE — causes crash in static-column deletion tests.
+
+Previous baseline (2026-06-14, after parser fixes): 25 / 313 passing, 41 xfailed, 2 xpassed, 13 skipped.
 
 Parser fixes (2026-06-14): +1 pass (testRandomDeletions; 25/313). Assert fire count rose from ~130 to 592 because
 eight parser bugs were fixed, converting ~55 previously-silent parse failures into engine asserts. Fixes:
@@ -23,31 +40,26 @@ Previous baseline (2026-06-13, pre-Phase 1): 23 / 313 passing, 39 xfailed, 1 xpa
 
 ### Unimplemented-CQL aborts
 
-Assert fires per conformance run (including re-fires after server restart). From server log after parser fixes.
-Unique affected tests are roughly half the fire count. Fire count is higher than Phase 2 because parser fixes
-convert former parse-failures into engine asserts (BATCH, tuple relations, PER PARTITION LIMIT).
+Assert fires per conformance run (post-Phase-3 baseline, 2026-06-15). Phase 3 eliminated
+the DELETE-on-clustering-key fires (~172) and SELECT DISTINCT fires (~20).
 
 | Fires | Symptom (assert string) | Site |
 |------:|-------------------------|------|
-| 172 | DELETE on table with clustering key is not implemented | `engine.cpp:999` |
-|  88 | Secondary indexes are not implemented | `engine.cpp:1139` |
-|  60 | UPDATE on table with clustering key is not implemented | `engine.cpp:799` |
-|  56 | ORDER BY on clustering key requires reverse iterator | `planner.cpp:234` |
-|  44 | SELECT clause type (function/cast/term) is not implemented | `planner.cpp:253` |
-|  40 | BATCH is not implemented | `engine.cpp:1151` |
-|  20 | SELECT DISTINCT/JSON is not implemented | `engine.cpp:455` |
-|  20 | counter column expressions (col = col + n) are not implemented | `planner.cpp:293` |
-|  20 | User-defined types are not implemented (CREATE/DROP TYPE) | `engine.cpp:1142,1148` |
-|  12 | subscript/field access in UPDATE SET is not implemented | `planner.cpp:276` |
-|  12 | key serialization for this type is not implemented | `key.cppm:226` |
-|   8 | tuple column type is not implemented | `schema.cpp:45` |
+|  88 | Secondary indexes are not implemented | `engine.cpp` |
+|  60 | UPDATE on table with clustering key is not implemented | `engine.cpp` |
+|  56 | ORDER BY on clustering key requires reverse iterator | `planner.cpp` |
+|  44 | SELECT clause type (function/cast/term) is not implemented | `planner.cpp` |
+|  40 | BATCH is not implemented | `engine.cpp` |
+|  20 | counter column expressions (col = col + n) are not implemented | `planner.cpp` |
+|  20 | User-defined types are not implemented (CREATE/DROP TYPE) | `engine.cpp` |
+|  12 | subscript/field access in UPDATE SET is not implemented | `planner.cpp` |
+|  12 | key serialization for this type is not implemented | `key.cppm` |
+|   8 | tuple column type is not implemented | `schema.cpp` |
 |   8 | PER PARTITION LIMIT is not implemented | `engine.cpp` |
-|   8 | token relations | `planner.cpp:141` |
+|   8 | token relations | `planner.cpp` |
 |   8 | tuple expression relations | `planner.cpp` |
-|   4 | writing null column values is not implemented | `io.cpp:157` |
-|   4 | writing integer value to this dtype is not implemented | `io.cpp:115` |
-|   4 | GROUP BY is not implemented | `engine.cpp:456` |
-|   4 | aggregate SELECT (COUNT(*), etc.) is not implemented | `engine.cpp:468` |
+|   4 | GROUP BY is not implemented | `engine.cpp` |
+|   4 | aggregate SELECT (COUNT(*), etc.) is not implemented | `engine.cpp` |
 
 ### Non-crash failures (server returns an error, test still fails)
 
@@ -68,15 +80,13 @@ convert former parse-failures into engine asserts (BATCH, tuple relations, PER P
 
 These are the items that block large slabs of tests and need a design decision, not just a code edit.
 
-- **DELETE/UPDATE on clustering tables (~172+60=232 assert fires, ~37 unique tests directly).** Schema layer
-  supports clustering BTrees; SELECT already walks them. DELETE/UPDATE only handle the non-clustering path.
-  Phase 3 introduces `apply_mutation`, a single read-modify-write entry point for all DML on both path
-  variants. The planner already captures CK equality in `RowLocator.ck_begin`; `plan_mutation` needs a
-  `MissingClusteringKey` error for clustering tables where ck_is_equality is false.
+- **UPDATE on clustering tables (~60 fires, ~12 unique tests).** DELETE on clustering tables is
+  now implemented (Phase 3). UPDATE still asserts. Phase 3 gaps include tuple-syntax range
+  UPDATE and CK prefix equality UPDATE (same gaps as DELETE).
 
-- **Static columns on writes (~12 unique tests, subsumed by CK crashes).**
-  Schema and read path support static columns; the write path does not. Phase 3 adds `rewrite_static`.
-  Can be split from the CK mutation work if needed.
+- **Static columns on writes (~12 unique tests).** Read path supports static columns (including
+  static-only partition SELECT). Write path (INSERT/UPDATE to static cols) not yet implemented;
+  rewrite_static deferred to Phase 3b.
 
 - **ORDER BY / CLUSTERING ORDER BY (~56 fires, ~9 unique tests in select_order_by_test.py).**
   Requires reverse iteration in `btree::Iterator` and `RowIterator`. `RowLocator` already has

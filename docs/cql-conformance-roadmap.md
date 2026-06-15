@@ -115,16 +115,25 @@ than post-Phase-2 because former silent parse failures now reach the engine.
 
 ---
 
-## Phase 3 — `apply_mutation` + Clustering-Table DELETE/UPDATE + Static Columns
+## Phase 3 — `apply_mutation` + Clustering-Table DELETE/UPDATE + Static Columns ✓ SUBSTANTIALLY COMPLETE
 
-**Impact: ~45 unique tests directly (389+132=521 assert fires post-Phase-2b); also unblocks ALLOW
-FILTERING tests blocked by clustering-table mutations (~20 additional).**
+**Delivered (2026-06-15):** Clustering-table DELETE (equality, range, partial-CK bounds, empty
+blob values); textAsBlob/blobAsText/intAsBlob/bigintAsBlob builtins; empty-blob crash fix in
+io.cpp; static-only partition SELECT with PK value injection; SELECT DISTINCT
+(`advance_partition()`); SELECT * column ordering (PK → CK → static → regular).
+Score: 73/313 (was 25/313).
 
-This is the largest single unlock remaining. Note: Phase 2's CREATE TABLE fixes caused some tests
-to fail earlier, reducing CK fire counts from 78+30=108 to 39+15=54, but the unique test impact
-is similar.
+**Known Phase 3 gaps (see Phase 3b below):**
+1. Static column writes — INSERT/UPDATE to static cols in clustering tables (`rewrite_static`).
+2. CK prefix equality DELETE — `DELETE WHERE k=? AND c1=0` on a 3-CK table should range-delete
+   all rows with c1=0; currently MissingClusteringKey because partial equality is not treated as
+   a range (needs `plan_mutation` to detect partial CK equality and convert it to a range locator).
+3. Tuple-syntax range DELETE — `WHERE (ck_col) > (?)` sets only filter predicates (not locator
+   bounds); DELETE gets MissingClusteringKey. Requires `TupleExpressionRelation` with non-EQ/IN
+   operators to populate `ck_begin`/`ck_end` in `build_row_locator`.
+4. USING TIMESTAMP on DELETE — causes crash; USING TIMESTAMP handling not yet implemented.
 
-### Design flags
+**Design flags** (originally planned for Phase 3, still apply to Phase 3b/gaps)
 
 **`needed_cols` deferred.** The original design couples a `needed_cols` optimization into Phase 3.
 This significantly increases scope and is not needed for correctness. Implement `apply_mutation`
@@ -274,6 +283,39 @@ to produce a `MutationSpec` (all value-columns as ColumnUpdates) and call `apply
 `plan_mutation` currently handles only single-row equality (pk_is_equality required).
 For clustering tables, add: if `ck_is_equality` is also false, return
 `PlanError::MissingClusteringKey`. `validate_plan` returns the appropriate message.
+
+---
+
+## Phase 3b — Static Column Writes, CK Prefix Equality, Tuple Range, USING TIMESTAMP
+
+**Impact: ~10 unique tests blocked by the Phase 3 gaps listed above.**
+
+### Static column writes (`rewrite_static`)
+
+`rewrite_static(pager, entry, tbl, col_values, col_present)`: reads the existing static blob
+(if any), merges in updated static columns, writes a new blob, updates `entry.static_page`.
+Called from `apply_mutation` after any ColumnUpdate that targets a `col.is_static` column.
+INSERT must also route static-col updates through this path for clustering tables.
+
+### CK prefix equality DELETE
+
+`plan_mutation` currently requires `ck_is_equality` for clustering tables. When a query like
+`DELETE FROM t WHERE k=? AND c1=0` specifies only the first of N CK columns, treat it as a
+range: synthesize `ck_begin = serialize_ck_prefix(c1=0)` and `ck_end = next_prefix(c1=0)`,
+setting `ck_begin_is_partial = true` and `ck_end_is_partial = true` (exclusive upper bound at
+the next prefix). The existing partial-bounds loop in `collect_range` already handles this.
+
+### Tuple-syntax range DELETE
+
+`build_row_locator` currently routes `TupleExpressionRelation` with non-EQ/IN operators to
+filter predicates only. For single-column tuples `(ck_col) OP (?)`, extract the CK column and
+operator and populate `ck_begin`/`ck_end` exactly as the scalar relation path does.
+
+### USING TIMESTAMP on DELETE
+
+The engine DELETE handler should parse and store the USING TIMESTAMP value (already in the
+parsed `Delete` AST). For now, silently ignore it (log + skip) so tests that use it do not
+crash. True timestamp-filtered visibility requires the Phase 10 row blob metadata header.
 
 ---
 
