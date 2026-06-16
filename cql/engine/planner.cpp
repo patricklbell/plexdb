@@ -63,7 +63,9 @@ namespace cql::planner {
         DynamicArray<bool>                    pk_in_seen;
         resize(pk_in_vals, n_pk);
         resize(pk_in_seen, n_pk);
-        for (U64 i = 0; i < n_pk; i++) pk_in_seen[i] = false;
+        for (U64 i = 0; i < n_pk; i++) {
+            pk_in_seen[i] = false;
+        }
 
         DynamicArray<Optional<Evaluated>>   ck_eq_vals;
         DynamicArray<WhereClause::Relation> ck_eq_rels;
@@ -73,7 +75,9 @@ namespace cql::planner {
         DynamicArray<bool>                    ck_in_seen;
         resize(ck_in_vals, n_ck);
         resize(ck_in_seen, n_ck);
-        for (U64 i = 0; i < n_ck; i++) ck_in_seen[i] = false;
+        for (U64 i = 0; i < n_ck; i++) {
+            ck_in_seen[i] = false;
+        }
 
         // Multi-column tuple IN: each outer entry is one combination, inner Optional<Evaluated>
         // indexed by CK position (empty if that CK not specified by the tuple).
@@ -166,27 +170,27 @@ namespace cql::planner {
                             bool partial = n_ck > 1;
                             switch (r.operator_) {
                                 case Operator::lt:
-                                    locator.ck_end           = key::serialize_clustering_single(tbl, eval);
-                                    locator.ck_has_end       = true;
-                                    locator.ck_end_inclusive = false;
-                                    locator.ck_end_is_partial   = partial;
+                                    locator.ck_end            = key::serialize_clustering_single(tbl, eval);
+                                    locator.ck_has_end        = true;
+                                    locator.ck_end_inclusive  = false;
+                                    locator.ck_end_is_partial = partial;
                                     break;
                                 case Operator::le:
-                                    locator.ck_end           = key::serialize_clustering_single(tbl, eval);
-                                    locator.ck_has_end       = true;
-                                    locator.ck_end_inclusive = true;
-                                    locator.ck_end_is_partial   = partial;
+                                    locator.ck_end            = key::serialize_clustering_single(tbl, eval);
+                                    locator.ck_has_end        = true;
+                                    locator.ck_end_inclusive  = true;
+                                    locator.ck_end_is_partial = partial;
                                     break;
                                 case Operator::gt:
-                                    locator.ck_begin           = key::serialize_clustering_single(tbl, eval);
-                                    locator.ck_has_begin       = true;
-                                    locator.ck_begin_inclusive = false;
+                                    locator.ck_begin            = key::serialize_clustering_single(tbl, eval);
+                                    locator.ck_has_begin        = true;
+                                    locator.ck_begin_inclusive  = false;
                                     locator.ck_begin_is_partial = partial;
                                     break;
                                 case Operator::ge:
-                                    locator.ck_begin           = key::serialize_clustering_single(tbl, eval);
-                                    locator.ck_has_begin       = true;
-                                    locator.ck_begin_inclusive = true;
+                                    locator.ck_begin            = key::serialize_clustering_single(tbl, eval);
+                                    locator.ck_has_begin        = true;
+                                    locator.ck_begin_inclusive  = true;
                                     locator.ck_begin_is_partial = partial;
                                     break;
                                 default:
@@ -213,7 +217,9 @@ namespace cql::planner {
                         if (all_ck_in) {
                             for (U64 ci = 0; ci < r.columns.length; ci++) {
                                 auto ck_pos = find_ck_position(tbl, r.columns[ci].identifier);
-                                if (ck_pos) ck_in_seen[*ck_pos] = true;
+                                if (ck_pos) {
+                                    ck_in_seen[*ck_pos] = true;
+                                }
                             }
                             if (r.columns.length > 1) {
                                 // Multi-column: each value-tuple is a pre-paired combination.
@@ -538,14 +544,30 @@ namespace cql::planner {
                 cer.operator_ != Operator::eq && cer.operator_ != Operator::in) {
                 AutoString8 op_name;
                 switch (cer.operator_) {
-                    case Operator::lt:           op_name = AutoString8("LT"); break;
-                    case Operator::gt:           op_name = AutoString8("GT"); break;
-                    case Operator::le:           op_name = AutoString8("LTE"); break;
-                    case Operator::ge:           op_name = AutoString8("GTE"); break;
-                    case Operator::ne:           op_name = AutoString8("NEQ"); break;
-                    case Operator::contains:     op_name = AutoString8("CONTAINS"); break;
-                    case Operator::contains_key: op_name = AutoString8("CONTAINS KEY"); break;
-                    default:                     op_name = AutoString8("UNKNOWN"); break;
+                    case Operator::lt:
+                        op_name = AutoString8("LT");
+                        break;
+                    case Operator::gt:
+                        op_name = AutoString8("GT");
+                        break;
+                    case Operator::le:
+                        op_name = AutoString8("LTE");
+                        break;
+                    case Operator::ge:
+                        op_name = AutoString8("GTE");
+                        break;
+                    case Operator::ne:
+                        op_name = AutoString8("NEQ");
+                        break;
+                    case Operator::contains:
+                        op_name = AutoString8("CONTAINS");
+                        break;
+                    case Operator::contains_key:
+                        op_name = AutoString8("CONTAINS KEY");
+                        break;
+                    default:
+                        op_name = AutoString8("UNKNOWN");
+                        break;
                 }
                 return {PlanError::NonEqInOnPartitionKeyMutation, move(op_name)};
             }
@@ -707,7 +729,9 @@ namespace cql::planner {
                 for (U64 ci = 0; ci < tbl.cols.length; ci++) {
                     if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == col_name) {
                         col_idx = ci;
-                        if (!tbl.cols[ci].is_static) is_static_only = false;
+                        if (!tbl.cols[ci].is_static) {
+                            is_static_only = false;
+                        }
                         break;
                     }
                 }

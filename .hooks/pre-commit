@@ -1,21 +1,48 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-staged=$(git diff --cached --name-only --diff-filter=ACM \
-    | grep -E '\.(cpp|cppm|h)$' \
-    | grep -Ev '(third_party/stb|/tools/)' \
-    || true)
-[[ -z "$staged" ]] && exit 0
+all_files=false
+
+case "${1:-}" in
+    --all)
+        all_files=true
+        ;;
+    "" )
+        ;;
+    *)
+        echo "Usage: $0 [--all]"
+        exit 1
+        ;;
+esac
+
+if $all_files; then
+    files=$(git ls-files \
+        | grep -E '\.(cpp|cppm|h)$' \
+        | grep -Ev '(third_party/stb|/tools/)' \
+        || true)
+else
+    files=$(git diff --cached --name-only --diff-filter=ACM \
+        | grep -E '\.(cpp|cppm|h)$' \
+        | grep -Ev '(third_party/stb|/tools/)' \
+        || true)
+fi
+
+[[ -z "$files" ]] && exit 0
 
 bad=()
 while IFS= read -r f; do
     if ! clang-format --dry-run --Werror "$f" 2>/dev/null; then
         bad+=("$f")
     fi
-done <<< "$staged"
+done <<< "$files"
 
 if [[ ${#bad[@]} -gt 0 ]]; then
-    echo "clang-format: the following staged files need formatting:"
+    if $all_files; then
+        echo "clang-format: the following tracked files need formatting:"
+    else
+        echo "clang-format: the following staged files need formatting:"
+    fi
+
     printf '  %s\n' "${bad[@]}"
     echo ""
     echo "  Run: clang-format -i ${bad[*]}"

@@ -85,10 +85,18 @@ namespace cql::key {
     static S64 eval_as_s64(const Evaluated& eval) {
         if (type_matches_tag<Constant>(eval.value)) {
             const auto& cv = get<Constant>(eval.value).value;
-            if (type_matches_tag<S64>(cv)) return get<S64>(cv);
-            if (type_matches_tag<S32>(cv)) return S64(get<S32>(cv));
-            if (type_matches_tag<S16>(cv)) return S64(get<S16>(cv));
-            if (type_matches_tag<U8>(cv)) return S64(get<U8>(cv));
+            if (type_matches_tag<S64>(cv)) {
+                return get<S64>(cv);
+            }
+            if (type_matches_tag<S32>(cv)) {
+                return S64(get<S32>(cv));
+            }
+            if (type_matches_tag<S16>(cv)) {
+                return S64(get<S16>(cv));
+            }
+            if (type_matches_tag<U8>(cv)) {
+                return S64(get<U8>(cv));
+            }
             return 0;
         }
         const ColumnValue& cv = get<ColumnValue>(eval.value);
