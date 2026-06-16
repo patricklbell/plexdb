@@ -476,6 +476,20 @@ export namespace cql::key {
         return out;
     }
 
+    DynamicArray<U8> serialize_clustering_prefix(const schema::Table& tbl, TArrayView<const Evaluated, U64> vals) {
+        assert_true(vals.length <= tbl.clustering_key_col_indices.length,
+                    "prefix length exceeds clustering key column count");
+        DynamicArray<U8> out;
+        bool             composite = tbl.clustering_key_col_indices.length > 1;
+        for (U64 i = 0; i < vals.length; i++) {
+            U64                   col_idx = tbl.clustering_key_col_indices[i];
+            const schema::Column& col     = tbl.cols[col_idx];
+            assert_true(type_matches_tag<type::Basic>(col.type.value), "clustering key must be a basic type");
+            append_component(out, vals[i], get<type::Basic>(col.type.value), composite);
+        }
+        return out;
+    }
+
     // Deserialize partition key bytes back into ColumnValues.
     // Returns one ColumnValue per tbl.partition_key_col_indices entry.
     DynamicArray<ColumnValue> deserialize_partition(const schema::Table& tbl, TArrayView<const U8, U16> key_bytes) {

@@ -167,7 +167,7 @@ namespace cql::repl {
                                 row_ctx.table       = result.resolved_table;
                                 row_ctx.row_values  = row_values.ptr;
                                 if (!evaluate_where(result.filter_predicates, row_ctx)) {
-                                    co_await row_it.advance();
+                                    co_await row_it.advance(row_end);
                                     continue;
                                 }
                                 bool first = true;
@@ -195,7 +195,7 @@ namespace cql::repl {
                                 }
                             }
                             os::stream_write(ostream, "\n");
-                            co_await row_it.advance();
+                            co_await row_it.advance(row_end);
                             ++row_count;
                         }
                     } else if (result.virtual_rows) {

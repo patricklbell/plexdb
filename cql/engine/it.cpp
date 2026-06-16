@@ -1,5 +1,6 @@
 module;
 #include <coroutine>
+#include <cstring>
 #include <plexdb/support/tracy/tracy.hpp>
 
 module cql.engine.it;
@@ -167,16 +168,51 @@ namespace cql {
         };
     }
 
+    static bool ck_key_has_prefix(TArrayView<const U8, U16> key, const DynamicArray<U8>& bound) {
+        if (key.length < static_cast<U16>(bound.length)) {
+            return false;
+        }
+        return bound.length == 0 || memcmp(key.ptr, bound.ptr, bound.length) == 0;
+    }
+
     static coroutine::Task<void> setup_clustering_for_partition(RowIterator& it, Pager* pager, const schema::PartitionEntry& entry) {
         it.clustering_btree = ClusteringBTree{
             pager, entry.data_page,
             btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
-        it.clustering_it     = co_await btree::begin<U64>(it.clustering_btree);
-        it.clustering_end_it = btree::end<U64>(it.clustering_btree);
-        it.static_only_row   = (it.clustering_it == it.clustering_end_it && entry.static_page != 0);
+
+        if (it.ck_has_begin) {
+            auto bv = TArrayView<const U8, U16>(it.ck_begin.ptr, static_cast<U16>(it.ck_begin.length));
+            if (it.ck_begin_inclusive) {
+                it.clustering_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(it.clustering_btree, bv);
+            } else {
+                it.clustering_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(it.clustering_btree, bv);
+            }
+            // @note composite keys byte-extending the prefix compare greater; loop to skip them
+            if (it.ck_begin_is_partial && !it.ck_begin_inclusive) {
+                auto end_it = btree::end<U64>(it.clustering_btree);
+                while (it.clustering_it != end_it && ck_key_has_prefix(it.clustering_it.key(), it.ck_begin)) {
+                    co_await it.clustering_it.advance();
+                }
+            }
+        } else {
+            it.clustering_it = co_await btree::begin<U64>(it.clustering_btree);
+        }
+
+        if (it.ck_has_end && !it.ck_end_is_partial) {
+            auto ev = TArrayView<const U8, U16>(it.ck_end.ptr, static_cast<U16>(it.ck_end.length));
+            if (it.ck_end_inclusive) {
+                it.clustering_end_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(it.clustering_btree, ev);
+            } else {
+                it.clustering_end_it = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(it.clustering_btree, ev);
+            }
+        } else {
+            it.clustering_end_it = btree::end<U64>(it.clustering_btree);
+        }
+
+        it.static_only_row = (it.clustering_it == it.clustering_end_it && entry.static_page != 0);
     }
 
-    coroutine::Task<void> RowIterator::advance() {
+    coroutine::Task<void> RowIterator::advance(const RowIterator& stop) {
         bool               own_tx = !this->pager->transaction_active;
         pager::Transaction tx{this->pager};
         if (own_tx) {
@@ -194,13 +230,28 @@ namespace cql {
             }
         } else {
             co_await this->clustering_it.advance();
-            if (clustering_it == clustering_end_it) {
-                co_await this->partition_it.advance();
-                auto end_it = btree::end<schema::PartitionEntry>(table->btree);
-                if (partition_it != end_it) {
-                    auto entry = *partition_it;
-                    co_await setup_clustering_for_partition(*this, pager, entry);
+            // @note ck_end_is_partial: clustering_end_it is btree::end; compare prefix bytes manually
+            if (this->ck_has_end && this->ck_end_is_partial && clustering_it != clustering_end_it) {
+                auto key_view = clustering_it.key();
+                U16  B        = static_cast<U16>(this->ck_end.length);
+                int  cmp      = (key_view.length >= B) ? memcmp(key_view.ptr, this->ck_end.ptr, B) : -1;
+                bool past_end = this->ck_end_inclusive ? (cmp > 0) : (cmp >= 0);
+                if (past_end) {
+                    clustering_it = btree::end<U64>(clustering_btree);
                 }
+            }
+            if (clustering_it == clustering_end_it) {
+                auto end_it = btree::end<schema::PartitionEntry>(table->btree);
+                do {
+                    co_await this->partition_it.advance();
+                    if (partition_it != end_it) {
+                        auto entry = *partition_it;
+                        co_await setup_clustering_for_partition(*this, pager, entry);
+                    }
+                } while (partition_it != end_it &&
+                         partition_it != stop.partition_it &&
+                         !static_only_row &&
+                         clustering_it == clustering_end_it);
             }
         }
         if (own_tx) {
@@ -230,6 +281,48 @@ namespace cql {
             it.partition_it != btree::end<schema::PartitionEntry>(table->btree)) {
             auto entry = *it.partition_it;
             co_await setup_clustering_for_partition(it, pager, entry);
+        }
+    }
+
+    coroutine::Task<void> apply_ck_bounds_on_clustering(RowIterator& it) {
+        if (!schema::has_clustering_keys(*it.table)) {
+            co_return;
+        }
+        if (it.partition_it == btree::end<schema::PartitionEntry>(it.table->btree)) {
+            co_return;
+        }
+        bool               own_tx = !it.pager->transaction_active;
+        pager::Transaction tx{it.pager};
+        if (own_tx) {
+            co_await tx.begin();
+        }
+        auto entry = *it.partition_it;
+        co_await setup_clustering_for_partition(it, it.pager, entry);
+        if (own_tx) {
+            co_await tx.commit();
+        }
+    }
+
+    coroutine::Task<void> advance_past_empty_ck_partitions(RowIterator& it, const RowIterator& stop) {
+        if (!schema::has_clustering_keys(*it.table)) {
+            co_return;
+        }
+        auto part_end = btree::end<schema::PartitionEntry>(it.table->btree);
+        while (it.partition_it != part_end && it.partition_it != stop.partition_it &&
+               !it.static_only_row && it.clustering_it == it.clustering_end_it) {
+            bool               own_tx = !it.pager->transaction_active;
+            pager::Transaction tx{it.pager};
+            if (own_tx) {
+                co_await tx.begin();
+            }
+            co_await it.partition_it.advance();
+            if (it.partition_it != part_end) {
+                auto entry = *it.partition_it;
+                co_await setup_clustering_for_partition(it, it.pager, entry);
+            }
+            if (own_tx) {
+                co_await tx.commit();
+            }
         }
     }
 

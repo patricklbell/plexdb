@@ -640,7 +640,7 @@ namespace cql::native {
                 if (result.is_distinct) {
                     co_await row_it.advance_partition();
                 } else {
-                    co_await row_it.advance();
+                    co_await row_it.advance(row_end);
                 }
             }
         }

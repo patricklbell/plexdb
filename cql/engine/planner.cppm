@@ -90,6 +90,7 @@ export namespace cql::planner {
         TypeMismatch,
         StaticOnlyUpdateWithCK,
         StaticOnlyDeleteWithCK,
+        RangeDeletionOnSpecificColumns,
         TokenFunctionInMutation,
         DuplicateColumnInMutation,
         NonKeyColumnInMutationWhere,

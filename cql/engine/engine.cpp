@@ -1,5 +1,6 @@
 module;
 #include <coroutine>
+#include <cstring>
 #include <plexdb/support/tracy/tracy.hpp>
 
 module cql.engine;
@@ -253,6 +254,11 @@ namespace cql::engine {
                     .status  = ExecutionStatus::Invalid,
                     .message = "Invalid restrictions on clustering columns since the DELETE statement modifies only static columns",
                 };
+            case planner::PlanError::RangeDeletionOnSpecificColumns:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "Range deletions are not supported for specific columns",
+                };
             case planner::PlanError::OrderByOnNonClusteringColumn: {
                 ExecutionResult r;
                 r.status          = ExecutionStatus::Invalid;
@@ -500,6 +506,61 @@ namespace cql::engine {
         co_await blob::insert(b, buf.ptr, buf.length);
     }
 
+    static coroutine::Task<RowRange> create_table_range_it(Engine& engine, schema::Table* tbl,
+                                                           const planner::RowLocator& locator) {
+        auto copy_ck_bounds = [&](RowIterator& it) {
+            it.ck_begin            = locator.ck_begin;
+            it.ck_end              = locator.ck_end;
+            it.ck_has_begin        = locator.ck_has_begin;
+            it.ck_has_end          = locator.ck_has_end;
+            it.ck_begin_inclusive  = locator.ck_begin_inclusive;
+            it.ck_end_inclusive    = locator.ck_end_inclusive;
+            it.ck_begin_is_partial = locator.ck_begin_is_partial;
+            it.ck_end_is_partial   = locator.ck_end_is_partial;
+        };
+
+        RowIterator start_it, stop_it;
+        bool        has_ck_bounds = locator.ck_has_begin || locator.ck_has_end;
+
+        if (locator.pk_is_equality) {
+            auto pk_view = TArrayView<const U8, U16>(locator.pk_begin.ptr, static_cast<U16>(locator.pk_begin.length));
+            start_it     = co_await create_table_eq_it(engine.pager, tbl, pk_view);
+            stop_it      = create_table_end_it(engine.pager, tbl);
+            if (start_it != stop_it) {
+                stop_it = co_await create_table_le_it(engine.pager, tbl, pk_view);
+            }
+        } else {
+            if (locator.pk_has_begin) {
+                auto pk_view = TArrayView<const U8, U16>(locator.pk_begin.ptr, static_cast<U16>(locator.pk_begin.length));
+                if (locator.pk_begin_inclusive) {
+                    start_it = co_await create_table_ge_it(engine.pager, tbl, pk_view);
+                } else {
+                    start_it = co_await create_table_gt_it(engine.pager, tbl, pk_view);
+                }
+            } else {
+                start_it = co_await create_table_begin_it(engine.pager, tbl);
+            }
+            if (locator.pk_has_end) {
+                auto pk_view = TArrayView<const U8, U16>(locator.pk_end.ptr, static_cast<U16>(locator.pk_end.length));
+                if (locator.pk_end_inclusive) {
+                    stop_it = co_await create_table_le_it(engine.pager, tbl, pk_view);
+                } else {
+                    stop_it = co_await create_table_lt_it(engine.pager, tbl, pk_view);
+                }
+            } else {
+                stop_it = create_table_end_it(engine.pager, tbl);
+            }
+        }
+
+        if (has_ck_bounds) {
+            copy_ck_bounds(start_it);
+            co_await apply_ck_bounds_on_clustering(start_it);
+            co_await advance_past_empty_ck_partitions(start_it, stop_it);
+        }
+
+        co_return RowRange{move(start_it), move(stop_it)};
+    }
+
     static int compare_ck_bytes(TArrayView<const U8, U16> a, const DynamicArray<U8>& b) {
         U64 min_len = min(U64(a.length), b.length);
         int cmp     = min_len > 0 ? os::memory_compare(a.ptr, b.ptr, min_len) : 0;
@@ -639,10 +700,23 @@ namespace cql::engine {
                 co_await apply_updates_to_row(tbl, col_values, col_present, spec, ctx);
                 co_await rewrite_static(engine, entry, tbl, col_values, col_present);
 
-                if (new_partition) {
+                if (new_partition && entry.static_page != 0) {
                     co_await btree::tinsert(tbl->btree, pk_bytes, entry);
-                } else {
-                    co_await btree::tupdate(tbl->btree, pk_bytes, entry);
+                } else if (!new_partition) {
+                    if (entry.static_page == 0) {
+                        // @note delete partition only when both static blob and clustering rows are absent
+                        schema::ClusteringBTree ck_check{
+                            engine.pager, entry.data_page,
+                            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
+                        auto ck_begin_it = co_await btree::begin<U64>(ck_check);
+                        if (ck_begin_it == btree::end<U64>(ck_check)) {
+                            co_await btree::remove(tbl->btree, pk_bytes);
+                        } else {
+                            co_await btree::tupdate(tbl->btree, pk_bytes, entry);
+                        }
+                    } else {
+                        co_await btree::tupdate(tbl->btree, pk_bytes, entry);
+                    }
                 }
             } else {
                 // Read-modify-write: shared path for UPDATE and column-level DELETE.
@@ -922,49 +996,7 @@ namespace cql::engine {
                     }
                 }
 
-                if (sp.locator.pk_is_equality) {
-                    auto start_it = co_await create_table_eq_it(engine.pager, tbl, sp.locator.pk_begin);
-                    auto stop_it  = create_table_end_it(engine.pager, tbl);
-                    if (start_it != stop_it) {
-                        stop_it = co_await create_table_le_it(engine.pager, tbl, sp.locator.pk_begin);
-                    }
-                    co_return ExecutionResult{
-                        .status             = ExecutionStatus::Success,
-                        .kind               = ResultKind::Rows,
-                        .keyspace           = AutoString8(ks_name),
-                        .table              = AutoString8(stmt.from.table_name),
-                        .row_limit_count    = limit_count,
-                        .is_distinct        = static_cast<bool>(stmt.transform),
-                        .rows               = RowRange{.start = move(start_it), .stop = move(stop_it)},
-                        .resolved_table     = tbl,
-                        .select_col_indices = move(select_col_indices),
-                        .filter_predicates  = move(sp.filter.predicates),
-                        .filter_ctx         = ctx,
-                    };
-                }
-
-                RowIterator start_it;
-                if (sp.locator.pk_has_begin) {
-                    if (sp.locator.pk_begin_inclusive) {
-                        start_it = co_await create_table_ge_it(engine.pager, tbl, sp.locator.pk_begin);
-                    } else {
-                        start_it = co_await create_table_gt_it(engine.pager, tbl, sp.locator.pk_begin);
-                    }
-                } else {
-                    start_it = co_await create_table_begin_it(engine.pager, tbl);
-                }
-
-                RowIterator stop_it;
-                if (sp.locator.pk_has_end) {
-                    if (sp.locator.pk_end_inclusive) {
-                        stop_it = co_await create_table_le_it(engine.pager, tbl, sp.locator.pk_end);
-                    } else {
-                        stop_it = co_await create_table_lt_it(engine.pager, tbl, sp.locator.pk_end);
-                    }
-                } else {
-                    stop_it = create_table_end_it(engine.pager, tbl);
-                }
-
+                auto row_range = co_await create_table_range_it(engine, tbl, sp.locator);
                 co_return ExecutionResult{
                     .status             = ExecutionStatus::Success,
                     .kind               = ResultKind::Rows,
@@ -972,7 +1004,7 @@ namespace cql::engine {
                     .table              = AutoString8(stmt.from.table_name),
                     .row_limit_count    = limit_count,
                     .is_distinct        = static_cast<bool>(stmt.transform),
-                    .rows               = RowRange{.start = move(start_it), .stop = move(stop_it)},
+                    .rows               = move(row_range),
                     .resolved_table     = tbl,
                     .select_col_indices = move(select_col_indices),
                     .filter_predicates  = move(sp.filter.predicates),
@@ -1112,30 +1144,11 @@ namespace cql::engine {
                             }
                         }
 
-                        // collect static column bytes into separate buffer (if any static cols present in INSERT)
-                        DynamicArray<U8> static_buffer;
-                        bool             any_static_in_insert = false;
+                        bool any_static_in_insert = false;
                         for (U64 si : tbl->static_col_indices) {
                             if (!tbl->cols[si].tombstone && try_get_names_idx(tbl->cols[si].name)) {
                                 any_static_in_insert = true;
                                 break;
-                            }
-                        }
-                        if (any_static_in_insert) {
-                            auto write_static_fn  = create_buffer_writer(static_buffer);
-                            auto write_static     = io::to_writer(write_static_fn);
-                            auto static_is_active = [&](U64 col_idx) {
-                                return !tbl->cols[col_idx].tombstone && is_static_col(col_idx) && static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name));
-                            };
-                            io::write_column_mask(write_static, io::to_checker(static_is_active), tbl->cols.length);
-                            for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                                if (is_static_col(ci) && !tbl->cols[ci].tombstone) {
-                                    auto names_idx_opt = try_get_names_idx(tbl->cols[ci].name);
-                                    if (names_idx_opt) {
-                                        const auto& eval = evaluate(v.values[*names_idx_opt]);
-                                        io::cast_write_evaluated_as_column_value(write_static, eval, tbl->cols[ci].type);
-                                    }
-                                }
                             }
                         }
 
@@ -1172,21 +1185,21 @@ namespace cql::engine {
                                 new_partition     = true;
                             }
 
-                            // create or replace static blob when static columns are present in this INSERT
                             if (any_static_in_insert) {
-                                if (entry.static_page == 0) {
-                                    entry.static_page = co_await blob::create_paged_dynamic(*engine.pager);
-                                    blob::BlobDynamicPaged static_blob;
-                                    co_await blob::load(static_blob, engine.pager, entry.static_page);
-                                    co_await blob::insert(static_blob, static_buffer.ptr, static_buffer.length);
-                                } else {
-                                    blob::BlobDynamicPaged static_blob;
-                                    co_await blob::load(static_blob, engine.pager, entry.static_page);
-                                    co_await blob::remove(static_blob);
-                                    entry.static_page = co_await blob::create_paged_dynamic(*engine.pager);
-                                    co_await blob::load(static_blob, engine.pager, entry.static_page);
-                                    co_await blob::insert(static_blob, static_buffer.ptr, static_buffer.length);
+                                DynamicArray<ColumnValue> sc_vals;
+                                DynamicArray<bool>        sc_present;
+                                co_await read_row_into(engine, tbl, 0, entry.static_page, sc_vals, sc_present);
+                                planner::MutationSpec static_spec;
+                                for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                                    if (is_static_col(ci) && !tbl->cols[ci].tombstone) {
+                                        auto ni = try_get_names_idx(tbl->cols[ci].name);
+                                        if (ni) {
+                                            push_back(static_spec.updates, planner::ColumnUpdate{ci, evaluate(v.values[*ni])});
+                                        }
+                                    }
                                 }
+                                co_await apply_updates_to_row(tbl, sc_vals, sc_present, static_spec, ctx);
+                                co_await rewrite_static(engine, entry, tbl, sc_vals, sc_present);
                             }
 
                             // persist the partition entry (insert new or update existing static_page)

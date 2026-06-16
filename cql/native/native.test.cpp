@@ -955,3 +955,116 @@ CQL_NATIVE_TEST_CASE("CREATE TABLE: composite partition key", "[cql.native]") {
     });
     co_return;
 }
+
+// Regression: SELECT with CK equality/range on a deleted row must return empty, not crash.
+// The bug was that apply_ck_bounds_on_clustering could leave clustering_it == clustering_end_it
+// (when no CK row satisfied the bound), and deref() would then dereference the end iterator.
+CQL_NATIVE_TEST_CASE("Clustering key: SELECT returns empty after CK row deleted", "[cql.native][clustering]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t (pk int, ck int, val text, PRIMARY KEY (pk, ck));")
+                  .opcode == op::RESULT);
+
+        // Use multi-char values to avoid collisions with column name substrings in the binary
+        // response body ('a' is in 'val', 'c' is in 'ck', so single-char checks are unreliable).
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, val) VALUES (1, 1, 'aaa');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, val) VALUES (1, 2, 'bbb');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, val) VALUES (1, 3, 'ccc');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, val) VALUES (2, 1, 'xxx');").opcode == op::RESULT);
+
+        // Verify CK equality SELECT works BEFORE any deletion.
+        Frame sel_before = send_query(client, "SELECT * FROM ks.t WHERE pk = 1 AND ck = 2;");
+        CHECK(result_kind(sel_before) == result::ROWS);
+        CHECK(body_contains(sel_before, "bbb"));
+
+        // Delete the middle CK row from partition 1.
+        CHECK(send_query(client, "DELETE FROM ks.t WHERE pk = 1 AND ck = 2;").opcode == op::RESULT);
+
+        // CK equality on the deleted row must return empty (not crash).
+        Frame sel_deleted = send_query(client, "SELECT * FROM ks.t WHERE pk = 1 AND ck = 2;");
+        CHECK(result_kind(sel_deleted) == result::ROWS);
+        CHECK(!body_contains(sel_deleted, "bbb"));
+
+        // Surviving rows in the same partition are still visible.
+        Frame sel1 = send_query(client, "SELECT * FROM ks.t WHERE pk = 1 AND ck = 1;");
+        CHECK(result_kind(sel1) == result::ROWS);
+        CHECK(body_contains(sel1, "aaa"));
+
+        Frame sel3 = send_query(client, "SELECT * FROM ks.t WHERE pk = 1 AND ck = 3;");
+        CHECK(result_kind(sel3) == result::ROWS);
+        CHECK(body_contains(sel3, "ccc"));
+
+        // Full scan must return all surviving rows across both partitions.
+        Frame sel_all = send_query(client, "SELECT * FROM ks.t;");
+        CHECK(result_kind(sel_all) == result::ROWS);
+        CHECK(body_contains(sel_all, "aaa"));
+        CHECK(!body_contains(sel_all, "bbb"));
+        CHECK(body_contains(sel_all, "ccc"));
+        CHECK(body_contains(sel_all, "xxx"));
+
+        // Delete all remaining CK rows from partition 1 via range.
+        CHECK(send_query(client, "DELETE FROM ks.t WHERE pk = 1 AND ck >= 1;").opcode == op::RESULT);
+
+        // Range SELECT on now-empty partition must return empty (not crash).
+        Frame sel_range = send_query(client, "SELECT * FROM ks.t WHERE pk = 1 AND ck >= 1;");
+        CHECK(result_kind(sel_range) == result::ROWS);
+        CHECK(!body_contains(sel_range, "aaa"));
+        CHECK(!body_contains(sel_range, "ccc"));
+
+        // Partition 2 must be unaffected.
+        Frame sel_p2 = send_query(client, "SELECT * FROM ks.t WHERE pk = 2;");
+        CHECK(result_kind(sel_p2) == result::ROWS);
+        CHECK(body_contains(sel_p2, "xxx"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Static columns: INSERT merges with existing static values", "[cql.native][static]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int, ck int, s1 text STATIC, s2 text STATIC, v text, PRIMARY KEY (pk, ck));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, s1, s2) VALUES (1, 'aaa', 'bbb');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, s1) VALUES (1, 'ccc');").opcode == op::RESULT);
+        Frame sel = send_query(client, "SELECT * FROM ks.t WHERE pk = 1;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "ccc")); // s1 updated
+        CHECK(body_contains(sel, "bbb")); // s2 preserved
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Static columns: partition removed after all statics deleted", "[cql.native][static]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int, ck int, s text STATIC, v text, PRIMARY KEY (pk, ck));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, s) VALUES (1, 'hello');").opcode == op::RESULT);
+        Frame before = send_query(client, "SELECT * FROM ks.t WHERE pk = 1;");
+        CHECK(result_kind(before) == result::ROWS);
+        CHECK(body_contains(before, "hello"));
+        CHECK(send_query(client, "DELETE s FROM ks.t WHERE pk = 1;").opcode == op::RESULT);
+        Frame after = send_query(client, "SELECT * FROM ks.t WHERE pk = 1;");
+        CHECK(result_kind(after) == result::ROWS);
+        CHECK(!body_contains(after, "hello"));
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Delete: range delete on specific column is invalid", "[cql.native][clustering]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int, ck int, v text, PRIMARY KEY (pk, ck));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, v) VALUES (1, 1, 'xxx');").opcode == op::RESULT);
+        Frame err = send_query(client, "DELETE v FROM ks.t WHERE pk = 1 AND ck >= 1;");
+        CHECK(err.opcode == op::ERROR);
+        Frame sel = send_query(client, "SELECT * FROM ks.t WHERE pk = 1 AND ck = 1;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "xxx"));
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}

@@ -290,7 +290,41 @@ namespace cql::planner {
                             filter.needs_allow_filtering = true;
                         }
                     } else {
-                        // IN or non-eq tuple relation: push to filter for post-scan evaluation.
+                        if (r.columns.length == 1 && r.values.length == 1 && n_ck > 0) {
+                            auto ck_pos = find_ck_position(tbl, r.columns[0].identifier);
+                            if (ck_pos && *ck_pos == 0) {
+                                Evaluated eval    = evaluate(r.values[0], ctx);
+                                bool      partial = n_ck > 1;
+                                switch (r.operator_) {
+                                    case Operator::lt:
+                                        locator.ck_end            = key::serialize_clustering_single(tbl, eval);
+                                        locator.ck_has_end        = true;
+                                        locator.ck_end_inclusive  = false;
+                                        locator.ck_end_is_partial = partial;
+                                        break;
+                                    case Operator::le:
+                                        locator.ck_end            = key::serialize_clustering_single(tbl, eval);
+                                        locator.ck_has_end        = true;
+                                        locator.ck_end_inclusive  = true;
+                                        locator.ck_end_is_partial = partial;
+                                        break;
+                                    case Operator::gt:
+                                        locator.ck_begin            = key::serialize_clustering_single(tbl, eval);
+                                        locator.ck_has_begin        = true;
+                                        locator.ck_begin_inclusive  = false;
+                                        locator.ck_begin_is_partial = partial;
+                                        break;
+                                    case Operator::ge:
+                                        locator.ck_begin            = key::serialize_clustering_single(tbl, eval);
+                                        locator.ck_has_begin        = true;
+                                        locator.ck_begin_inclusive  = true;
+                                        locator.ck_begin_is_partial = partial;
+                                        break;
+                                    default:
+                                        break;
+                                }
+                            }
+                        }
                         push_back(filter.predicates, rel);
                     }
                 } else if constexpr (SameAs<T, WhereClause::TokenRelation>) {
@@ -456,6 +490,39 @@ namespace cql::planner {
                 if (all_covered) {
                     push_back(locator.ck_in_values, key::serialize_clustering(tbl, full_combo));
                 }
+            }
+        }
+
+        // @note partial CK prefix EQ (c1=0 on 3-CK table) is not ck_is_equality; convert to prefix range
+        if (n_ck > 1 && !locator.ck_is_equality && !locator.ck_has_begin && !locator.ck_has_end &&
+            locator.ck_in_values.length == 0 && !locator.ck_has_in) {
+            U64 n_prefix = 0;
+            for (U64 i = 0; i < n_ck; i++) {
+                if (ck_eq_vals[i]) {
+                    n_prefix++;
+                } else {
+                    break;
+                }
+            }
+            if (n_prefix > 0) {
+                DynamicArray<U8> prefix;
+                if (n_prefix == 1) {
+                    prefix = key::serialize_clustering_single(tbl, *ck_eq_vals[0]);
+                } else {
+                    DynamicArray<Evaluated> prefix_evals;
+                    for (U64 i = 0; i < n_prefix; i++) {
+                        push_back(prefix_evals, *ck_eq_vals[i]);
+                    }
+                    prefix = key::serialize_clustering_prefix(tbl, prefix_evals);
+                }
+                locator.ck_begin            = prefix;
+                locator.ck_has_begin        = true;
+                locator.ck_begin_inclusive  = true;
+                locator.ck_begin_is_partial = true;
+                locator.ck_end              = move(prefix);
+                locator.ck_has_end          = true;
+                locator.ck_end_inclusive    = true;
+                locator.ck_end_is_partial   = true;
             }
         }
 
@@ -745,6 +812,12 @@ namespace cql::planner {
 
             if (is_static_only && ck_specified) {
                 plan.result.error = PlanError::StaticOnlyDeleteWithCK;
+                return plan;
+            }
+
+            bool has_ck_range = (plan.locator.ck_has_begin || plan.locator.ck_has_end) && !plan.locator.ck_is_equality;
+            if (!is_static_only && has_ck_range) {
+                plan.result.error = PlanError::RangeDeletionOnSpecificColumns;
                 return plan;
             }
         }

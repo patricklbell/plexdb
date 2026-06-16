@@ -103,6 +103,16 @@ export namespace cql {
 
         bool static_only_row = false; // @note true when partition has static data but no clustering rows
 
+        // CK iteration bounds; applied per-partition in setup_clustering_for_partition.
+        DynamicArray<U8> ck_begin;
+        DynamicArray<U8> ck_end;
+        bool             ck_has_begin        = false;
+        bool             ck_has_end          = false;
+        bool             ck_begin_inclusive  = true;
+        bool             ck_end_inclusive    = true;
+        bool             ck_begin_is_partial = false;
+        bool             ck_end_is_partial   = false;
+
         RowIterator() = default;
 
         RowIterator(const RowIterator&)            = delete;
@@ -115,26 +125,42 @@ export namespace cql {
             , clustering_btree(other.clustering_btree)
             , clustering_it(move(other.clustering_it))
             , clustering_end_it(move(other.clustering_end_it))
-            , static_only_row(other.static_only_row) {
+            , static_only_row(other.static_only_row)
+            , ck_begin(move(other.ck_begin))
+            , ck_end(move(other.ck_end))
+            , ck_has_begin(other.ck_has_begin)
+            , ck_has_end(other.ck_has_end)
+            , ck_begin_inclusive(other.ck_begin_inclusive)
+            , ck_end_inclusive(other.ck_end_inclusive)
+            , ck_begin_is_partial(other.ck_begin_is_partial)
+            , ck_end_is_partial(other.ck_end_is_partial) {
             fix_clustering_btree_ptr(other);
         }
 
         RowIterator& operator=(RowIterator&& other) noexcept {
             if (this != &other) {
-                pager             = other.pager;
-                table             = other.table;
-                partition_it      = move(other.partition_it);
-                clustering_btree  = other.clustering_btree;
-                clustering_it     = move(other.clustering_it);
-                clustering_end_it = move(other.clustering_end_it);
-                static_only_row   = other.static_only_row;
+                pager               = other.pager;
+                table               = other.table;
+                partition_it        = move(other.partition_it);
+                clustering_btree    = other.clustering_btree;
+                clustering_it       = move(other.clustering_it);
+                clustering_end_it   = move(other.clustering_end_it);
+                static_only_row     = other.static_only_row;
+                ck_begin            = move(other.ck_begin);
+                ck_end              = move(other.ck_end);
+                ck_has_begin        = other.ck_has_begin;
+                ck_has_end          = other.ck_has_end;
+                ck_begin_inclusive  = other.ck_begin_inclusive;
+                ck_end_inclusive    = other.ck_end_inclusive;
+                ck_begin_is_partial = other.ck_begin_is_partial;
+                ck_end_is_partial   = other.ck_end_is_partial;
                 fix_clustering_btree_ptr(other);
             }
             return *this;
         }
 
         coroutine::Task<ColumnRange> deref();
-        coroutine::Task<void>        advance();
+        coroutine::Task<void>        advance(const RowIterator& stop);
         coroutine::Task<void>        advance_partition();
 
         bool operator==(const RowIterator& other) const {
@@ -156,6 +182,12 @@ export namespace cql {
             }
         }
     };
+
+    // @note must be called after assigning it.ck_* bounds and before iteration begins
+    coroutine::Task<void> apply_ck_bounds_on_clustering(RowIterator& it);
+
+    // @note skips leading partitions whose CK range contains no rows and no static data
+    coroutine::Task<void> advance_past_empty_ck_partitions(RowIterator& it, const RowIterator& stop);
 
     RowIterator create_table_end_it(Pager* pager, schema::Table* table);
 
