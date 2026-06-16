@@ -21,6 +21,7 @@ jobs:
             -not -path '*/build/*' \
             -not -path '*/third_party/stb/*' \
             -not -path '*/tools/*' \
+            -not -path '*/docs/*' \
             \( -name '*.cpp' -o -name '*.cppm' -o -name '*.h' \) \
             -print0 \
             | xargs -0 clang-format-19 --dry-run --Werror
