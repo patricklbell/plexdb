@@ -383,9 +383,9 @@ namespace cql::parsers {
                 static constexpr auto value = lexy::constant(7);
             };
             struct dur_unit {
-                static constexpr auto rule  = dsl::p<unit_mo> | dsl::p<unit_ms> | dsl::p<unit_us> | dsl::p<unit_ns> |
-                                              dsl::p<unit_y> | dsl::p<unit_w> | dsl::p<unit_d> | dsl::p<unit_h> |
-                                              dsl::p<unit_m> | dsl::p<unit_s>;
+                static constexpr auto rule = dsl::p<unit_mo> | dsl::p<unit_ms> | dsl::p<unit_us> | dsl::p<unit_ns> |
+                                             dsl::p<unit_y> | dsl::p<unit_w> | dsl::p<unit_d> | dsl::p<unit_h> |
+                                             dsl::p<unit_m> | dsl::p<unit_s>;
                 static constexpr auto value = lexy::forward<int>;
             };
             struct dur_amount : lexy::transparent_production {
@@ -439,8 +439,8 @@ namespace cql::parsers {
                 static constexpr auto value = as_dyn_arr<Duration>;
             };
             static constexpr auto rule = [] {
-                auto dur_start   = dsl::lit_c<'y'> | dsl::lit_c<'m'> | dsl::lit_c<'w'> | dsl::lit_c<'d'> |
-                                   dsl::lit_c<'h'> | dsl::lit_c<'s'> | dsl::lit_c<'u'> | dsl::lit_c<'n'>;
+                auto dur_start = dsl::lit_c<'y'> | dsl::lit_c<'m'> | dsl::lit_c<'w'> | dsl::lit_c<'d'> |
+                                 dsl::lit_c<'h'> | dsl::lit_c<'s'> | dsl::lit_c<'u'> | dsl::lit_c<'n'>;
                 auto is_duration = dsl::peek(dsl::while_one(dsl::digit<>) + dur_start);
                 return is_duration >> dsl::p<components>;
             }();
@@ -568,12 +568,12 @@ namespace cql::parsers {
             };
 
             // @note order matters: longer prefixes first (timestamp before time, smallint before set, etc.)
-            static constexpr auto rule  = dsl::p<t_timestamp> | dsl::p<t_timeuuid> | dsl::p<t_tinyint> |
-                                          dsl::p<t_text> | dsl::p<t_time> | dsl::p<t_ascii> | dsl::p<t_bigint> | dsl::p<t_blob> |
-                                          dsl::p<t_boolean> | dsl::p<t_counter> | dsl::p<t_date> | dsl::p<t_decimal> |
-                                          dsl::p<t_double> | dsl::p<t_duration> | dsl::p<t_float> | dsl::p<t_inet> |
-                                          dsl::p<t_int> | dsl::p<t_smallint> | dsl::p<t_uuid> | dsl::p<t_varchar> |
-                                          dsl::p<t_varint>;
+            static constexpr auto rule = dsl::p<t_timestamp> | dsl::p<t_timeuuid> | dsl::p<t_tinyint> |
+                                         dsl::p<t_text> | dsl::p<t_time> | dsl::p<t_ascii> | dsl::p<t_bigint> | dsl::p<t_blob> |
+                                         dsl::p<t_boolean> | dsl::p<t_counter> | dsl::p<t_date> | dsl::p<t_decimal> |
+                                         dsl::p<t_double> | dsl::p<t_duration> | dsl::p<t_float> | dsl::p<t_inet> |
+                                         dsl::p<t_int> | dsl::p<t_smallint> | dsl::p<t_uuid> | dsl::p<t_varchar> |
+                                         dsl::p<t_varint>;
             static constexpr auto value = lexy::forward<type::Type>;
         };
 
@@ -609,8 +609,8 @@ namespace cql::parsers {
                     [](type::Type key) { return type::create_set(move(key)); });
             };
             struct map_type {
-                static constexpr auto rule  = kw_map >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> +
-                                                            dsl::lit_c<','> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> + dsl::lit_c<'>'>;
+                static constexpr auto rule = kw_map >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> +
+                                                           dsl::lit_c<','> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> + dsl::lit_c<'>'>;
                 static constexpr auto value = lexy::callback<type::Type>(
                     [](type::Type key, type::Type val) { return type::create_map(move(key), move(val)); });
             };
@@ -972,8 +972,8 @@ namespace cql::parsers {
                     []() { return Operator::contains_key; });
             };
 
-            static constexpr auto rule  = dsl::p<ne> | dsl::p<le> | dsl::p<ge> | dsl::p<lt> | dsl::p<gt> |
-                                          dsl::p<eq> | dsl::p<in_> | dsl::p<contains_rule>;
+            static constexpr auto rule = dsl::p<ne> | dsl::p<le> | dsl::p<ge> | dsl::p<lt> | dsl::p<gt> |
+                                         dsl::p<eq> | dsl::p<in_> | dsl::p<contains_rule>;
             static constexpr auto value = lexy::forward<Operator>;
         };
 
@@ -1327,8 +1327,8 @@ namespace cql::parsers {
             static constexpr auto value = as_dyn_arr<CreateTable::ColumnOrder>;
         };
         struct clustering_order_option {
-            static constexpr auto rule  = kw_clustering >> dsl::p<ws> + kw_order + dsl::p<ws> + kw_by + dsl::p<ws> +
-                                                               dsl::lit_c<'('> + dsl::p<ws> + dsl::p<clustering_order_list> + dsl::p<ws> + dsl::lit_c<')'>;
+            static constexpr auto rule = kw_clustering >> dsl::p<ws> + kw_order + dsl::p<ws> + kw_by + dsl::p<ws> +
+                                                              dsl::lit_c<'('> + dsl::p<ws> + dsl::p<clustering_order_list> + dsl::p<ws> + dsl::lit_c<')'>;
             static constexpr auto value = lexy::callback<TableOption>(
                 [](DynamicArray<CreateTable::ColumnOrder>&& orders) -> TableOption {
                     return TableOption{CreateTable::ClusteringOrder{.column_orders = move(orders)}};
@@ -1403,8 +1403,8 @@ namespace cql::parsers {
         };
         struct alter_table_drop {
             // Optional USING TIMESTAMP n at the end (parsed and discarded — engine ignores it).
-            static constexpr auto rule  = kw_drop >> dsl::p<ws> + dsl::p<if_exists> + dsl::p<ws> +
-                                                         dsl::p<drop_column_list> + dsl::p<ws> + dsl::p<using_clause>;
+            static constexpr auto rule = kw_drop >> dsl::p<ws> + dsl::p<if_exists> + dsl::p<ws> +
+                                                        dsl::p<drop_column_list> + dsl::p<ws> + dsl::p<using_clause>;
             static constexpr auto value = lexy::callback<AlterTable>(
                 [](bool if_exists, DynamicArray<ColumnName>&& cols, DynamicArray<UpdateParameter>&&) -> AlterTable {
                     return {
@@ -1776,15 +1776,15 @@ namespace cql::parsers {
         // ====================================================================
         struct selector_rule;
         struct count_selector {
-            static constexpr auto rule  = kw_count >> dsl::p<ws> + dsl::lit_c<'('> + dsl::p<ws> +
-                                                          (dsl::lit_c<'*'> | dsl::lit_c<'1'>)+dsl::p<ws> + dsl::lit_c<')'>;
+            static constexpr auto rule = kw_count >> dsl::p<ws> + dsl::lit_c<'('> + dsl::p<ws> +
+                                                         (dsl::lit_c<'*'> | dsl::lit_c<'1'>)+dsl::p<ws> + dsl::lit_c<')'>;
             static constexpr auto value = lexy::callback<Select::Selector>(
                 []() -> Select::Selector { return {.value = Select::Count{}}; });
         };
         struct cast_selector {
-            static constexpr auto rule  = kw_cast >> dsl::p<ws> + dsl::lit_c<'('> + dsl::p<ws> +
-                                                         dsl::recurse<selector_rule> + dsl::p<ws> +
-                                                         kw_as + dsl::p<ws> + dsl::p<data_type> + dsl::p<ws> + dsl::lit_c<')'>;
+            static constexpr auto rule = kw_cast >> dsl::p<ws> + dsl::lit_c<'('> + dsl::p<ws> +
+                                                        dsl::recurse<selector_rule> + dsl::p<ws> +
+                                                        kw_as + dsl::p<ws> + dsl::p<data_type> + dsl::p<ws> + dsl::lit_c<')'>;
             static constexpr auto value = lexy::callback<Select::Selector>(
                 [](Select::Selector&& sel, type::Type type) -> Select::Selector {
                     return {
@@ -1851,8 +1851,8 @@ namespace cql::parsers {
             static constexpr auto value = lexy::forward<Select::SelectClause>;
         };
         struct order_by_el {
-            static constexpr auto rule  = (dsl::member<&Select::ColumnOrderBy::column> = dsl::p<column_name>)+dsl::p<ws> +
-                                          (dsl::member<&Select::ColumnOrderBy::sort> = dsl::p<sort_order>);
+            static constexpr auto rule = (dsl::member<&Select::ColumnOrderBy::column> = dsl::p<column_name>)+dsl::p<ws> +
+                                         (dsl::member<&Select::ColumnOrderBy::sort> = dsl::p<sort_order>);
             static constexpr auto value = lexy::as_aggregate<Select::ColumnOrderBy>;
         };
         struct order_by_list {

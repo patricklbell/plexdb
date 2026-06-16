@@ -206,7 +206,8 @@ export namespace plexdb::uring {
                 }
                 co_await coroutine::Awaitable{
                     [this](std::coroutine_handle<> h) { push_front(waiters, h); },
-                    []() {}};
+                    []() {
+                    }};
             }
         }
 

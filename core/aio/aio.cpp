@@ -45,7 +45,9 @@ namespace plexdb::aio {
                           co_await coroutine::Awaitable{
                           [handles, slot](std::coroutine_handle<> h) { handles[slot] = h; },
                           []() {},
-                          [handles, slot]() { handles[slot] = {}; }};
+                          [handles, slot]() {
+                          handles[slot] = {};
+                          }};
                           }},
                           FileWriteFunctor{[handles, aio_ctx](os::Handle f, Rng1U64 rng, const void* in) -> coroutine::Task<> {
                           U64 slot = os::aio_submit_write(*aio_ctx, f, rng, in);
@@ -53,7 +55,9 @@ namespace plexdb::aio {
                           co_await coroutine::Awaitable{
                           [handles, slot](std::coroutine_handle<> h) { handles[slot] = h; },
                           []() {},
-                          [handles, slot]() { handles[slot] = {}; }};
+                          [handles, slot]() {
+                          handles[slot] = {};
+                          }};
                           }},
                           FileSyncFunctor{[handles, aio_ctx](os::Handle f) -> coroutine::Task<> {
                           U64 slot = os::aio_submit_sync(*aio_ctx, f);
@@ -61,7 +65,9 @@ namespace plexdb::aio {
                           co_await coroutine::Awaitable{
                           [handles, slot](std::coroutine_handle<> h) { handles[slot] = h; },
                           []() {},
-                          [handles, slot]() { handles[slot] = {}; }};
+                          [handles, slot]() {
+                          handles[slot] = {};
+                          }};
                           }},
                           },
             EventConsumer{
@@ -130,7 +136,9 @@ namespace plexdb::aio {
                     co_await coroutine::Awaitable{
                         [s = this, n = &node](std::coroutine_handle<> h) { n->value = h; push_back(s->buf_waiters, n); },
                         []() {},
-                        [s = this, n = &node]() { remove(s->buf_waiters, n); }};
+                        [s = this, n = &node]() {
+                            remove(s->buf_waiters, n);
+                        }};
                 }
             }
 
@@ -167,7 +175,9 @@ namespace plexdb::aio {
             co_await coroutine::Awaitable{
                 [s = state, buf_idx](std::coroutine_handle<> h) { s->ops[buf_idx].handle = h; },
                 []() {},
-                [s = state, buf_idx]() { s->ops[buf_idx].handle = {}; }};
+                [s = state, buf_idx]() {
+                    s->ops[buf_idx].handle = {};
+                }};
 
             if (op.dst && op.bytes > 0) {
                 os::memory_copy(op.dst, state->ring->buffers + U64(buf_idx) * state->buf_size, op.bytes);
@@ -191,7 +201,9 @@ namespace plexdb::aio {
             co_await coroutine::Awaitable{
                 [s = state, buf_idx](std::coroutine_handle<> h) { s->ops[buf_idx].handle = h; },
                 []() {},
-                [s = state, buf_idx]() { s->ops[buf_idx].handle = {}; }};
+                [s = state, buf_idx]() {
+                    s->ops[buf_idx].handle = {};
+                }};
 
             state->release_buf(buf_idx);
         }};
@@ -203,7 +215,9 @@ namespace plexdb::aio {
             co_await coroutine::Awaitable{
                 [s = state, sync_idx](std::coroutine_handle<> h) { s->sync_handles[sync_idx] = h; },
                 []() {},
-                [s = state, sync_idx]() { s->sync_handles[sync_idx] = {}; }};
+                [s = state, sync_idx]() {
+                    s->sync_handles[sync_idx] = {};
+                }};
         }};
 
         EventConsumer consumer{

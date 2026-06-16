@@ -207,6 +207,8 @@ static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(bool 
 
     return {
         aio::create_sync_file_io_context(),
-        aio::EventConsumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}}
+        aio::EventConsumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool {
+                               return true;
+                           }}}
     };
 }

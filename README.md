@@ -32,4 +32,4 @@ After cloning, activate the pre-commit formatting hook:
 git config core.hooksPath .hooks
 ```
 
-The hook runs `clang-format --dry-run --Werror` on staged `.cpp`/`.cppm`/`.h` files and rejects the commit if any file needs reformatting.
+The hook runs `clang-format-19 --dry-run` on staged files.

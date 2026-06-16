@@ -31,20 +31,20 @@ fi
 
 bad=()
 while IFS= read -r f; do
-    if ! clang-format --dry-run --Werror "$f" 2>/dev/null; then
+    if ! clang-format-19 --dry-run --Werror "$f" 2>/dev/null; then
         bad+=("$f")
     fi
 done <<< "$files"
 
 if [[ ${#bad[@]} -gt 0 ]]; then
     if $all_files; then
-        echo "clang-format: the following tracked files need formatting:"
+        echo "clang-format-19: the following tracked files need formatting:"
     else
-        echo "clang-format: the following staged files need formatting:"
+        echo "clang-format-19: the following staged files need formatting:"
     fi
 
     printf '  %s\n' "${bad[@]}"
     echo ""
-    echo "  Run: clang-format -i ${bad[*]}"
+    echo "  Run: clang-format-19 -i ${bad[*]}"
     exit 1
 fi

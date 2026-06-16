@@ -60,7 +60,7 @@ export namespace plexdb {
         T(1);
         a + b;
         a - b;
-        a * b;
+        a* b;
         a / b;
         a % b;
         a & b;

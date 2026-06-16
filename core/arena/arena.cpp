@@ -12,12 +12,12 @@ namespace plexdb::arena {
         // extract arena header & fill
         ArenaPage* arena = reinterpret_cast<ArenaPage*>(base);
         *arena           = {
-            .prev        = nullptr,
-            .current     = arena,
-            .free_stack  = nullptr,
-            .page_offset = HEADER_SIZE,
-            .page_size   = page_size,
-            .base_offset = 0,
+                      .prev        = nullptr,
+                      .current     = arena,
+                      .free_stack  = nullptr,
+                      .page_offset = HEADER_SIZE,
+                      .page_size   = page_size,
+                      .base_offset = 0,
         };
         return arena;
     }

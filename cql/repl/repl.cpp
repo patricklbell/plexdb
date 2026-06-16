@@ -69,7 +69,9 @@ namespace cql::repl {
     }
 
     void run(os::Handle istream, os::Handle ostream, Engine& engine) {
-        aio::EventConsumer repl_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+        aio::EventConsumer repl_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool {
+                                             return true;
+                                         }}};
         os::Poll           repl_poll{};
         constexpr U64      INPUT_BUFFER_SIZE = 4096;
         char               input_buf[INPUT_BUFFER_SIZE];

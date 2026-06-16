@@ -249,7 +249,9 @@ namespace plexdb::pager {
             co_await coroutine::Awaitable{
                 [p = &pager, n = &node](std::coroutine_handle<> h) { n->value = h; push_back(p->tx_waiters, n); },
                 []() {},
-                [p = &pager, n = &node]() { remove(p->tx_waiters, n); }};
+                [p = &pager, n = &node]() {
+                    remove(p->tx_waiters, n);
+                }};
         }
         pager.saved_header       = pager.header;
         pager.transaction_active = true;

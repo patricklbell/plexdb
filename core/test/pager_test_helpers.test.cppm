@@ -15,7 +15,9 @@ using namespace plexdb;
 
 export {
     inline auto               g_test_sync_file_io_ctx = aio::create_sync_file_io_context();
-    inline aio::EventConsumer g_test_sync_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool { return true; }}};
+    inline aio::EventConsumer g_test_sync_consumer{0, aio::OnUnblockFunctor{[](const TArrayView<os::PollEvent>&) -> bool {
+                                                       return true;
+                                                   }}};
     inline os::Poll           g_test_poll{};
 
     inline Pager test_pager(os::Handle f) {
@@ -40,7 +42,7 @@ export {
         return p;
     }
 
-    inline void destroy_test_pager(Pager& p) {
+    inline void destroy_test_pager(Pager & p) {
         aio::drive(pager::destroy(p), g_test_sync_consumer, g_test_poll);
     }
 

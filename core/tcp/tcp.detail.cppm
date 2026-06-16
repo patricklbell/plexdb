@@ -334,7 +334,9 @@ export namespace plexdb::tcp {
                                 conn->waiting_rwc                              = h;
                                 find_or_insert(in_s->waiting_op, conn->client) = SocketListenerState::WaitRead;
                             },
-                            [conn]() -> bool { return !os::is_zero_handle(conn->client); }};
+                            [conn]() -> bool {
+                                return !os::is_zero_handle(conn->client);
+                            }};
                         if (!ready) {
                             co_return Error::ConnectionClosed;
                         }
