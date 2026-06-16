@@ -2,7 +2,7 @@
 # run cassandra-stress against a local cql instance
 #
 # Usage: [options]
-#   -b <path>    plexdb_cql_server binary (default: ./build/debug/cql/plexdb_cql_server)
+#   -b <path>    plexdb_cql_server binary (default: ./build/cql/plexdb_cql_server)
 #   -n <ops>     operations per workload  (default: 100000)
 #   -t <threads> client threads           (default: 16)
 #   -p <port>    native protocol port     (default: 9042)
@@ -13,7 +13,7 @@ set -euo pipefail
 
 LD_PRELOAD=""
 
-BINARY="${BINARY:-./build/debug/cql/plexdb_cql_server}"
+BINARY="${BINARY:-./build/cql/plexdb_cql_server}"
 OPS="${OPS:-100000}"
 THREADS="${THREADS:-16}"
 PORT="${PORT:-9042}"
