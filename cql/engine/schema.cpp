@@ -184,10 +184,10 @@ namespace cql::schema {
         for (U64 ks_idx = 0; ks_idx < schema.storage.keyspaces.length; ks_idx++) {
             const KeyspaceStorage& ks_storage = schema.storage.keyspaces[ks_idx];
             Keyspace               ks{
-                              .idx       = ks_idx,
-                              .tombstone = ks_storage.header.tombstone,
-                              .name      = ks_storage.name,
-                              .tbls      = {},
+                .idx       = ks_idx,
+                .tombstone = ks_storage.header.tombstone,
+                .name      = ks_storage.name,
+                .tbls      = {},
             };
             for (const auto& tbl_idx : ks_storage.tables) {
                 const TableStorage& tbl_storage = schema.storage.tables[tbl_idx];
