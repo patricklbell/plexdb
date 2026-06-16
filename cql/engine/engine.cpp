@@ -502,7 +502,7 @@ namespace cql::engine {
 
     static int compare_ck_bytes(TArrayView<const U8, U16> a, const DynamicArray<U8>& b) {
         U64 min_len = min(U64(a.length), b.length);
-        int cmp     = min_len > 0 ? memcmp(a.ptr, b.ptr, min_len) : 0;
+        int cmp     = min_len > 0 ? os::memory_compare(a.ptr, b.ptr, min_len) : 0;
         if (cmp != 0) {
             return cmp;
         }
@@ -550,7 +550,7 @@ namespace cql::engine {
                         if (key.length < static_cast<U16>(bound.length)) {
                             return false;
                         }
-                        return bound.length == 0 || memcmp(key.ptr, bound.ptr, bound.length) == 0;
+                        return bound.length == 0 || os::memory_compare(key.ptr, bound.ptr, bound.length) == 0;
                     };
 
                     auto collect_range = [&](auto&& it, const auto& end_it) -> coroutine::Task<void> {
@@ -566,7 +566,7 @@ namespace cql::engine {
                                     // Partial inclusive upper bound (c1 <= X): stop when the key's first-component
                                     // bytes are strictly greater than the bound prefix.
                                     U16 B   = static_cast<U16>(locator.ck_end.length);
-                                    int cmp = memcmp(key_view.ptr, locator.ck_end.ptr, min(key_view.length, B));
+                                    int cmp = os::memory_compare(key_view.ptr, locator.ck_end.ptr, min(key_view.length, B));
                                     if (cmp > 0) {
                                         break;
                                     }
@@ -580,7 +580,7 @@ namespace cql::engine {
                             CkEntry e;
                             e.page = *it;
                             resize(e.key, U64(key_view.length));
-                            memcpy(e.key.ptr, key_view.ptr, key_view.length);
+                            os::memory_copy(e.key.ptr, key_view.ptr, key_view.length);
                             push_back(to_delete, move(e));
                             co_await it.advance();
                         }
