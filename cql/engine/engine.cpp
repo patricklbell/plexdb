@@ -365,8 +365,7 @@ namespace cql::engine {
                     assert_true(engine.single_node, "COMPACT STORAGE not supported in non-single-node mode");
                     log::native_info("ignoring COMPACT STORAGE (single-node no-op)");
                 } else if constexpr (SameAs<O, CreateTable::ClusteringOrder>) {
-                    // @todo store per-column sort direction in schema and use it in RowIterator
-                    log::native_info("warning: CLUSTERING ORDER BY not yet implemented, using default ASC");
+                    // @note consumed by schema::create_table when assigning per-CK directions.
                 } else if constexpr (SameAs<O, OptionPair>) {
                     handle_table_option_pair(o, engine);
                 } else {
@@ -1332,6 +1331,168 @@ namespace cql::engine {
                             }
                         }
                         co_await idx_it.advance();
+                    }
+
+                    co_return ExecutionResult{
+                        .status       = ExecutionStatus::Success,
+                        .kind         = ResultKind::VirtualRows,
+                        .keyspace     = AutoString8(ks_name),
+                        .table        = AutoString8(stmt.from.table_name),
+                        .virtual_rows = move(vr),
+                    };
+                }
+
+                // ORDER BY + PK IN: multi-partition merge. Per-partition iteration alone
+                // returns rows partition-by-partition; sorting by CK bytes globally produces
+                // the merged stream the test expects.
+                if (stmt.order_by && sp.locator.pk_in_values.length > 0) {
+                    DynamicArray<U64> col_order;
+                    if (select_col_indices.length > 0) {
+                        col_order = select_col_indices;
+                    } else {
+                        for (U64 ci : tbl->partition_key_col_indices) {
+                            push_back(col_order, ci);
+                        }
+                        for (U64 ci : tbl->clustering_key_col_indices) {
+                            push_back(col_order, ci);
+                        }
+                        for (U64 ci : tbl->static_col_indices) {
+                            push_back(col_order, ci);
+                        }
+                        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                            if (!tbl->cols[ci].tombstone &&
+                                tbl->cols[ci].key_kind == schema::KeyKind::None &&
+                                !tbl->cols[ci].is_static) {
+                                push_back(col_order, ci);
+                            }
+                        }
+                    }
+
+                    VirtualRows vr;
+                    vr.keyspace = AutoString8(ks_name);
+                    vr.table    = AutoString8(stmt.from.table_name);
+                    for (U64 ci : col_order) {
+                        push_back(vr.columns, VirtualColumn{tbl->cols[ci].name, tbl->cols[ci].type});
+                    }
+
+                    // Collect (ck_bytes, projected_values) for each row across all partitions.
+                    struct CollectedRow {
+                        DynamicArray<U8>          ck_bytes;
+                        DynamicArray<ColumnValue> values;
+                    };
+                    DynamicArray<CollectedRow> collected;
+
+                    for (const auto& pk_bytes : sp.locator.pk_in_values) {
+                        auto pk_v      = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                        auto entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_v);
+                        if (!entry_opt) {
+                            continue;
+                        }
+
+                        DynamicArray<ColumnValue> pk_vals = key::deserialize_partition(*tbl, pk_v);
+
+                        if (schema::has_clustering_keys(*tbl)) {
+                            schema::ClusteringBTree ck_btree{
+                                engine.pager, entry_opt->data_page,
+                                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
+                            auto ck_it  = co_await btree::begin<U64>(ck_btree);
+                            auto ck_end = btree::end<U64>(ck_btree);
+                            while (ck_it != ck_end) {
+                                auto             ck_view = ck_it.key();
+                                DynamicArray<U8> ck_buf;
+                                resize(ck_buf, U64(ck_view.length));
+                                os::memory_copy(ck_buf.ptr, ck_view.ptr, ck_view.length);
+
+                                DynamicArray<ColumnValue> cv;
+                                DynamicArray<bool>        present;
+                                co_await read_row_into(engine, tbl, *ck_it, entry_opt->static_page, cv, present);
+                                for (U64 i = 0; i < tbl->partition_key_col_indices.length; i++) {
+                                    U64 ci = tbl->partition_key_col_indices[i];
+                                    if (ci < cv.length && !present[ci]) {
+                                        cv[ci]      = pk_vals[i];
+                                        present[ci] = true;
+                                    }
+                                }
+                                DynamicArray<ColumnValue> ck_vals = key::deserialize_clustering(*tbl, TArrayView<const U8, U16>(ck_buf.ptr, static_cast<U16>(ck_buf.length)));
+                                for (U64 i = 0; i < tbl->clustering_key_col_indices.length && i < ck_vals.length; i++) {
+                                    U64 ci = tbl->clustering_key_col_indices[i];
+                                    if (ci < cv.length && !present[ci]) {
+                                        cv[ci]      = move(ck_vals[i]);
+                                        present[ci] = true;
+                                    }
+                                }
+
+                                EvalContext row_ctx = ctx;
+                                row_ctx.table       = tbl;
+                                row_ctx.row_values  = cv.ptr;
+                                if (evaluate_where(sp.filter.predicates, row_ctx)) {
+                                    CollectedRow cr;
+                                    cr.ck_bytes = move(ck_buf);
+                                    resize(cr.values, col_order.length);
+                                    for (U64 i = 0; i < col_order.length; i++) {
+                                        U64 ci = col_order[i];
+                                        if (ci < cv.length && present[ci]) {
+                                            cr.values[i] = cv[ci];
+                                        }
+                                    }
+                                    push_back(collected, move(cr));
+                                }
+                                co_await ck_it.advance();
+                            }
+                        } else if (entry_opt->data_page != 0 || entry_opt->static_page != 0) {
+                            DynamicArray<ColumnValue> cv;
+                            DynamicArray<bool>        present;
+                            co_await read_row_into(engine, tbl, entry_opt->data_page, entry_opt->static_page, cv, present);
+                            for (U64 i = 0; i < tbl->partition_key_col_indices.length; i++) {
+                                U64 ci = tbl->partition_key_col_indices[i];
+                                if (ci < cv.length && !present[ci]) {
+                                    cv[ci]      = pk_vals[i];
+                                    present[ci] = true;
+                                }
+                            }
+                            EvalContext row_ctx = ctx;
+                            row_ctx.table       = tbl;
+                            row_ctx.row_values  = cv.ptr;
+                            if (evaluate_where(sp.filter.predicates, row_ctx)) {
+                                CollectedRow cr;
+                                resize(cr.values, col_order.length);
+                                for (U64 i = 0; i < col_order.length; i++) {
+                                    U64 ci = col_order[i];
+                                    if (ci < cv.length && present[ci]) {
+                                        cr.values[i] = cv[ci];
+                                    }
+                                }
+                                push_back(collected, move(cr));
+                            }
+                        }
+                    }
+
+                    // Sort by CK bytes. Reverse direction flips comparison.
+                    bool reverse = sp.locator.reverse_clustering;
+                    for (U64 i = 1; i < collected.length; i++) {
+                        for (U64 j = i; j > 0; j--) {
+                            const auto& a   = collected[j - 1].ck_bytes;
+                            const auto& b   = collected[j].ck_bytes;
+                            U64         ml  = min(a.length, b.length);
+                            int         cmp = ml > 0 ? os::memory_compare(a.ptr, b.ptr, ml) : 0;
+                            if (cmp == 0) {
+                                cmp = (a.length < b.length) ? -1 : (a.length > b.length ? 1 : 0);
+                            }
+                            bool swap = reverse ? (cmp < 0) : (cmp > 0);
+                            if (!swap) {
+                                break;
+                            }
+                            auto tmp         = move(collected[j - 1]);
+                            collected[j - 1] = move(collected[j]);
+                            collected[j]     = move(tmp);
+                        }
+                    }
+
+                    U64 cap = collected.length < limit_count ? collected.length : limit_count;
+                    for (U64 i = 0; i < cap; i++) {
+                        VirtualRow vrow;
+                        vrow.values = move(collected[i].values);
+                        push_back(vr.rows, move(vrow));
                     }
 
                     co_return ExecutionResult{

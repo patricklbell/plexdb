@@ -2,8 +2,8 @@
 
 ## Current Status
 
-Phases 1–5 complete. Score: 92/313 passing (2026-06-17). Mustpass list (73 entries)
-verified — no regressions.
+Phases 1–5 complete (with most Phase 5 follow-ups). Score: 97/313 passing
+(2026-06-17). Mustpass list (73 entries) verified — no regressions.
 
 ---
 
@@ -84,27 +84,37 @@ Collection-column indexes (`CREATE INDEX ON tbl(col)` for LIST/SET/MAP, plus
 
 ---
 
-## Phase 5 follow-ups
+## Phase 5 follow-ups (shipped)
 
-Phase 5 (ORDER BY DESC via reverse clustering iteration) is shipped. Remaining items:
+The four planned follow-ups from Phase 5 landed (single-direction cases). Remaining work
+on these features that requires byte-level changes to key encoding is captured below.
 
-- **ORDER BY after a CK equality restriction.** `testAllowSkippingEqualityAndSingleValueIn
-  RestrictedClusteringColumns` issues `WHERE a=? AND b=? ORDER BY c` — when `b` is restricted
-  by equality, Cassandra treats `c` as the effective first clustering position for ORDER BY.
-  Our planner rejects this with `OrderByOnNonClusteringColumn`. Needs the planner to skip CK
-  columns that are constrained by equality when walking the ORDER BY prefix.
-- **ORDER BY + IN on partition key.** `testOrderByForInClause*` use
-  `WHERE pk IN (...) ORDER BY ck` and expect a single merged-sorted stream across the
-  partitions. Our index path returns rows partition-by-partition. Needs a merge step above
-  the per-partition iterators.
-- **`CLUSTERING ORDER BY` directive on table.** `testReversedComparator` defines
-  `WITH CLUSTERING ORDER BY (col DESC)` so the table's natural order is reversed. We currently
-  parse and discard the directive. Persist on `TableHeader.clustering_orders` and have the
-  planner invert `reverse_clustering` accordingly.
-- **Multi-direction ORDER BY.** `testMultiordering` issues `ORDER BY b ASC, c DESC` on a
-  table whose `CLUSTERING ORDER BY` matches. We currently reject mixed-direction ORDER BY;
-  with table-defined orders, mixed input is valid when it matches the table's column-wise
-  direction.
+- **ORDER BY after a CK equality restriction.** Planner now records `ck_eq_prefix_len`
+  and lets ORDER BY start at any position from 0 up to that prefix. `WHERE a=? AND b=?
+  ORDER BY c` is accepted.
+- **ORDER BY + PK IN.** Engine collects rows across all listed partitions, sorts by
+  serialized CK bytes (forward or reverse depending on `reverse_clustering`), applies
+  LIMIT, and returns as VirtualRows.
+- **`CLUSTERING ORDER BY` directive on table.** `Column.clustering_order` persisted in
+  `ColumnHeader`; populated from the CREATE TABLE option. Planner uses this as the
+  per-CK natural direction; default scans on `(c DESC)` tables now reverse.
+- **ORDER BY without a partition-key restriction is rejected.** Required by the
+  semantics of single-partition ordering.
+
+### Still open
+
+- **Multi-direction CLUSTERING ORDER BY.** Tables like `(c1 ASC, c2 DESC)` need the
+  per-column byte sequence in the clustering key inverted for DESC columns so a single
+  forward/reverse BTree traversal still produces the table's natural order.
+  `testReversedComparator` (second sub-test) and `testMultiordering` need this. Without
+  byte inversion the planner accepts the queries but the default scan and any
+  ORDER BY that requires a mixed direction return rows in the wrong order.
+- **ORDER BY across `pk IN` + `LIMIT`.** Works for simple shapes; tests that also use
+  scalar functions (`ttl(v)`), collections, or null bound values fail on those
+  unrelated features rather than on the ORDER BY logic.
+- **ORDER BY after a CK equality restriction with tuple-eq predicates.**
+  `WHERE a=? AND (b, c) = (?, ?) ORDER BY c` requires tuple-equality support in the
+  WHERE planner.
 
 ---
 

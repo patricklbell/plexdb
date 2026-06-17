@@ -224,12 +224,13 @@ namespace cql::schema {
                     const ColumnStorage& col_storage = schema.storage.columns[col_idx];
 
                     Column col{
-                        .tombstone    = col_storage.header.tombstone,
-                        .is_static    = col_storage.header.is_static,
-                        .name         = col_storage.name,
-                        .type         = unpack_type(schema, col_storage.header.type_id),
-                        .key_kind     = col_storage.header.key_kind,
-                        .key_position = col_storage.header.key_position,
+                        .tombstone        = col_storage.header.tombstone,
+                        .is_static        = col_storage.header.is_static,
+                        .name             = col_storage.name,
+                        .type             = unpack_type(schema, col_storage.header.type_id),
+                        .key_kind         = col_storage.header.key_kind,
+                        .key_position     = col_storage.header.key_position,
+                        .clustering_order = col_storage.header.clustering_order,
                     };
 
                     push_back(tbl.cols, move(col));
@@ -590,6 +591,23 @@ namespace cql::schema {
         }
         PrimaryKeyInfo& pk_info = *pk_info_opt;
 
+        // Build the per-CK direction map from any CLUSTERING ORDER BY directive in WITH options.
+        DynamicArray<Sort> ck_orders;
+        resize(ck_orders, pk_info.clustering_col_def_indices.length);
+        for (U64 i = 0; i < ck_orders.length; i++) {
+            ck_orders[i] = Sort::ASC;
+        }
+        for (const auto& opt : create.options.value) {
+            visit(opt, [&](const auto& o) {
+                using O = RemoveCVRef<decltype(o)>;
+                if constexpr (SameAs<O, CreateTable::ClusteringOrder>) {
+                    for (U64 i = 0; i < o.column_orders.length && i < ck_orders.length; i++) {
+                        ck_orders[i] = o.column_orders[i].sort;
+                    }
+                }
+            });
+        }
+
         U64 btree_page = co_await btree::create_paged(
             *schema.tables_blob.pager,
             btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{});
@@ -650,8 +668,9 @@ namespace cql::schema {
             }
 
             // Determine key_kind and key_position for this column
-            KeyKind kk = KeyKind::None;
-            U16     kp = 0;
+            KeyKind kk    = KeyKind::None;
+            U16     kp    = 0;
+            Sort    order = Sort::ASC;
             for (U64 i = 0; i < pk_info.partition_col_def_indices.length; i++) {
                 if (pk_info.partition_col_def_indices[i] == col_def_idx) {
                     kk = KeyKind::PartitionKey;
@@ -662,14 +681,15 @@ namespace cql::schema {
             if (kk == KeyKind::None) {
                 for (U64 i = 0; i < pk_info.clustering_col_def_indices.length; i++) {
                     if (pk_info.clustering_col_def_indices[i] == col_def_idx) {
-                        kk = KeyKind::ClusteringKey;
-                        kp = static_cast<U16>(i);
+                        kk    = KeyKind::ClusteringKey;
+                        kp    = static_cast<U16>(i);
+                        order = ck_orders[i];
                         break;
                     }
                 }
             }
 
-            if (auto res = co_await create_column(schema, tbl_ref, col_def, kk, kp); res.error != Error::None) {
+            if (auto res = co_await create_column(schema, tbl_ref, col_def, kk, kp, order); res.error != Error::None) {
                 // @todo hard delete
                 co_await delete_table(schema, ks, create.name.table_name);
                 co_return Result<Table*>{nullptr, res.error, res.message};
@@ -696,7 +716,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create,
-                                                   KeyKind key_kind, U16 key_position) {
+                                                   KeyKind key_kind, U16 key_position, Sort clustering_order) {
         if (create._static) {
             if (tbl.clustering_key_col_indices.length == 0) {
                 co_return Result<Column*>{nullptr, Error::InvalidOptions, "static columns require at least one clustering column"};
@@ -728,13 +748,14 @@ namespace cql::schema {
         ColumnStorage col_storage{
             .offset_in_blob_bytes = offset_bytes,
             .header               = ColumnHeader{
-                                                 .tombstone    = false,
-                                                 .is_static    = create._static,
-                                                 .name_length  = create.name.identifier.length,
-                                                 .type_id      = type_id,
-                                                 .table_idx    = tbl.idx,
-                                                 .key_kind     = key_kind,
-                                                 .key_position = key_position,
+                                                 .tombstone        = false,
+                                                 .is_static        = create._static,
+                                                 .name_length      = create.name.identifier.length,
+                                                 .type_id          = type_id,
+                                                 .table_idx        = tbl.idx,
+                                                 .key_kind         = key_kind,
+                                                 .key_position     = key_position,
+                                                 .clustering_order = clustering_order,
                                                  },
             .name = AutoString8(create.name.identifier),
         };
@@ -750,12 +771,13 @@ namespace cql::schema {
 
         U64    new_col_idx = tbl.cols.length;
         Column col{
-            .tombstone    = col_storage_ref.header.tombstone,
-            .is_static    = col_storage_ref.header.is_static,
-            .name         = col_storage_ref.name,
-            .type         = unpack_type(schema, col_storage_ref.header.type_id),
-            .key_kind     = key_kind,
-            .key_position = key_position,
+            .tombstone        = col_storage_ref.header.tombstone,
+            .is_static        = col_storage_ref.header.is_static,
+            .name             = col_storage_ref.name,
+            .type             = unpack_type(schema, col_storage_ref.header.type_id),
+            .key_kind         = key_kind,
+            .key_position     = key_position,
+            .clustering_order = clustering_order,
         };
         Column* col_ptr = &push_back(tbl.cols, move(col));
         if (create._static) {

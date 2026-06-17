@@ -1277,3 +1277,73 @@ CQL_NATIVE_TEST_CASE("ORDER BY on non-clustering column is rejected", "[cql.nati
     });
     co_return;
 }
+
+CQL_NATIVE_TEST_CASE("ORDER BY without partition-key restriction is rejected", "[cql.native][order_by]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int, ck int, v text, PRIMARY KEY (pk, ck));").opcode == op::RESULT);
+        Frame bad = send_query(client, "SELECT * FROM ks.t ORDER BY ck;");
+        CHECK(bad.opcode == op::ERROR);
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("ORDER BY can skip a CK column restricted by equality", "[cql.native][order_by]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (a int, b int, c int, d int, PRIMARY KEY (a, b, c));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (a, b, c, d) VALUES (0, 0, 0, 0);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (a, b, c, d) VALUES (0, 0, 1, 1);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (a, b, c, d) VALUES (0, 0, 2, 2);").opcode == op::RESULT);
+
+        Frame desc = send_query(client, "SELECT c FROM ks.t WHERE a = 0 AND b = 0 ORDER BY c DESC;");
+        CHECK(result_kind(desc) == result::ROWS);
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("CLUSTERING ORDER BY (col DESC) reverses default scan", "[cql.native][order_by]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (k int, c int, v text, PRIMARY KEY (k, c)) WITH CLUSTERING ORDER BY (c DESC);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c, v) VALUES (0, 1, 'low');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c, v) VALUES (0, 2, 'mid');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c, v) VALUES (0, 3, 'high');").opcode == op::RESULT);
+
+        // Default scan should follow the table's CLUSTERING ORDER (c DESC) — high first.
+        Frame def = send_query(client, "SELECT v FROM ks.t WHERE k = 0;");
+        CHECK(result_kind(def) == result::ROWS);
+        CHECK(body_index_of(def, "high") < body_index_of(def, "mid"));
+        CHECK(body_index_of(def, "mid") < body_index_of(def, "low"));
+
+        // ORDER BY c ASC against a DESC table reverses back to ascending.
+        Frame asc = send_query(client, "SELECT v FROM ks.t WHERE k = 0 ORDER BY c ASC;");
+        CHECK(result_kind(asc) == result::ROWS);
+        CHECK(body_index_of(asc, "low") < body_index_of(asc, "mid"));
+        CHECK(body_index_of(asc, "mid") < body_index_of(asc, "high"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("ORDER BY merges across PK IN partitions", "[cql.native][order_by]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk text, ck int, v text, PRIMARY KEY (pk, ck));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, v) VALUES ('a', 3, 'three');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, v) VALUES ('b', 1, 'one');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, v) VALUES ('c', 2, 'two');").opcode == op::RESULT);
+
+        Frame fr = send_query(client, "SELECT v FROM ks.t WHERE pk IN ('a', 'b', 'c') ORDER BY ck;");
+        CHECK(result_kind(fr) == result::ROWS);
+        CHECK(body_index_of(fr, "one") < body_index_of(fr, "two"));
+        CHECK(body_index_of(fr, "two") < body_index_of(fr, "three"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}

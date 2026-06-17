@@ -615,6 +615,17 @@ namespace cql::planner {
             locator.index_key_prefix = {};
         }
 
+        // Contiguous equality-restricted CK prefix. A single-value IN counts as equality.
+        for (U64 i = 0; i < n_ck; i++) {
+            if (static_cast<bool>(ck_eq_vals[i])) {
+                locator.ck_eq_prefix_len = i + 1;
+            } else if (ck_in_seen[i] && ck_in_vals[i].length == 1) {
+                locator.ck_eq_prefix_len = i + 1;
+            } else {
+                break;
+            }
+        }
+
         return {move(locator), move(filter)};
     }
 
@@ -670,31 +681,80 @@ namespace cql::planner {
             return plan;
         }
 
-        if (stmt.order_by) {
-            // ORDER BY must restrict the partition key (single partition) and name a prefix
-            // of the clustering columns in order, all with matching direction.
-            bool any_desc = false;
-            bool any_asc  = false;
+        if (stmt.order_by && stmt.order_by->columns.length > 0) {
+            // ORDER BY requires the partition key to be fully restricted (eq or IN) so
+            // the scan stays within partitions whose iteration we can deterministically
+            // order.
+            if (!plan.locator.pk_is_equality && !plan.locator.pk_has_in &&
+                plan.locator.pk_in_values.length == 0) {
+                plan.result.error = PlanError::OrderByOnNonClusteringColumn;
+                return plan;
+            }
+            // ORDER BY column[0] must name some clustering column; subsequent columns
+            // must follow positionally. The starting position may sit anywhere within
+            // (or just past) the equality-restricted prefix — Cassandra accepts ORDER BY
+            // either on the equality column itself or on the first non-equality position.
+            // For each ORDER BY column we compare its direction with the table's per-CK
+            // clustering_order: all-match means forward scan, all-opposite means reverse
+            // scan, mixed is invalid (cannot satisfy with a single direction until
+            // per-column byte inversion lands).
+            String8 first_name(stmt.order_by->columns[0].column.identifier.c_str,
+                               stmt.order_by->columns[0].column.identifier.length);
+            U64     ck_start = MAX_U64;
+            for (U64 p = 0; p < tbl.clustering_key_col_indices.length; p++) {
+                if (tbl.cols[tbl.clustering_key_col_indices[p]].name == first_name) {
+                    ck_start = p;
+                    break;
+                }
+            }
+            if (ck_start == MAX_U64) {
+                plan.result.error   = PlanError::OrderByOnNonClusteringColumn;
+                plan.result.context = AutoString8(first_name);
+                return plan;
+            }
+            // ORDER BY may skip past an equality-restricted prefix but may NOT skip past
+            // an unrestricted CK column. Reject `ORDER BY ck[k]` when any of ck[0..k-1]
+            // is unrestricted, since the result would not match a single forward/reverse
+            // scan from position k.
+            if (ck_start > plan.locator.ck_eq_prefix_len) {
+                plan.result.error   = PlanError::OrderByOnNonClusteringColumn;
+                plan.result.context = AutoString8(first_name);
+                return plan;
+            }
+
+            // Validation: per CK position, the query direction must either match the
+            // table direction or be its opposite, and the choice must be uniform across
+            // all ORDER BY columns. Iteration direction comes from the first ORDER BY
+            // column's sort — all subsequent columns are constrained to agree with it.
+            Optional<bool> opposite_decision;
             for (U64 i = 0; i < stmt.order_by->columns.length; i++) {
                 const auto& col_order = stmt.order_by->columns[i];
                 String8     name(col_order.column.identifier.c_str, col_order.column.identifier.length);
-                if (i >= tbl.clustering_key_col_indices.length ||
-                    tbl.cols[tbl.clustering_key_col_indices[i]].name != name) {
+                U64         ck_pos = ck_start + i;
+                if (ck_pos >= tbl.clustering_key_col_indices.length ||
+                    tbl.cols[tbl.clustering_key_col_indices[ck_pos]].name != name) {
                     plan.result.error   = PlanError::OrderByOnNonClusteringColumn;
                     plan.result.context = AutoString8(name);
                     return plan;
                 }
-                if (col_order.sort == Sort::DESC) {
-                    any_desc = true;
-                } else {
-                    any_asc = true;
+                Sort tbl_order   = tbl.cols[tbl.clustering_key_col_indices[ck_pos]].clustering_order;
+                bool is_opposite = (col_order.sort != tbl_order);
+                if (opposite_decision && *opposite_decision != is_opposite) {
+                    plan.result.error = PlanError::OrderByOnNonClusteringColumn;
+                    return plan;
                 }
+                opposite_decision = is_opposite;
             }
-            if (any_desc && any_asc) {
-                plan.result.error = PlanError::OrderByOnNonClusteringColumn;
-                return plan;
+            plan.locator.reverse_clustering = (stmt.order_by->columns[0].sort == Sort::DESC);
+        } else if (tbl.clustering_key_col_indices.length > 0) {
+            // No ORDER BY: default scan returns rows in the table's CLUSTERING ORDER. The
+            // first non-equality CK column's direction determines the scan direction;
+            // mixed clustering orders past that position cannot be honored yet.
+            U64 first_ck = plan.locator.ck_eq_prefix_len;
+            if (first_ck < tbl.clustering_key_col_indices.length &&
+                tbl.cols[tbl.clustering_key_col_indices[first_ck]].clustering_order == Sort::DESC) {
+                plan.locator.reverse_clustering = true;
             }
-            plan.locator.reverse_clustering = any_desc;
         }
 
         for (const auto& sc : stmt.select.clauses) {

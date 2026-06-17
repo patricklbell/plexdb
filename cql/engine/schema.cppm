@@ -26,6 +26,8 @@ export namespace cql::schema {
         const type::Type type;
         KeyKind          key_kind     = KeyKind::None;
         U16              key_position = 0;
+        // @note clustering_order only meaningful when key_kind == ClusteringKey; default ASC.
+        Sort clustering_order = Sort::ASC;
     };
 
 // Stored as the fixed-size value in the outer (partition) BTree for all tables.
@@ -121,6 +123,7 @@ export namespace cql::schema {
         U64     table_idx;
         KeyKind key_kind;
         U16     key_position;
+        Sort    clustering_order;
     };
     struct IndexHeader {
         bool tombstone;
@@ -221,7 +224,7 @@ export namespace cql::schema {
     coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create);
     coroutine::Task<Result<void>>   delete_table(Schema& schema, Keyspace& ks, String8 name);
 
-    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create, KeyKind key_kind = KeyKind::None, U16 key_position = 0);
+    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create, KeyKind key_kind = KeyKind::None, U16 key_position = 0, Sort clustering_order = Sort::ASC);
     coroutine::Task<Result<void>>    delete_column(Schema& schema, Table& tbl, String8 name);
 
     Result<Index*>                  read_index(Schema& schema, Table& tbl, String8 name);

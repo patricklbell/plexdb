@@ -50,6 +50,10 @@ export namespace cql::planner {
         bool reverse_partitions = false;
         bool reverse_clustering = false;
 
+        // @note number of clustering positions, starting from 0, restricted by equality (or
+        // single-value IN). ORDER BY may begin at the first non-equality CK position.
+        U64 ck_eq_prefix_len = 0;
+
         // Set when a WHERE equality predicate matches an indexed non-key column.
         Optional<U64>    index_col_idx;    // column index in tbl.cols
         DynamicArray<U8> index_key_prefix; // encoded column value for index prefix scan
