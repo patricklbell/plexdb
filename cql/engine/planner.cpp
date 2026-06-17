@@ -45,6 +45,60 @@ namespace cql::planner {
         return false;
     }
 
+    // Apply a single-column range bound to `bounds`. When `direction == DESC`,
+    // logical </> map onto byte >/< since DESC values are encoded byte-inverted,
+    // so the begin/end roles swap. `partial` marks bounds that cover a prefix
+    // shorter than the full composite key (forces prefix-aware comparison).
+    static void apply_range_bound(KeyBounds& bounds, Operator op, Sort direction,
+                                  DynamicArray<U8> bytes, bool partial) {
+        if (direction == Sort::DESC) {
+            switch (op) {
+                case Operator::lt:
+                    op = Operator::gt;
+                    break;
+                case Operator::le:
+                    op = Operator::ge;
+                    break;
+                case Operator::gt:
+                    op = Operator::lt;
+                    break;
+                case Operator::ge:
+                    op = Operator::le;
+                    break;
+                default:
+                    break;
+            }
+        }
+        switch (op) {
+            case Operator::lt:
+                bounds.end            = move(bytes);
+                bounds.has_end        = true;
+                bounds.end_inclusive  = false;
+                bounds.end_is_partial = partial;
+                break;
+            case Operator::le:
+                bounds.end            = move(bytes);
+                bounds.has_end        = true;
+                bounds.end_inclusive  = true;
+                bounds.end_is_partial = partial;
+                break;
+            case Operator::gt:
+                bounds.begin            = move(bytes);
+                bounds.has_begin        = true;
+                bounds.begin_inclusive  = false;
+                bounds.begin_is_partial = partial;
+                break;
+            case Operator::ge:
+                bounds.begin            = move(bytes);
+                bounds.has_begin        = true;
+                bounds.begin_inclusive  = true;
+                bounds.begin_is_partial = partial;
+                break;
+            default:
+                break;
+        }
+    }
+
     Pair<RowLocator, FilterPlan> build_row_locator(const WhereClause& where, const schema::Table& tbl, const EvalContext& ctx) {
         RowLocator locator{};
         FilterPlan filter{};
@@ -144,24 +198,24 @@ namespace cql::planner {
                         } else if (n_pk == 1 && *pk_pos == 0) {
                             switch (r.operator_) {
                                 case Operator::lt:
-                                    locator.pk_end           = key::serialize_partition_single(tbl, eval);
-                                    locator.pk_has_end       = true;
-                                    locator.pk_end_inclusive = false;
+                                    locator.pk.end           = key::serialize_partition_single(tbl, eval);
+                                    locator.pk.has_end       = true;
+                                    locator.pk.end_inclusive = false;
                                     break;
                                 case Operator::le:
-                                    locator.pk_end           = key::serialize_partition_single(tbl, eval);
-                                    locator.pk_has_end       = true;
-                                    locator.pk_end_inclusive = true;
+                                    locator.pk.end           = key::serialize_partition_single(tbl, eval);
+                                    locator.pk.has_end       = true;
+                                    locator.pk.end_inclusive = true;
                                     break;
                                 case Operator::gt:
-                                    locator.pk_begin           = key::serialize_partition_single(tbl, eval);
-                                    locator.pk_has_begin       = true;
-                                    locator.pk_begin_inclusive = false;
+                                    locator.pk.begin           = key::serialize_partition_single(tbl, eval);
+                                    locator.pk.has_begin       = true;
+                                    locator.pk.begin_inclusive = false;
                                     break;
                                 case Operator::ge:
-                                    locator.pk_begin           = key::serialize_partition_single(tbl, eval);
-                                    locator.pk_has_begin       = true;
-                                    locator.pk_begin_inclusive = true;
+                                    locator.pk.begin           = key::serialize_partition_single(tbl, eval);
+                                    locator.pk.has_begin       = true;
+                                    locator.pk.begin_inclusive = true;
                                     break;
                                 default:
                                     push_back(filter.predicates, rel);
@@ -195,35 +249,9 @@ namespace cql::planner {
                             });
                             push_back(filter.predicates, rel);
                         } else if (*ck_pos == 0) {
-                            bool partial = n_ck > 1;
-                            switch (r.operator_) {
-                                case Operator::lt:
-                                    locator.ck_end            = key::serialize_clustering_single(tbl, eval);
-                                    locator.ck_has_end        = true;
-                                    locator.ck_end_inclusive  = false;
-                                    locator.ck_end_is_partial = partial;
-                                    break;
-                                case Operator::le:
-                                    locator.ck_end            = key::serialize_clustering_single(tbl, eval);
-                                    locator.ck_has_end        = true;
-                                    locator.ck_end_inclusive  = true;
-                                    locator.ck_end_is_partial = partial;
-                                    break;
-                                case Operator::gt:
-                                    locator.ck_begin            = key::serialize_clustering_single(tbl, eval);
-                                    locator.ck_has_begin        = true;
-                                    locator.ck_begin_inclusive  = false;
-                                    locator.ck_begin_is_partial = partial;
-                                    break;
-                                case Operator::ge:
-                                    locator.ck_begin            = key::serialize_clustering_single(tbl, eval);
-                                    locator.ck_has_begin        = true;
-                                    locator.ck_begin_inclusive  = true;
-                                    locator.ck_begin_is_partial = partial;
-                                    break;
-                                default:
-                                    break;
-                            }
+                            Sort dir = tbl.cols[tbl.clustering_key_col_indices[0]].clustering_order;
+                            apply_range_bound(locator.ck, r.operator_, dir,
+                                              key::serialize_clustering_single(tbl, eval), n_ck > 1);
                             // @note CK range also goes to filter for post-scan evaluation;
                             // does not set needs_allow_filtering — CK filtering is efficient.
                             push_back(filter.predicates, rel);
@@ -339,36 +367,10 @@ namespace cql::planner {
                         if (r.columns.length == 1 && r.values.length == 1 && n_ck > 0) {
                             auto ck_pos = find_ck_position(tbl, r.columns[0].identifier);
                             if (ck_pos && *ck_pos == 0) {
-                                Evaluated eval    = evaluate(r.values[0], ctx);
-                                bool      partial = n_ck > 1;
-                                switch (r.operator_) {
-                                    case Operator::lt:
-                                        locator.ck_end            = key::serialize_clustering_single(tbl, eval);
-                                        locator.ck_has_end        = true;
-                                        locator.ck_end_inclusive  = false;
-                                        locator.ck_end_is_partial = partial;
-                                        break;
-                                    case Operator::le:
-                                        locator.ck_end            = key::serialize_clustering_single(tbl, eval);
-                                        locator.ck_has_end        = true;
-                                        locator.ck_end_inclusive  = true;
-                                        locator.ck_end_is_partial = partial;
-                                        break;
-                                    case Operator::gt:
-                                        locator.ck_begin            = key::serialize_clustering_single(tbl, eval);
-                                        locator.ck_has_begin        = true;
-                                        locator.ck_begin_inclusive  = false;
-                                        locator.ck_begin_is_partial = partial;
-                                        break;
-                                    case Operator::ge:
-                                        locator.ck_begin            = key::serialize_clustering_single(tbl, eval);
-                                        locator.ck_has_begin        = true;
-                                        locator.ck_begin_inclusive  = true;
-                                        locator.ck_begin_is_partial = partial;
-                                        break;
-                                    default:
-                                        break;
-                                }
+                                Evaluated eval = evaluate(r.values[0], ctx);
+                                Sort      dir  = tbl.cols[tbl.clustering_key_col_indices[0]].clustering_order;
+                                apply_range_bound(locator.ck, r.operator_, dir,
+                                                  key::serialize_clustering_single(tbl, eval), n_ck > 1);
                             }
                         }
                         push_back(filter.predicates, rel);
@@ -394,10 +396,10 @@ namespace cql::planner {
             for (U64 i = 0; i < n_pk; i++) {
                 push_back(evals, move(*pk_eq_vals[i]));
             }
-            locator.pk_begin           = key::serialize_partition(tbl, evals);
-            locator.pk_has_begin       = true;
-            locator.pk_begin_inclusive = true;
-            locator.pk_is_equality     = true;
+            locator.pk.begin           = key::serialize_partition(tbl, evals);
+            locator.pk.has_begin       = true;
+            locator.pk.begin_inclusive = true;
+            locator.pk.is_equality     = true;
         } else {
             // Check if all PK positions have either EQ or IN (even empty IN).
             // If so, generate a cartesian product of pk_in_values for multi-partition support.
@@ -409,7 +411,7 @@ namespace cql::planner {
                 }
             }
             if (all_pk_covered) {
-                locator.pk_has_in = true;
+                locator.pk.has_in = true;
                 DynamicArray<U64> sizes;
                 resize(sizes, n_pk);
                 U64 total = 1;
@@ -425,7 +427,7 @@ namespace cql::planner {
                         U64 choice = (idx / stride) % sizes[i];
                         push_back(combo, pk_eq_vals[i] ? *pk_eq_vals[i] : pk_in_vals[i][choice]);
                     }
-                    push_back(locator.pk_in_values, key::serialize_partition(tbl, combo));
+                    push_back(locator.pk.in_values, key::serialize_partition(tbl, combo));
                 }
                 // Push EQ parts to filter so they are evaluated row-by-row in SELECT.
                 for (const auto& r : pk_eq_rels) {
@@ -442,7 +444,7 @@ namespace cql::planner {
                     }
                 }
                 if (any_pk_empty_in) {
-                    locator.pk_has_in = true;
+                    locator.pk.has_in = true;
                 } else {
                     for (const auto& r : pk_eq_rels) {
                         push_back(filter.predicates, r);
@@ -487,10 +489,10 @@ namespace cql::planner {
                 for (U64 i = 0; i < n_ck; i++) {
                     push_back(evals, move(*ck_eq_vals[i]));
                 }
-                locator.ck_begin           = key::serialize_clustering(tbl, evals);
-                locator.ck_has_begin       = true;
-                locator.ck_begin_inclusive = true;
-                locator.ck_is_equality     = true;
+                locator.ck.begin           = key::serialize_clustering(tbl, evals);
+                locator.ck.has_begin       = true;
+                locator.ck.begin_inclusive = true;
+                locator.ck.is_equality     = true;
                 // @note CK equality also goes to filter for post-scan evaluation;
                 // the locator's ck_begin is used for initial positioning only.
                 for (const auto& r : ck_eq_rels) {
@@ -507,7 +509,7 @@ namespace cql::planner {
                     }
                 }
                 if (all_ck_covered) {
-                    locator.ck_has_in = true;
+                    locator.ck.has_in = true;
                     DynamicArray<U64> sizes;
                     resize(sizes, n_ck);
                     U64 total = 1;
@@ -523,13 +525,13 @@ namespace cql::planner {
                             U64 choice = (idx / stride) % sizes[i];
                             push_back(combo, ck_eq_vals[i] ? *ck_eq_vals[i] : ck_in_vals[i][choice]);
                         }
-                        push_back(locator.ck_in_values, key::serialize_clustering(tbl, combo));
+                        push_back(locator.ck.in_values, key::serialize_clustering(tbl, combo));
                     }
                 } else {
                     // If any explicitly-seen IN list is empty, the product is 0 — no-op.
                     for (U64 i = 0; i < n_ck; i++) {
                         if (ck_in_seen[i] && ck_in_vals[i].length == 0) {
-                            locator.ck_has_in = true;
+                            locator.ck.has_in = true;
                             break;
                         }
                     }
@@ -555,14 +557,14 @@ namespace cql::planner {
                     }
                 }
                 if (all_covered) {
-                    push_back(locator.ck_in_values, key::serialize_clustering(tbl, full_combo));
+                    push_back(locator.ck.in_values, key::serialize_clustering(tbl, full_combo));
                 }
             }
         }
 
         // @note partial CK prefix EQ (c1=0 on 3-CK table) is not ck_is_equality; convert to prefix range
-        if (n_ck > 1 && !locator.ck_is_equality && !locator.ck_has_begin && !locator.ck_has_end &&
-            locator.ck_in_values.length == 0 && !locator.ck_has_in) {
+        if (n_ck > 1 && !locator.ck.is_equality && !locator.ck.has_begin && !locator.ck.has_end &&
+            locator.ck.in_values.length == 0 && !locator.ck.has_in) {
             U64 n_prefix = 0;
             for (U64 i = 0; i < n_ck; i++) {
                 if (ck_eq_vals[i]) {
@@ -582,22 +584,22 @@ namespace cql::planner {
                     }
                     prefix = key::serialize_clustering_prefix(tbl, prefix_evals);
                 }
-                locator.ck_begin            = prefix;
-                locator.ck_has_begin        = true;
-                locator.ck_begin_inclusive  = true;
-                locator.ck_begin_is_partial = true;
-                locator.ck_end              = move(prefix);
-                locator.ck_has_end          = true;
-                locator.ck_end_inclusive    = true;
-                locator.ck_end_is_partial   = true;
+                locator.ck.begin            = prefix;
+                locator.ck.has_begin        = true;
+                locator.ck.begin_inclusive  = true;
+                locator.ck.begin_is_partial = true;
+                locator.ck.end              = move(prefix);
+                locator.ck.has_end          = true;
+                locator.ck.end_inclusive    = true;
+                locator.ck.end_is_partial   = true;
             }
         }
 
         // @note CK eq on position N with a smaller-N position missing is filtering inside
         // the partition; a global secondary index on N does not avoid the partition scan.
-        bool partition_scoped = locator.pk_is_equality || locator.pk_has_in ||
-                                locator.ck_has_begin || locator.ck_has_end;
-        if (n_ck > 0 && !locator.ck_is_equality && partition_scoped) {
+        bool partition_scoped = locator.pk.is_equality || locator.pk.has_in ||
+                                locator.ck.has_begin || locator.ck.has_end;
+        if (n_ck > 0 && !locator.ck.is_equality && partition_scoped) {
             bool prefix_broken = false;
             for (U64 i = 0; i < n_ck; i++) {
                 bool covered = static_cast<bool>(ck_eq_vals[i]) || ck_in_seen[i];
@@ -610,7 +612,7 @@ namespace cql::planner {
         }
 
         // @note prefer the partition lookup over the index when both are available.
-        if (locator.index_col_idx && (locator.pk_is_equality || locator.pk_has_in)) {
+        if (locator.index_col_idx && (locator.pk.is_equality || locator.pk.has_in)) {
             locator.index_col_idx    = {};
             locator.index_key_prefix = {};
         }
@@ -685,8 +687,8 @@ namespace cql::planner {
             // ORDER BY requires the partition key to be fully restricted (eq or IN) so
             // the scan stays within partitions whose iteration we can deterministically
             // order.
-            if (!plan.locator.pk_is_equality && !plan.locator.pk_has_in &&
-                plan.locator.pk_in_values.length == 0) {
+            if (!plan.locator.pk.is_equality && !plan.locator.pk.has_in &&
+                plan.locator.pk.in_values.length == 0) {
                 plan.result.error = PlanError::OrderByOnNonClusteringColumn;
                 return plan;
             }
@@ -845,7 +847,7 @@ namespace cql::planner {
             plan.filter     = move(flt);
         }
 
-        if (!plan.locator.pk_is_equality && plan.locator.pk_in_values.length == 0 && !plan.locator.pk_has_in) {
+        if (!plan.locator.pk.is_equality && plan.locator.pk.in_values.length == 0 && !plan.locator.pk.has_in) {
             plan.result.error   = PlanError::MissingPartitionKey;
             plan.result.context = AutoString8(tbl.cols[tbl.partition_key_col_indices[0]].name);
             return plan;
@@ -885,7 +887,7 @@ namespace cql::planner {
         }
 
         if (tbl.clustering_key_col_indices.length > 0) {
-            bool ck_specified = plan.locator.ck_is_equality || plan.locator.ck_in_values.length > 0 || plan.locator.ck_has_in;
+            bool ck_specified = plan.locator.ck.is_equality || plan.locator.ck.in_values.length > 0 || plan.locator.ck.has_in;
             if (!ck_specified && has_non_static_assignment) {
                 plan.result.error   = PlanError::MissingClusteringKey;
                 plan.result.context = AutoString8(tbl.cols[tbl.clustering_key_col_indices[0]].name);
@@ -946,14 +948,14 @@ namespace cql::planner {
             plan.filter     = move(flt);
         }
 
-        if (!plan.locator.pk_is_equality && plan.locator.pk_in_values.length == 0 && !plan.locator.pk_has_in) {
+        if (!plan.locator.pk.is_equality && plan.locator.pk.in_values.length == 0 && !plan.locator.pk.has_in) {
             plan.result.error   = PlanError::MissingPartitionKey;
             plan.result.context = AutoString8(tbl.cols[tbl.partition_key_col_indices[0]].name);
             return plan;
         }
 
-        bool ck_specified = plan.locator.ck_is_equality || plan.locator.ck_in_values.length > 0 ||
-                            plan.locator.ck_has_in || plan.locator.ck_has_begin || plan.locator.ck_has_end;
+        bool ck_specified = plan.locator.ck.is_equality || plan.locator.ck.in_values.length > 0 ||
+                            plan.locator.ck.has_in || plan.locator.ck.has_begin || plan.locator.ck.has_end;
 
         if (stmt.selections.length == 0) {
             plan.spec.is_full_delete = true;
@@ -986,7 +988,7 @@ namespace cql::planner {
                 return plan;
             }
 
-            bool has_ck_range = (plan.locator.ck_has_begin || plan.locator.ck_has_end) && !plan.locator.ck_is_equality;
+            bool has_ck_range = (plan.locator.ck.has_begin || plan.locator.ck.has_end) && !plan.locator.ck.is_equality;
             if (!is_static_only && has_ck_range) {
                 plan.result.error = PlanError::RangeDeletionOnSpecificColumns;
                 return plan;
@@ -994,7 +996,7 @@ namespace cql::planner {
         }
 
         // Skip CK check if the PK IN list is empty — the mutation is guaranteed to be a no-op.
-        bool pk_will_be_empty = plan.locator.pk_has_in && plan.locator.pk_in_values.length == 0;
+        bool pk_will_be_empty = plan.locator.pk.has_in && plan.locator.pk.in_values.length == 0;
         // Range or full-partition deletes are valid even without CK equality/IN.
         // Missing CK only applies to column-level (non-static) deletes that need a specific row.
         bool needs_ck = !plan.spec.is_full_delete && !pk_will_be_empty;

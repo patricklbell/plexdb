@@ -15,37 +15,27 @@ import cql.engine.types;
 using namespace plexdb;
 
 export namespace cql::planner {
+    // Shared bound description for partition and clustering keys. `is_partial` is
+    // meaningful only for composite clustering keys where the bound covers a
+    // prefix shorter than the full CK column count.
+    struct KeyBounds {
+        DynamicArray<U8> begin{};
+        DynamicArray<U8> end{};
+        bool             has_begin        = false;
+        bool             has_end          = false;
+        bool             begin_inclusive  = true;
+        bool             end_inclusive    = true;
+        bool             is_equality      = false;
+        bool             begin_is_partial = false;
+        bool             end_is_partial   = false;
+        bool             has_in           = false;
+        // Non-empty when WHERE uses IN; each entry is a fully serialized key.
+        DynamicArray<DynamicArray<U8>> in_values{};
+    };
+
     struct RowLocator {
-        DynamicArray<U8> pk_begin{};
-        DynamicArray<U8> pk_end{};
-        bool             pk_has_begin       = false;
-        bool             pk_has_end         = false;
-        bool             pk_begin_inclusive = true;
-        bool             pk_end_inclusive   = true;
-        bool             pk_is_equality     = false;
-
-        // Non-empty when WHERE uses IN on the partition key.
-        // Each entry is a fully serialized partition key to mutate.
-        DynamicArray<DynamicArray<U8>> pk_in_values{};
-
-        // Non-empty when WHERE uses IN on the clustering key.
-        // Each entry is a fully serialized clustering key to mutate.
-        DynamicArray<DynamicArray<U8>> ck_in_values{};
-
-        DynamicArray<U8> ck_begin{};
-        DynamicArray<U8> ck_end{};
-        bool             ck_has_begin       = false;
-        bool             ck_has_end         = false;
-        bool             ck_begin_inclusive = true;
-        bool             ck_end_inclusive   = true;
-        bool             ck_is_equality     = false;
-
-        bool pk_has_in = false;
-        bool ck_has_in = false;
-
-        // @note set when bound covers only first CK column of a multi-column key; composite-encoded, requires prefix comparison
-        bool ck_begin_is_partial = false;
-        bool ck_end_is_partial   = false;
+        KeyBounds pk;
+        KeyBounds ck;
 
         bool reverse_partitions = false;
         bool reverse_clustering = false;

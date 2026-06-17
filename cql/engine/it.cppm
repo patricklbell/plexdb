@@ -9,6 +9,7 @@ import plexdb.blob;
 
 import cql.engine.column_value;
 import cql.engine.io;
+import cql.engine.planner;
 import cql.engine.schema;
 import cql.engine.statements;
 
@@ -104,14 +105,7 @@ export namespace cql {
         bool static_only_row = false; // @note true when partition has static data but no clustering rows
 
         // CK iteration bounds; applied per-partition in setup_clustering_for_partition.
-        DynamicArray<U8> ck_begin;
-        DynamicArray<U8> ck_end;
-        bool             ck_has_begin        = false;
-        bool             ck_has_end          = false;
-        bool             ck_begin_inclusive  = true;
-        bool             ck_end_inclusive    = true;
-        bool             ck_begin_is_partial = false;
-        bool             ck_end_is_partial   = false;
+        planner::KeyBounds ck;
 
         // @note when reverse_clustering is true, clustering_end_it is rend
         // (leaf=nullptr) and the lower bound is checked on each advance.
@@ -130,36 +124,22 @@ export namespace cql {
             , clustering_it(move(other.clustering_it))
             , clustering_end_it(move(other.clustering_end_it))
             , static_only_row(other.static_only_row)
-            , ck_begin(move(other.ck_begin))
-            , ck_end(move(other.ck_end))
-            , ck_has_begin(other.ck_has_begin)
-            , ck_has_end(other.ck_has_end)
-            , ck_begin_inclusive(other.ck_begin_inclusive)
-            , ck_end_inclusive(other.ck_end_inclusive)
-            , ck_begin_is_partial(other.ck_begin_is_partial)
-            , ck_end_is_partial(other.ck_end_is_partial)
+            , ck(move(other.ck))
             , reverse_clustering(other.reverse_clustering) {
             fix_clustering_btree_ptr(other);
         }
 
         RowIterator& operator=(RowIterator&& other) noexcept {
             if (this != &other) {
-                pager               = other.pager;
-                table               = other.table;
-                partition_it        = move(other.partition_it);
-                clustering_btree    = other.clustering_btree;
-                clustering_it       = move(other.clustering_it);
-                clustering_end_it   = move(other.clustering_end_it);
-                static_only_row     = other.static_only_row;
-                ck_begin            = move(other.ck_begin);
-                ck_end              = move(other.ck_end);
-                ck_has_begin        = other.ck_has_begin;
-                ck_has_end          = other.ck_has_end;
-                ck_begin_inclusive  = other.ck_begin_inclusive;
-                ck_end_inclusive    = other.ck_end_inclusive;
-                ck_begin_is_partial = other.ck_begin_is_partial;
-                ck_end_is_partial   = other.ck_end_is_partial;
-                reverse_clustering  = other.reverse_clustering;
+                pager              = other.pager;
+                table              = other.table;
+                partition_it       = move(other.partition_it);
+                clustering_btree   = other.clustering_btree;
+                clustering_it      = move(other.clustering_it);
+                clustering_end_it  = move(other.clustering_end_it);
+                static_only_row    = other.static_only_row;
+                ck                 = move(other.ck);
+                reverse_clustering = other.reverse_clustering;
                 fix_clustering_btree_ptr(other);
             }
             return *this;

@@ -1378,6 +1378,43 @@ CQL_NATIVE_TEST_CASE("CLUSTERING ORDER BY must list a CK prefix in order", "[cql
     co_return;
 }
 
+CQL_NATIVE_TEST_CASE("Range bounds on DESC clustering column return matching rows", "[cql.native][order_by]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t (k int, c int, label text, "
+                         "PRIMARY KEY (k, c)) WITH CLUSTERING ORDER BY (c DESC);")
+                  .opcode == op::RESULT);
+        for (int i = 0; i < 5; i++) {
+            char buf[120];
+            int  n = snprintf(buf, sizeof(buf),
+                              "INSERT INTO ks.t (k, c, label) VALUES (0, %d, 'v%d');", i, i);
+            CHECK(send_query(client, String8(buf, U64(n))).opcode == op::RESULT);
+        }
+
+        // Logical c > 2 on a DESC column must return rows 3 and 4.
+        Frame gt = send_query(client, "SELECT label FROM ks.t WHERE k = 0 AND c > 2;");
+        CHECK(result_kind(gt) == result::ROWS);
+        CHECK(!body_contains(gt, "v0"));
+        CHECK(!body_contains(gt, "v1"));
+        CHECK(!body_contains(gt, "v2"));
+        CHECK(body_contains(gt, "v3"));
+        CHECK(body_contains(gt, "v4"));
+
+        // Logical c <= 1 returns rows 0 and 1.
+        Frame le = send_query(client, "SELECT label FROM ks.t WHERE k = 0 AND c <= 1;");
+        CHECK(result_kind(le) == result::ROWS);
+        CHECK(body_contains(le, "v0"));
+        CHECK(body_contains(le, "v1"));
+        CHECK(!body_contains(le, "v2"));
+        CHECK(!body_contains(le, "v3"));
+        CHECK(!body_contains(le, "v4"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
 CQL_NATIVE_TEST_CASE("ORDER BY merges across PK IN partitions", "[cql.native][order_by]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
         CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
