@@ -722,10 +722,12 @@ namespace cql::planner {
                 return plan;
             }
 
-            // Validation: per CK position, the query direction must either match the
+            // Validation: per CK position the query direction must either match the
             // table direction or be its opposite, and the choice must be uniform across
-            // all ORDER BY columns. Iteration direction comes from the first ORDER BY
-            // column's sort — all subsequent columns are constrained to agree with it.
+            // all ORDER BY columns. With per-DESC-column byte inversion in the
+            // clustering key encoding (see key.cppm), forward BTree iteration already
+            // produces the table's natural CLUSTERING ORDER, so reverse_clustering
+            // simply tracks the all-match (false) vs all-opposite (true) consensus.
             Optional<bool> opposite_decision;
             for (U64 i = 0; i < stmt.order_by->columns.length; i++) {
                 const auto& col_order = stmt.order_by->columns[i];
@@ -745,17 +747,11 @@ namespace cql::planner {
                 }
                 opposite_decision = is_opposite;
             }
-            plan.locator.reverse_clustering = (stmt.order_by->columns[0].sort == Sort::DESC);
-        } else if (tbl.clustering_key_col_indices.length > 0) {
-            // No ORDER BY: default scan returns rows in the table's CLUSTERING ORDER. The
-            // first non-equality CK column's direction determines the scan direction;
-            // mixed clustering orders past that position cannot be honored yet.
-            U64 first_ck = plan.locator.ck_eq_prefix_len;
-            if (first_ck < tbl.clustering_key_col_indices.length &&
-                tbl.cols[tbl.clustering_key_col_indices[first_ck]].clustering_order == Sort::DESC) {
-                plan.locator.reverse_clustering = true;
-            }
+            plan.locator.reverse_clustering = opposite_decision.has_value() && *opposite_decision;
         }
+        // @note default scan (no ORDER BY): forward iteration already produces the
+        // table's natural CLUSTERING ORDER thanks to per-DESC byte inversion at encode
+        // time, so reverse_clustering stays false.
 
         for (const auto& sc : stmt.select.clauses) {
             visit(sc.column.value, [&](const auto& sel) {

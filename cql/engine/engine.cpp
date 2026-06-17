@@ -1010,7 +1010,9 @@ namespace cql::engine {
                 co_return create_keyspace_created(stmt.name);
             } else if constexpr (SameAs<T, CreateTable>) {
                 String8 ks_name = static_cast<bool>(stmt.name.keyspace_name) ? String8(*stmt.name.keyspace_name) : current_keyspace;
-                assert_true_not_implemented(!is_system_keyspace(ks_name), "system keyspace CREATE TABLE is not implemented");
+                if (is_system_keyspace(ks_name)) {
+                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "system keyspaces cannot be modified"};
+                }
 
                 auto ks = schema::read_keyspace(engine.schema, ks_name).value;
                 if (ks == nullptr) {
@@ -1023,8 +1025,15 @@ namespace cql::engine {
 
                 handle_table_options(stmt.options, engine);
 
-                auto tbl = (co_await schema::create_table(engine.schema, *ks, stmt)).value;
-                if (tbl == nullptr) {
+                auto tbl_res = co_await schema::create_table(engine.schema, *ks, stmt);
+                if (tbl_res.value == nullptr) {
+                    if (tbl_res.error == schema::Error::InvalidOptions) {
+                        ExecutionResult r;
+                        r.status          = ExecutionStatus::Invalid;
+                        r.message_storage = AutoString8(tbl_res.message);
+                        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                        co_return r;
+                    }
                     co_return create_server_error("Failed to create table");
                 }
 

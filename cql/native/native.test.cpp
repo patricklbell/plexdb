@@ -1330,6 +1330,54 @@ CQL_NATIVE_TEST_CASE("CLUSTERING ORDER BY (col DESC) reverses default scan", "[c
     co_return;
 }
 
+CQL_NATIVE_TEST_CASE("Multi-direction CLUSTERING ORDER BY returns rows in mixed direction", "[cql.native][order_by]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t (k int, c1 int, c2 int, label text, "
+                         "PRIMARY KEY (k, c1, c2)) WITH CLUSTERING ORDER BY (c1 ASC, c2 DESC);")
+                  .opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c1, c2, label) VALUES (0, 0, 0, 'aa');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c1, c2, label) VALUES (0, 0, 1, 'ab');").opcode == op::RESULT);
+
+        // Mixed direction ORDER BY is rejected up front (no data needed).
+        Frame bad = send_query(client, "SELECT * FROM ks.t WHERE k = 0 ORDER BY c1 ASC, c2 ASC;");
+        CHECK(bad.opcode == op::ERROR);
+
+        // Default scan must return c2-DESC inside c1=0: ab before aa.
+        Frame def = send_query(client, "SELECT label FROM ks.t WHERE k = 0;");
+        CHECK(result_kind(def) == result::ROWS);
+        CHECK(body_index_of(def, "ab") < body_index_of(def, "aa"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("CLUSTERING ORDER BY must list a CK prefix in order", "[cql.native][order_by]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        // Skipping c1 in the directive is invalid (must start at the first CK).
+        Frame skip = send_query(client,
+                                "CREATE TABLE ks.t1 (k int, c1 int, c2 int, "
+                                "PRIMARY KEY (k, c1, c2)) WITH CLUSTERING ORDER BY (c2 DESC);");
+        CHECK(skip.opcode == op::ERROR);
+        // Wrong order: c2 before c1 in the directive is invalid.
+        Frame wrong = send_query(client,
+                                 "CREATE TABLE ks.t2 (k int, c1 int, c2 int, "
+                                 "PRIMARY KEY (k, c1, c2)) WITH CLUSTERING ORDER BY (c2 ASC, c1 DESC);");
+        CHECK(wrong.opcode == op::ERROR);
+        // Extra column past the CK list is invalid.
+        Frame extra = send_query(client,
+                                 "CREATE TABLE ks.t3 (k int, c1 int, c2 int, "
+                                 "PRIMARY KEY (k, c1, c2)) WITH CLUSTERING ORDER BY (c1 DESC, c2 DESC, c3 DESC);");
+        CHECK(extra.opcode == op::ERROR);
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
 CQL_NATIVE_TEST_CASE("ORDER BY merges across PK IN partitions", "[cql.native][order_by]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
         CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);

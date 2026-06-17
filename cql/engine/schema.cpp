@@ -597,15 +597,38 @@ namespace cql::schema {
         for (U64 i = 0; i < ck_orders.length; i++) {
             ck_orders[i] = Sort::ASC;
         }
+        Error order_err = Error::None;
         for (const auto& opt : create.options.value) {
+            if (order_err != Error::None) {
+                break;
+            }
             visit(opt, [&](const auto& o) {
                 using O = RemoveCVRef<decltype(o)>;
                 if constexpr (SameAs<O, CreateTable::ClusteringOrder>) {
-                    for (U64 i = 0; i < o.column_orders.length && i < ck_orders.length; i++) {
+                    // Directive columns must be a sequential prefix of the table's
+                    // clustering columns in the same order; the last directive column may
+                    // not extend past the actual CK list and must reference a real CK col.
+                    for (U64 i = 0; i < o.column_orders.length; i++) {
+                        if (i >= ck_orders.length) {
+                            order_err = Error::InvalidOptions;
+                            return;
+                        }
+                        U64     ck_def_idx = pk_info.clustering_col_def_indices[i];
+                        String8 ck_name(create.column_definitions[ck_def_idx].name.identifier.c_str,
+                                        create.column_definitions[ck_def_idx].name.identifier.length);
+                        String8 directive_name(o.column_orders[i].column.identifier.c_str,
+                                               o.column_orders[i].column.identifier.length);
+                        if (ck_name != directive_name) {
+                            order_err = Error::InvalidOptions;
+                            return;
+                        }
                         ck_orders[i] = o.column_orders[i].sort;
                     }
                 }
             });
+        }
+        if (order_err != Error::None) {
+            co_return Result<Table*>{nullptr, order_err, "CLUSTERING ORDER BY must list a sequential prefix of the table's clustering columns"};
         }
 
         U64 btree_page = co_await btree::create_paged(

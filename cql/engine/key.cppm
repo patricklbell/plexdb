@@ -134,9 +134,15 @@ namespace cql::key {
     // Append one key component.
     // Fixed-width types in composite keys: prepend a 2-byte big-endian length (constant, so ordering is unaffected).
     // Variable-length types in composite keys: use escaped-terminated encoding to preserve ordering.
+    // @note `direction == Sort::DESC` inverts the value bytes (not the length prefix) so that
+    // forward lex iteration produces the value in descending logical order. Only fixed-width
+    // types support DESC — variable-width DESC would require an inverted escape/terminator
+    // scheme which is not yet implemented.
     static void append_component(DynamicArray<U8>& out, const Evaluated& eval,
-                                 type::Basic dtype, bool is_composite) {
-        const Constant& c = get<Constant>(eval.value);
+                                 type::Basic dtype, bool is_composite,
+                                 Sort direction = Sort::ASC) {
+        const Constant& c           = get<Constant>(eval.value);
+        U64             value_start = out.length;
         switch (dtype) {
             case type::Basic::bigint:
             case type::Basic::timestamp:
@@ -144,6 +150,7 @@ namespace cql::key {
                 if (is_composite) {
                     append_u16_be(out, 8);
                 }
+                value_start = out.length;
                 append_s64_be(out, eval_as_s64(eval));
                 break;
             }
@@ -151,6 +158,7 @@ namespace cql::key {
                 if (is_composite) {
                     append_u16_be(out, 4);
                 }
+                value_start = out.length;
                 append_s32_be(out, static_cast<S32>(eval_as_s64(eval)));
                 break;
             }
@@ -158,6 +166,7 @@ namespace cql::key {
                 if (is_composite) {
                     append_u16_be(out, 2);
                 }
+                value_start = out.length;
                 append_s16_be(out, static_cast<S16>(eval_as_s64(eval)));
                 break;
             }
@@ -166,6 +175,7 @@ namespace cql::key {
                 if (is_composite) {
                     append_u16_be(out, 1);
                 }
+                value_start = out.length;
                 push_back(out, bits);
                 break;
             }
@@ -173,6 +183,7 @@ namespace cql::key {
                 if (is_composite) {
                     append_u16_be(out, 1);
                 }
+                value_start = out.length;
                 push_back(out, eval_as_bool(eval) ? U8(1) : U8(0));
                 break;
             }
@@ -180,6 +191,7 @@ namespace cql::key {
                 if (is_composite) {
                     append_u16_be(out, 8);
                 }
+                value_start = out.length;
                 append_f64_be(out, eval_as_f64(eval));
                 break;
             }
@@ -192,12 +204,16 @@ namespace cql::key {
                 if (is_composite) {
                     append_u16_be(out, 4);
                 }
+                value_start = out.length;
                 append_bytes(out, bytes, 4);
                 break;
             }
             case type::Basic::text:
             case type::Basic::varchar:
             case type::Basic::ascii: {
+                if (direction == Sort::DESC) {
+                    assert_not_implemented("DESC ordering on variable-width clustering column is not implemented");
+                }
                 const AutoString8& s = get<AutoString8>(c.value);
                 const U8*          p = reinterpret_cast<const U8*>(s.c_str);
                 const U16          n = static_cast<U16>(s.length);
@@ -206,7 +222,7 @@ namespace cql::key {
                 } else {
                     append_bytes(out, p, n);
                 }
-                break;
+                return;
             }
             case type::Basic::uuid:
             case type::Basic::timeuuid: {
@@ -214,36 +230,52 @@ namespace cql::key {
                 if (is_composite) {
                     append_u16_be(out, static_cast<U16>(UUID::length));
                 }
+                value_start = out.length;
                 append_bytes(out, &u.value[0], static_cast<U16>(UUID::length));
                 break;
             }
             case type::Basic::blob: {
+                if (direction == Sort::DESC) {
+                    assert_not_implemented("DESC ordering on variable-width clustering column is not implemented");
+                }
                 const Blob& b = get<Blob>(c.value);
                 if (is_composite) {
                     append_escaped_terminated(out, b.value.ptr, static_cast<U16>(b.value.length));
                 } else {
                     append_bytes(out, b.value.ptr, static_cast<U16>(b.value.length));
                 }
-                break;
+                return;
             }
             case type::Basic::hex: {
+                if (direction == Sort::DESC) {
+                    assert_not_implemented("DESC ordering on variable-width clustering column is not implemented");
+                }
                 const Hex& h = get<Hex>(c.value);
                 if (is_composite) {
                     append_escaped_terminated(out, h.value.ptr, static_cast<U16>(h.value.length));
                 } else {
                     append_bytes(out, h.value.ptr, static_cast<U16>(h.value.length));
                 }
-                break;
+                return;
             }
             default:
                 assert_not_implemented("key serialization for this type is not implemented");
-                break;
+                return;
+        }
+        if (direction == Sort::DESC) {
+            for (U64 i = value_start; i < out.length; i++) {
+                out[i] = static_cast<U8>(out[i] ^ 0xFFu);
+            }
         }
     }
 
     // Decode one key component from `src` starting at `*pos`. Advances *pos past the component.
+    // @note when `direction == Sort::DESC` the value bytes (not the length prefix) were
+    // inverted at encode time; we XOR with 0xFF before decoding to recover the original.
     static ColumnValue decode_component(const U8* src, U16 total_len, U16* pos,
-                                        type::Basic dtype, bool composite) {
+                                        type::Basic dtype, bool composite,
+                                        Sort direction = Sort::ASC) {
+        const U8 m = (direction == Sort::DESC) ? U8(0xFFu) : U8(0x00u);
         if (composite) {
             switch (dtype) {
                 // Fixed-width composite components: 2-byte length prefix + data
@@ -253,33 +285,33 @@ namespace cql::key {
                     *pos += 2;
                     U64 bits = 0;
                     for (int b = 0; b < 8; b++) {
-                        bits = (bits << 8) | src[*pos + b];
+                        bits = (bits << 8) | (src[*pos + b] ^ m);
                     }
                     *pos += 8;
                     return ColumnValue{static_cast<S64>(bits ^ 0x8000000000000000ULL)};
                 }
                 case type::Basic::int_: {
                     *pos += 2;
-                    U32 bits = (U32(src[*pos]) << 24) | (U32(src[*pos + 1]) << 16) |
-                               (U32(src[*pos + 2]) << 8) | U32(src[*pos + 3]);
+                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) |
+                               (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
                     *pos += 4;
                     return ColumnValue{static_cast<S32>(bits ^ 0x80000000U)};
                 }
                 case type::Basic::smallint: {
                     *pos += 2;
-                    U16 bits = (U16(src[*pos]) << 8) | U16(src[*pos + 1]);
+                    U16 bits = (U16(src[*pos] ^ m) << 8) | U16(src[*pos + 1] ^ m);
                     *pos += 2;
                     return ColumnValue{static_cast<S16>(bits ^ 0x8000U)};
                 }
                 case type::Basic::tinyint: {
                     *pos += 2;
-                    U8 bits = src[*pos] ^ 0x80U;
+                    U8 bits = (src[*pos] ^ m) ^ 0x80U;
                     *pos += 1;
                     return ColumnValue{bits};
                 }
                 case type::Basic::boolean: {
                     *pos += 2;
-                    U8 v = src[*pos];
+                    U8 v = src[*pos] ^ m;
                     *pos += 1;
                     return ColumnValue{v};
                 }
@@ -287,7 +319,7 @@ namespace cql::key {
                     *pos += 2;
                     U64 bits = 0;
                     for (int b = 0; b < 8; b++) {
-                        bits = (bits << 8) | src[*pos + b];
+                        bits = (bits << 8) | (src[*pos + b] ^ m);
                     }
                     *pos += 8;
                     bits = (bits & 0x8000000000000000ULL) ? (bits ^ 0x8000000000000000ULL) : ~bits;
@@ -297,8 +329,8 @@ namespace cql::key {
                 }
                 case type::Basic::float_: {
                     *pos += 2;
-                    U32 bits = (U32(src[*pos]) << 24) | (U32(src[*pos + 1]) << 16) |
-                               (U32(src[*pos + 2]) << 8) | U32(src[*pos + 3]);
+                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) |
+                               (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
                     *pos += 4;
                     bits = (bits & 0x80000000U) ? (bits ^ 0x80000000U) : ~bits;
                     F32 v;
@@ -309,7 +341,9 @@ namespace cql::key {
                 case type::Basic::timeuuid: {
                     *pos += 2;
                     UUID u;
-                    os::memory_copy(&u.value[0], src + *pos, UUID::length);
+                    for (U64 i = 0; i < UUID::length; i++) {
+                        u.value[i] = static_cast<U8>(src[*pos + i] ^ m);
+                    }
                     *pos += static_cast<U16>(UUID::length);
                     return ColumnValue{u};
                 }
@@ -370,36 +404,36 @@ namespace cql::key {
                 case type::Basic::counter: {
                     U64 bits = 0;
                     for (int b = 0; b < 8; b++) {
-                        bits = (bits << 8) | src[*pos + b];
+                        bits = (bits << 8) | (src[*pos + b] ^ m);
                     }
                     *pos += 8;
                     return ColumnValue{static_cast<S64>(bits ^ 0x8000000000000000ULL)};
                 }
                 case type::Basic::int_: {
-                    U32 bits = (U32(src[*pos]) << 24) | (U32(src[*pos + 1]) << 16) |
-                               (U32(src[*pos + 2]) << 8) | U32(src[*pos + 3]);
+                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) |
+                               (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
                     *pos += 4;
                     return ColumnValue{static_cast<S32>(bits ^ 0x80000000U)};
                 }
                 case type::Basic::smallint: {
-                    U16 bits = (U16(src[*pos]) << 8) | U16(src[*pos + 1]);
+                    U16 bits = (U16(src[*pos] ^ m) << 8) | U16(src[*pos + 1] ^ m);
                     *pos += 2;
                     return ColumnValue{static_cast<S16>(bits ^ 0x8000U)};
                 }
                 case type::Basic::tinyint: {
-                    U8 bits = src[*pos] ^ 0x80U;
+                    U8 bits = (src[*pos] ^ m) ^ 0x80U;
                     *pos += 1;
                     return ColumnValue{bits};
                 }
                 case type::Basic::boolean: {
-                    U8 v = src[*pos];
+                    U8 v = src[*pos] ^ m;
                     *pos += 1;
                     return ColumnValue{v};
                 }
                 case type::Basic::double_: {
                     U64 bits = 0;
                     for (int b = 0; b < 8; b++) {
-                        bits = (bits << 8) | src[*pos + b];
+                        bits = (bits << 8) | (src[*pos + b] ^ m);
                     }
                     *pos += 8;
                     bits = (bits & 0x8000000000000000ULL) ? (bits ^ 0x8000000000000000ULL) : ~bits;
@@ -408,8 +442,8 @@ namespace cql::key {
                     return ColumnValue{v};
                 }
                 case type::Basic::float_: {
-                    U32 bits = (U32(src[*pos]) << 24) | (U32(src[*pos + 1]) << 16) |
-                               (U32(src[*pos + 2]) << 8) | U32(src[*pos + 3]);
+                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) |
+                               (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
                     *pos += 4;
                     bits = (bits & 0x80000000U) ? (bits ^ 0x80000000U) : ~bits;
                     F32 v;
@@ -419,7 +453,9 @@ namespace cql::key {
                 case type::Basic::uuid:
                 case type::Basic::timeuuid: {
                     UUID u;
-                    os::memory_copy(&u.value[0], src + *pos, UUID::length);
+                    for (U64 i = 0; i < UUID::length; i++) {
+                        u.value[i] = static_cast<U8>(src[*pos + i] ^ m);
+                    }
                     *pos += static_cast<U16>(UUID::length);
                     return ColumnValue{u};
                 }
@@ -548,7 +584,7 @@ export namespace cql::key {
         assert_true(type_matches_tag<type::Basic>(col.type.value), "clustering key must be a basic type");
         bool             is_composite = tbl.clustering_key_col_indices.length > 1;
         DynamicArray<U8> out;
-        append_component(out, val, get<type::Basic>(col.type.value), is_composite);
+        append_component(out, val, get<type::Basic>(col.type.value), is_composite, col.clustering_order);
         return out;
     }
 
@@ -562,7 +598,7 @@ export namespace cql::key {
             U64                   col_idx = tbl.clustering_key_col_indices[i];
             const schema::Column& col     = tbl.cols[col_idx];
             assert_true(type_matches_tag<type::Basic>(col.type.value), "clustering key must be a basic type");
-            append_component(out, clustering_vals[i], get<type::Basic>(col.type.value), composite);
+            append_component(out, clustering_vals[i], get<type::Basic>(col.type.value), composite, col.clustering_order);
         }
         return out;
     }
@@ -576,7 +612,7 @@ export namespace cql::key {
             U64                   col_idx = tbl.clustering_key_col_indices[i];
             const schema::Column& col     = tbl.cols[col_idx];
             assert_true(type_matches_tag<type::Basic>(col.type.value), "clustering key must be a basic type");
-            append_component(out, vals[i], get<type::Basic>(col.type.value), composite);
+            append_component(out, vals[i], get<type::Basic>(col.type.value), composite, col.clustering_order);
         }
         return out;
     }
@@ -669,7 +705,7 @@ export namespace cql::key {
             U64                   col_idx = tbl.clustering_key_col_indices[i];
             const schema::Column& col     = tbl.cols[col_idx];
             type::Basic           dtype   = get<type::Basic>(col.type.value);
-            push_back(out, decode_component(key_bytes.ptr, key_bytes.length, &pos, dtype, composite));
+            push_back(out, decode_component(key_bytes.ptr, key_bytes.length, &pos, dtype, composite, col.clustering_order));
         }
         return out;
     }

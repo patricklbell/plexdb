@@ -1,9 +1,10 @@
 ## CQL conformance gaps
 
-Baseline: 97 / 313 passing, 40 xfailed, 3 xpassed, 13 skipped, 160 failed
-(scylladb ref: master, 2026-06-17, after Phase 5 follow-ups).
+Baseline: 99 / 313 passing, 40 xfailed, 3 xpassed, 13 skipped, 158 failed
+(scylladb ref: master, 2026-06-17, after Phase 5 follow-ups including
+multi-direction CLUSTERING ORDER BY).
 
-The 160 failures partition by primary exception into ~50 server crashes (aborts), ~37
+The 158 failures partition by primary exception into ~48 server crashes (aborts), ~37
 server-returned errors (non-crash), and ~73 test-side check failures. Fire/hit counts in
 the first two tables are higher than the unique-test count because a single test can
 trigger multiple aborts or error hits during setup or teardown.
@@ -20,7 +21,8 @@ trigger multiple aborts or error hits during setup or teardown.
 |   2 | PER PARTITION LIMIT is not implemented | `engine.cpp` |
 |   2 | GROUP BY is not implemented | `engine.cpp` |
 |   2 | aggregate SELECT (COUNT(*), etc.) is not implemented | `engine.cpp` |
-|   2 | key serialization for this type is not implemented | `key.cppm` |
+|   1 | key serialization for this type is not implemented | `key.cppm` |
+|   1 | DESC ordering on variable-width clustering column is not implemented | `key.cppm` |
 |   1 | writing null column values is not implemented | `io.cpp` |
 |   1 | writing integer value to this dtype is not implemented | `io.cpp` |
 

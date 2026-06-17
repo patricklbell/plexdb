@@ -2,8 +2,9 @@
 
 ## Current Status
 
-Phases 1–5 complete (with most Phase 5 follow-ups). Score: 97/313 passing
-(2026-06-17). Mustpass list (73 entries) verified — no regressions.
+Phases 1–5 complete (all Phase 5 follow-ups shipped, including multi-direction
+CLUSTERING ORDER BY). Score: 99/313 passing (2026-06-17). Mustpass list
+(73 entries) verified — no regressions.
 
 ---
 
@@ -63,20 +64,13 @@ predicate matches an indexed basic-typed non-key column.
 
 ---
 
-## Phase 4 follow-ups
+## Phase 4 follow-ups (shipped)
 
-Phase 4 (secondary indexes, DISTINCT validation, schema-version + virtual-table WHERE
-that make the cassandra-driver schema refresh work) is shipped. Remaining items:
-
-- **Token-based partition ordering.** `testIndexQueryWithCompositePartitionKey` returns
-  correct rows but in lex-PK order; Cassandra uses Murmur3 token order. Needs a
-  partitioner layer that hashes the partition key into a token and orders by it.
-  Touches every BTree key comparison, not just indexes.
-- **ALTER TABLE WITH options.** `min_index_interval`, `max_index_interval`,
-  `default_time_to_live` (also in Phase 10), `gc_grace_seconds`, etc. — values are
-  parsed and silently dropped. Persist on `TableHeader` and surface in `system_schema.tables`.
-- **`CUSTOM INDEX ... USING '...'`** (SASI/SAI) and per-index `WITH OPTIONS` — deferred
-  indefinitely.
+Phase 4 — secondary indexes, DISTINCT validation, schema-version + virtual-table WHERE
+that make the cassandra-driver schema refresh work — is shipped. The remaining feature
+items (token ordering, ALTER TABLE options persistence, CUSTOM INDEX) were not on the
+Phase 4 critical path and are listed under **Cross-phase follow-ups** at the end of this
+document.
 
 Collection-column indexes (`CREATE INDEX ON tbl(col)` for LIST/SET/MAP, plus
 `keys(col)`/`values(col)`/`entries(col)` for `CONTAINS` / `CONTAINS KEY`) are part of
@@ -86,35 +80,38 @@ Collection-column indexes (`CREATE INDEX ON tbl(col)` for LIST/SET/MAP, plus
 
 ## Phase 5 follow-ups (shipped)
 
-The four planned follow-ups from Phase 5 landed (single-direction cases). Remaining work
-on these features that requires byte-level changes to key encoding is captured below.
+All five planned follow-ups landed:
 
-- **ORDER BY after a CK equality restriction.** Planner now records `ck_eq_prefix_len`
-  and lets ORDER BY start at any position from 0 up to that prefix. `WHERE a=? AND b=?
-  ORDER BY c` is accepted.
+- **ORDER BY after a CK equality restriction.** Planner records `ck_eq_prefix_len`
+  and lets ORDER BY start at any position from 0 up to that prefix.
 - **ORDER BY + PK IN.** Engine collects rows across all listed partitions, sorts by
   serialized CK bytes (forward or reverse depending on `reverse_clustering`), applies
   LIMIT, and returns as VirtualRows.
-- **`CLUSTERING ORDER BY` directive on table.** `Column.clustering_order` persisted in
-  `ColumnHeader`; populated from the CREATE TABLE option. Planner uses this as the
-  per-CK natural direction; default scans on `(c DESC)` tables now reverse.
-- **ORDER BY without a partition-key restriction is rejected.** Required by the
-  semantics of single-partition ordering.
+- **`CLUSTERING ORDER BY` directive on table.** `Column.clustering_order` persisted
+  in `ColumnHeader`; populated from the CREATE TABLE option; the directive is
+  validated to be a sequential prefix of the table's clustering columns.
+- **ORDER BY without a partition-key restriction is rejected.**
+- **Multi-direction CLUSTERING ORDER BY.** `append_component`/`decode_component`
+  invert the value bytes (not the length prefix) for DESC clustering columns at
+  encode time. Forward BTree iteration then produces the table's natural mixed
+  order natively, and the planner sets `reverse_clustering` from the
+  match-or-opposite consensus across the ORDER BY list. Variable-width DESC
+  (text/blob/hex on DESC clustering columns) is not implemented and asserts at
+  encode time — captured below as a known limitation.
 
-### Still open
+### Known limitations carried over
 
-- **Multi-direction CLUSTERING ORDER BY.** Tables like `(c1 ASC, c2 DESC)` need the
-  per-column byte sequence in the clustering key inverted for DESC columns so a single
-  forward/reverse BTree traversal still produces the table's natural order.
-  `testReversedComparator` (second sub-test) and `testMultiordering` need this. Without
-  byte inversion the planner accepts the queries but the default scan and any
-  ORDER BY that requires a mixed direction return rows in the wrong order.
-- **ORDER BY across `pk IN` + `LIMIT`.** Works for simple shapes; tests that also use
-  scalar functions (`ttl(v)`), collections, or null bound values fail on those
-  unrelated features rather than on the ORDER BY logic.
-- **ORDER BY after a CK equality restriction with tuple-eq predicates.**
-  `WHERE a=? AND (b, c) = (?, ?) ORDER BY c` requires tuple-equality support in the
-  WHERE planner.
+- **Range queries on DESC clustering columns.** With byte inversion, a logical
+  `c > X` on a DESC column corresponds to a *lower* byte-bound in lex order. The
+  planner still treats `>`/`<` as if all CK columns are ASC, so range bounds on a
+  DESC column may select the wrong rows. No failing test currently exercises this.
+- **Variable-width DESC clustering columns.** The escape-terminated encoding for
+  `text`/`varchar`/`ascii`/`blob`/`hex` would need an inverted escape/terminator
+  scheme; encode asserts `not_implemented` for now.
+- **Tuple-equality WHERE predicates.** `WHERE a=? AND (b, c) = (?, ?) ORDER BY c`
+  appears in `testAllowSkippingEqualityAndSingleValueInRestrictedClusteringColumns`;
+  the planner does not yet expand a tuple predicate into per-column equalities.
+  Lands as a planner follow-up after the major mutation/aggregation phases.
 
 ---
 
@@ -315,3 +312,33 @@ explicit USING TTL.
 TTL expiry is a scan+tombstone operation. Trigger candidates: on open, after N mutations,
 or on explicit COMPACT statement. Design separately; the row blob format change here is
 the prerequisite.
+
+---
+
+## Cross-phase follow-ups
+
+Items carried forward from earlier phases that do not fit one specific upcoming phase.
+
+- **Range queries on DESC clustering columns.** The byte-inversion encoding shipped in
+  Phase 5 makes a logical `c > X` on a DESC column equivalent to a *byte-lower* bound.
+  The planner currently issues the same `pk_begin`/`pk_end` for both directions, so the
+  bound semantics are inverted on DESC. Fix in the planner range path: when a CK column
+  is DESC, swap `>`/`<` and inclusivity when serializing the bound.
+- **Variable-width DESC clustering columns.** Implement an inverted escape/terminator
+  scheme for `text`/`varchar`/`ascii`/`blob`/`hex` so they may participate in
+  `CLUSTERING ORDER BY ... DESC`. Touches `append_escaped_terminated` and the matching
+  decode loops.
+- **Tuple-equality WHERE.** Expand `WHERE (a, b) = (?, ?)` into per-column equalities
+  in the planner so it composes with existing CK-equality skipping (used by
+  `testAllowSkippingEqualityAndSingleValueInRestrictedClusteringColumns`).
+- **Token-based partition ordering.** Hash partition keys with Murmur3 and order
+  partitions by token. Required by `testIndexQueryWithCompositePartitionKey` and a
+  handful of paging tests. Touches every BTree key comparison.
+- **ALTER TABLE WITH options persistence** (`min_index_interval`, `gc_grace_seconds`,
+  etc.) — currently parsed and silently dropped. Persist on `TableHeader` and surface
+  in `system_schema.tables`.
+- **`CUSTOM INDEX ... USING '...'` (SASI/SAI)** and per-index `WITH OPTIONS` — deferred
+  indefinitely.
+- **CREATE TABLE without keyspace.** Currently returns `Invalid` rather than asserting,
+  but the message should specifically say "no keyspace has been specified". Trivial
+  copy-edit.
