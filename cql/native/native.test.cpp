@@ -139,6 +139,43 @@ CQL_NATIVE_TEST_CASE("Native protocol TRUNCATE clears all rows", "[cql.native]")
     co_return;
 }
 
+CQL_NATIVE_TEST_CASE("Native protocol SELECT COUNT(*) aggregate", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (kind text, time int, v int, PRIMARY KEY (kind, time));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (kind, time, v) VALUES ('a', 0, 0);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (kind, time, v) VALUES ('a', 1, 1);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (kind, time, v) VALUES ('a', 2, 2);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (kind, time, v) VALUES ('b', 0, 0);").opcode == op::RESULT);
+
+        // bigint cql_value: [length=8 big-endian][8-byte big-endian value]
+        const U8 count_4[] = {0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 4};
+        const U8 count_3[] = {0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 3};
+        const U8 count_2[] = {0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 2};
+
+        Frame all = send_query(client, "SELECT COUNT(*) FROM ks.t;");
+        CHECK(all.opcode == op::RESULT);
+        CHECK(result_kind(all) == result::ROWS);
+        CHECK(body_contains(all, count_4, sizeof(count_4)));
+
+        Frame part = send_query(client, "SELECT COUNT(*) FROM ks.t WHERE kind = 'a';");
+        CHECK(result_kind(part) == result::ROWS);
+        CHECK(body_contains(part, count_3, sizeof(count_3)));
+
+        Frame in_eq = send_query(client, "SELECT COUNT(1) FROM ks.t WHERE kind IN ('a', 'b') AND time = 0;");
+        CHECK(result_kind(in_eq) == result::ROWS);
+        CHECK(body_contains(in_eq, count_2, sizeof(count_2)));
+
+        Frame aliased = send_query(client, "SELECT count(*) AS user_count FROM ks.t;");
+        CHECK(result_kind(aliased) == result::ROWS);
+        CHECK(body_contains(aliased, "user_count"));
+        CHECK(body_contains(aliased, count_4, sizeof(count_4)));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
 CQL_NATIVE_TEST_CASE("Native protocol system.local virtual view", "[cql.native]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
         Frame local = send_query(client, "SELECT * FROM system.local;");

@@ -1,13 +1,5 @@
 # CQL Engine Roadmap
 
-## Current Status
-
-Phases 1–5 complete (all Phase 5 follow-ups shipped, including multi-direction
-CLUSTERING ORDER BY). Score: 99/313 passing (2026-06-17). Mustpass list
-(73 entries) verified — no regressions.
-
----
-
 ## End-State Architecture
 
 ```
@@ -29,124 +21,17 @@ parsers/            — CQL text → Statement AST (lexy grammar)
 
 ### Key design principles
 
-**The planner is shared across all DML.** `build_row_locator(where, tbl, ctx)` is called
-identically for SELECT, UPDATE, and DELETE. It produces a `RowLocator` describing partition
+**The planner is shared across all DML.** `RowLocator` is shared across statements and describes partition
 key bounds, clustering key bounds, and residual filter predicates. What the statement *does*
 with the located rows is separate (`ProjectionPlan` for SELECT, `MutationSpec` for mutations).
 
 **plan → validate → execute are three separate steps.**
 - `plan_*` functions do pure analysis (no I/O, no error message strings).
-- `validate_plan` converts plan-level error codes into protocol `ExecutionResult` values.
-- `execute` trusts the plan is valid and does only I/O.
-
-**`apply_mutation` is the single mutation entry point.** INSERT, UPDATE, DELETE, and BATCH
-child statements all funnel through one function:
-`apply_mutation(engine, tbl, locator, spec, ctx)`.
-This is the only place that reads existing rows, applies updates, writes new blobs, and
-maintains secondary indexes. New per-mutation work (counter evaluation in Phase 7) lands
-here without altering callers.
-
-**Column-level DELETE is a mutation with null assignments.**
-`DELETE col1, col2 WHERE pk = ?` produces `MutationSpec{updates=[{col1,Null},{col2,Null}]}`.
-This flows through the same `apply_mutation` path as UPDATE.
-
-**`needed_cols` optimization is deferred.** `MutationSpec` and `ProjectionPlan` do not yet
-carry `needed_cols: DynamicArray<U64>`. All paths pass an empty set (meaning "all columns").
-Add `needed_cols` fields and wire `ColumnIterator::load` to skip unreferenced columns when
-implementing Phase 7 (counters) or as a standalone optimization pass.
+- `validate` checks the plan is valid.
+- `execute` trusts the plan is valid and does storage layer changes.
 
 **Aggregation sits above iteration.** `SELECT COUNT(*)` consumes `RowIterator` inside
 the engine and returns a synthesized `VirtualRows` row, avoiding deferred-tx lifetime issues.
-
-**Secondary-index slot on `RowLocator`.** `Optional<U64> index_col_idx` plus the
-encoded `index_key_prefix` are set by `build_row_locator` whenever a WHERE equality
-predicate matches an indexed basic-typed non-key column.
-
----
-
-## Phase 4 follow-ups (shipped)
-
-Phase 4 — secondary indexes, DISTINCT validation, schema-version + virtual-table WHERE
-that make the cassandra-driver schema refresh work — is shipped. The remaining feature
-items (token ordering, ALTER TABLE options persistence, CUSTOM INDEX) were not on the
-Phase 4 critical path and are listed under **Cross-phase follow-ups** at the end of this
-document.
-
-Collection-column indexes (`CREATE INDEX ON tbl(col)` for LIST/SET/MAP, plus
-`keys(col)`/`values(col)`/`entries(col)` for `CONTAINS` / `CONTAINS KEY`) are part of
-**Phase 8** — they share the per-element iteration that collection DML introduces.
-
----
-
-## Phase 5 follow-ups (shipped)
-
-All five planned follow-ups landed:
-
-- **ORDER BY after a CK equality restriction.** Planner records `ck_eq_prefix_len`
-  and lets ORDER BY start at any position from 0 up to that prefix.
-- **ORDER BY + PK IN.** Engine collects rows across all listed partitions, sorts by
-  serialized CK bytes (forward or reverse depending on `reverse_clustering`), applies
-  LIMIT, and returns as VirtualRows.
-- **`CLUSTERING ORDER BY` directive on table.** `Column.clustering_order` persisted
-  in `ColumnHeader`; populated from the CREATE TABLE option; the directive is
-  validated to be a sequential prefix of the table's clustering columns.
-- **ORDER BY without a partition-key restriction is rejected.**
-- **Multi-direction CLUSTERING ORDER BY.** `append_component`/`decode_component`
-  invert the value bytes (not the length prefix) for DESC clustering columns at
-  encode time. Forward BTree iteration then produces the table's natural mixed
-  order natively, and the planner sets `reverse_clustering` from the
-  match-or-opposite consensus across the ORDER BY list. Variable-width DESC
-  (text/blob/hex on DESC clustering columns) is not implemented and asserts at
-  encode time — captured below as a known limitation.
-
-### Known limitations carried over
-
-- **Range queries on DESC clustering columns.** With byte inversion, a logical
-  `c > X` on a DESC column corresponds to a *lower* byte-bound in lex order. The
-  planner still treats `>`/`<` as if all CK columns are ASC, so range bounds on a
-  DESC column may select the wrong rows. No failing test currently exercises this.
-- **Variable-width DESC clustering columns.** The escape-terminated encoding for
-  `text`/`varchar`/`ascii`/`blob`/`hex` would need an inverted escape/terminator
-  scheme; encode asserts `not_implemented` for now.
-- **Tuple-equality WHERE predicates.** `WHERE a=? AND (b, c) = (?, ?) ORDER BY c`
-  appears in `testAllowSkippingEqualityAndSingleValueInRestrictedClusteringColumns`;
-  the planner does not yet expand a tuple predicate into per-column equalities.
-  Lands as a planner follow-up after the major mutation/aggregation phases.
-
----
-
-## Phase 6 — Aggregation / SELECT COUNT
-
-**Impact: ~10 unique tests (COUNT, simple scalar functions). No dependency on Phase 5.**
-
-### Execution path
-
-When `projection.is_aggregate`:
-
-```
-(start_it, stop_it) = co_await create_table_range_it(locator, pager, tbl)
-count = 0U64
-it = start_it
-while it != stop_it:
-    col_range = co_await it.deref()
-    row_ctx = build_row_ctx(tbl, col_range, projection.needed_cols)
-    if evaluate_where(filter.predicates, row_ctx): count += 1
-    co_await it.advance()
-co_return ExecutionResult{VirtualRows = synthesize_count_row(count)}
-```
-
-The transaction closes before returning (no deferred-tx). `synthesize_count_row` builds
-a single-row `VirtualRows` matching the existing system table helper signature.
-
-### Supported operations
-
-- `COUNT(*)` → `needed_cols = {}` (no column deserialization needed, just advance iterator)
-- `COUNT(col)` → `needed_cols = {col_idx}`, increment only when `col_present[col_idx]`
-- Other aggregate functions (`SUM`, `AVG`, `MIN`, `MAX`) → `assert_not_implemented`
-- Scalar functions in SELECT (`writetime`, `ttl`, `now`, `token`, type casts) → `assert_not_implemented`
-
-The SelectOp types `FunctionCall` and `Cast` from the end-state spec are added to
-`ProjectionPlan` but branch to `assert_not_implemented` until dedicated phases address them.
 
 ---
 
@@ -170,7 +55,8 @@ struct ColumnUpdate:
 
 `plan_mutation` stores `TermWithIdentifiers` in `new_value` when the assignment RHS has
 column references (detected by `type_matches_tag<AutoString8>` anywhere in the term).
-`needed_cols` is extended to include the source column of the counter expression.
+`MutationSpec` gains a `needed_cols: DynamicArray<U64>` field (mirroring `ProjectionPlan`)
+extended to include the source column of the counter expression.
 
 ### Changes to apply_updates_to_row
 
@@ -196,7 +82,7 @@ row_ctx.row_values = col_values.ptr
 
 **Impact: ~22 unique tests in collections_test.py. Complex; isolated from other phases.**
 
-Two independent sub-problems:
+Two independent sub-problems plus the rolled-in collection-index work.
 
 **Sub-problem A: collection literals in INSERT/UPDATE** (~8 fires for list, ~5 for set, ~1 for map).
 Parser produces a literal constant (e.g., `[1, 2, 3]`). `io.cpp` needs writers:
@@ -217,10 +103,11 @@ O(1) updates but is a major storage-layer change; defer unless profiling shows i
 (subscript set, append, merge). `apply_updates` materializes the existing collection value,
 applies the patch, and writes back.
 
-**Sub-problem C: collection-column indexes** (rolled in from Phase 4 — ~8 fires).
-The Phase 4 `CreateIndex` handler currently rejects collection columns ("cannot create
-index on collection column"). Phase 8's per-element iteration is the same machinery needed
-to emit an index entry per collection element, so collection indexes land here.
+**Sub-problem C: collection-column indexes** (~8 fires).
+The current `CreateIndex` handler rejects collection columns ("cannot create index on
+collection column"). Phase 8's per-element iteration is the same machinery needed to emit
+an index entry per collection element, so collection indexes land here rather than in a
+separate phase.
 
 - Schema: `Index` gains an `IndexKind` enum (`Values` / `Keys` / `Entries` / `Full`)
   parsed from `CREATE INDEX ON tbl(values(col))`, `tbl(keys(col))`, `tbl(entries(col))`.
@@ -264,11 +151,16 @@ execute BATCH:
 
 The outer transaction wraps all child mutations atomically; no per-child commit.
 
-### Limitation
+### Out of scope inside this phase — conditional BATCH (LWT)
 
-Conditional BATCH (`IF` clauses, light-weight transactions) requires compare-and-swap
-semantics that interact with Cassandra's Paxos protocol. Mark with `assert_not_implemented`
-and defer indefinitely.
+`IF`-clauses on BATCH require compare-and-swap semantics that, in Cassandra, are built on
+the Paxos consensus protocol across replicas. Single-node plexdb has no replica set, but
+the test suite expects the *user-visible* CAS semantics (read-check-write atomicity with
+`[applied]` result rows). Implementing this would require a separate CAS executor that
+reads condition columns, evaluates the predicate, and either applies the batch or returns
+the existing row — distinct from the unconditional path above and not on the critical
+path for any unblocked test cluster. Mark with `assert_not_implemented`; revisit only
+if a downstream user explicitly needs LWT.
 
 ---
 
@@ -307,38 +199,75 @@ Add `default_ttl_ms: S64 = 0` to `TableHeader`. Set from `CREATE TABLE ... WITH 
 (removes the Phase 2 silent-skip). Apply to every INSERT on that table that doesn't supply
 explicit USING TTL.
 
-### TTL sweep (deferred, not in this phase)
+### Deferred sub-task — background TTL sweep
 
-TTL expiry is a scan+tombstone operation. Trigger candidates: on open, after N mutations,
-or on explicit COMPACT statement. Design separately; the row blob format change here is
-the prerequisite.
+Expiry enforcement at read time (filter expired rows in the iterator) is sufficient for
+correctness; the row blob format change above is the only on-disk prerequisite. A
+background sweep that emits tombstones is a separate optimization with trigger candidates
+on open, after N mutations, or on explicit COMPACT. Schedule once read-time enforcement
+is stable. The header laid down here already carries `expiry_unix_ms`, so the sweep can
+land without another breaking change.
 
 ---
 
-## Cross-phase follow-ups
+## Cross-phase planner & schema follow-ups
 
-Items carried forward from earlier phases that do not fit one specific upcoming phase.
+Smaller items that don't fit one of phases 6–10 but remain on the critical path for
+specific conformance tests. Each is independent and can be picked up in any order.
 
-- **Range queries on DESC clustering columns.** The byte-inversion encoding shipped in
-  Phase 5 makes a logical `c > X` on a DESC column equivalent to a *byte-lower* bound.
-  The planner currently issues the same `pk_begin`/`pk_end` for both directions, so the
-  bound semantics are inverted on DESC. Fix in the planner range path: when a CK column
-  is DESC, swap `>`/`<` and inclusivity when serializing the bound.
-- **Variable-width DESC clustering columns.** Implement an inverted escape/terminator
-  scheme for `text`/`varchar`/`ascii`/`blob`/`hex` so they may participate in
-  `CLUSTERING ORDER BY ... DESC`. Touches `append_escaped_terminated` and the matching
-  decode loops.
-- **Tuple-equality WHERE.** Expand `WHERE (a, b) = (?, ?)` into per-column equalities
-  in the planner so it composes with existing CK-equality skipping (used by
-  `testAllowSkippingEqualityAndSingleValueInRestrictedClusteringColumns`).
-- **Token-based partition ordering.** Hash partition keys with Murmur3 and order
-  partitions by token. Required by `testIndexQueryWithCompositePartitionKey` and a
-  handful of paging tests. Touches every BTree key comparison.
-- **ALTER TABLE WITH options persistence** (`min_index_interval`, `gc_grace_seconds`,
-  etc.) — currently parsed and silently dropped. Persist on `TableHeader` and surface
-  in `system_schema.tables`.
-- **`CUSTOM INDEX ... USING '...'` (SASI/SAI)** and per-index `WITH OPTIONS` — deferred
-  indefinitely.
-- **CREATE TABLE without keyspace.** Currently returns `Invalid` rather than asserting,
-  but the message should specifically say "no keyspace has been specified". Trivial
-  copy-edit.
+- **Variable-width DESC clustering columns.** `append_escaped_terminated` currently
+  asserts `not_implemented` for DESC on `text`/`varchar`/`ascii`/`blob`/`hex`. Needs an
+  inverted escape/terminator scheme so the encoded bytes still compare correctly under
+  the byte-inversion-for-DESC convention. Touches `append_escaped_terminated` and the
+  matching decode loops. Isolated change; lives outside every phase because no upcoming
+  feature work depends on it.
+- **Tuple-equality WHERE expansion.** `WHERE (a, b) = (?, ?)` is not yet expanded into
+  per-column equalities, so it does not compose with the CK-equality-skipping ORDER BY
+  path. Blocks `testAllowSkippingEqualityAndSingleValueInRestrictedClusteringColumns`.
+  Pure planner work: split the tuple in `build_row_locator` before populating
+  `KeyConstraints`.
+- **ALTER TABLE WITH options persistence.** Options like `min_index_interval` and
+  `gc_grace_seconds` are parsed and silently dropped. Persist on `TableHeader` and
+  surface in `system_schema.tables`. Required by tests that round-trip
+  `ALTER TABLE … WITH …` and then `SELECT` the option back.
+- **CREATE TABLE without keyspace name.** Currently returns `Invalid` with a generic
+  message; the conformance tests grep for the specific phrase
+  "no keyspace has been specified". Trivial copy-edit in the create-table handler.
+
+---
+
+## Major future direction — token-based partition ordering
+
+**Status: out of scope for the current single-node correctness pass; required for full
+Cassandra-shape conformance.**
+
+Cassandra hashes partition keys with Murmur3 and orders partitions by token, not by raw
+PK bytes. plexdb currently orders by raw PK bytes inside the partition BTree, which is
+correct for point lookups and PK ranges but produces a different cross-partition order
+than Cassandra. Tests affected include `testIndexQueryWithCompositePartitionKey` and most
+multi-partition paging tests that observe ordering.
+
+Why it's out of scope for now: every BTree key comparison on the partition tree would
+swap from raw bytes to `(token, pk_bytes)`; schema would have to record the partitioner
+choice; secondary-index keys would need to embed the token of the pointed-to partition;
+and the `token(...)` function plus `WHERE token(pk) > ?` syntax would need wiring through
+the planner. Doing this before phases 6–10 are stable would churn every key-handling code
+path without unblocking any of the larger feature gaps. Revisit once the phase work above
+is complete and a concrete conformance target makes the cost worthwhile.
+
+---
+
+## Out of scope (will not implement)
+
+- **`CUSTOM INDEX ... USING '...'` (SASI/SAI) and per-index `WITH OPTIONS`.** SASI and SAI
+  are Cassandra-internal index implementations whose on-disk format and query semantics
+  are tied to specific JVM-side data structures. Replicating them duplicates the role of
+  the built-in B-tree index plus the collection indexes planned for Phase 8, while adding
+  large surface area for a single test category. The agreed behavior is to return
+  `Invalid` with a clear error message and refuse the statement.
+- **Conditional BATCH and standalone LWT (`IF` on UPDATE / DELETE).** Compare-and-swap
+  semantics modeled on Paxos consensus. The unconditional Phase 9 path covers every
+  unblocked BATCH test; LWT only unblocks a small number of conformance tests that all
+  depend on multi-replica semantics plexdb is not designed for. Returning
+  `assert_not_implemented` is the agreed behavior; standalone LWT applies the same
+  rationale to single-statement `UPDATE … IF` / `DELETE … IF`.

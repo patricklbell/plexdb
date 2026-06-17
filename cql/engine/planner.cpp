@@ -721,6 +721,41 @@ namespace cql::planner {
             });
         }
 
+        auto add_needed = [&](U64 ci) {
+            for (U64 i = 0; i < plan.projection.needed_cols.length; i++) {
+                if (plan.projection.needed_cols[i] == ci) {
+                    return;
+                }
+            }
+            push_back(plan.projection.needed_cols, ci);
+        };
+        for (const auto& op : plan.projection.ops) {
+            if (type_matches_tag<SelectOp::ColumnRef>(op.value)) {
+                add_needed(get<SelectOp::ColumnRef>(op.value).col_idx);
+            }
+        }
+        auto add_needed_by_name = [&](const AutoString8& ident) {
+            String8 name(ident.c_str, ident.length);
+            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == name) {
+                    add_needed(ci);
+                    return;
+                }
+            }
+        };
+        for (const auto& rel : plan.filter.predicates) {
+            visit(rel.value, [&](const auto& r) {
+                using T = RemoveCVRef<decltype(r)>;
+                if constexpr (SameAs<T, WhereClause::ColumnExpressionRelation>) {
+                    add_needed_by_name(r.column.identifier);
+                } else if constexpr (SameAs<T, WhereClause::TupleExpressionRelation>) {
+                    for (U64 i = 0; i < r.columns.length; i++) {
+                        add_needed_by_name(r.columns[i].identifier);
+                    }
+                }
+            });
+        }
+
         return plan;
     }
 

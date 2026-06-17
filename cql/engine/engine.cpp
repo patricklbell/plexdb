@@ -94,238 +94,7 @@ namespace cql::engine {
     // ========================================================================
     // execute
     // ========================================================================
-    static ExecutionResult create_void_success() {
-        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
-    }
-    // @note msg should be static storage duration
-    static ExecutionResult create_server_error(const char* msg) {
-        return {.status = ExecutionStatus::ServerError, .message = msg};
-    }
-    static ExecutionResult create_system_keyspace_invalid() {
-        return {.status = ExecutionStatus::Invalid, .message = "system keyspaces cannot be modified"};
-    }
-    static ExecutionResult create_keyspace_already_exists(const String8& keyspace_name) {
-        return {
-            .status   = ExecutionStatus::AlreadyExists,
-            .message  = "Keyspace already exists",
-            .keyspace = AutoString8(keyspace_name),
-        };
-    }
-    static ExecutionResult create_keyspace_created(const String8& keyspace_name) {
-        return {
-            .status   = ExecutionStatus::Success,
-            .kind     = ResultKind::SchemaChange,
-            .message  = "CREATED",
-            .keyspace = AutoString8(keyspace_name),
-        };
-    }
-    static ExecutionResult create_keyspace_not_found(const String8& keyspace_name) {
-        ExecutionResult r;
-        r.status          = ExecutionStatus::Invalid;
-        r.keyspace        = AutoString8(keyspace_name);
-        r.message_storage = "Keyspace '" + r.keyspace + "' does not exist";
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-        return r;
-    }
-    static ExecutionResult create_use_keyspace(const String8& keyspace_name) {
-        return {.status = ExecutionStatus::Success, .kind = ResultKind::UseKeyspace, .keyspace = AutoString8(keyspace_name)};
-    }
-    static ExecutionResult create_table_already_exists(const String8& keyspace_name, const String8& table_name) {
-        return {
-            .status   = ExecutionStatus::AlreadyExists,
-            .message  = "Table already exists",
-            .keyspace = AutoString8(keyspace_name),
-            .table    = AutoString8(table_name),
-        };
-    }
-    static ExecutionResult create_table_not_found(const String8& keyspace_name, const String8& table_name) {
-        ExecutionResult r;
-        r.status          = ExecutionStatus::Invalid;
-        r.keyspace        = AutoString8(keyspace_name);
-        r.table           = AutoString8(table_name);
-        r.message_storage = "Table '" + r.keyspace + "." + r.table + "' does not exist";
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-        return r;
-    }
-    static ExecutionResult create_table_created(const String8& keyspace_name, const String8& table_name) {
-        return {
-            .status   = ExecutionStatus::Success,
-            .kind     = ResultKind::SchemaChange,
-            .message  = "CREATED",
-            .keyspace = AutoString8(keyspace_name),
-            .table    = AutoString8(table_name),
-        };
-    }
-    static ExecutionResult create_schema_changed(const String8& keyspace_name) {
-        return {
-            .status   = ExecutionStatus::Success,
-            .kind     = ResultKind::SchemaChange,
-            .keyspace = AutoString8(keyspace_name),
-        };
-    }
-    static ExecutionResult create_schema_changed(const String8& keyspace_name, const String8& table_name) {
-        return {
-            .status   = ExecutionStatus::Success,
-            .kind     = ResultKind::SchemaChange,
-            .keyspace = AutoString8(keyspace_name),
-            .table    = AutoString8(table_name),
-        };
-    }
-    static ExecutionResult create_insert_column_does_not_match_value_count(const String8& keyspace_name, const String8& table_name) {
-        return {
-            .status   = ExecutionStatus::Invalid,
-            .message  = "Column count does not match value count",
-            .keyspace = AutoString8(keyspace_name),
-            .table    = AutoString8(table_name),
-        };
-    }
-
-    static ExecutionResult create_insert_into_unknown_column(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
-        ExecutionResult r;
-        r.status          = ExecutionStatus::Invalid;
-        r.keyspace        = AutoString8(keyspace_name);
-        r.table           = AutoString8(table_name);
-        r.message_storage = "Undefined column name " + AutoString8(col_name);
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-        return r;
-    }
-    static ExecutionResult create_insert_duplicate_column(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
-        ExecutionResult r;
-        r.status          = ExecutionStatus::Invalid;
-        r.keyspace        = AutoString8(keyspace_name);
-        r.table           = AutoString8(table_name);
-        r.message_storage = "Multiple definitions of identifier " + AutoString8(col_name);
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-        return r;
-    }
-    static ExecutionResult create_insert_incompatible_literal(const String8& keyspace_name, const String8& table_name) {
-        return {
-            .status   = ExecutionStatus::Invalid,
-            .message  = "Incompatible literal for column type",
-            .keyspace = AutoString8(keyspace_name),
-            .table    = AutoString8(table_name),
-        };
-    }
-    static ExecutionResult create_insert_missing_pk(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
-        ExecutionResult r;
-        r.status          = ExecutionStatus::Invalid;
-        r.keyspace        = AutoString8(keyspace_name);
-        r.table           = AutoString8(table_name);
-        r.message_storage = "Missing mandatory PRIMARY KEY part " + AutoString8(col_name);
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-        return r;
-    }
-    static ExecutionResult create_insert_missing_ck(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
-        ExecutionResult r;
-        r.status          = ExecutionStatus::Invalid;
-        r.keyspace        = AutoString8(keyspace_name);
-        r.table           = AutoString8(table_name);
-        r.message_storage = "Missing mandatory PRIMARY KEY part " + AutoString8(col_name);
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-        return r;
-    }
-    static Optional<ExecutionResult> validate_plan(const planner::PlanResult& result) {
-        switch (result.error) {
-            case planner::PlanError::None:
-                return {};
-            case planner::PlanError::RequiresAllowFiltering:
-                return ExecutionResult{
-                    .status  = ExecutionStatus::Invalid,
-                    .message = "Cannot execute this query as it might involve data filtering and thus may have unpredictable performance. If you want to execute this query despite the performance unpredictability, use ALLOW FILTERING",
-                };
-            case planner::PlanError::MissingPartitionKey: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Some partition key parts are missing: " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
-            }
-            case planner::PlanError::MissingClusteringKey: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Some clustering keys are missing: " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
-            }
-            case planner::PlanError::StaticOnlyUpdateWithCK:
-                return ExecutionResult{
-                    .status  = ExecutionStatus::Invalid,
-                    .message = "Invalid restrictions on clustering columns since the UPDATE statement modifies only static columns",
-                };
-            case planner::PlanError::StaticOnlyDeleteWithCK:
-                return ExecutionResult{
-                    .status  = ExecutionStatus::Invalid,
-                    .message = "Invalid restrictions on clustering columns since the DELETE statement modifies only static columns",
-                };
-            case planner::PlanError::RangeDeletionOnSpecificColumns:
-                return ExecutionResult{
-                    .status  = ExecutionStatus::Invalid,
-                    .message = "Range deletions are not supported for specific columns",
-                };
-            case planner::PlanError::OrderByOnNonClusteringColumn: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Order by is currently only supported on the clustered columns of the PRIMARY KEY, got " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
-            }
-            case planner::PlanError::ColumnNotFound: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Undefined column name " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
-            }
-            case planner::PlanError::TypeMismatch:
-                return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Type mismatch for key column"};
-            case planner::PlanError::TokenFunctionInMutation:
-                return ExecutionResult{
-                    .status  = ExecutionStatus::Invalid,
-                    .message = "The token function cannot be used in WHERE clauses for UPDATE",
-                };
-            case planner::PlanError::DuplicateColumnInMutation: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Column " + result.context + " is assigned twice in UPDATE";
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
-            }
-            case planner::PlanError::NonKeyColumnInMutationWhere: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Non PRIMARY KEY columns found in where clause: " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
-            }
-            case planner::PlanError::NonEqInOnPartitionKeyMutation: {
-                ExecutionResult r;
-                r.status = ExecutionStatus::Invalid;
-                if (result.context.length > 0) {
-                    r.message_storage = AutoString8("Only EQ and IN relation are supported on the partition key (unless you use the token() function) — ") + result.context + " is not supported";
-                } else {
-                    r.message_storage = AutoString8("Only EQ and IN relation are supported on the partition key (unless you use the token() function)");
-                }
-                r.message = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
-            }
-            case planner::PlanError::CounterOperationOnNonCounter: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Cannot apply counter operations on non-counter column " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
-            }
-            case planner::PlanError::DistinctRestrictionInvalid:
-                return ExecutionResult{
-                    .status  = ExecutionStatus::Invalid,
-                    .message = "SELECT DISTINCT with WHERE clause only supports restriction by partition key and/or static columns.",
-                };
-        }
-        return {};
-    }
-
-    // append bytes sync into a DynamicArray buffer — used for write-buffering before async blob writes
-    static auto create_buffer_writer(DynamicArray<U8>& buf) {
+    static auto create_sync_buffer_writer(DynamicArray<U8>& buf) {
         return [&buf](const U8* in_value, U64 size) {
             U64 old_len = buf.length;
             resize(buf, old_len + size);
@@ -333,7 +102,7 @@ namespace cql::engine {
         };
     }
 
-    // Silently ignores all recognized and unknown Cassandra table properties (single-node mode).
+    // @todo multi-node support
     static void handle_table_option_pair(const OptionPair& opt, Engine& engine) {
         String8 key = opt.first;
         if (key == "comment") {
@@ -377,10 +146,6 @@ namespace cql::engine {
             });
         }
     }
-
-    // ========================================================================
-    // mutation helpers
-    // ========================================================================
 
     // Read a row blob (and optional static blob) into parallel col_values/col_present arrays.
     // If page_idx == 0 and static_page_idx == 0, leaves all entries as Null/absent.
@@ -502,7 +267,7 @@ namespace cql::engine {
                                                const DynamicArray<bool>&        col_present) {
         bool             has_ck = schema::has_clustering_keys(*tbl);
         DynamicArray<U8> buf;
-        auto             write_fn  = create_buffer_writer(buf);
+        auto             write_fn  = create_sync_buffer_writer(buf);
         auto             write     = io::to_writer(write_fn);
         auto             is_active = [&](U64 idx) {
             return idx < col_present.length && col_present[idx] &&
@@ -544,7 +309,7 @@ namespace cql::engine {
             } else if (io::can_cast_write_evaluated_as_column_value(eval, tbl->cols[idx].type)) {
                 col_present[idx] = true;
                 DynamicArray<U8> tmp;
-                auto             w_fn = create_buffer_writer(tmp);
+                auto             w_fn = create_sync_buffer_writer(tmp);
                 io::cast_write_evaluated_as_column_value(io::to_writer(w_fn), eval, tbl->cols[idx].type, ctx);
                 U64  off  = 0;
                 auto r_fn = [&tmp, &off](U8* dst, U64 sz) -> coroutine::Task<void> {
@@ -585,7 +350,7 @@ namespace cql::engine {
         }
 
         DynamicArray<U8> buf;
-        auto             write_fn  = create_buffer_writer(buf);
+        auto             write_fn  = create_sync_buffer_writer(buf);
         auto             write     = io::to_writer(write_fn);
         auto             is_active = [&](U64 idx) {
             return idx < col_present.length && col_present[idx] && tbl->cols[idx].is_static;
@@ -812,11 +577,242 @@ namespace cql::engine {
         vr.rows = move(kept);
     }
 
+    static ExecutionResult create_void_success() {
+        return {.status = ExecutionStatus::Success, .kind = ResultKind::Void};
+    }
+    // @note msg should be static storage duration
+    static ExecutionResult create_server_error(const char* msg) {
+        return {.status = ExecutionStatus::ServerError, .message = msg};
+    }
+    static ExecutionResult create_system_keyspace_invalid() {
+        return {.status = ExecutionStatus::Invalid, .message = "system keyspaces cannot be modified"};
+    }
+    static ExecutionResult create_keyspace_already_exists(const String8& keyspace_name) {
+        return {
+            .status   = ExecutionStatus::AlreadyExists,
+            .message  = "Keyspace already exists",
+            .keyspace = AutoString8(keyspace_name),
+        };
+    }
+    static ExecutionResult create_keyspace_created(const String8& keyspace_name) {
+        return {
+            .status   = ExecutionStatus::Success,
+            .kind     = ResultKind::SchemaChange,
+            .message  = "CREATED",
+            .keyspace = AutoString8(keyspace_name),
+        };
+    }
+    static ExecutionResult create_keyspace_not_found(const String8& keyspace_name) {
+        ExecutionResult r;
+        r.status          = ExecutionStatus::Invalid;
+        r.keyspace        = AutoString8(keyspace_name);
+        r.message_storage = "Keyspace '" + r.keyspace + "' does not exist";
+        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
+    }
+    static ExecutionResult create_use_keyspace(const String8& keyspace_name) {
+        return {.status = ExecutionStatus::Success, .kind = ResultKind::UseKeyspace, .keyspace = AutoString8(keyspace_name)};
+    }
+    static ExecutionResult create_table_already_exists(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status   = ExecutionStatus::AlreadyExists,
+            .message  = "Table already exists",
+            .keyspace = AutoString8(keyspace_name),
+            .table    = AutoString8(table_name),
+        };
+    }
+    static ExecutionResult create_table_not_found(const String8& keyspace_name, const String8& table_name) {
+        ExecutionResult r;
+        r.status          = ExecutionStatus::Invalid;
+        r.keyspace        = AutoString8(keyspace_name);
+        r.table           = AutoString8(table_name);
+        r.message_storage = "Table '" + r.keyspace + "." + r.table + "' does not exist";
+        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
+    }
+    static ExecutionResult create_table_created(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status   = ExecutionStatus::Success,
+            .kind     = ResultKind::SchemaChange,
+            .message  = "CREATED",
+            .keyspace = AutoString8(keyspace_name),
+            .table    = AutoString8(table_name),
+        };
+    }
+    static ExecutionResult create_schema_changed(const String8& keyspace_name) {
+        return {
+            .status   = ExecutionStatus::Success,
+            .kind     = ResultKind::SchemaChange,
+            .keyspace = AutoString8(keyspace_name),
+        };
+    }
+    static ExecutionResult create_schema_changed(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status   = ExecutionStatus::Success,
+            .kind     = ResultKind::SchemaChange,
+            .keyspace = AutoString8(keyspace_name),
+            .table    = AutoString8(table_name),
+        };
+    }
+    static ExecutionResult create_insert_column_does_not_match_value_count(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status   = ExecutionStatus::Invalid,
+            .message  = "Column count does not match value count",
+            .keyspace = AutoString8(keyspace_name),
+            .table    = AutoString8(table_name),
+        };
+    }
+
+    static ExecutionResult create_insert_into_unknown_column(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
+        ExecutionResult r;
+        r.status          = ExecutionStatus::Invalid;
+        r.keyspace        = AutoString8(keyspace_name);
+        r.table           = AutoString8(table_name);
+        r.message_storage = "Undefined column name " + AutoString8(col_name);
+        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
+    }
+    static ExecutionResult create_insert_duplicate_column(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
+        ExecutionResult r;
+        r.status          = ExecutionStatus::Invalid;
+        r.keyspace        = AutoString8(keyspace_name);
+        r.table           = AutoString8(table_name);
+        r.message_storage = "Multiple definitions of identifier " + AutoString8(col_name);
+        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
+    }
+    static ExecutionResult create_insert_incompatible_literal(const String8& keyspace_name, const String8& table_name) {
+        return {
+            .status   = ExecutionStatus::Invalid,
+            .message  = "Incompatible literal for column type",
+            .keyspace = AutoString8(keyspace_name),
+            .table    = AutoString8(table_name),
+        };
+    }
+    static ExecutionResult create_insert_missing_pk(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
+        ExecutionResult r;
+        r.status          = ExecutionStatus::Invalid;
+        r.keyspace        = AutoString8(keyspace_name);
+        r.table           = AutoString8(table_name);
+        r.message_storage = "Missing mandatory PRIMARY KEY part " + AutoString8(col_name);
+        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
+    }
+    static ExecutionResult create_insert_missing_ck(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
+        ExecutionResult r;
+        r.status          = ExecutionStatus::Invalid;
+        r.keyspace        = AutoString8(keyspace_name);
+        r.table           = AutoString8(table_name);
+        r.message_storage = "Missing mandatory PRIMARY KEY part " + AutoString8(col_name);
+        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        return r;
+    }
+    static Optional<ExecutionResult> create_error_if_plan_invalid(const planner::PlanResult& result) {
+        switch (result.error) {
+            case planner::PlanError::None:
+                return {};
+            case planner::PlanError::RequiresAllowFiltering:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "Cannot execute this query as it might involve data filtering and thus may have unpredictable performance. If you want to execute this query despite the performance unpredictability, use ALLOW FILTERING",
+                };
+            case planner::PlanError::MissingPartitionKey: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Some partition key parts are missing: " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::MissingClusteringKey: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Some clustering keys are missing: " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::StaticOnlyUpdateWithCK:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "Invalid restrictions on clustering columns since the UPDATE statement modifies only static columns",
+                };
+            case planner::PlanError::StaticOnlyDeleteWithCK:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "Invalid restrictions on clustering columns since the DELETE statement modifies only static columns",
+                };
+            case planner::PlanError::RangeDeletionOnSpecificColumns:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "Range deletions are not supported for specific columns",
+                };
+            case planner::PlanError::OrderByOnNonClusteringColumn: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Order by is currently only supported on the clustered columns of the PRIMARY KEY, got " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::ColumnNotFound: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Undefined column name " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::TypeMismatch:
+                return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Type mismatch for key column"};
+            case planner::PlanError::TokenFunctionInMutation:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "The token function cannot be used in WHERE clauses for UPDATE",
+                };
+            case planner::PlanError::DuplicateColumnInMutation: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Column " + result.context + " is assigned twice in UPDATE";
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::NonKeyColumnInMutationWhere: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Non PRIMARY KEY columns found in where clause: " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::NonEqInOnPartitionKeyMutation: {
+                ExecutionResult r;
+                r.status = ExecutionStatus::Invalid;
+                if (result.context.length > 0) {
+                    r.message_storage = AutoString8("Only EQ and IN relation are supported on the partition key (unless you use the token() function) — ") + result.context + " is not supported";
+                } else {
+                    r.message_storage = AutoString8("Only EQ and IN relation are supported on the partition key (unless you use the token() function)");
+                }
+                r.message = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::CounterOperationOnNonCounter: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Cannot apply counter operations on non-counter column " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::DistinctRestrictionInvalid:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "SELECT DISTINCT with WHERE clause only supports restriction by partition key and/or static columns.",
+                };
+        }
+        return {};
+    }
+
     // @note caller must have set sp.locator.index_col_idx.
-    static coroutine::Task<ExecutionResult>
-    execute_select_index(Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
-                         const planner::SelectPlan& sp, DynamicArray<U64> select_col_indices,
-                         U64 limit_count, EvalContext ctx) {
+    static coroutine::Task<ExecutionResult> execute_select_index(
+        Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
+        const planner::SelectPlan& sp, DynamicArray<U64> select_col_indices,
+        U64 limit_count, EvalContext ctx
+    ) {
         schema::Index* active_idx = nullptr;
         for (auto& idx : tbl->indexes) {
             if (!idx.tombstone && idx.col_idx == *sp.locator.index_col_idx) {
@@ -906,10 +902,11 @@ namespace cql::engine {
     }
 
     // @profile materializes all matching rows then sorts; LIMIT applied last.
-    static coroutine::Task<ExecutionResult>
-    execute_select_pk_in_ordered(Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
-                                 const planner::SelectPlan& sp, DynamicArray<U64> select_col_indices,
-                                 U64 limit_count, EvalContext ctx) {
+    static coroutine::Task<ExecutionResult> execute_select_pk_in_ordered(
+        Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
+        const planner::SelectPlan& sp, DynamicArray<U64> select_col_indices,
+        U64 limit_count, EvalContext ctx
+    ) {
         DynamicArray<U64> col_order = build_select_col_order(*tbl, select_col_indices);
         VirtualRows       vr        = make_virtual_rows_shell(*tbl, ks_name, table_name, col_order);
 
@@ -1008,11 +1005,142 @@ namespace cql::engine {
         };
     }
 
+    // @note LIMIT and ORDER BY have no effect on aggregate SELECT (Cassandra
+    // semantics): the result is always a single row, and ordering does not
+    // change the count.
+    // @todo collapse the index-walk duplication with execute_select_index.
+    static coroutine::Task<ExecutionResult> execute_select_aggregate(
+        Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
+        const Select& stmt, const planner::SelectPlan& sp, EvalContext ctx
+    ) {
+        VirtualRows vr;
+        vr.keyspace      = AutoString8(ks_name);
+        vr.table         = AutoString8(table_name);
+        String8 col_name = (stmt.select.clauses.length > 0 && stmt.select.clauses[0].as)
+                               ? String8(*stmt.select.clauses[0].as)
+                               : String8("count");
+        emplace_back(vr.columns, VirtualColumn{col_name, type::create_basic(type::Basic::bigint)});
+
+        bool has_filter = sp.filter.predicates.length > 0;
+        S64  count      = 0;
+
+        auto eval_filter = [&](const DynamicArray<ColumnValue>& row_values) -> bool {
+            EvalContext row_ctx = ctx;
+            row_ctx.table       = tbl;
+            row_ctx.row_values  = row_values.ptr;
+            return evaluate_where(sp.filter.predicates, row_ctx);
+        };
+
+        if (sp.locator.index_col_idx) {
+            schema::Index* active_idx = nullptr;
+            for (auto& idx : tbl->indexes) {
+                if (!idx.tombstone && idx.col_idx == *sp.locator.index_col_idx) {
+                    active_idx = &idx;
+                    break;
+                }
+            }
+            if (active_idx == nullptr) {
+                co_return create_server_error("secondary index not found");
+            }
+            type::Basic             dtype       = get<type::Basic>(tbl->cols[active_idx->col_idx].type.value);
+            const DynamicArray<U8>& prefix      = sp.locator.index_key_prefix;
+            auto                    prefix_view = TArrayView<const U8, U16>(prefix.ptr, static_cast<U16>(prefix.length));
+            auto                    idx_it      = co_await btree::find_it<U8, btree::SearchStrategy::FirstGreaterEqual>(
+                active_idx->btree, prefix_view);
+            auto idx_end = btree::end<U8>(active_idx->btree);
+
+            while (idx_it != idx_end) {
+                auto key_view = idx_it.key();
+                if (key_view.length < prefix_view.length ||
+                    os::memory_compare(key_view.ptr, prefix_view.ptr, prefix_view.length) != 0) {
+                    break;
+                }
+                U16 plen     = key::index_prefix_len(dtype, key_view.ptr);
+                U16 pk_len   = static_cast<U16>((U16(key_view.ptr[plen]) << 8) | U16(key_view.ptr[plen + 1]));
+                U16 ck_start = static_cast<U16>(plen + 2 + pk_len);
+                U16 ck_len   = key_view.length > ck_start ? static_cast<U16>(key_view.length - ck_start) : 0;
+
+                // @note copy pk/ck before iterator.advance() invalidates key_view
+                DynamicArray<U8> pk_buf, ck_buf;
+                resize(pk_buf, U64(pk_len));
+                os::memory_copy(pk_buf.ptr, key_view.ptr + plen + 2, pk_len);
+                if (ck_len > 0) {
+                    resize(ck_buf, U64(ck_len));
+                    os::memory_copy(ck_buf.ptr, key_view.ptr + ck_start, ck_len);
+                }
+
+                auto entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_buf);
+                if (entry_opt) {
+                    U64 row_page = 0;
+                    if (schema::has_clustering_keys(*tbl) && ck_len > 0) {
+                        schema::ClusteringBTree ck_btree{
+                            engine.pager, entry_opt->data_page,
+                            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
+                        auto rp = co_await btree::tfind<U64>(ck_btree, ck_buf);
+                        if (rp) {
+                            row_page = *rp;
+                        }
+                    } else {
+                        row_page = entry_opt->data_page;
+                    }
+                    if (row_page != 0 || entry_opt->static_page != 0) {
+                        DynamicArray<ColumnValue> cv;
+                        DynamicArray<bool>        present;
+                        co_await read_row_into(engine, tbl, row_page, entry_opt->static_page, cv, present);
+                        inject_key_columns(*tbl,
+                                           TArrayView<const U8, U16>{pk_buf.ptr, pk_len},
+                                           TArrayView<const U8, U16>{nullptr, 0},
+                                           cv, present);
+                        if (!has_filter || eval_filter(cv)) {
+                            count++;
+                        }
+                    }
+                }
+                co_await idx_it.advance();
+            }
+        } else {
+            auto row_range = co_await create_table_range_it(engine, tbl, sp.locator);
+            while (row_range.start != row_range.stop) {
+                if (!has_filter) {
+                    count++;
+                } else {
+                    ColumnRange               col_range = co_await row_range.start.deref();
+                    DynamicArray<ColumnValue> row_values;
+                    while (col_range.start != col_range.stop && row_values.length < tbl->cols.length) {
+                        push_back(row_values, co_await col_range.start.deref());
+                        co_await col_range.start.advance();
+                    }
+                    while (row_values.length < tbl->cols.length) {
+                        push_back(row_values, ColumnValue{Null{}});
+                    }
+                    if (eval_filter(row_values)) {
+                        count++;
+                    }
+                }
+                co_await row_range.start.advance(row_range.stop);
+            }
+        }
+
+        VirtualRow row;
+        emplace_back(row.values, ColumnValue{S64(count)});
+        push_back(vr.rows, move(row));
+
+        co_return ExecutionResult{
+            .status       = ExecutionStatus::Success,
+            .kind         = ResultKind::VirtualRows,
+            .keyspace     = AutoString8(ks_name),
+            .table        = AutoString8(table_name),
+            .virtual_rows = move(vr),
+        };
+    }
+
     // @note locator.pk.is_equality must be true.
-    static coroutine::Task<void> apply_mutation(Engine& engine, schema::Table* tbl,
-                                                const planner::RowLocator&   locator,
-                                                const planner::MutationSpec& spec,
-                                                const EvalContext&           ctx) {
+    static coroutine::Task<void> apply_mutation(
+        Engine& engine, schema::Table* tbl,
+        const planner::RowLocator&   locator,
+        const planner::MutationSpec& spec,
+        const EvalContext&           ctx
+    ) {
         const DynamicArray<U8>& pk_bytes     = locator.pk.begin;
         bool                    have_indexes = tbl->indexes.length > 0;
 
@@ -1472,10 +1600,14 @@ namespace cql::engine {
                 }
 
                 planner::SelectPlan sp = planner::plan_select(stmt, *tbl, ctx);
-                if (auto err = validate_plan(sp.result)) {
+                if (auto err = create_error_if_plan_invalid(sp.result)) {
                     co_return move(*err);
                 }
-                assert_true_not_implemented(!sp.projection.is_aggregate, "aggregate SELECT (COUNT(*), etc.) is not implemented");
+
+                if (sp.projection.is_aggregate) {
+                    co_return co_await execute_select_aggregate(
+                        engine, tbl, ks_name, stmt.from.table_name, stmt, sp, ctx);
+                }
 
                 // Extract column indices for native layer from projection ops.
                 DynamicArray<U64> select_col_indices;
@@ -1629,7 +1761,7 @@ namespace cql::engine {
 
                         // collect regular (non-static) row bytes into buffer (sync)
                         DynamicArray<U8> row_buffer;
-                        auto             write_fn      = create_buffer_writer(row_buffer);
+                        auto             write_fn      = create_sync_buffer_writer(row_buffer);
                         auto             write         = io::to_writer(write_fn);
                         auto             row_is_active = [&](U64 col_idx) {
                             return !tbl->cols[col_idx].tombstone && static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name)) && !is_static_col(col_idx);
@@ -1836,7 +1968,7 @@ namespace cql::engine {
                 }
 
                 planner::MutationPlan mp = planner::plan_update(stmt, *tbl, ctx);
-                if (auto err = validate_plan(mp.result)) {
+                if (auto err = create_error_if_plan_invalid(mp.result)) {
                     co_return move(*err);
                 }
                 auto apply_for_ck = [&](planner::MutationPlan& mp_ref) -> coroutine::Task<void> {
@@ -1890,7 +2022,7 @@ namespace cql::engine {
                 }
 
                 planner::MutationPlan mp = planner::plan_delete(stmt, *tbl, ctx);
-                if (auto err = validate_plan(mp.result)) {
+                if (auto err = create_error_if_plan_invalid(mp.result)) {
                     co_return move(*err);
                 }
                 auto apply_for_ck_del = [&](planner::MutationPlan& mp_ref) -> coroutine::Task<void> {

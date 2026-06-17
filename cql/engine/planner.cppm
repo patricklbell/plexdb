@@ -64,6 +64,10 @@ export namespace cql::planner {
 
     struct ProjectionPlan {
         DynamicArray<SelectOp> ops;
+        // @note de-duplicated set of columns the executor must materialize per row:
+        // projected columns plus any column referenced by WHERE filter predicates.
+        // Empty means no column data is needed (e.g. COUNT(*) with no filter).
+        DynamicArray<U64>      needed_cols;
         bool                   is_aggregate = false;
     };
 
