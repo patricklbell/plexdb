@@ -1517,14 +1517,16 @@ namespace cql::parsers {
                     [](lexy::nullopt) -> Optional<AutoString8> { return {}; },
                     [](AutoString8&& name) -> Optional<AutoString8> { return move(name); });
             };
-            // Index column specifier: identifier or func(identifier) — parsed and discarded.
+            // Index column specifier: identifier or func(identifier) — returns the indexed column name.
             struct index_col_spec : lexy::transparent_production {
                 static constexpr auto rule = [] {
                     auto fn_form = dsl::peek(dsl::p<identifier> + dsl::p<ws> + dsl::lit_c<'('>) >>
                                    dsl::p<identifier> + dsl::p<ws> + dsl::lit_c<'('> + dsl::p<ws> + dsl::p<identifier> + dsl::p<ws> + dsl::lit_c<')'>;
                     return fn_form | dsl::else_ >> dsl::p<identifier>;
                 }();
-                static constexpr auto value = lexy::noop;
+                static constexpr auto value = lexy::callback<AutoString8>(
+                    [](AutoString8&&, AutoString8&& col_name) -> AutoString8 { return move(col_name); },
+                    [](AutoString8&& col_name) -> AutoString8 { return move(col_name); });
             };
 
             static constexpr auto rule = [] {
@@ -1540,9 +1542,19 @@ namespace cql::parsers {
                            cols;
             }();
             static constexpr auto value = lexy::callback<CreateIndex>(
-                [](bool custom, bool if_not_exists, Optional<AutoString8>&& index_name, TableName&& table) -> CreateIndex {
-                    return {.custom = custom, .if_not_exists = if_not_exists, .index_name = move(index_name), .table = move(table)};
+                [](bool custom, bool if_not_exists, Optional<AutoString8>&& index_name, TableName&& table, AutoString8&& column_name) -> CreateIndex {
+                    return {.custom = custom, .if_not_exists = if_not_exists, .index_name = move(index_name), .table = move(table), .column_name = move(column_name)};
                 });
+        };
+
+        struct drop_index_stmt {
+            static constexpr auto rule = [] {
+                auto key = kw_drop + dsl::p<ws> + kw_index;
+                return dsl::peek(key) >> key + dsl::p<ws> +
+                                             dsl::p<if_exists> + dsl::p<ws> +
+                                             dsl::p<table_name>;
+            }();
+            static constexpr auto value = lexy::construct<DropIndex>;
         };
 
         struct create_type_stmt {
@@ -1958,7 +1970,7 @@ namespace cql::parsers {
         // ====================================================================
         struct statement {
             static constexpr auto rule = [] {
-                auto stmt = dsl::p<use_stmt> | dsl::p<create_keyspace_stmt> | dsl::p<alter_keyspace_stmt> | dsl::p<drop_keyspace_stmt> | dsl::p<create_table_stmt> | dsl::p<create_index_stmt> | dsl::p<create_type_stmt> | dsl::p<alter_type_stmt> | dsl::p<drop_type_stmt> | dsl::p<alter_table_stmt> | dsl::p<drop_table_stmt> | dsl::p<truncate_stmt> | dsl::p<batch_stmt> | dsl::p<insert_stmt> | dsl::p<update_stmt> | dsl::p<delete_stmt> | dsl::p<select_stmt>;
+                auto stmt = dsl::p<use_stmt> | dsl::p<create_keyspace_stmt> | dsl::p<alter_keyspace_stmt> | dsl::p<drop_keyspace_stmt> | dsl::p<create_table_stmt> | dsl::p<create_index_stmt> | dsl::p<drop_index_stmt> | dsl::p<create_type_stmt> | dsl::p<alter_type_stmt> | dsl::p<drop_type_stmt> | dsl::p<alter_table_stmt> | dsl::p<drop_table_stmt> | dsl::p<truncate_stmt> | dsl::p<batch_stmt> | dsl::p<insert_stmt> | dsl::p<update_stmt> | dsl::p<delete_stmt> | dsl::p<select_stmt>;
                 return dsl::p<ws> + stmt + dsl::p<ws> + (dsl::lit_c<';'> | dsl::eof);
             }();
 
@@ -1972,6 +1984,7 @@ namespace cql::parsers {
                 [](DropTable&& s) -> Statement { return {.value = move(s)}; },
                 [](TruncateTable&& s) -> Statement { return {.value = move(s)}; },
                 [](CreateIndex&& s) -> Statement { return {.value = move(s)}; },
+                [](DropIndex&& s) -> Statement { return {.value = move(s)}; },
                 [](CreateType&& s) -> Statement { return {.value = move(s)}; },
                 [](AlterType&& s) -> Statement { return {.value = move(s)}; },
                 [](DropType&& s) -> Statement { return {.value = move(s)}; },

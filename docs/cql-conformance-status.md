@@ -1,117 +1,95 @@
 ## CQL conformance gaps
 
-Baseline: 73 / 313 passing, 40 xfailed, 3 xpassed, 13 skipped (scylladb ref: master, 2026-06-15, after Phase 3).
+Baseline: 83 / 313 passing, 40 xfailed, 3 xpassed, 13 skipped, 174 failed
+(scylladb ref: master, 2026-06-16, after Phase 4).
 
-Phase 3 (2026-06-15): +48 passes (73/313). Delivered: clustering-table DELETE (equality, range,
-partial-CK bounds, empty-value bounds); textAsBlob/blobAsText/intAsBlob/bigintAsBlob builtins;
-empty-blob crash fix in io.cpp; static-only partition SELECT (no clustering rows, static page
-non-null) with PK value injection; SELECT DISTINCT via advance_partition(); SELECT * column
-ordering (PK → CK → static → regular).
-
-Phase 3 gaps (not yet delivered):
-- Static column writes (rewrite_static) — INSERT/UPDATE to static cols in clustering tables.
-- CK prefix equality DELETE on 3-CK tables — `DELETE WHERE k=? AND c1=0` where c1 is the
-  first of three CK cols should range-delete all rows with c1=0; currently treated as full
-  equality (MissingClusteringKey when c2/c3 are absent).
-- Tuple-syntax range DELETE — `WHERE (ck_col) > (?)` sets only filter predicates, not
-  locator bounds; DELETE gets MissingClusteringKey.
-- USING TIMESTAMP on DELETE — causes crash in static-column deletion tests.
-
-Previous baseline (2026-06-14, after parser fixes): 25 / 313 passing, 41 xfailed, 2 xpassed, 13 skipped.
-
-Parser fixes (2026-06-14): +1 pass (testRandomDeletions; 25/313). Assert fire count rose from ~130 to 592 because
-eight parser bugs were fixed, converting ~55 previously-silent parse failures into engine asserts. Fixes:
-BATCH termination (whitespace before APPLY BATCH), function_selector far-ahead lookahead (→ local peek),
-COUNT(1), (col,col) tuple IN/= in WHERE, LIMIT/PER PARTITION LIMIT bind markers, PER PARTITION LIMIT
-stored in wrong field, UDT literal {ident: val} parsing. Parse-failure count dropped from ~70 to ~15.
-
-Previous baseline (2026-06-14, after Phase 2): 24 / 313 passing, 41 xfailed, 2 xpassed, 13 skipped.
-Phase 2 (2026-06-14): 0 new passes (still 24/313). Assert fire count reduced from ~290 to ~130 per run.
-Phase 2 eliminated: WITH-option crashes (converted to log+ignore), default_time_to_live crash (silently skipped),
-collection literal write crashes in UPDATE (plan_update and engine UPDATE now call evaluate() directly), and
-several stale entries (composite PK and frozen types were already handled by the parser). Tests that Phase 2
-was expected to unblock are also blocked by clustering-key mutations — Phase 3 is the actual unlock.
-
-Previous baseline (2026-06-14, after Phase 1): 24 / 313 passing, 41 xfailed, 2 xpassed, 13 skipped.
-Phase 1 gains: +1 pass (testDeleteColumnNoClustering); planner module; column-level DELETE; non-PK WHERE →
-RequiresAllowFiltering; compound PK equality; LIMIT implemented.
-
-Previous baseline (2026-06-13, pre-Phase 1): 23 / 313 passing, 39 xfailed, 1 xpassed.
+The 174 failures partition by primary exception into ~63 server crashes (aborts), ~36
+server-returned errors (non-crash), and ~75 test-side check failures. Fire/hit counts in
+the first two tables are higher than the unique-test count because a single test can
+trigger multiple aborts or error hits during setup or teardown.
 
 ### Unimplemented-CQL aborts
 
-Assert fires per conformance run (post-Phase-3 baseline, 2026-06-15). Phase 3 eliminated
-the DELETE-on-clustering-key fires (~172) and SELECT DISTINCT fires (~20).
-
 | Fires | Symptom (assert string) | Site |
 |------:|-------------------------|------|
-|  88 | Secondary indexes are not implemented | `engine.cpp` |
-|  60 | UPDATE on table with clustering key is not implemented | `engine.cpp` |
-|  56 | ORDER BY on clustering key requires reverse iterator | `planner.cpp` |
-|  44 | SELECT clause type (function/cast/term) is not implemented | `planner.cpp` |
-|  40 | BATCH is not implemented | `engine.cpp` |
-|  20 | counter column expressions (col = col + n) are not implemented | `planner.cpp` |
-|  20 | User-defined types are not implemented (CREATE/DROP TYPE) | `engine.cpp` |
-|  12 | subscript/field access in UPDATE SET is not implemented | `planner.cpp` |
-|  12 | key serialization for this type is not implemented | `key.cppm` |
-|   8 | tuple column type is not implemented | `schema.cpp` |
-|   8 | PER PARTITION LIMIT is not implemented | `engine.cpp` |
-|   8 | token relations | `planner.cpp` |
-|   8 | tuple expression relations | `planner.cpp` |
-|   4 | GROUP BY is not implemented | `engine.cpp` |
-|   4 | aggregate SELECT (COUNT(*), etc.) is not implemented | `engine.cpp` |
+|  23 | ORDER BY on clustering key requires reverse iterator | `planner.cpp` |
+|  12 | BATCH is not implemented | `engine.cpp` |
+|  11 | SELECT clause type (function/cast/term) is not implemented | `planner.cpp` |
+|   5 | User-defined types are not implemented (CREATE/DROP TYPE) | `engine.cpp` |
+|   4 | subscript/field access in UPDATE SET is not implemented | `planner.cpp` |
+|   2 | tuple column type is not implemented | `schema.cpp` |
+|   2 | PER PARTITION LIMIT is not implemented | `engine.cpp` |
+|   2 | GROUP BY is not implemented | `engine.cpp` |
+|   2 | aggregate SELECT (COUNT(*), etc.) is not implemented | `engine.cpp` |
+|   1 | writing null column values is not implemented | `io.cpp` |
+|   1 | writing integer value to this dtype is not implemented | `io.cpp` |
+|   1 | key serialization for this type is not implemented | `key.cppm` |
 
 ### Non-crash failures (server returns an error, test still fails)
 
 | Hits | Server `message=` | Notes |
 |-----:|-------------------|-------|
-| ~15 | `Failed to parse CQL` | Remaining parser gaps: `CREATE TYPE`, `CREATE INDEX`, `INSERT ... USING TTL AND TIMESTAMP`, various `ALTER` shapes. Down from ~70 after parser fixes. |
-|  10 | `Insert is missing a value for a clustering key` | Tests inserting with optional clustering columns and unset bind values. |
-|   8 | `Insert is missing a value for a primary key` | Same shape for PK columns. |
-|   6 | `INSERT USING TTL is not implemented` | Returned as `Invalid` (not a crash). |
+|  14 | `cannot create index on collection column` | Phase 4 rejects collection-column indexes; lands in Phase 8 with the per-element iteration that DML needs. |
+|   8 | `Failed to parse CQL` | Remaining parser gaps: a few `ALTER` shapes and `INSERT ... USING TTL AND TIMESTAMP`. |
+|   6 | `INSERT USING TTL is not implemented` | Returned as `Invalid` (not a crash). Phase 10. |
+|   5 | `Cannot apply counter operations on non-counter column <name>` | Tests that use `col = col + n` against non-counter columns; the planner now type-checks the assignment instead of falling through. |
 |   4 | `Incompatible literal for column type` | smallint/tinyint and reversed type cases. |
-|   3 | `USING TIMESTAMP` on ALTER DROP | Tests expecting timestamp-filtered column visibility. |
-|   2 | `Table does not exist` | Test exercises error shape on dropped table. |
+|   2 | `Cannot execute this query as it might involve data filtering ... use ALLOW FILTERING` | Two tests our index path should serve directly; need additional planner work to suppress the gate. |
+|   1 | `Keyspace 'with' does not exist` | Parser/keyword collision: bareword `with` is consumed as a keyspace identifier. |
 
+### Test-side check failures (server did not crash or return an error)
+
+These tests run to completion against the server but fail their own assertions. They are
+not visible in server logs and need conformance-driven planner/executor work to fix.
+
+| Tests | Category | Notes |
+|------:|----------|-------|
+|  36 | `AssertionError` — wrong rows, wrong count, wrong order, or wrong error regex | The server returned a result, but content or order differs from Cassandra. Includes `Expected regex:` mismatches where we reject a query with a different message than upstream. Concentrated in `*_test.py` files for `select`, `filtering`, `allow_filtering`, and `static_column` semantics. |
+|  23 | `Failed: DID NOT RAISE` — server accepted a query it should have rejected | 15 expected `InvalidRequest`, 4 expected `SyntaxException`, 3 expected `ConfigurationException`, 1 either. Missing validation in planner (restriction rules, type checking) and parser (reject malformed shapes). |
+|  13 | `ValueError: Too many arguments provided to bind()` | Driver-side bind mismatch — the server returns prepared-statement metadata with a different column count than the test binds. Likely from misreporting `?` placeholders in DML returning columns. |
+|   2 | `cassandra.protocol.ErrorMessage: Failed to create table` | Two schema setup failures: `testInvalidCreateTableStatements`, `testTable`. Generic `Unknown` (code=0x0001) — engine returns the wrong error code for these CREATE TABLE shapes. |
+|   1 | `TypeError: object of type 'int' has no len()` | `testFilterWithIndexForContains` — server returns an int where a collection is expected, driver crashes during deserialization. |
 
 ---
 
-## Design / structural issues to flag
+## Summary of structural issues
 
-These are the items that block large slabs of tests and need a design decision, not just a code edit.
-
-- **UPDATE on clustering tables (~60 fires, ~12 unique tests).** DELETE on clustering tables is
-  now implemented (Phase 3). UPDATE still asserts. Phase 3 gaps include tuple-syntax range
-  UPDATE and CK prefix equality UPDATE (same gaps as DELETE).
-
-- **Static columns on writes (~12 unique tests).** Read path supports static columns (including
-  static-only partition SELECT). Write path (INSERT/UPDATE to static cols) not yet implemented;
-  rewrite_static deferred to Phase 3b.
-
-- **ORDER BY / CLUSTERING ORDER BY (~56 fires, ~9 unique tests in select_order_by_test.py).**
+- **ORDER BY / CLUSTERING ORDER BY (~23 fires, ~9 unique tests in select_order_by_test.py).**
   Requires reverse iteration in `btree::Iterator` and `RowIterator`. `RowLocator` already has
   `reverse_partitions` and `reverse_clustering` fields; `plan_select` asserts instead of setting them.
-  Phase 5 fills these in. Depends on Phase 3 since valid ORDER BY columns are clustering keys.
+  Phase 5 fills these in.
 
-- **Secondary indexes (~88 fires, ~11 unique tests).** New storage object, planner change, DDL. Phase 4.
-
-- **SELECT COUNT / scalar functions (~44+4=48 fires, ~8 unique tests).** Aggregation stage above
+- **SELECT COUNT / scalar functions (~11+2=13 fires, ~8 unique tests).** Aggregation stage above
   `RowIterator` plus scalar function registry. Phase 6.
 
-- **Counter columns (~20 fires, ~5 unique tests).** `col = col + n` assignment needs row context at apply
-  time. Phase 7 extends `apply_mutation` to resolve column references.
+- **Counter columns (~5 hits as "non-counter column" errors, ~3 unique tests).** The reject-on-wrong-type
+  path now works; the actual counter-evaluation path (`col = col + n` on a real counter column) still
+  needs `apply_mutation` to provide a row context. Phase 7.
 
-- **Collection subscript / append DML (~12 fires, subscript/field access asserts).** `col[k] = v` and
+- **Collection subscript / append DML (~4 fires, subscript/field access asserts).** `col[k] = v` and
   `col = col + {…}` require read-modify-write on the collection bytes. Phase 8.
 
-- **BATCH (~40 fires, ~11 unique tests).** Single engine entry point wrapping child statements in one
+- **Collection-column secondary indexes (~14 hits as `cannot create index on collection column`).**
+  Bundled with Phase 8 — the per-element iteration is the same machinery.
+
+- **BATCH (~12 fires, ~11 unique tests).** Single engine entry point wrapping child statements in one
   transaction. Phase 9. Conditional BATCH (LWT) deferred indefinitely.
 
 - **TTL (~6 "INSERT USING TTL" non-crash errors, ~6 unique tests).** Row blob metadata header required.
   Phase 10.
 
-- **PER PARTITION LIMIT (~8 fires).** Engine needs to enforce per-partition row cap during SELECT iteration.
+- **User-defined types (~5 fires).** `CREATE TYPE` / `ALTER TYPE` / `DROP TYPE` are parser+schema work
+  not currently scheduled in a phase.
 
-- **Tuple expression relations (~8 fires).** Planner needs to handle `(c1,c2) IN (...)` / `(c1,c2) = (...)` in `build_row_locator`.
+- **PER PARTITION LIMIT (~2 fires).** Engine needs to enforce per-partition row cap during SELECT iteration.
 
-- **Token relations (~8 fires).** Planner needs token-range scan in `build_row_locator`.
+- **GROUP BY (~2 fires).** Not scheduled.
+
+- **Tuple column type (~2 fires).** `schema.cpp` rejects `tuple<...>` as a column type.
+
+- **`Incompatible literal for column type` (~4 hits).** Mostly smallint/tinyint coercion and reversed
+  types — `cast_write_evaluated_as_column_value` needs to accept more shapes.
+
+- **Partitioner ordering.** `testIndexQueryWithCompositePartitionKey` and similar tests expect
+  Murmur3 token order on partitions; plexdb sorts by raw partition-key bytes. See the Phase 4
+  follow-ups in `cql-conformance-roadmap.md`.

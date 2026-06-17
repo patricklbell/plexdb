@@ -22,8 +22,8 @@ export namespace cql::engine {
     };
 
     struct VirtualRows {
-        String8                     keyspace;
-        String8                     table;
+        AutoString8                 keyspace;
+        AutoString8                 table;
         DynamicArray<VirtualColumn> columns;
         DynamicArray<VirtualRow>    rows;
     };

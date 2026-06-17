@@ -353,6 +353,12 @@ export namespace cql {
         bool                  if_not_exists;
         Optional<AutoString8> index_name;
         TableName             table;
+        AutoString8           column_name;
+    };
+
+    struct DropIndex {
+        bool      if_exists;
+        TableName index_name; // table_name field holds the index name; keyspace_name is optional
     };
 
     struct CreateType {
@@ -515,6 +521,7 @@ export namespace cql {
             DropTable,
             TruncateTable,
             CreateIndex,
+            DropIndex,
             CreateType,
             AlterType,
             DropType,

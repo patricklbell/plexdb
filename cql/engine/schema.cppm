@@ -43,6 +43,16 @@ export namespace cql::schema {
     using PartitionBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<sizeof(PartitionEntry)>>;
     // Inner clustering BTree: ck_bytes → row_page (U64)
     using ClusteringBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<sizeof(U64)>>;
+    // Secondary index BTree: index_key → dummy (1 byte); all data is in the key
+    using IndexBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<1>>;
+
+    struct Index {
+        U64        idx; // index into storage.indexes
+        bool       tombstone;
+        String8    name;
+        U64        col_idx; // which column in tbl.cols is indexed
+        IndexBTree btree;
+    };
 
     struct Table {
         U64                  idx;
@@ -52,6 +62,7 @@ export namespace cql::schema {
         DynamicArray<U64>    partition_key_col_indices;  // sorted by key_position
         DynamicArray<U64>    clustering_key_col_indices; // sorted by key_position
         DynamicArray<U64>    static_col_indices;         // col indices where is_static == true
+        DynamicArray<Index>  indexes;
         PartitionBTree       btree;
     };
 
@@ -72,6 +83,7 @@ export namespace cql::schema {
         U64 tables_page;
         U64 columns_page;
         U64 types_page;
+        U64 indexes_page;
     };
     struct KeyspaceHeader {
         bool tombstone;
@@ -110,6 +122,13 @@ export namespace cql::schema {
         KeyKind key_kind;
         U16     key_position;
     };
+    struct IndexHeader {
+        bool tombstone;
+        U64  name_length;
+        U64  table_idx;
+        U64  col_idx;
+        U64  btree_page;
+    };
 #pragma pack(pop)
 
     enum class ReplicationClass {
@@ -117,6 +136,12 @@ export namespace cql::schema {
         SimpleStrategy,
         NetworkTopologyStrategy,
     };
+    struct IndexStorage {
+        U64         offset_in_blob_bytes;
+        IndexHeader header;
+        AutoString8 name;
+    };
+
     // @todo use long held transaction with pager cache as storage?
     struct KeyspaceStorage {
         U64               offset_in_blob_bytes;
@@ -144,6 +169,7 @@ export namespace cql::schema {
         DynamicArray<TableStorage>      tables;
         DynamicArray<KeyspaceStorage>   keyspaces;
         DynamicArray<TypeRegistryEntry> type_entries;
+        DynamicArray<IndexStorage>      indexes;
     };
 
     struct Schema {
@@ -155,6 +181,7 @@ export namespace cql::schema {
         blob::BlobDynamicPaged tables_blob;
         blob::BlobDynamicPaged columns_blob;
         blob::BlobDynamicPaged types_blob;
+        blob::BlobDynamicPaged indexes_blob;
 
         Schema() = default;
     };
@@ -170,6 +197,7 @@ export namespace cql::schema {
         ColumnNameCollision,
         MissingTable,
         MissingColumn,
+        MissingIndex,
     };
     template<typename T>
     struct Result {
@@ -195,4 +223,8 @@ export namespace cql::schema {
 
     coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create, KeyKind key_kind = KeyKind::None, U16 key_position = 0);
     coroutine::Task<Result<void>>    delete_column(Schema& schema, Table& tbl, String8 name);
+
+    Result<Index*>                  read_index(Schema& schema, Table& tbl, String8 name);
+    coroutine::Task<Result<Index*>> create_index(Schema& schema, Table& tbl, U64 col_idx, String8 index_name);
+    coroutine::Task<Result<void>>   drop_index(Schema& schema, Table& tbl, String8 name);
 }

@@ -2,7 +2,8 @@
 
 ## Current Status
 
-Phases 1–3b complete. Score: 79/313 passing (2026-06-16).
+Phases 1–4 complete. Score: 83/313 passing (2026-06-16). Mustpass list (73 entries)
+verified — no regressions.
 
 ---
 
@@ -41,8 +42,8 @@ with the located rows is separate (`ProjectionPlan` for SELECT, `MutationSpec` f
 child statements all funnel through one function:
 `apply_mutation(engine, tbl, locator, spec, ctx)`.
 This is the only place that reads existing rows, applies updates, writes new blobs, and
-maintains secondary indexes. Counter evaluation (Phase 7) and index maintenance (Phase 4)
-are added to this function without altering its callers.
+maintains secondary indexes. New per-mutation work (counter evaluation in Phase 7) lands
+here without altering callers.
 
 **Column-level DELETE is a mutation with null assignments.**
 `DELETE col1, col2 WHERE pk = ?` produces `MutationSpec{updates=[{col1,Null},{col2,Null}]}`.
@@ -56,69 +57,30 @@ implementing Phase 7 (counters) or as a standalone optimization pass.
 **Aggregation sits above iteration.** `SELECT COUNT(*)` consumes `RowIterator` inside
 the engine and returns a synthesized `VirtualRows` row, avoiding deferred-tx lifetime issues.
 
-**`locator.index` slot does not exist yet.** Phase 4 must add `Optional<U64> index_col_idx`
-to `RowLocator`.
+**Secondary-index slot on `RowLocator`.** `Optional<U64> index_col_idx` plus the
+encoded `index_key_prefix` are set by `build_row_locator` whenever a WHERE equality
+predicate matches an indexed basic-typed non-key column.
 
 ---
 
-## Phase 4 — Secondary Indexes
+## Phase 4 follow-ups
 
-**Impact: ~22 unique tests (secondary index scans, CREATE/DROP INDEX). Must come before
-any optimization pass; no dependencies on Phase 5 or later.**
+Phase 4 (secondary indexes, DISTINCT validation, schema-version + virtual-table WHERE
+that make the cassandra-driver schema refresh work) is shipped. Remaining items:
 
-### Schema changes
+- **Token-based partition ordering.** `testIndexQueryWithCompositePartitionKey` returns
+  correct rows but in lex-PK order; Cassandra uses Murmur3 token order. Needs a
+  partitioner layer that hashes the partition key into a token and orders by it.
+  Touches every BTree key comparison, not just indexes.
+- **ALTER TABLE WITH options.** `min_index_interval`, `max_index_interval`,
+  `default_time_to_live` (also in Phase 10), `gc_grace_seconds`, etc. — values are
+  parsed and silently dropped. Persist on `TableHeader` and surface in `system_schema.tables`.
+- **`CUSTOM INDEX ... USING '...'`** (SASI/SAI) and per-index `WITH OPTIONS` — deferred
+  indefinitely.
 
-```
-// Index BTree key: indexed_col_bytes ++ pk_bytes (length-prefixed if variable-length)
-// Index BTree value: empty (key encodes everything needed)
-struct Index:
-    idx:         U64
-    tombstone:   bool
-    name:        String8
-    col_idx:     U64          // column this index covers
-    btree:       IndexBTree   // BTreePaged<VarlenKeyPolicy, EmptyValuePolicy>
-
-Table gains:
-    indexes:     DynamicArray<Index>
-```
-
-**Index key format.** Variable-length column values (text, blob) need a length prefix to
-avoid ambiguous prefix boundaries: `[len: U16][col_bytes][pk_bytes]`. Fixed-length types
-(int, bigint, uuid, etc.) need no prefix since their width is known from the column type.
-The planner's `index_lookup` strips the prefix to extract pk_bytes.
-
-`SchemaHeader` gains `indexes_page: U64`. `schema::create_index` and `schema::load` persist
-and reload the index catalog alongside keyspaces/tables/columns.
-
-### Parser + engine
-
-The `CreateIndex` AST node gains `column_name`. The parser handles
-`CREATE INDEX [name] ON table (column)`. The engine handler calls `schema::create_index`,
-then backfills the index by walking the table BTree and calling `update_indexes`.
-
-`DropIndex` follows the tombstone pattern from `DROP TABLE`.
-
-### DML index maintenance
-
-```
-update_indexes(engine, tbl, pk_bytes,
-               old_col_values, old_col_present,
-               new_col_values, new_col_present):
-    for each Index in tbl.indexes where not tombstone:
-        old_key = make_index_key(old_col_values[idx.col_idx], pk_bytes)  if old_col_present
-        new_key = make_index_key(new_col_values[idx.col_idx], pk_bytes)  if new_col_present
-        if old_present and old_key != new_key:
-            co_await btree::remove(idx.btree, old_key)
-        if new_present and old_key != new_key:
-            co_await btree::insert(idx.btree, new_key, empty_value)
-```
-
-### Planner integration
-
-Add `Optional<U64> index_col_idx` to `RowLocator`. `build_row_locator` sets it when an equality
-relation on a non-PK column matches an indexed column and `!needs_allow_filtering`. Engine SELECT
-path: if `locator.index_col_idx` is set, do a prefix range scan on the index BTree to collect
-pk_bytes, then run pk equality lookups.
+Collection-column indexes (`CREATE INDEX ON tbl(col)` for LIST/SET/MAP, plus
+`keys(col)`/`values(col)`/`entries(col)` for `CONTAINS` / `CONTAINS KEY`) are part of
+**Phase 8** — they share the per-element iteration that collection DML introduces.
 
 ---
 
@@ -266,6 +228,31 @@ O(1) updates but is a major storage-layer change; defer unless profiling shows i
 `ColumnUpdate.new_value` gains a third variant: `CollectionPatch` describing the delta
 (subscript set, append, merge). `apply_updates` materializes the existing collection value,
 applies the patch, and writes back.
+
+**Sub-problem C: collection-column indexes** (rolled in from Phase 4 — ~8 fires).
+The Phase 4 `CreateIndex` handler currently rejects collection columns ("cannot create
+index on collection column"). Phase 8's per-element iteration is the same machinery needed
+to emit an index entry per collection element, so collection indexes land here.
+
+- Schema: `Index` gains an `IndexKind` enum (`Values` / `Keys` / `Entries` / `Full`)
+  parsed from `CREATE INDEX ON tbl(values(col))`, `tbl(keys(col))`, `tbl(entries(col))`.
+  Plain `tbl(col)` on a list/set defaults to `Values`; on a map it remains an explicit
+  error (per Cassandra, map without `keys()`/`values()`/`entries()` is ambiguous).
+- Index key format: `[len-prefixed element_bytes][pk_len][pk_bytes][ck_bytes]`. For map
+  `Entries`, the element is `key_bytes ++ value_bytes`; for `Keys`, just the map key.
+- Maintenance: when an indexed collection column changes, iterate the old element set,
+  remove each `(element, pk, ck)` index entry, then iterate the new element set and
+  insert. The diff approach (only emit the changed elements) is an optimization deferred
+  to a later pass.
+- WHERE handling: `col CONTAINS x` planner-translates to an index lookup against a
+  `Values`-kind index on `col`; `col CONTAINS KEY x` against a `Keys` index; `col[k] = v`
+  to an `Entries` index lookup with element = `k ++ v`.
+
+Blocks: `testSetContainsWithIndex`, `testListContainsWithIndex`,
+`testListContainsWithIndexAndFiltering`, `testMapKeyContainsWithIndex`,
+`testMapValueContainsWithIndex`, `testFilterWithIndexForContains`,
+`testQueryMultipleIndexTypes`, `testContainsKeyAndContainsWithIndexOnMapKey`,
+`testContainsKeyAndContainsWithIndexOnMapValue`, `testIndexLookupWithClusteringPrefix`.
 
 ---
 

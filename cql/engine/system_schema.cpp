@@ -1,6 +1,7 @@
 module cql.engine.system_schema;
 
 import cql.engine.column_value;
+import cql.engine.schema;
 import cql.engine.types;
 import cql.engine.evaluator;
 import cql.engine.statements;
@@ -484,8 +485,33 @@ namespace cql::engine {
         emplace_back(vr.columns, VirtualColumn{"options", type::create_map(type::Basic::text, type::Basic::text)});
         emplace_back(vr.columns, VirtualColumn{"extensions", type::create_map(type::Basic::text, type::Basic::blob)});
 
-        // @todo secondary indexes
-        (void)schema;
+        for (auto& ks : schema.keyspaces) {
+            if (ks.tombstone) {
+                continue;
+            }
+            for (auto& tbl : ks.tbls) {
+                if (tbl.tombstone) {
+                    continue;
+                }
+                for (auto& idx : tbl.indexes) {
+                    if (idx.tombstone) {
+                        continue;
+                    }
+                    VirtualRow row;
+                    emplace_back(row.values, AutoString8(ks.name));
+                    emplace_back(row.values, AutoString8(tbl.name));
+                    emplace_back(row.values, AutoString8(idx.name));
+                    emplace_back(row.values, "COMPOSITES"_as);
+                    {
+                        DynamicMap<NestedColumnValue, NestedColumnValue> opts{};
+                        insert(opts, ncv("target"_as), ncv(AutoString8(tbl.cols[idx.col_idx].name)));
+                        emplace_back(row.values, move(opts));
+                    }
+                    emplace_back(row.values, DynamicMap<NestedColumnValue, NestedColumnValue>{});
+                    emplace_back(vr.rows, move(row));
+                }
+            }
+        }
         return vr;
     }
 
@@ -574,7 +600,58 @@ namespace cql::engine {
         return vr;
     }
 
-    VirtualRows create_system_local(U16 port) {
+    // @note clients rely on a *changing* UUID to drive their schema metadata refresh,
+    // so the value here must be a deterministic function of every persisted schema field.
+    static UUID compute_schema_version(schema::Schema& schema) {
+        U64  h1  = 14695981039346656037ULL;
+        U64  h2  = 1099511628211ULL;
+        auto mix = [&](U64 v) {
+            h1 ^= v;
+            h1 *= 1099511628211ULL;
+            h2 ^= v + (h1 << 7) + (h1 >> 3);
+            h2 *= 1469598103934665603ULL;
+        };
+        for (auto& ks : schema.keyspaces) {
+            mix(U64(ks.tombstone));
+            mix(ks.name.length);
+            for (U64 i = 0; i < ks.name.length; i++) {
+                mix(U64(U8(ks.name.data[i])));
+            }
+            for (auto& tbl : ks.tbls) {
+                mix(U64(tbl.tombstone));
+                mix(tbl.name.length);
+                for (U64 i = 0; i < tbl.name.length; i++) {
+                    mix(U64(U8(tbl.name.data[i])));
+                }
+                mix(tbl.cols.length);
+                for (auto& col : tbl.cols) {
+                    mix(U64(col.tombstone));
+                    mix(col.name.length);
+                    for (U64 i = 0; i < col.name.length; i++) {
+                        mix(U64(U8(col.name.data[i])));
+                    }
+                }
+                for (auto& idx : tbl.indexes) {
+                    mix(U64(idx.tombstone));
+                    mix(idx.col_idx);
+                    mix(idx.name.length);
+                    for (U64 i = 0; i < idx.name.length; i++) {
+                        mix(U64(U8(idx.name.data[i])));
+                    }
+                }
+            }
+        }
+        UUID out;
+        for (U64 i = 0; i < 8; i++) {
+            out.value[i] = U8((h1 >> (i * 8)) & 0xff);
+        }
+        for (U64 i = 0; i < 8; i++) {
+            out.value[i + 8] = U8((h2 >> (i * 8)) & 0xff);
+        }
+        return out;
+    }
+
+    VirtualRows create_system_local(U16 port, schema::Schema& schema) {
         VirtualRows vr;
         vr.keyspace = "system";
         vr.table    = "local";
@@ -627,9 +704,7 @@ namespace cql::engine {
         emplace_back(row.values, "3.11.19"_as);           // @note last version in 3.x, before system_virtual
         emplace_back(row.values, create_loopback_ipv4()); // rpc_address
         emplace_back(row.values, S32(port));
-        emplace_back(row.values, UUID{
-                                     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
-        });
+        emplace_back(row.values, compute_schema_version(schema));
         {
             DynamicSet<NestedColumnValue> s{};
             insert(s, ncv("0"_as));

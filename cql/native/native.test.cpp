@@ -1068,3 +1068,152 @@ CQL_NATIVE_TEST_CASE("Delete: range delete on specific column is invalid", "[cql
     });
     co_return;
 }
+
+CQL_NATIVE_TEST_CASE("Secondary index: CREATE INDEX and SELECT via indexed column", "[cql.native][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.users (id int PRIMARY KEY, name text, age int);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.users (id, name, age) VALUES (1, 'Alice', 30);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.users (id, name, age) VALUES (2, 'Bob', 25);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.users (id, name, age) VALUES (3, 'Carol', 30);").opcode == op::RESULT);
+
+        Frame ci = send_query(client, "CREATE INDEX ON ks.users (age);");
+        CHECK(ci.opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT id, name FROM ks.users WHERE age = 30;");
+        CHECK(sel.opcode == op::RESULT);
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "Alice"));
+        CHECK(body_contains(sel, "Carol"));
+        CHECK(!body_contains(sel, "Bob"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Secondary index: backfill on CREATE INDEX covers pre-existing rows", "[cql.native][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int PRIMARY KEY, city text);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, city) VALUES (10, 'London');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, city) VALUES (20, 'Paris');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, city) VALUES (30, 'London');").opcode == op::RESULT);
+
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (city);").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT pk, city FROM ks.t WHERE city = 'London';");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "London"));
+        CHECK(!body_contains(sel, "Paris"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Secondary index: UPDATE maintains index", "[cql.native][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int PRIMARY KEY, v text);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (v);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, v) VALUES (1, 'aaa');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, v) VALUES (2, 'bbb');").opcode == op::RESULT);
+
+        CHECK(send_query(client, "UPDATE ks.t SET v = 'bbb' WHERE pk = 1;").opcode == op::RESULT);
+
+        Frame bbb = send_query(client, "SELECT pk FROM ks.t WHERE v = 'bbb';");
+        CHECK(result_kind(bbb) == result::ROWS);
+        // Both pk 1 and 2 now have v = 'bbb'; pk 1 with old value 'aaa' must not appear under 'aaa'.
+        Frame aaa = send_query(client, "SELECT pk FROM ks.t WHERE v = 'aaa';");
+        CHECK(result_kind(aaa) == result::ROWS);
+        CHECK(!body_contains(aaa, "aaa")); // no rows match
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Secondary index: DELETE removes row from index", "[cql.native][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int PRIMARY KEY, name text, tag text);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (tag);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, name, tag) VALUES (1, 'Alice', 'x');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, name, tag) VALUES (2, 'Bob', 'x');").opcode == op::RESULT);
+
+        CHECK(send_query(client, "DELETE FROM ks.t WHERE pk = 1;").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT name FROM ks.t WHERE tag = 'x';");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "Bob"));
+        CHECK(!body_contains(sel, "Alice"));
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Secondary index: DROP INDEX removes index", "[cql.native][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int PRIMARY KEY, v text);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX idx ON ks.t (v);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, v) VALUES (1, 'hello');").opcode == op::RESULT);
+
+        CHECK(send_query(client, "DROP INDEX ks.idx;").opcode == op::RESULT);
+
+        // After drop, query requires ALLOW FILTERING (no index to use).
+        Frame err = send_query(client, "SELECT pk FROM ks.t WHERE v = 'hello';");
+        CHECK(err.opcode == op::ERROR);
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Secondary index: CREATE INDEX IF NOT EXISTS is idempotent", "[cql.native][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int PRIMARY KEY, v text);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX idx ON ks.t (v);").opcode == op::RESULT);
+        // Second create with IF NOT EXISTS must not error.
+        CHECK(send_query(client, "CREATE INDEX IF NOT EXISTS idx ON ks.t (v);").opcode == op::RESULT);
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Secondary index: clustering table index scan", "[cql.native][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int, ck int, label text, PRIMARY KEY (pk, ck));").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (label);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, label) VALUES (1, 10, 'foo');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, label) VALUES (1, 20, 'bar');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, label) VALUES (2, 10, 'foo');").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT pk, ck, label FROM ks.t WHERE label = 'foo';");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "foo"));
+        CHECK(!body_contains(sel, "bar"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Secondary index: system_schema.indexes lists created indexes", "[cql.native][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int PRIMARY KEY, v text);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX my_idx ON ks.t (v);").opcode == op::RESULT);
+
+        Frame idx_sel = send_query(client, "SELECT * FROM system_schema.indexes;");
+        CHECK(result_kind(idx_sel) == result::ROWS);
+        CHECK(body_contains(idx_sel, "my_idx"));
+        CHECK(body_contains(idx_sel, "COMPOSITES"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}

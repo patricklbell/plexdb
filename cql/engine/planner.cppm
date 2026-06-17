@@ -49,6 +49,10 @@ export namespace cql::planner {
 
         bool reverse_partitions = false;
         bool reverse_clustering = false;
+
+        // Set when a WHERE equality predicate matches an indexed non-key column.
+        Optional<U64>    index_col_idx;    // column index in tbl.cols
+        DynamicArray<U8> index_key_prefix; // encoded column value for index prefix scan
     };
 
     struct FilterPlan {
@@ -96,6 +100,7 @@ export namespace cql::planner {
         NonKeyColumnInMutationWhere,
         NonEqInOnPartitionKeyMutation,
         CounterOperationOnNonCounter,
+        DistinctRestrictionInvalid,
     };
 
     struct PlanResult {

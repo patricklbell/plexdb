@@ -337,6 +337,28 @@ namespace cql::key {
                     os::memory_copy(s.c_str, buf.ptr, buf.length);
                     return ColumnValue{move(s)};
                 }
+                case type::Basic::blob:
+                case type::Basic::hex: {
+                    DynamicArray<U8> buf;
+                    while (*pos + 1 < total_len) {
+                        U8 c = src[*pos];
+                        *pos += 1;
+                        if (c == 0x00) {
+                            if (src[*pos] == 0xFF) {
+                                *pos += 1;
+                                push_back(buf, U8(0x00));
+                            } else {
+                                *pos += 1;
+                                break;
+                            }
+                        } else {
+                            push_back(buf, c);
+                        }
+                    }
+                    Blob b;
+                    b.value = move(buf);
+                    return ColumnValue{move(b)};
+                }
                 default:
                     assert_not_implemented("key deserialization not implemented for this type");
                     return ColumnValue{Null{}};
@@ -410,11 +432,80 @@ namespace cql::key {
                     *pos += slen;
                     return ColumnValue{move(s)};
                 }
+                case type::Basic::blob:
+                case type::Basic::hex: {
+                    U16  slen = static_cast<U16>(total_len - *pos);
+                    Blob b;
+                    resize(b.value, U64(slen));
+                    os::memory_copy(b.value.ptr, src + *pos, slen);
+                    *pos += slen;
+                    return ColumnValue{move(b)};
+                }
                 default:
                     assert_not_implemented("key deserialization not implemented for this type");
                     return ColumnValue{Null{}};
             }
         }
+    }
+}
+
+namespace cql::key {
+    // Returns true for types whose encoding length is not determined by dtype alone.
+    static bool is_variable_length_basic(type::Basic dtype) {
+        return dtype == type::Basic::text || dtype == type::Basic::varchar ||
+               dtype == type::Basic::ascii || dtype == type::Basic::blob ||
+               dtype == type::Basic::hex;
+    }
+
+    // @note append_component encodes from Constant, so widen ColumnValue's narrow
+    // numeric representations (S16, S32, S8, F32, U8-as-bool) into the matching Constant types.
+    static Evaluated cv_to_const_eval(const ColumnValue& cv, type::Basic dtype) {
+        Constant c{};
+        switch (dtype) {
+            case type::Basic::bigint:
+            case type::Basic::timestamp:
+            case type::Basic::counter:
+                c.value = get<S64>(cv);
+                break;
+            case type::Basic::int_:
+                c.value = S64(get<S32>(cv));
+                break;
+            case type::Basic::smallint:
+                c.value = S64(get<S16>(cv));
+                break;
+            // tinyint: ColumnValue holds raw U8 bit pattern (S8 reinterpreted). Constant needs S64.
+            case type::Basic::tinyint:
+                c.value = S64(static_cast<S8>(get<U8>(cv)));
+                break;
+            case type::Basic::boolean:
+                c.value = bool(get<U8>(cv) != 0);
+                break;
+            case type::Basic::double_:
+                c.value = get<F64>(cv);
+                break;
+            // float: ColumnValue holds F32. Constant needs F64; append_component casts back.
+            case type::Basic::float_:
+                c.value = F64(get<F32>(cv));
+                break;
+            case type::Basic::text:
+            case type::Basic::varchar:
+            case type::Basic::ascii:
+                c.value = get<AutoString8>(cv);
+                break;
+            case type::Basic::uuid:
+            case type::Basic::timeuuid:
+                c.value = get<UUID>(cv);
+                break;
+            case type::Basic::blob:
+                c.value = get<Blob>(cv);
+                break;
+            default:
+                assert_not_implemented("index key encoding for this type is not implemented");
+                break;
+        }
+        Evaluated e{};
+        e.value = c;
+        return e;
     }
 }
 
@@ -490,6 +581,70 @@ export namespace cql::key {
         return out;
     }
 
+    // @note variable-length values must be escape-terminated so that the prefix boundary
+    // is unambiguous even when the value contains zero bytes; fixed-width values do not need it.
+    DynamicArray<U8> make_index_prefix(const Evaluated& val, type::Basic dtype) {
+        DynamicArray<U8> out;
+        append_component(out, val, dtype, is_variable_length_basic(dtype));
+        return out;
+    }
+
+    DynamicArray<U8> make_index_prefix_from_cv(const ColumnValue& cv, type::Basic dtype) {
+        return make_index_prefix(cv_to_const_eval(cv, dtype), dtype);
+    }
+
+    U16 index_prefix_len(type::Basic dtype, const U8* key_ptr) {
+        if (!is_variable_length_basic(dtype)) {
+            switch (dtype) {
+                case type::Basic::bigint:
+                case type::Basic::timestamp:
+                case type::Basic::counter:
+                case type::Basic::double_:
+                    return 8;
+                case type::Basic::int_:
+                case type::Basic::float_:
+                    return 4;
+                case type::Basic::smallint:
+                    return 2;
+                case type::Basic::tinyint:
+                case type::Basic::boolean:
+                    return 1;
+                case type::Basic::uuid:
+                case type::Basic::timeuuid:
+                    return static_cast<U16>(UUID::length);
+                default:
+                    return 0;
+            }
+        }
+        // @note escape format: 0x00 0xFF = literal NUL, 0x00 0x00 = terminator.
+        U16 i = 0;
+        while (true) {
+            if (key_ptr[i] == 0x00) {
+                i += 2;
+                if (key_ptr[i - 1] != 0xFF) {
+                    break;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        return i;
+    }
+
+    // @note index key layout: col_prefix || [U16 pk_len] || pk_bytes || ck_bytes
+    DynamicArray<U8> make_full_index_key(const DynamicArray<U8>&   prefix,
+                                         TArrayView<const U8, U16> pk_bytes,
+                                         TArrayView<const U8, U16> ck_bytes) {
+        DynamicArray<U8> out;
+        append_bytes(out, prefix.ptr, static_cast<U16>(prefix.length));
+        append_u16_be(out, pk_bytes.length);
+        append_bytes(out, pk_bytes.ptr, pk_bytes.length);
+        if (ck_bytes.length > 0) {
+            append_bytes(out, ck_bytes.ptr, ck_bytes.length);
+        }
+        return out;
+    }
+
     // Deserialize partition key bytes back into ColumnValues.
     // Returns one ColumnValue per tbl.partition_key_col_indices entry.
     DynamicArray<ColumnValue> deserialize_partition(const schema::Table& tbl, TArrayView<const U8, U16> key_bytes) {
@@ -498,6 +653,20 @@ export namespace cql::key {
         U16                       pos       = 0;
         for (U64 i = 0; i < tbl.partition_key_col_indices.length; i++) {
             U64                   col_idx = tbl.partition_key_col_indices[i];
+            const schema::Column& col     = tbl.cols[col_idx];
+            type::Basic           dtype   = get<type::Basic>(col.type.value);
+            push_back(out, decode_component(key_bytes.ptr, key_bytes.length, &pos, dtype, composite));
+        }
+        return out;
+    }
+
+    // @note partial CK prefixes are legal; trailing positions with no bytes left are simply absent.
+    DynamicArray<ColumnValue> deserialize_clustering(const schema::Table& tbl, TArrayView<const U8, U16> key_bytes) {
+        DynamicArray<ColumnValue> out;
+        bool                      composite = tbl.clustering_key_col_indices.length > 1;
+        U16                       pos       = 0;
+        for (U64 i = 0; i < tbl.clustering_key_col_indices.length && pos < key_bytes.length; i++) {
+            U64                   col_idx = tbl.clustering_key_col_indices[i];
             const schema::Column& col     = tbl.cols[col_idx];
             type::Basic           dtype   = get<type::Basic>(col.type.value);
             push_back(out, decode_component(key_bytes.ptr, key_bytes.length, &pos, dtype, composite));

@@ -47,7 +47,7 @@ namespace cql::engine {
     Optional<VirtualRows> try_system_select(Engine& engine, String8 keyspace, String8 table) {
         if (keyspace == "system") {
             if (table == "local") {
-                return create_system_local(engine.port);
+                return create_system_local(engine.port, engine.schema);
             }
             if (table == "peers") {
                 return create_system_peers();
@@ -312,6 +312,11 @@ namespace cql::engine {
                 r.message         = String8(r.message_storage.c_str, r.message_storage.length);
                 return r;
             }
+            case planner::PlanError::DistinctRestrictionInvalid:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "SELECT DISTINCT with WHERE clause only supports restriction by partition key and/or static columns.",
+                };
         }
         return {};
     }
@@ -506,6 +511,104 @@ namespace cql::engine {
         co_await blob::insert(b, buf.ptr, buf.length);
     }
 
+    // @note empty old_cv/old_present means "row did not exist"; empty new_cv/new_present means "row was deleted".
+    static coroutine::Task<void> update_indexes(Engine& /*engine*/, schema::Table* tbl,
+                                                TArrayView<const U8, U16>        pk_bytes,
+                                                TArrayView<const U8, U16>        ck_bytes,
+                                                const DynamicArray<ColumnValue>& old_cv,
+                                                const DynamicArray<bool>&        old_present,
+                                                const DynamicArray<ColumnValue>& new_cv,
+                                                const DynamicArray<bool>&        new_present) {
+        for (auto& idx : tbl->indexes) {
+            if (idx.tombstone) {
+                continue;
+            }
+            U64 ci = idx.col_idx;
+            if (!type_matches_tag<type::Basic>(tbl->cols[ci].type.value)) {
+                continue;
+            }
+            type::Basic dtype   = get<type::Basic>(tbl->cols[ci].type.value);
+            bool        old_has = ci < old_cv.length && old_present[ci] && !type_matches_tag<Null>(old_cv[ci]);
+            bool        new_has = ci < new_cv.length && new_present[ci] && !type_matches_tag<Null>(new_cv[ci]);
+            if (old_has) {
+                DynamicArray<U8> old_key = key::make_full_index_key(
+                    key::make_index_prefix_from_cv(old_cv[ci], dtype), pk_bytes, ck_bytes);
+                auto kv = TArrayView<const U8, U16>(old_key.ptr, static_cast<U16>(old_key.length));
+                co_await btree::remove(idx.btree, kv);
+            }
+            if (new_has) {
+                DynamicArray<U8> new_key = key::make_full_index_key(
+                    key::make_index_prefix_from_cv(new_cv[ci], dtype), pk_bytes, ck_bytes);
+                auto kv    = TArrayView<const U8, U16>(new_key.ptr, static_cast<U16>(new_key.length));
+                U8   dummy = 0;
+                co_await btree::tinsert(idx.btree, kv, dummy);
+            }
+        }
+    }
+
+    static coroutine::Task<void> backfill_index(Engine& engine, schema::Table* tbl, schema::Index& idx) {
+        if (!type_matches_tag<type::Basic>(tbl->cols[idx.col_idx].type.value)) {
+            co_return;
+        }
+        type::Basic dtype = get<type::Basic>(tbl->cols[idx.col_idx].type.value);
+        U64         ci    = idx.col_idx;
+
+        auto part_it  = co_await btree::begin<schema::PartitionEntry>(tbl->btree);
+        auto part_end = btree::end<schema::PartitionEntry>(tbl->btree);
+
+        while (part_it != part_end) {
+            auto             pk_view = part_it.key();
+            DynamicArray<U8> pk_buf;
+            resize(pk_buf, U64(pk_view.length));
+            os::memory_copy(pk_buf.ptr, pk_view.ptr, pk_view.length);
+            TArrayView<const U8, U16> pk_bytes{pk_buf.ptr, pk_view.length};
+
+            schema::PartitionEntry entry = *part_it;
+
+            if (schema::has_clustering_keys(*tbl)) {
+                schema::ClusteringBTree ck_btree{
+                    engine.pager, entry.data_page,
+                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
+                auto ck_it  = co_await btree::begin<U64>(ck_btree);
+                auto ck_end = btree::end<U64>(ck_btree);
+                while (ck_it != ck_end) {
+                    auto             ck_view = ck_it.key();
+                    DynamicArray<U8> ck_buf;
+                    resize(ck_buf, U64(ck_view.length));
+                    os::memory_copy(ck_buf.ptr, ck_view.ptr, ck_view.length);
+                    TArrayView<const U8, U16> ck_bytes{ck_buf.ptr, ck_view.length};
+
+                    DynamicArray<ColumnValue> cv;
+                    DynamicArray<bool>        present;
+                    co_await read_row_into(engine, tbl, *ck_it, entry.static_page, cv, present);
+
+                    if (ci < cv.length && present[ci] && !type_matches_tag<Null>(cv[ci])) {
+                        DynamicArray<U8> ikey = key::make_full_index_key(
+                            key::make_index_prefix_from_cv(cv[ci], dtype), pk_bytes, ck_bytes);
+                        auto kv    = TArrayView<const U8, U16>(ikey.ptr, static_cast<U16>(ikey.length));
+                        U8   dummy = 0;
+                        co_await btree::tinsert(idx.btree, kv, dummy);
+                    }
+                    co_await ck_it.advance();
+                }
+            } else {
+                TArrayView<const U8, U16> ck_bytes{nullptr, 0};
+                DynamicArray<ColumnValue> cv;
+                DynamicArray<bool>        present;
+                co_await read_row_into(engine, tbl, entry.data_page, entry.static_page, cv, present);
+
+                if (ci < cv.length && present[ci] && !type_matches_tag<Null>(cv[ci])) {
+                    DynamicArray<U8> ikey = key::make_full_index_key(
+                        key::make_index_prefix_from_cv(cv[ci], dtype), pk_bytes, ck_bytes);
+                    auto kv    = TArrayView<const U8, U16>(ikey.ptr, static_cast<U16>(ikey.length));
+                    U8   dummy = 0;
+                    co_await btree::tinsert(idx.btree, kv, dummy);
+                }
+            }
+            co_await part_it.advance();
+        }
+    }
+
     static coroutine::Task<RowRange> create_table_range_it(Engine& engine, schema::Table* tbl,
                                                            const planner::RowLocator& locator) {
         auto copy_ck_bounds = [&](RowIterator& it) {
@@ -576,7 +679,8 @@ namespace cql::engine {
                                                 const planner::RowLocator&   locator,
                                                 const planner::MutationSpec& spec,
                                                 const EvalContext&           ctx) {
-        const DynamicArray<U8>& pk_bytes = locator.pk_begin;
+        const DynamicArray<U8>& pk_bytes     = locator.pk_begin;
+        bool                    have_indexes = tbl->indexes.length > 0;
 
         if (schema::has_clustering_keys(*tbl)) {
             auto                    entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
@@ -594,10 +698,22 @@ namespace cql::engine {
                 if (locator.ck_is_equality) {
                     auto row_page_opt = co_await btree::tfind<U64>(ck_btree, ck_bytes);
                     if (row_page_opt) {
+                        DynamicArray<ColumnValue> old_cv;
+                        DynamicArray<bool>        old_present;
+                        if (have_indexes) {
+                            co_await read_row_into(engine, tbl, *row_page_opt, entry.static_page, old_cv, old_present);
+                        }
                         blob::BlobDynamicPaged row_blob;
                         co_await blob::load(row_blob, engine.pager, *row_page_opt);
                         co_await blob::remove(row_blob);
                         co_await btree::remove(ck_btree, ck_bytes);
+                        if (have_indexes) {
+                            DynamicArray<ColumnValue> empty_cv;
+                            DynamicArray<bool>        empty_present;
+                            auto                      pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                            auto                      ck_v = TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length));
+                            co_await update_indexes(engine, tbl, pk_v, ck_v, old_cv, old_present, empty_cv, empty_present);
+                        }
                     }
                 } else {
                     // Range or full-partition delete: collect all matching (ck_key, page) pairs.
@@ -697,8 +813,15 @@ namespace cql::engine {
                 DynamicArray<ColumnValue> col_values;
                 DynamicArray<bool>        col_present;
                 co_await read_row_into(engine, tbl, 0, entry.static_page, col_values, col_present);
+                DynamicArray<ColumnValue> old_cv      = have_indexes ? col_values : DynamicArray<ColumnValue>{};
+                DynamicArray<bool>        old_present = have_indexes ? col_present : DynamicArray<bool>{};
                 co_await apply_updates_to_row(tbl, col_values, col_present, spec, ctx);
                 co_await rewrite_static(engine, entry, tbl, col_values, col_present);
+                if (have_indexes) {
+                    TArrayView<const U8, U16> empty_ck{nullptr, 0};
+                    auto                      pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                    co_await update_indexes(engine, tbl, pk_v, empty_ck, old_cv, old_present, col_values, col_present);
+                }
 
                 if (new_partition && entry.static_page != 0) {
                     co_await btree::tinsert(tbl->btree, pk_bytes, entry);
@@ -741,8 +864,8 @@ namespace cql::engine {
                 DynamicArray<bool>        col_present;
                 co_await read_row_into(engine, tbl, existing_page, entry.static_page, col_values, col_present);
 
-                // Inject PK column values from key bytes for rows that don't have them yet
-                // (e.g. upsert via UPDATE ... WHERE pk IN (...)).
+                // @note PK/CK columns are not stored in the row blob — derive them from key bytes
+                // so apply_updates_to_row and update_indexes see the full row image.
                 {
                     auto                      pk_view = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
                     DynamicArray<ColumnValue> pk_vals = key::deserialize_partition(*tbl, pk_view);
@@ -753,8 +876,19 @@ namespace cql::engine {
                             col_present[ci] = true;
                         }
                     }
+                    auto                      ck_view = TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length));
+                    DynamicArray<ColumnValue> ck_vals = key::deserialize_clustering(*tbl, ck_view);
+                    for (U64 i = 0; i < ck_vals.length; i++) {
+                        U64 ci = tbl->clustering_key_col_indices[i];
+                        if (ci < col_values.length && !col_present[ci]) {
+                            col_values[ci]  = move(ck_vals[i]);
+                            col_present[ci] = true;
+                        }
+                    }
                 }
 
+                DynamicArray<ColumnValue> old_cv      = have_indexes ? col_values : DynamicArray<ColumnValue>{};
+                DynamicArray<bool>        old_present = have_indexes ? col_present : DynamicArray<bool>{};
                 co_await apply_updates_to_row(tbl, col_values, col_present, spec, ctx);
 
                 bool any_static_updated = false;
@@ -782,6 +916,12 @@ namespace cql::engine {
                 } else if (any_static_updated) {
                     co_await btree::tupdate(tbl->btree, pk_bytes, entry);
                 }
+
+                if (have_indexes) {
+                    auto pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                    auto ck_v = TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length));
+                    co_await update_indexes(engine, tbl, pk_v, ck_v, old_cv, old_present, col_values, col_present);
+                }
             }
         } else {
             // Non-clustering table: data_page is the row blob directly.
@@ -789,10 +929,22 @@ namespace cql::engine {
 
             if (spec.is_full_delete) {
                 if (entry_opt) {
+                    DynamicArray<ColumnValue> old_cv;
+                    DynamicArray<bool>        old_present;
+                    if (have_indexes) {
+                        co_await read_row_into(engine, tbl, entry_opt->data_page, entry_opt->static_page, old_cv, old_present);
+                    }
                     blob::BlobDynamicPaged row_blob;
                     co_await blob::load(row_blob, engine.pager, entry_opt->data_page);
                     co_await blob::remove(row_blob);
                     co_await btree::remove(tbl->btree, pk_bytes);
+                    if (have_indexes) {
+                        DynamicArray<ColumnValue> empty_cv;
+                        DynamicArray<bool>        empty_present;
+                        TArrayView<const U8, U16> empty_ck{nullptr, 0};
+                        auto                      pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                        co_await update_indexes(engine, tbl, pk_v, empty_ck, old_cv, old_present, empty_cv, empty_present);
+                    }
                 }
             } else {
                 schema::PartitionEntry entry = entry_opt ? *entry_opt : schema::PartitionEntry{0, 0};
@@ -813,6 +965,8 @@ namespace cql::engine {
                     }
                 }
 
+                DynamicArray<ColumnValue> old_cv      = have_indexes ? col_values : DynamicArray<ColumnValue>{};
+                DynamicArray<bool>        old_present = have_indexes ? col_present : DynamicArray<bool>{};
                 co_await apply_updates_to_row(tbl, col_values, col_present, spec, ctx);
 
                 U64 new_row_page = co_await write_row_blob(engine, tbl, col_values, col_present);
@@ -823,6 +977,12 @@ namespace cql::engine {
                     co_await btree::remove(tbl->btree, pk_bytes);
                 }
                 co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{new_row_page, entry.static_page});
+
+                if (have_indexes) {
+                    TArrayView<const U8, U16> empty_ck{nullptr, 0};
+                    auto                      pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                    co_await update_indexes(engine, tbl, pk_v, empty_ck, old_cv, old_present, col_values, col_present);
+                }
             }
         }
     }
@@ -951,6 +1111,58 @@ namespace cql::engine {
 
                 auto system_vr = try_system_select(engine, ks_name, stmt.from.table_name);
                 if (system_vr) {
+                    // @note text-column equality is the only WHERE shape applied here;
+                    // unsupported predicates are silently ignored.
+                    if (stmt.where) {
+                        auto matches_row = [&](const VirtualRow& row) -> bool {
+                            for (const auto& rel : stmt.where->relations) {
+                                bool ok = visit(rel.value, [&](const auto& r) -> bool {
+                                    using RT = RemoveCVRef<decltype(r)>;
+                                    if constexpr (SameAs<RT, WhereClause::ColumnExpressionRelation>) {
+                                        if (r.operator_ != Operator::eq) {
+                                            return true;
+                                        }
+                                        U64 col_idx = MAX_U64;
+                                        for (U64 i = 0; i < system_vr->columns.length; i++) {
+                                            if (system_vr->columns[i].name == String8(r.column.identifier.c_str, r.column.identifier.length)) {
+                                                col_idx = i;
+                                                break;
+                                            }
+                                        }
+                                        if (col_idx == MAX_U64) {
+                                            return true;
+                                        }
+                                        Evaluated eval = evaluate(r.value, ctx);
+                                        if (!type_matches_tag<Constant>(eval.value)) {
+                                            return true;
+                                        }
+                                        const auto& con = get<Constant>(eval.value);
+                                        if (col_idx >= row.values.length) {
+                                            return false;
+                                        }
+                                        const ColumnValue& cv = row.values[col_idx];
+                                        if (type_matches_tag<AutoString8>(cv) && type_matches_tag<AutoString8>(con.value)) {
+                                            return String8(get<AutoString8>(cv)) == String8(get<AutoString8>(con.value));
+                                        }
+                                        return true;
+                                    } else {
+                                        return true;
+                                    }
+                                });
+                                if (!ok) {
+                                    return false;
+                                }
+                            }
+                            return true;
+                        };
+                        DynamicArray<VirtualRow> kept;
+                        for (auto& row : system_vr->rows) {
+                            if (matches_row(row)) {
+                                push_back(kept, move(row));
+                            }
+                        }
+                        system_vr->rows = move(kept);
+                    }
                     co_return ExecutionResult{
                         .status       = ExecutionStatus::Success,
                         .kind         = ResultKind::VirtualRows,
@@ -994,6 +1206,138 @@ namespace cql::engine {
                     if (type_matches_tag<planner::SelectOp::ColumnRef>(op.value)) {
                         push_back(select_col_indices, get<planner::SelectOp::ColumnRef>(op.value).col_idx);
                     }
+                }
+
+                if (sp.locator.index_col_idx) {
+                    schema::Index* active_idx = nullptr;
+                    for (auto& idx : tbl->indexes) {
+                        if (!idx.tombstone && idx.col_idx == *sp.locator.index_col_idx) {
+                            active_idx = &idx;
+                            break;
+                        }
+                    }
+                    if (active_idx == nullptr) {
+                        co_return create_server_error("secondary index not found");
+                    }
+
+                    type::Basic dtype = get<type::Basic>(tbl->cols[active_idx->col_idx].type.value);
+
+                    DynamicArray<U64> col_order;
+                    if (select_col_indices.length > 0) {
+                        col_order = select_col_indices;
+                    } else {
+                        for (U64 ci : tbl->partition_key_col_indices) {
+                            push_back(col_order, ci);
+                        }
+                        for (U64 ci : tbl->clustering_key_col_indices) {
+                            push_back(col_order, ci);
+                        }
+                        for (U64 ci : tbl->static_col_indices) {
+                            push_back(col_order, ci);
+                        }
+                        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                            if (!tbl->cols[ci].tombstone &&
+                                tbl->cols[ci].key_kind == schema::KeyKind::None &&
+                                !tbl->cols[ci].is_static) {
+                                push_back(col_order, ci);
+                            }
+                        }
+                    }
+
+                    VirtualRows vr;
+                    vr.keyspace = AutoString8(ks_name);
+                    vr.table    = AutoString8(stmt.from.table_name);
+                    for (U64 ci : col_order) {
+                        push_back(vr.columns, VirtualColumn{tbl->cols[ci].name, tbl->cols[ci].type});
+                    }
+
+                    const DynamicArray<U8>& prefix      = sp.locator.index_key_prefix;
+                    auto                    prefix_view = TArrayView<const U8, U16>(prefix.ptr, static_cast<U16>(prefix.length));
+                    auto                    idx_it      = co_await btree::find_it<U8, btree::SearchStrategy::FirstGreaterEqual>(
+                        active_idx->btree, prefix_view);
+                    auto idx_end = btree::end<U8>(active_idx->btree);
+
+                    U64 row_count = 0;
+                    while (idx_it != idx_end && row_count < limit_count) {
+                        auto key_view = idx_it.key();
+                        if (key_view.length < prefix_view.length ||
+                            os::memory_compare(key_view.ptr, prefix_view.ptr, prefix_view.length) != 0) {
+                            break;
+                        }
+
+                        U16                       plen   = key::index_prefix_len(dtype, key_view.ptr);
+                        U16                       pk_len = static_cast<U16>((U16(key_view.ptr[plen]) << 8) | U16(key_view.ptr[plen + 1]));
+                        TArrayView<const U8, U16> pk_view{key_view.ptr + plen + 2, pk_len};
+                        U16                       ck_start = static_cast<U16>(plen + 2 + pk_len);
+                        U16                       ck_len   = key_view.length > ck_start ? static_cast<U16>(key_view.length - ck_start) : 0;
+                        TArrayView<const U8, U16> ck_view{key_view.ptr + ck_start, ck_len};
+
+                        // @note copy pk/ck before iterator.advance() invalidates key_view
+                        DynamicArray<U8> pk_buf, ck_buf;
+                        resize(pk_buf, U64(pk_len));
+                        os::memory_copy(pk_buf.ptr, pk_view.ptr, pk_len);
+                        if (ck_len > 0) {
+                            resize(ck_buf, U64(ck_len));
+                            os::memory_copy(ck_buf.ptr, ck_view.ptr, ck_len);
+                        }
+
+                        auto entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_buf);
+                        if (entry_opt) {
+                            U64 row_page = 0;
+                            if (schema::has_clustering_keys(*tbl) && ck_len > 0) {
+                                schema::ClusteringBTree ck_btree{
+                                    engine.pager, entry_opt->data_page,
+                                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
+                                auto rp = co_await btree::tfind<U64>(ck_btree, ck_buf);
+                                if (rp) {
+                                    row_page = *rp;
+                                }
+                            } else {
+                                row_page = entry_opt->data_page;
+                            }
+
+                            if (row_page != 0 || entry_opt->static_page != 0) {
+                                DynamicArray<ColumnValue> cv;
+                                DynamicArray<bool>        present;
+                                co_await read_row_into(engine, tbl, row_page, entry_opt->static_page, cv, present);
+
+                                TArrayView<const U8, U16> pk_v{pk_buf.ptr, pk_len};
+                                DynamicArray<ColumnValue> pk_vals = key::deserialize_partition(*tbl, pk_v);
+                                for (U64 i = 0; i < tbl->partition_key_col_indices.length; i++) {
+                                    U64 ci = tbl->partition_key_col_indices[i];
+                                    if (ci < cv.length && !present[ci]) {
+                                        cv[ci]      = move(pk_vals[i]);
+                                        present[ci] = true;
+                                    }
+                                }
+
+                                EvalContext row_ctx = ctx;
+                                row_ctx.table       = tbl;
+                                row_ctx.row_values  = cv.ptr;
+                                if (evaluate_where(sp.filter.predicates, row_ctx)) {
+                                    VirtualRow vrow;
+                                    resize(vrow.values, col_order.length);
+                                    for (U64 i = 0; i < col_order.length; i++) {
+                                        U64 ci = col_order[i];
+                                        if (ci < cv.length && present[ci]) {
+                                            vrow.values[i] = cv[ci];
+                                        }
+                                    }
+                                    push_back(vr.rows, move(vrow));
+                                    row_count++;
+                                }
+                            }
+                        }
+                        co_await idx_it.advance();
+                    }
+
+                    co_return ExecutionResult{
+                        .status       = ExecutionStatus::Success,
+                        .kind         = ResultKind::VirtualRows,
+                        .keyspace     = AutoString8(ks_name),
+                        .table        = AutoString8(stmt.from.table_name),
+                        .virtual_rows = move(vr),
+                    };
                 }
 
                 auto row_range = co_await create_table_range_it(engine, tbl, sp.locator);
@@ -1169,6 +1513,51 @@ namespace cql::engine {
                         }
                         DynamicArray<U8> pk_bytes = key::serialize_partition(*tbl, partition_evals);
 
+                        bool have_indexes = tbl->indexes.length > 0;
+
+                        auto maintain_indexes = [&](TArrayView<const U8, U16> pk_v, TArrayView<const U8, U16> ck_v,
+                                                    const DynamicArray<ColumnValue>& old_cv,
+                                                    const DynamicArray<bool>&        old_present) -> coroutine::Task<void> {
+                            for (auto& idx : tbl->indexes) {
+                                if (idx.tombstone) {
+                                    continue;
+                                }
+                                U64 ci = idx.col_idx;
+                                if (!type_matches_tag<type::Basic>(tbl->cols[ci].type.value)) {
+                                    continue;
+                                }
+                                type::Basic dtype = get<type::Basic>(tbl->cols[ci].type.value);
+
+                                bool old_has = ci < old_cv.length && old_present[ci] &&
+                                               !type_matches_tag<Null>(old_cv[ci]);
+                                auto                ni = try_get_names_idx(tbl->cols[ci].name);
+                                Optional<Evaluated> new_eval;
+                                if (ni) {
+                                    Evaluated e         = evaluate(v.values[*ni], ctx);
+                                    bool      e_is_null = (type_matches_tag<Constant>(e.value) &&
+                                                      type_matches_tag<Null>(get<Constant>(e.value).value)) ||
+                                                     (type_matches_tag<ColumnValue>(e.value) &&
+                                                      type_matches_tag<Null>(get<ColumnValue>(e.value)));
+                                    if (!e_is_null) {
+                                        new_eval = move(e);
+                                    }
+                                }
+                                if (old_has) {
+                                    DynamicArray<U8> old_key = key::make_full_index_key(
+                                        key::make_index_prefix_from_cv(old_cv[ci], dtype), pk_v, ck_v);
+                                    auto kv = TArrayView<const U8, U16>(old_key.ptr, static_cast<U16>(old_key.length));
+                                    co_await btree::remove(idx.btree, kv);
+                                }
+                                if (new_eval) {
+                                    DynamicArray<U8> new_key = key::make_full_index_key(
+                                        key::make_index_prefix(*new_eval, dtype), pk_v, ck_v);
+                                    auto kv    = TArrayView<const U8, U16>(new_key.ptr, static_cast<U16>(new_key.length));
+                                    U8   dummy = 0;
+                                    co_await btree::tinsert(idx.btree, kv, dummy);
+                                }
+                            }
+                        };
+
                         if (schema::has_clustering_keys(*tbl)) {
                             // look up or create the partition entry
                             auto                   entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
@@ -1209,6 +1598,9 @@ namespace cql::engine {
                                 co_await btree::tupdate(tbl->btree, pk_bytes, entry);
                             }
 
+                            DynamicArray<U8>          ck_bytes;
+                            DynamicArray<ColumnValue> old_cv;
+                            DynamicArray<bool>        old_present;
                             if (needs_clustering_row) {
                                 schema::ClusteringBTree clustering_btree{
                                     engine.pager, entry.data_page,
@@ -1217,11 +1609,37 @@ namespace cql::engine {
                                 for (U64 ck_ci : tbl->clustering_key_col_indices) {
                                     push_back(clustering_evals, evaluate(v.values[*try_get_names_idx(tbl->cols[ck_ci].name)], ctx));
                                 }
-                                DynamicArray<U8> ck_bytes = key::serialize_clustering(*tbl, clustering_evals);
+                                ck_bytes = key::serialize_clustering(*tbl, clustering_evals);
+                                if (have_indexes) {
+                                    auto row_page_opt = co_await btree::tfind<U64>(clustering_btree, ck_bytes);
+                                    if (row_page_opt) {
+                                        co_await read_row_into(engine, tbl, *row_page_opt, entry.static_page, old_cv, old_present);
+                                    }
+                                }
                                 co_await btree::tinsert(clustering_btree, ck_bytes, row_page);
                             }
+
+                            if (have_indexes && needs_clustering_row) {
+                                auto pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                                auto ck_v = TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length));
+                                co_await maintain_indexes(pk_v, ck_v, old_cv, old_present);
+                            }
                         } else {
+                            DynamicArray<ColumnValue> old_cv;
+                            DynamicArray<bool>        old_present;
+                            if (have_indexes) {
+                                auto entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
+                                if (entry_opt) {
+                                    co_await read_row_into(engine, tbl, entry_opt->data_page, entry_opt->static_page, old_cv, old_present);
+                                }
+                            }
                             co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{row_page, 0});
+
+                            if (have_indexes) {
+                                TArrayView<const U8, U16> empty_ck{nullptr, 0};
+                                auto                      pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                                co_await maintain_indexes(pk_v, empty_ck, old_cv, old_present);
+                            }
                         }
 
                         co_return create_void_success();
@@ -1415,8 +1833,80 @@ namespace cql::engine {
                     }
                 });
             } else if constexpr (SameAs<T, CreateIndex>) {
-                assert_not_implemented("Secondary indexes are not implemented");
-                co_return ExecutionResult{};
+                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
+                auto    ks      = schema::read_keyspace(engine.schema, ks_name).value;
+                if (ks == nullptr) {
+                    co_return create_keyspace_not_found(ks_name);
+                }
+                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+                if (tbl == nullptr) {
+                    co_return create_table_not_found(ks_name, stmt.table.table_name);
+                }
+
+                U64 col_idx = MAX_U64;
+                for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                    if (!tbl->cols[ci].tombstone && tbl->cols[ci].name == String8(stmt.column_name.c_str, stmt.column_name.length)) {
+                        col_idx = ci;
+                        break;
+                    }
+                }
+                if (col_idx == MAX_U64) {
+                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "column not found"};
+                }
+                if (!type_matches_tag<type::Basic>(tbl->cols[col_idx].type.value)) {
+                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "cannot create index on collection column"};
+                }
+                if (tbl->cols[col_idx].key_kind == schema::KeyKind::PartitionKey &&
+                    tbl->partition_key_col_indices.length == 1) {
+                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "cannot create secondary index on the only partition key column"};
+                }
+
+                AutoString8 index_name;
+                if (stmt.index_name) {
+                    index_name = *stmt.index_name;
+                } else {
+                    index_name = AutoString8(stmt.table.table_name);
+                    append(index_name, "_");
+                    append(index_name, stmt.column_name);
+                    append(index_name, "_idx");
+                }
+
+                if (schema::read_index(engine.schema, *tbl, index_name).error == schema::Error::None) {
+                    co_return stmt.if_not_exists ? create_void_success()
+                                                 : ExecutionResult{.status = ExecutionStatus::AlreadyExists, .message = "index already exists"};
+                }
+
+                auto res = co_await schema::create_index(engine.schema, *tbl, col_idx, index_name);
+                if (res.error != schema::Error::None) {
+                    co_return create_server_error("failed to create index");
+                }
+                co_await backfill_index(engine, tbl, *res.value);
+
+                co_return create_schema_changed(ks_name, stmt.table.table_name);
+            } else if constexpr (SameAs<T, DropIndex>) {
+                String8 ks_name = static_cast<bool>(stmt.index_name.keyspace_name) ? String8(*stmt.index_name.keyspace_name) : current_keyspace;
+                auto    ks      = schema::read_keyspace(engine.schema, ks_name).value;
+                if (ks == nullptr) {
+                    co_return (stmt.if_exists) ? create_void_success() : create_keyspace_not_found(ks_name);
+                }
+
+                // @note DROP INDEX <name> doesn't say which table; scan every table in the keyspace.
+                String8        idx_name_str(stmt.index_name.table_name.c_str, stmt.index_name.table_name.length);
+                schema::Table* found_tbl = nullptr;
+                for (auto& tbl : ks->tbls) {
+                    if (!tbl.tombstone) {
+                        if (schema::read_index(engine.schema, tbl, idx_name_str).error == schema::Error::None) {
+                            found_tbl = &tbl;
+                            break;
+                        }
+                    }
+                }
+                if (found_tbl == nullptr) {
+                    co_return (stmt.if_exists) ? create_void_success()
+                                               : ExecutionResult{.status = ExecutionStatus::Invalid, .message = "index not found"};
+                }
+                co_await schema::drop_index(engine.schema, *found_tbl, idx_name_str);
+                co_return create_schema_changed(ks_name, found_tbl->name);
             } else if constexpr (SameAs<T, CreateType>) {
                 assert_not_implemented("User-defined types are not implemented");
                 co_return ExecutionResult{};

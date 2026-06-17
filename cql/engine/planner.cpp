@@ -52,6 +52,32 @@ namespace cql::planner {
         U64 n_pk = tbl.partition_key_col_indices.length;
         U64 n_ck = tbl.clustering_key_col_indices.length;
 
+        auto col_is_indexed = [&](U64 ci) -> bool {
+            if (!type_matches_tag<type::Basic>(tbl.cols[ci].type.value)) {
+                return false;
+            }
+            for (const auto& idx : tbl.indexes) {
+                if (!idx.tombstone && idx.col_idx == ci) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        auto try_capture_index = [&](U64 ci, const Evaluated& eval) {
+            if (locator.index_col_idx) {
+                return;
+            }
+            if (is_null_eval(eval)) {
+                return;
+            }
+            if (!col_is_indexed(ci)) {
+                return;
+            }
+            locator.index_col_idx    = ci;
+            locator.index_key_prefix = key::make_index_prefix(
+                eval, get<type::Basic>(tbl.cols[ci].type.value));
+        };
+
         // @note Equality values are collected per position so compound keys are only
         // serialized when all positions are filled; partial matches fall to filter.
         DynamicArray<Optional<Evaluated>>   pk_eq_vals;
@@ -96,6 +122,7 @@ namespace cql::planner {
                             if (!is_null_eval(eval)) {
                                 pk_eq_vals[*pk_pos] = eval;
                                 push_back(pk_eq_rels, rel);
+                                try_capture_index(tbl.partition_key_col_indices[*pk_pos], eval);
                             }
                         } else if (r.operator_ == Operator::in) {
                             // Collect IN values per PK position for multi-partition mutations.
@@ -151,6 +178,7 @@ namespace cql::planner {
                             if (!is_null_eval(eval)) {
                                 ck_eq_vals[*ck_pos] = eval;
                                 push_back(ck_eq_rels, rel);
+                                try_capture_index(tbl.clustering_key_col_indices[*ck_pos], eval);
                             }
                         } else if (r.operator_ == Operator::in) {
                             ck_in_seen[*ck_pos] = true;
@@ -203,8 +231,26 @@ namespace cql::planner {
                             push_back(filter.predicates, rel);
                         }
                     } else {
+                        bool covered_by_index = false;
+                        if (r.operator_ == Operator::eq) {
+                            String8 col_name(r.column.identifier.c_str, r.column.identifier.length);
+                            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                                if (tbl.cols[ci].name == col_name && !tbl.cols[ci].tombstone) {
+                                    if (col_is_indexed(ci)) {
+                                        Evaluated eval = evaluate(r.value, ctx);
+                                        if (!is_null_eval(eval)) {
+                                            try_capture_index(ci, eval);
+                                            covered_by_index = true;
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                         push_back(filter.predicates, rel);
-                        filter.needs_allow_filtering = true;
+                        if (!covered_by_index) {
+                            filter.needs_allow_filtering = true;
+                        }
                     }
                 } else if constexpr (SameAs<T, WhereClause::TupleExpressionRelation>) {
                     if (r.operator_ == Operator::in && r.columns.length > 0) {
@@ -400,7 +446,28 @@ namespace cql::planner {
                 } else {
                     for (const auto& r : pk_eq_rels) {
                         push_back(filter.predicates, r);
-                        filter.needs_allow_filtering = true;
+                        bool covered = false;
+                        if (auto rel = visit(r.value, [](const auto& v) -> const WhereClause::ColumnExpressionRelation* {
+                                using T = RemoveCVRef<decltype(v)>;
+                                if constexpr (SameAs<T, WhereClause::ColumnExpressionRelation>) {
+                                    return &v;
+                                } else {
+                                    return nullptr;
+                                }
+                            })) {
+                            String8 col_name(rel->column.identifier.c_str, rel->column.identifier.length);
+                            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                                if (tbl.cols[ci].name == col_name && !tbl.cols[ci].tombstone) {
+                                    if (col_is_indexed(ci)) {
+                                        covered = true;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        if (!covered) {
+                            filter.needs_allow_filtering = true;
+                        }
                     }
                 }
             }
@@ -526,6 +593,28 @@ namespace cql::planner {
             }
         }
 
+        // @note CK eq on position N with a smaller-N position missing is filtering inside
+        // the partition; a global secondary index on N does not avoid the partition scan.
+        bool partition_scoped = locator.pk_is_equality || locator.pk_has_in ||
+                                locator.ck_has_begin || locator.ck_has_end;
+        if (n_ck > 0 && !locator.ck_is_equality && partition_scoped) {
+            bool prefix_broken = false;
+            for (U64 i = 0; i < n_ck; i++) {
+                bool covered = static_cast<bool>(ck_eq_vals[i]) || ck_in_seen[i];
+                if (!covered) {
+                    prefix_broken = true;
+                } else if (prefix_broken && static_cast<bool>(ck_eq_vals[i])) {
+                    filter.needs_allow_filtering = true;
+                }
+            }
+        }
+
+        // @note prefer the partition lookup over the index when both are available.
+        if (locator.index_col_idx && (locator.pk_is_equality || locator.pk_has_in)) {
+            locator.index_col_idx    = {};
+            locator.index_key_prefix = {};
+        }
+
         return {move(locator), move(filter)};
     }
 
@@ -536,6 +625,44 @@ namespace cql::planner {
             auto [loc, flt] = build_row_locator(*stmt.where, tbl, ctx);
             plan.locator    = move(loc);
             plan.filter     = move(flt);
+        }
+
+        // @note DISTINCT restricts to per-partition projection, so WHERE must address whole
+        // partitions only (partition key components or static columns).
+        if (stmt.where && stmt.transform && *stmt.transform == Select::Transform::UNIQUE) {
+            for (const auto& rel : stmt.where->relations) {
+                bool ok = visit(rel.value, [&](const auto& r) -> bool {
+                    using T        = RemoveCVRef<decltype(r)>;
+                    auto check_col = [&](const AutoString8& ident) -> bool {
+                        if (find_pk_position(tbl, ident)) {
+                            return true;
+                        }
+                        String8 name(ident.c_str, ident.length);
+                        for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                            if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == name && tbl.cols[ci].is_static) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    };
+                    if constexpr (SameAs<T, WhereClause::ColumnExpressionRelation>) {
+                        return check_col(r.column.identifier);
+                    } else if constexpr (SameAs<T, WhereClause::TupleExpressionRelation>) {
+                        for (U64 i = 0; i < r.columns.length; i++) {
+                            if (!check_col(r.columns[i].identifier)) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    } else {
+                        return true;
+                    }
+                });
+                if (!ok) {
+                    plan.result.error = PlanError::DistinctRestrictionInvalid;
+                    return plan;
+                }
+            }
         }
 
         if (!stmt.allow_filtering && plan.filter.needs_allow_filtering) {

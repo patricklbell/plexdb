@@ -109,6 +109,7 @@ namespace cql::schema {
         co_await blob::load(schema.tables_blob, in_pager, schema_header.tables_page);
         co_await blob::load(schema.columns_blob, in_pager, schema_header.columns_page);
         co_await blob::load(schema.types_blob, in_pager, schema_header.types_page);
+        co_await blob::load(schema.indexes_blob, in_pager, schema_header.indexes_page);
 
         //
         // allocate storage and cache blob contents in memory
@@ -177,6 +178,18 @@ namespace cql::schema {
             push_back(schema.storage.type_entries, entry);
         }
 
+        for (U64 index_offset = 0; index_offset < schema.indexes_blob.size_bytes;) {
+            IndexStorage idx_storage{
+                .offset_in_blob_bytes = index_offset,
+                .header               = {},
+                .name                 = {},
+            };
+            co_await blob::tget(schema.indexes_blob, &idx_storage.header, &index_offset);
+            idx_storage.name = AutoString8{idx_storage.header.name_length};
+            co_await get_str(schema.indexes_blob, idx_storage.name, &index_offset);
+            push_back(schema.storage.indexes, move(idx_storage));
+        }
+
         //
         // resolves indices and construct views
         //
@@ -200,6 +213,7 @@ namespace cql::schema {
                     .partition_key_col_indices  = {},
                     .clustering_key_col_indices = {},
                     .static_col_indices         = {},
+                    .indexes                    = {},
                     .btree                      = PartitionBTree{
                                                    in_pager, tbl_storage.header.btree_page,
                                                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}},
@@ -252,6 +266,33 @@ namespace cql::schema {
             }
             push_back(schema.keyspaces, move(ks));
         }
+
+        // @note post-pass: tables must already be built (above) before indexes can attach to them.
+        for (U64 idx_storage_i = 0; idx_storage_i < schema.storage.indexes.length; idx_storage_i++) {
+            const IndexStorage& idx_storage = schema.storage.indexes[idx_storage_i];
+            assert_true(idx_storage.header.table_idx < schema.storage.tables.length, "invalid index table_idx");
+
+            const TableStorage& tbl_storage = schema.storage.tables[idx_storage.header.table_idx];
+            U64                 ks_idx      = tbl_storage.header.keyspace_idx;
+            assert_true(ks_idx < schema.keyspaces.length, "invalid index keyspace_idx");
+            Keyspace& ks = schema.keyspaces[ks_idx];
+
+            for (auto& tbl : ks.tbls) {
+                if (tbl.idx == idx_storage.header.table_idx) {
+                    Index idx{
+                        .idx       = idx_storage_i,
+                        .tombstone = idx_storage.header.tombstone,
+                        .name      = idx_storage.name,
+                        .col_idx   = idx_storage.header.col_idx,
+                        .btree     = IndexBTree{
+                                                in_pager, idx_storage.header.btree_page,
+                                                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}},
+                    };
+                    push_back(tbl.indexes, move(idx));
+                    break;
+                }
+            }
+        }
     }
 
     coroutine::Task<U64> create_schema(Pager& pager) {
@@ -261,12 +302,14 @@ namespace cql::schema {
         U64 tables_page    = co_await blob::create_paged_dynamic(pager, 0);
         U64 columns_page   = co_await blob::create_paged_dynamic(pager, 0);
         U64 types_page     = co_await blob::create_paged_dynamic(pager, 0);
+        U64 indexes_page   = co_await blob::create_paged_dynamic(pager, 0);
 
         SchemaHeader header{
             .keyspaces_page = keyspaces_page,
             .tables_page    = tables_page,
             .columns_page   = columns_page,
             .types_page     = types_page,
+            .indexes_page   = indexes_page,
         };
 
         blob::BlobStaticPaged schema_blob;
@@ -582,6 +625,7 @@ namespace cql::schema {
             .partition_key_col_indices  = {},
             .clustering_key_col_indices = {},
             .static_col_indices         = {},
+            .indexes                    = {},
             .btree                      = PartitionBTree{
                                            schema.tables_blob.pager, tbl_storage_ref.header.btree_page,
                                            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}},
@@ -739,5 +783,70 @@ namespace cql::schema {
             co_return Result<void>{};
         }
         co_return Result<void>{col_res.error, col_res.message};
+    }
+
+    Result<Index*> read_index(Schema& /*schema*/, Table& tbl, String8 name) {
+        for (auto& idx : tbl.indexes) {
+            if (idx.name == name && !idx.tombstone) {
+                return {&idx};
+            }
+        }
+        return {nullptr, Error::MissingIndex};
+    }
+
+    coroutine::Task<Result<Index*>> create_index(Schema& schema, Table& tbl, U64 col_idx, String8 index_name) {
+        U64 btree_page = co_await btree::create_paged(
+            *schema.indexes_blob.pager,
+            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{});
+
+        U64 offset_bytes = schema.indexes_blob.size_bytes;
+
+        IndexStorage idx_storage{
+            .offset_in_blob_bytes = offset_bytes,
+            .header               = IndexHeader{
+                                                .tombstone   = false,
+                                                .name_length = index_name.length,
+                                                .table_idx   = tbl.idx,
+                                                .col_idx     = col_idx,
+                                                .btree_page  = btree_page,
+                                                },
+            .name = AutoString8(index_name),
+        };
+        IndexStorage& idx_storage_ref = push_back(schema.storage.indexes, move(idx_storage));
+
+        co_await blob::resize(
+            schema.indexes_blob,
+            offset_bytes + sizeof(idx_storage_ref.header) + idx_storage_ref.name.length);
+
+        co_await blob::tupdate(schema.indexes_blob, &idx_storage_ref.header, &offset_bytes);
+        co_await update_str(schema.indexes_blob, idx_storage_ref.name, &offset_bytes);
+
+        U64   new_idx_storage_i = schema.storage.indexes.length - 1;
+        Index idx{
+            .idx       = new_idx_storage_i,
+            .tombstone = false,
+            .name      = idx_storage_ref.name,
+            .col_idx   = col_idx,
+            .btree     = IndexBTree{
+                                    schema.indexes_blob.pager, btree_page,
+                                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}},
+        };
+        co_return Result<Index*>{&push_back(tbl.indexes, move(idx))};
+    }
+
+    coroutine::Task<Result<void>> drop_index(Schema& schema, Table& tbl, String8 name) {
+        auto idx_res = read_index(schema, tbl, name);
+        if (idx_res.error == Error::None) {
+            Index* idx     = idx_res.value;
+            idx->tombstone = true;
+
+            IndexStorage& idx_storage    = schema.storage.indexes[idx->idx];
+            idx_storage.header.tombstone = true;
+
+            U64 offset = idx_storage.offset_in_blob_bytes + offsetof(IndexHeader, tombstone);
+            co_await blob::tupdate(schema.indexes_blob, &idx_storage.header.tombstone, &offset);
+            co_return Result<void>{};
+        }
+        co_return Result<void>{idx_res.error, idx_res.message};
     }
 }
