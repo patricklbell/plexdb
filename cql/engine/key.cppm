@@ -135,9 +135,8 @@ namespace cql::key {
     // Fixed-width types in composite keys: prepend a 2-byte big-endian length (constant, so ordering is unaffected).
     // Variable-length types in composite keys: use escaped-terminated encoding to preserve ordering.
     // @note `direction == Sort::DESC` inverts the value bytes (not the length prefix) so that
-    // forward lex iteration produces the value in descending logical order. Only fixed-width
-    // types support DESC — variable-width DESC would require an inverted escape/terminator
-    // scheme which is not yet implemented.
+    // forward lex iteration produces the value in descending logical order. Variable-width
+    // types assert on DESC — their escape/terminator scheme cannot be byte-inverted in place.
     static void append_component(DynamicArray<U8>& out, const Evaluated& eval,
                                  type::Basic dtype, bool is_composite,
                                  Sort direction = Sort::ASC) {

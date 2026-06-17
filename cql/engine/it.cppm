@@ -113,9 +113,8 @@ export namespace cql {
         bool             ck_begin_is_partial = false;
         bool             ck_end_is_partial   = false;
 
-        // @note reverse_clustering iterates clustering keys back-to-front within each
-        // partition; clustering_end_it is rend (leaf=nullptr) and the lower bound is
-        // checked on each advance. ORDER BY DESC sets this.
+        // @note when reverse_clustering is true, clustering_end_it is rend
+        // (leaf=nullptr) and the lower bound is checked on each advance.
         bool reverse_clustering = false;
 
         RowIterator() = default;

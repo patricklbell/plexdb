@@ -1351,9 +1351,10 @@ namespace cql::engine {
                     };
                 }
 
-                // ORDER BY + PK IN: multi-partition merge. Per-partition iteration alone
-                // returns rows partition-by-partition; sorting by CK bytes globally produces
-                // the merged stream the test expects.
+                // @note ORDER BY + PK IN runs through a materialized k-way merge —
+                // the per-partition iterator emits in CK order within each partition
+                // only, so a global sort across the IN-list is required.
+                // @profile materializes all matching rows; LIMIT applied after sort.
                 if (stmt.order_by && sp.locator.pk_in_values.length > 0) {
                     DynamicArray<U64> col_order;
                     if (select_col_indices.length > 0) {
@@ -1476,7 +1477,7 @@ namespace cql::engine {
                         }
                     }
 
-                    // Sort by CK bytes. Reverse direction flips comparison.
+                    // @profile O(N^2) insertion sort on the materialized row set.
                     bool reverse = sp.locator.reverse_clustering;
                     for (U64 i = 1; i < collected.length; i++) {
                         for (U64 j = i; j > 0; j--) {
@@ -1497,7 +1498,7 @@ namespace cql::engine {
                         }
                     }
 
-                    U64 cap = collected.length < limit_count ? collected.length : limit_count;
+                    U64 cap = min(collected.length, limit_count);
                     for (U64 i = 0; i < cap; i++) {
                         VirtualRow vrow;
                         vrow.values = move(collected[i].values);

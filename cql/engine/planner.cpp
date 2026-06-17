@@ -690,14 +690,9 @@ namespace cql::planner {
                 plan.result.error = PlanError::OrderByOnNonClusteringColumn;
                 return plan;
             }
-            // ORDER BY column[0] must name some clustering column; subsequent columns
-            // must follow positionally. The starting position may sit anywhere within
-            // (or just past) the equality-restricted prefix — Cassandra accepts ORDER BY
-            // either on the equality column itself or on the first non-equality position.
-            // For each ORDER BY column we compare its direction with the table's per-CK
-            // clustering_order: all-match means forward scan, all-opposite means reverse
-            // scan, mixed is invalid (cannot satisfy with a single direction until
-            // per-column byte inversion lands).
+            // @note ORDER BY column[0] may sit anywhere from CK[0] through the last
+            // equality-restricted CK position; columns past it must follow CK order
+            // positionally.
             String8 first_name(stmt.order_by->columns[0].column.identifier.c_str,
                                stmt.order_by->columns[0].column.identifier.length);
             U64     ck_start = MAX_U64;
@@ -707,27 +702,15 @@ namespace cql::planner {
                     break;
                 }
             }
-            if (ck_start == MAX_U64) {
-                plan.result.error   = PlanError::OrderByOnNonClusteringColumn;
-                plan.result.context = AutoString8(first_name);
-                return plan;
-            }
-            // ORDER BY may skip past an equality-restricted prefix but may NOT skip past
-            // an unrestricted CK column. Reject `ORDER BY ck[k]` when any of ck[0..k-1]
-            // is unrestricted, since the result would not match a single forward/reverse
-            // scan from position k.
-            if (ck_start > plan.locator.ck_eq_prefix_len) {
+            if (ck_start == MAX_U64 || ck_start > plan.locator.ck_eq_prefix_len) {
                 plan.result.error   = PlanError::OrderByOnNonClusteringColumn;
                 plan.result.context = AutoString8(first_name);
                 return plan;
             }
 
-            // Validation: per CK position the query direction must either match the
-            // table direction or be its opposite, and the choice must be uniform across
-            // all ORDER BY columns. With per-DESC-column byte inversion in the
-            // clustering key encoding (see key.cppm), forward BTree iteration already
-            // produces the table's natural CLUSTERING ORDER, so reverse_clustering
-            // simply tracks the all-match (false) vs all-opposite (true) consensus.
+            // @note each ORDER BY direction must either match or invert the table's
+            // CLUSTERING ORDER, and the choice must be uniform across the list.
+            // reverse_clustering is true exactly when every column inverts.
             Optional<bool> opposite_decision;
             for (U64 i = 0; i < stmt.order_by->columns.length; i++) {
                 const auto& col_order = stmt.order_by->columns[i];
@@ -749,9 +732,6 @@ namespace cql::planner {
             }
             plan.locator.reverse_clustering = opposite_decision.has_value() && *opposite_decision;
         }
-        // @note default scan (no ORDER BY): forward iteration already produces the
-        // table's natural CLUSTERING ORDER thanks to per-DESC byte inversion at encode
-        // time, so reverse_clustering stays false.
 
         for (const auto& sc : stmt.select.clauses) {
             visit(sc.column.value, [&](const auto& sel) {

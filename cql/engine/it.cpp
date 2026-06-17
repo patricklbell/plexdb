@@ -183,8 +183,9 @@ namespace cql {
         if (it.reverse_clustering) {
             // Position the start at the highest key satisfying the upper bound. For
             // partial upper bounds we start at rbegin and skip backward while the key
-            // is past the bound (cheap for typical data and avoids needing a
-            // first-greater-on-prefix btree primitive).
+            // is past the bound.
+            // @profile O(rows past upper bound). Acceptable while there is no
+            // first-greater-on-prefix BTree primitive.
             if (it.ck_has_end && !it.ck_end_is_partial) {
                 auto ev = TArrayView<const U8, U16>(it.ck_end.ptr, static_cast<U16>(it.ck_end.length));
                 if (it.ck_end_inclusive) {
