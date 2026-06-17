@@ -576,6 +576,67 @@ export namespace plexdb::btree {
         it.idx = static_cast<CountType>(it.idx + 1_u16);
     }
 
+    // Moves the iterator one position backward in place. Falls off the start the same
+    // way next_iterator_inplace falls off the end: leaf=nullptr, ref=0, idx=0 — so it
+    // compares equal to end() and serves as the reverse-iteration sentinel.
+    template<BTree BT>
+    coroutine::Task<void> prev_iterator_inplace(
+        BT& t, IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>& it) {
+        assert_true(it.leaf != nullptr, "cannot advance past end");
+
+        if (it.idx == 0) {
+            if (it.leaf->prev != 0) {
+                NodeRef     prev_ref  = it.leaf->prev;
+                const Node* prev_node = co_await read_node(t, prev_ref);
+                os::memory_copy(it.leaf_buf.ptr, prev_node, it.node_size);
+                it.leaf = reinterpret_cast<const Node*>(it.leaf_buf.ptr);
+                it.ref  = prev_ref;
+                it.idx  = static_cast<CountType>(it.leaf->key_count - 1_u16);
+            } else {
+                it.leaf_buf = {};
+                it.leaf     = nullptr;
+                it.ref      = 0;
+                it.idx      = 0;
+            }
+            co_return;
+        }
+
+        it.idx = static_cast<CountType>(it.idx - 1_u16);
+    }
+
+    template<BTree BT>
+    coroutine::Task<IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>> rbegin_iterator_impl(BT& t) {
+        using Impl    = IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>;
+        const auto& h = *(co_await read_header(t));
+        if (h.size == 0) {
+            co_return Impl{};
+        }
+
+        auto    kp    = key_policy(t);
+        auto    vp    = value_policy(t);
+        U32     ns    = node_size(t);
+        NodeRef n_ref = h.root;
+        for (CountType depth = 0; depth < h.depth; depth++) {
+            const Node* n = co_await read_node(t, n_ref);
+            assert_true(n->key_count > 0, "internal node must have at least one key");
+            n_ref = internal_children(n, ns, kp)[n->key_count];
+        }
+
+        const Node* n = co_await read_node(t, n_ref);
+        assert_true(n->key_count > 0, "leaf node must have at least one value");
+
+        Impl it{};
+        it.node_size = ns;
+        it.leaf_buf  = UniquePtr<U8>{os::allocate(ns)};
+        os::memory_copy(it.leaf_buf.ptr, n, ns);
+        it.leaf = reinterpret_cast<const Node*>(it.leaf_buf.ptr);
+        it.ref  = n_ref;
+        it.idx  = static_cast<CountType>(n->key_count - 1_u16);
+        it.kp   = kp;
+        it.vp   = vp;
+        co_return move(it);
+    }
+
     template<SearchStrategy Strategy, BTree BT>
     coroutine::Task<IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>> search_iterator_impl(
         BT& t, BTreeKeyType<BT> key) {

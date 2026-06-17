@@ -121,6 +121,8 @@ export namespace cql::test {
     String8 body_str(const Frame& f);
     bool    body_contains(const Frame& f, String8 needle);
     bool    body_contains(const Frame& f, const U8* needle, U64 needle_len);
+    // Returns the first offset where `needle` appears in the body, or MAX_U64 if absent.
+    U64 body_index_of(const Frame& f, String8 needle);
 
     // Read prepared-statement id ([short bytes] starting at body offset 4).
     // The returned view points into f.body and is valid until f is destroyed.

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-Phases 1–4 complete. Score: 83/313 passing (2026-06-16). Mustpass list (73 entries)
+Phases 1–5 complete. Score: 92/313 passing (2026-06-17). Mustpass list (73 entries)
 verified — no regressions.
 
 ---
@@ -84,46 +84,27 @@ Collection-column indexes (`CREATE INDEX ON tbl(col)` for LIST/SET/MAP, plus
 
 ---
 
-## Phase 5 — ORDER BY (Reverse Iterator)
+## Phase 5 follow-ups
 
-**Impact: ~14 unique tests in select_order_by_test.py. Depends on Phase 3 (clustering
-tables) since all valid ORDER BY columns are clustering keys.**
+Phase 5 (ORDER BY DESC via reverse clustering iteration) is shipped. Remaining items:
 
-`create_table_range_it` already exists in engine.cpp and handles PK and CK bounds for the
-SELECT path. Phase 5 extends it with reverse direction support.
-
-### btree::Iterator reverse flag
-
-Add `bool reverse` to `Iterator`. In `advance()`:
-
-```
-if reverse: btree::prev(this)
-else:        btree::next(this)    // existing behavior
-```
-
-Factory functions:
-```
-rbegin_it<BTree, V>(btree) → Iterator   // last key, reverse=true
-rend_it<BTree, V>(btree)   → Iterator   // sentinel
-```
-
-A runtime bool is acceptable; the branch cost is negligible vs page I/O.
-
-### RowIterator direction
-
-`RowIterator` gains `reverse_partitions: bool` and `reverse_clustering: bool` (both default
-false). `advance()` branches on these flags identically to the scalar iterator case.
-The existing `fix_clustering_btree_ptr` invariant is unaffected — it applies on copy/move
-regardless of direction.
-
-### Planner integration
-
-`plan_select` sets `locator.reverse_clustering = (col_order.sort == DESC)` instead of
-`assert_not_implemented`. The existing `assert_not_implemented("ORDER BY on clustering key")`
-becomes dead code and is removed.
-
-`create_table_range_it` consults `locator.reverse_partitions` and `locator.reverse_clustering`
-to choose `rbegin_it`/`rend_it` vs `begin_it`/`end_it` when constructing the iterator pair.
+- **ORDER BY after a CK equality restriction.** `testAllowSkippingEqualityAndSingleValueIn
+  RestrictedClusteringColumns` issues `WHERE a=? AND b=? ORDER BY c` — when `b` is restricted
+  by equality, Cassandra treats `c` as the effective first clustering position for ORDER BY.
+  Our planner rejects this with `OrderByOnNonClusteringColumn`. Needs the planner to skip CK
+  columns that are constrained by equality when walking the ORDER BY prefix.
+- **ORDER BY + IN on partition key.** `testOrderByForInClause*` use
+  `WHERE pk IN (...) ORDER BY ck` and expect a single merged-sorted stream across the
+  partitions. Our index path returns rows partition-by-partition. Needs a merge step above
+  the per-partition iterators.
+- **`CLUSTERING ORDER BY` directive on table.** `testReversedComparator` defines
+  `WITH CLUSTERING ORDER BY (col DESC)` so the table's natural order is reversed. We currently
+  parse and discard the directive. Persist on `TableHeader.clustering_orders` and have the
+  planner invert `reverse_clustering` accordingly.
+- **Multi-direction ORDER BY.** `testMultiordering` issues `ORDER BY b ASC, c DESC` on a
+  table whose `CLUSTERING ORDER BY` matches. We currently reject mixed-direction ORDER BY;
+  with table-defined orders, mixed input is valid when it matches the table's column-wise
+  direction.
 
 ---
 

@@ -113,6 +113,11 @@ export namespace cql {
         bool             ck_begin_is_partial = false;
         bool             ck_end_is_partial   = false;
 
+        // @note reverse_clustering iterates clustering keys back-to-front within each
+        // partition; clustering_end_it is rend (leaf=nullptr) and the lower bound is
+        // checked on each advance. ORDER BY DESC sets this.
+        bool reverse_clustering = false;
+
         RowIterator() = default;
 
         RowIterator(const RowIterator&)            = delete;
@@ -133,7 +138,8 @@ export namespace cql {
             , ck_begin_inclusive(other.ck_begin_inclusive)
             , ck_end_inclusive(other.ck_end_inclusive)
             , ck_begin_is_partial(other.ck_begin_is_partial)
-            , ck_end_is_partial(other.ck_end_is_partial) {
+            , ck_end_is_partial(other.ck_end_is_partial)
+            , reverse_clustering(other.reverse_clustering) {
             fix_clustering_btree_ptr(other);
         }
 
@@ -154,6 +160,7 @@ export namespace cql {
                 ck_end_inclusive    = other.ck_end_inclusive;
                 ck_begin_is_partial = other.ck_begin_is_partial;
                 ck_end_is_partial   = other.ck_end_is_partial;
+                reverse_clustering  = other.reverse_clustering;
                 fix_clustering_btree_ptr(other);
             }
             return *this;

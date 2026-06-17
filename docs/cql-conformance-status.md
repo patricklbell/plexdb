@@ -1,10 +1,10 @@
 ## CQL conformance gaps
 
-Baseline: 83 / 313 passing, 40 xfailed, 3 xpassed, 13 skipped, 174 failed
-(scylladb ref: master, 2026-06-16, after Phase 4).
+Baseline: 92 / 313 passing, 40 xfailed, 3 xpassed, 13 skipped, 165 failed
+(scylladb ref: master, 2026-06-17, after Phase 5).
 
-The 174 failures partition by primary exception into ~63 server crashes (aborts), ~36
-server-returned errors (non-crash), and ~75 test-side check failures. Fire/hit counts in
+The 165 failures partition by primary exception into ~54 server crashes (aborts), ~37
+server-returned errors (non-crash), and ~74 test-side check failures. Fire/hit counts in
 the first two tables are higher than the unique-test count because a single test can
 trigger multiple aborts or error hits during setup or teardown.
 
@@ -12,10 +12,9 @@ trigger multiple aborts or error hits during setup or teardown.
 
 | Fires | Symptom (assert string) | Site |
 |------:|-------------------------|------|
-|  23 | ORDER BY on clustering key requires reverse iterator | `planner.cpp` |
+|  17 | SELECT clause type (function/cast/term) is not implemented | `planner.cpp` |
 |  12 | BATCH is not implemented | `engine.cpp` |
-|  11 | SELECT clause type (function/cast/term) is not implemented | `planner.cpp` |
-|   5 | User-defined types are not implemented (CREATE/DROP TYPE) | `engine.cpp` |
+|   6 | User-defined types are not implemented (CREATE/DROP TYPE) | `engine.cpp` |
 |   4 | subscript/field access in UPDATE SET is not implemented | `planner.cpp` |
 |   2 | tuple column type is not implemented | `schema.cpp` |
 |   2 | PER PARTITION LIMIT is not implemented | `engine.cpp` |
@@ -31,10 +30,12 @@ trigger multiple aborts or error hits during setup or teardown.
 |-----:|-------------------|-------|
 |  14 | `cannot create index on collection column` | Phase 4 rejects collection-column indexes; lands in Phase 8 with the per-element iteration that DML needs. |
 |   8 | `Failed to parse CQL` | Remaining parser gaps: a few `ALTER` shapes and `INSERT ... USING TTL AND TIMESTAMP`. |
+|   7 | `Cannot apply counter operations on non-counter column <name>` | Tests that use `col = col + n` against non-counter columns; the planner type-checks the assignment instead of falling through. |
 |   6 | `INSERT USING TTL is not implemented` | Returned as `Invalid` (not a crash). Phase 10. |
-|   5 | `Cannot apply counter operations on non-counter column <name>` | Tests that use `col = col + n` against non-counter columns; the planner now type-checks the assignment instead of falling through. |
 |   4 | `Incompatible literal for column type` | smallint/tinyint and reversed type cases. |
-|   2 | `Cannot execute this query as it might involve data filtering ... use ALLOW FILTERING` | Two tests our index path should serve directly; need additional planner work to suppress the gate. |
+|   4 | `Cannot execute this query as it might involve data filtering ... use ALLOW FILTERING` | Index path should serve some of these directly; needs additional planner work to suppress the gate. |
+|   2 | `Failed to create table` | Schema setup error for invalid CREATE TABLE shapes (testInvalidCreateTableStatements, testTable). |
+|   1 | `Order by is currently only supported on the clustered columns of the PRIMARY KEY` | `testAllowSkippingEqualityAndSingleValueInRestrictedClusteringColumns` ORDER BY after a CK equality restriction — planner rejects what Cassandra allows. |
 |   1 | `Keyspace 'with' does not exist` | Parser/keyword collision: bareword `with` is consumed as a keyspace identifier. |
 
 ### Test-side check failures (server did not crash or return an error)
@@ -54,15 +55,12 @@ not visible in server logs and need conformance-driven planner/executor work to 
 
 ## Summary of structural issues
 
-- **ORDER BY / CLUSTERING ORDER BY (~23 fires, ~9 unique tests in select_order_by_test.py).**
-  Requires reverse iteration in `btree::Iterator` and `RowIterator`. `RowLocator` already has
-  `reverse_partitions` and `reverse_clustering` fields; `plan_select` asserts instead of setting them.
-  Phase 5 fills these in.
+- **SELECT scalar functions / aggregates (~17+2=19 fires, ~12 unique tests).** Aggregation stage
+  above `RowIterator` plus scalar function registry (`blobAsInt`, `intAsBlob`, etc.). Phase 6.
+  The fire count grew after Phase 5 because tests that previously aborted on ORDER BY now
+  reach the function-call selection codepath.
 
-- **SELECT COUNT / scalar functions (~11+2=13 fires, ~8 unique tests).** Aggregation stage above
-  `RowIterator` plus scalar function registry. Phase 6.
-
-- **Counter columns (~5 hits as "non-counter column" errors, ~3 unique tests).** The reject-on-wrong-type
+- **Counter columns (~7 hits as "non-counter column" errors).** The reject-on-wrong-type
   path now works; the actual counter-evaluation path (`col = col + n` on a real counter column) still
   needs `apply_mutation` to provide a row context. Phase 7.
 

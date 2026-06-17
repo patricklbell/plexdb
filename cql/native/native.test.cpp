@@ -1217,3 +1217,63 @@ CQL_NATIVE_TEST_CASE("Secondary index: system_schema.indexes lists created index
     });
     co_return;
 }
+
+CQL_NATIVE_TEST_CASE("ORDER BY DESC returns clustering rows in reverse", "[cql.native][order_by]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int, ck int, label text, PRIMARY KEY (pk, ck));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, label) VALUES (1, 1, 'alpha');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, label) VALUES (1, 2, 'beta');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (pk, ck, label) VALUES (1, 3, 'gamma');").opcode == op::RESULT);
+
+        Frame asc = send_query(client, "SELECT label FROM ks.t WHERE pk = 1 ORDER BY ck ASC;");
+        CHECK(result_kind(asc) == result::ROWS);
+        CHECK(body_index_of(asc, "alpha") < body_index_of(asc, "beta"));
+        CHECK(body_index_of(asc, "beta") < body_index_of(asc, "gamma"));
+
+        Frame desc = send_query(client, "SELECT label FROM ks.t WHERE pk = 1 ORDER BY ck DESC;");
+        CHECK(result_kind(desc) == result::ROWS);
+        CHECK(body_index_of(desc, "gamma") < body_index_of(desc, "beta"));
+        CHECK(body_index_of(desc, "beta") < body_index_of(desc, "alpha"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("ORDER BY DESC honors clustering range bounds", "[cql.native][order_by]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int, ck int, label text, PRIMARY KEY (pk, ck));").opcode == op::RESULT);
+        for (int i = 0; i < 5; i++) {
+            char buf[80];
+            int  n = snprintf(buf, sizeof(buf), "INSERT INTO ks.t (pk, ck, label) VALUES (1, %d, 'v%d');", i, i);
+            CHECK(send_query(client, String8(buf, U64(n))).opcode == op::RESULT);
+        }
+
+        Frame fr = send_query(client, "SELECT label FROM ks.t WHERE pk = 1 AND ck >= 1 AND ck < 4 ORDER BY ck DESC;");
+        CHECK(result_kind(fr) == result::ROWS);
+        CHECK(body_contains(fr, "v1"));
+        CHECK(body_contains(fr, "v2"));
+        CHECK(body_contains(fr, "v3"));
+        CHECK(!body_contains(fr, "v0"));
+        CHECK(!body_contains(fr, "v4"));
+        CHECK(body_index_of(fr, "v3") < body_index_of(fr, "v2"));
+        CHECK(body_index_of(fr, "v2") < body_index_of(fr, "v1"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("ORDER BY on non-clustering column is rejected", "[cql.native][order_by]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (pk int, ck int, v text, PRIMARY KEY (pk, ck));").opcode == op::RESULT);
+        Frame bad = send_query(client, "SELECT * FROM ks.t WHERE pk = 1 ORDER BY v ASC;");
+        CHECK(bad.opcode == op::ERROR);
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}

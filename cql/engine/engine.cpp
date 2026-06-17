@@ -620,6 +620,7 @@ namespace cql::engine {
             it.ck_end_inclusive    = locator.ck_end_inclusive;
             it.ck_begin_is_partial = locator.ck_begin_is_partial;
             it.ck_end_is_partial   = locator.ck_end_is_partial;
+            it.reverse_clustering  = locator.reverse_clustering;
         };
 
         RowIterator start_it, stop_it;
@@ -655,7 +656,9 @@ namespace cql::engine {
             }
         }
 
-        if (has_ck_bounds) {
+        // reverse_clustering re-runs setup with the reverse path even when there are no
+        // explicit CK bounds (clustering_it must start at the last key, not the first).
+        if (has_ck_bounds || locator.reverse_clustering) {
             copy_ck_bounds(start_it);
             co_await apply_ck_bounds_on_clustering(start_it);
             co_await advance_past_empty_ck_partitions(start_it, stop_it);

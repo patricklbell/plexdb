@@ -25,6 +25,7 @@ export namespace plexdb::btree {
     struct Iterator {
         IteratorImpl<BTreeKP<BT>, BTreeVP<BT>> impl;
         BT*                                    btree;
+        bool                                   reverse = false;
 
         Iterator() = default;
         explicit Iterator(BT* in_btree)
@@ -32,7 +33,11 @@ export namespace plexdb::btree {
         }
 
         coroutine::Task<void> advance() {
-            co_await next_iterator_inplace(*this->btree, this->impl);
+            if (this->reverse) {
+                co_await prev_iterator_inplace(*this->btree, this->impl);
+            } else {
+                co_await next_iterator_inplace(*this->btree, this->impl);
+            }
         }
 
         T operator*() const {
@@ -137,6 +142,23 @@ export namespace plexdb::btree {
     template<typename T, BTree BT>
     Iterator<BT, T> end(BT&) {
         return {};
+    }
+
+    // Positions at the last key. advance() must use the iterator's `reverse=true`
+    // flag (set here) to step backward; rend() is identical to end() — leaf=nullptr.
+    template<typename T, BTree BT>
+    coroutine::Task<Iterator<BT, T>> rbegin(BT& t) {
+        Iterator<BT, T> it{&t};
+        it.reverse = true;
+        it.impl    = co_await rbegin_iterator_impl(*it.btree);
+        co_return move(it);
+    }
+
+    template<typename T, BTree BT>
+    Iterator<BT, T> rend(BT&) {
+        Iterator<BT, T> it{};
+        it.reverse = true;
+        return it;
     }
 
     template<typename T, SearchStrategy Strategy, BTree BT>

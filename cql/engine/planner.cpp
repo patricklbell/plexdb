@@ -671,22 +671,30 @@ namespace cql::planner {
         }
 
         if (stmt.order_by) {
-            for (const auto& col_order : stmt.order_by->columns) {
-                String8 name(col_order.column.identifier.c_str, col_order.column.identifier.length);
-                bool    is_ck = false;
-                for (U64 ck_ci : tbl.clustering_key_col_indices) {
-                    if (tbl.cols[ck_ci].name == name) {
-                        is_ck = true;
-                        break;
-                    }
-                }
-                if (!is_ck) {
+            // ORDER BY must restrict the partition key (single partition) and name a prefix
+            // of the clustering columns in order, all with matching direction.
+            bool any_desc = false;
+            bool any_asc  = false;
+            for (U64 i = 0; i < stmt.order_by->columns.length; i++) {
+                const auto& col_order = stmt.order_by->columns[i];
+                String8     name(col_order.column.identifier.c_str, col_order.column.identifier.length);
+                if (i >= tbl.clustering_key_col_indices.length ||
+                    tbl.cols[tbl.clustering_key_col_indices[i]].name != name) {
                     plan.result.error   = PlanError::OrderByOnNonClusteringColumn;
                     plan.result.context = AutoString8(name);
                     return plan;
                 }
-                assert_not_implemented("ORDER BY on clustering key requires reverse iterator");
+                if (col_order.sort == Sort::DESC) {
+                    any_desc = true;
+                } else {
+                    any_asc = true;
+                }
             }
+            if (any_desc && any_asc) {
+                plan.result.error = PlanError::OrderByOnNonClusteringColumn;
+                return plan;
+            }
+            plan.locator.reverse_clustering = any_desc;
         }
 
         for (const auto& sc : stmt.select.clauses) {

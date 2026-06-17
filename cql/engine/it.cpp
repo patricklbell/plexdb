@@ -180,6 +180,70 @@ namespace cql {
             pager, entry.data_page,
             btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
 
+        if (it.reverse_clustering) {
+            // Position the start at the highest key satisfying the upper bound; the lower
+            // bound is checked per advance() since for partial bounds and rend there is
+            // no precomputable end iterator.
+            if (it.ck_has_end && !it.ck_end_is_partial) {
+                auto ev = TArrayView<const U8, U16>(it.ck_end.ptr, static_cast<U16>(it.ck_end.length));
+                if (it.ck_end_inclusive) {
+                    it.clustering_it = co_await btree::find_it<U64, btree::SearchStrategy::LastLessEqual>(it.clustering_btree, ev);
+                } else {
+                    it.clustering_it = co_await btree::find_it<U64, btree::SearchStrategy::LastLess>(it.clustering_btree, ev);
+                }
+            } else if (it.ck_has_end && it.ck_end_is_partial) {
+                // Start just past the partial upper bound (in reverse direction):
+                // for inclusive upper, the first key >= bound that does NOT match the prefix is past;
+                // we want the last key whose prefix <= bound. Easiest is to seek to the end of
+                // the prefix range and step back.
+                auto ev                  = TArrayView<const U8, U16>(it.ck_end.ptr, static_cast<U16>(it.ck_end.length));
+                it.clustering_it         = co_await btree::find_it<U64, btree::SearchStrategy::FirstGreater>(it.clustering_btree, ev);
+                it.clustering_it.reverse = true;
+                if (it.clustering_it == btree::end<U64>(it.clustering_btree)) {
+                    it.clustering_it = co_await btree::rbegin<U64>(it.clustering_btree);
+                } else {
+                    co_await it.clustering_it.advance();
+                }
+                // Skip composite-extension keys for exclusive upper.
+                auto rend_it = btree::rend<U64>(it.clustering_btree);
+                while (it.clustering_it != rend_it && !ck_key_has_prefix(it.clustering_it.key(), it.ck_end)) {
+                    co_await it.clustering_it.advance();
+                }
+                if (!it.ck_end_inclusive) {
+                    while (it.clustering_it != rend_it && ck_key_has_prefix(it.clustering_it.key(), it.ck_end)) {
+                        co_await it.clustering_it.advance();
+                    }
+                }
+            } else {
+                it.clustering_it = co_await btree::rbegin<U64>(it.clustering_btree);
+            }
+            it.clustering_it.reverse = true;
+            it.clustering_end_it     = btree::rend<U64>(it.clustering_btree);
+
+            // If the chosen start already violates the lower bound, mark exhausted.
+            if (it.clustering_it != it.clustering_end_it && it.ck_has_begin) {
+                auto key_view = it.clustering_it.key();
+                U16  B        = static_cast<U16>(it.ck_begin.length);
+                int  cmp;
+                if (it.ck_begin_is_partial) {
+                    cmp = (key_view.length >= B) ? memcmp(key_view.ptr, it.ck_begin.ptr, B) : -1;
+                } else {
+                    U64 ml = min(U64(key_view.length), U64(B));
+                    cmp    = ml > 0 ? memcmp(key_view.ptr, it.ck_begin.ptr, ml) : 0;
+                    if (cmp == 0) {
+                        cmp = (key_view.length < B) ? -1 : (key_view.length > B ? 1 : 0);
+                    }
+                }
+                bool past_begin = it.ck_begin_inclusive ? (cmp < 0) : (cmp <= 0);
+                if (past_begin) {
+                    it.clustering_it = btree::rend<U64>(it.clustering_btree);
+                }
+            }
+
+            it.static_only_row = (it.clustering_it == it.clustering_end_it && entry.static_page != 0);
+            co_return;
+        }
+
         if (it.ck_has_begin) {
             auto bv = TArrayView<const U8, U16>(it.ck_begin.ptr, static_cast<U16>(it.ck_begin.length));
             if (it.ck_begin_inclusive) {
@@ -230,14 +294,37 @@ namespace cql {
             }
         } else {
             co_await this->clustering_it.advance();
-            // @note ck_end_is_partial: clustering_end_it is btree::end; compare prefix bytes manually
-            if (this->ck_has_end && this->ck_end_is_partial && clustering_it != clustering_end_it) {
-                auto key_view = clustering_it.key();
-                U16  B        = static_cast<U16>(this->ck_end.length);
-                int  cmp      = (key_view.length >= B) ? memcmp(key_view.ptr, this->ck_end.ptr, B) : -1;
-                bool past_end = this->ck_end_inclusive ? (cmp > 0) : (cmp >= 0);
-                if (past_end) {
-                    clustering_it = btree::end<U64>(clustering_btree);
+            if (this->reverse_clustering) {
+                // For reverse iteration, clustering_end_it is rend; we instead check the
+                // lower bound on each step.
+                if (this->ck_has_begin && clustering_it != clustering_end_it) {
+                    auto key_view = clustering_it.key();
+                    U16  B        = static_cast<U16>(this->ck_begin.length);
+                    int  cmp;
+                    if (this->ck_begin_is_partial) {
+                        cmp = (key_view.length >= B) ? memcmp(key_view.ptr, this->ck_begin.ptr, B) : -1;
+                    } else {
+                        U64 ml = min(U64(key_view.length), U64(B));
+                        cmp    = ml > 0 ? memcmp(key_view.ptr, this->ck_begin.ptr, ml) : 0;
+                        if (cmp == 0) {
+                            cmp = (key_view.length < B) ? -1 : (key_view.length > B ? 1 : 0);
+                        }
+                    }
+                    bool past_begin = this->ck_begin_inclusive ? (cmp < 0) : (cmp <= 0);
+                    if (past_begin) {
+                        clustering_it = btree::rend<U64>(clustering_btree);
+                    }
+                }
+            } else {
+                // @note ck_end_is_partial: clustering_end_it is btree::end; compare prefix bytes manually
+                if (this->ck_has_end && this->ck_end_is_partial && clustering_it != clustering_end_it) {
+                    auto key_view = clustering_it.key();
+                    U16  B        = static_cast<U16>(this->ck_end.length);
+                    int  cmp      = (key_view.length >= B) ? memcmp(key_view.ptr, this->ck_end.ptr, B) : -1;
+                    bool past_end = this->ck_end_inclusive ? (cmp > 0) : (cmp >= 0);
+                    if (past_end) {
+                        clustering_it = btree::end<U64>(clustering_btree);
+                    }
                 }
             }
             if (clustering_it == clustering_end_it) {

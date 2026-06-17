@@ -272,6 +272,21 @@ namespace cql::test {
     bool body_contains(const Frame& f, const U8* needle, U64 needle_len) {
         return buf_contains(f.body.ptr, f.body.length, needle, needle_len);
     }
+    U64 body_index_of(const Frame& f, String8 needle) {
+        if (needle.length == 0) {
+            return 0;
+        }
+        if (f.body.length < needle.length) {
+            return MAX_U64;
+        }
+        const U8* n = reinterpret_cast<const U8*>(needle.data);
+        for (U64 i = 0; i + needle.length <= f.body.length; i++) {
+            if (memory_compare(f.body.ptr + i, n, needle.length) == 0) {
+                return i;
+            }
+        }
+        return MAX_U64;
+    }
 
     TArrayView<const U8> read_prepared_id(const Frame& f) {
         assert_true(f.body.length >= 6, "read_prepared_id: body too short");
