@@ -40,6 +40,8 @@ namespace {
             return dtype == type::Basic::uuid || dtype == type::Basic::timeuuid;
         } else if constexpr (Either<RemoveCV<T>, Null>) {
             return true;
+        } else if constexpr (Either<RemoveCV<T>, Unset>) {
+            return false;
         } else if constexpr (Either<RemoveCV<T>, bool>) {
             return dtype == type::Basic::boolean;
         } else if constexpr (Either<RemoveCV<T>, Hex>) {
@@ -160,6 +162,8 @@ namespace {
             w(reinterpret_cast<const U8*>(&src.nanoseconds), sizeof(src.nanoseconds));
         } else if constexpr (SameAs<T, Null>) {
             assert_not_implemented("writing null column values is not implemented");
+        } else if constexpr (SameAs<T, Unset>) {
+            assert_true(false, "UNSET reached column writer, this should neveer happen, apply_updates_to_row should skip earlier");
         } else {
             static_assert(!SameAs<T, T>, "missing underlying type case");
         }

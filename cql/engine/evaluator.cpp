@@ -394,7 +394,14 @@ namespace cql {
         return as_value<F64>(e) != nullptr || as_value<F32>(e) != nullptr;
     }
 
+    static bool eval_is_unset(const Evaluated& e) {
+        return as_value<Unset>(e) != nullptr;
+    }
+
     static Evaluated evaluate_binary_arithmetic(const Evaluated& lhs, ArithmeticOperator op, const Evaluated& rhs) {
+        if (eval_is_unset(lhs) || eval_is_unset(rhs)) {
+            return Evaluated{Constant{Unset{}}};
+        }
         if (eval_is_null(lhs) || eval_is_null(rhs)) {
             return Evaluated{Constant{Null{}}};
         }
@@ -454,6 +461,9 @@ namespace cql {
     }
 
     static Evaluated evaluate_unary_minus(const Evaluated& value) {
+        if (eval_is_unset(value)) {
+            return Evaluated{Constant{Unset{}}};
+        }
         if (eval_is_null(value)) {
             return Evaluated{Constant{Null{}}};
         }
@@ -860,6 +870,9 @@ namespace plexdb {
 
         if (type_matches_tag<cql::Null>(con.value)) {
             return "null"_as;
+        }
+        if (type_matches_tag<cql::Unset>(con.value)) {
+            return "unset"_as;
         }
 
         switch (dtype) {

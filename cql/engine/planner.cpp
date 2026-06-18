@@ -72,6 +72,40 @@ namespace cql::planner {
                get<type::Basic>(col.type.value) == type::Basic::counter;
     }
 
+    bool table_has_counter(const schema::Table& tbl) {
+        for (const auto& col : tbl.cols) {
+            if (!col.tombstone && col_is_counter(col)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Cassandra allows counter writes only in the form `c = c + n` or `c = c - n`,
+    // where the LHS column reference matches the assignment target and the RHS contains
+    // no further column references (constants, bind markers, or arithmetic over those).
+    static bool is_counter_increment_form(const TermWithIdentifiers& twi, const String8& target_col) {
+        if (!type_matches_tag<TOIArithmeticOperation>(twi.value)) {
+            return false;
+        }
+        const auto& arith = get<TOIArithmeticOperation>(twi.value);
+        if (!type_matches_tag<TOIBinaryArithmetic>(arith.value)) {
+            return false;
+        }
+        const auto& bin = get<TOIBinaryArithmetic>(arith.value);
+        if (bin.op != ArithmeticOperator::plus && bin.op != ArithmeticOperator::minus) {
+            return false;
+        }
+        if (!type_matches_tag<AutoString8>(bin.lhs.value)) {
+            return false;
+        }
+        const auto& lhs_name = get<AutoString8>(bin.lhs.value);
+        if (String8(lhs_name.c_str, lhs_name.length) != target_col) {
+            return false;
+        }
+        return !twi_has_column_ref(bin.rhs);
+    }
+
     static bool term_is_literal_null(const Term& t) {
         return type_matches_tag<Constant>(t.value) &&
                type_matches_tag<Null>(get<Constant>(t.value).value);
@@ -938,8 +972,14 @@ namespace cql::planner {
             }
 
             bool has_col_ref = twi_has_column_ref(assign.value);
-            if (has_col_ref && !col_is_counter(tbl.cols[*col_idx])) {
+            bool is_counter  = col_is_counter(tbl.cols[*col_idx]);
+            if (has_col_ref && !is_counter) {
                 plan.result.error   = PlanError::CounterOperationOnNonCounter;
+                plan.result.context = AutoString8(col_name);
+                return plan;
+            }
+            if (is_counter && !is_counter_increment_form(assign.value, col_name)) {
+                plan.result.error   = PlanError::CounterAssignmentNotIncrement;
                 plan.result.context = AutoString8(col_name);
                 return plan;
             }

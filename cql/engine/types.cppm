@@ -13,6 +13,9 @@ export namespace cql {
     // value types
     // ========================================================================
     struct Null {};
+    // @note CQL native protocol [bytes] length -2 = UNSET; distinct from NULL — UNSET means
+    // "no change" for INSERT/UPDATE assignments; NULL means "remove the value".
+    struct Unset {};
     struct UUID {
         static constexpr U64 length = 16_u64;
         Array<U8, length>    value;

@@ -1,5 +1,5 @@
 # Mustpass list — tests that must pass to prevent regressions.
-# Generated: 2026-06-14
+# Generated: 2026-06-18
 # Regenerate: tools/cql_tests/run.sh -o tools/cql_tests/mustpass.txt
 #
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testAlterCollections
@@ -8,6 +8,12 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testDropAndReaddDroppedCollection
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testInvalidCollectionsMix
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testNonPureFunctionCollection
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_test.py::testCounterFiltering
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_test.py::testCounterFilteringWithNull
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_test.py::testCounterUpdatesWithUnset
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_test.py::testCountersOnCollections
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_test.py::testProhibitReversedCounterAsPartOfPrimaryKey
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_test.py::testRegularCounters
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/timestamp_test.py::testInsertTimestampWithUnset
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAddList
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAlterDropEmptySSTable
@@ -17,11 +23,15 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_tes
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testDropListAndAddListWithSameName
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testDropListAndAddMapWithSameName
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/create_test.py::testCreateKeyspaceWithNetworkTopologyStrategyNoOptions
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/create_test.py::testMultiOrderingValidation
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/create_test.py::testSparseCompositeTable
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testCrossMemSSTableMultiColumn[False-False]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testCrossMemSSTableMultiColumn[False-True]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testCrossMemSSTableMultiColumn[True-False]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testCrossMemSSTableMultiColumn[True-True]
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteAndReverseQueries
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteByCompositePrefix
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteByCompositePrefixWithCompaction
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteColumnNoClustering
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteRange[False-False]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteRange[False-True]
@@ -37,10 +47,13 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_te
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteWithOneClusteringColumns[False]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteWithOneClusteringColumns[True]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteWithOnlyPK
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteWithRangeAndOneClusteringColumn[False]
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeleteWithRangeAndOneClusteringColumn[True]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeletedRowCannotBeSelected
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeletedRowsDoNotResurface
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testDeletion
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testQueryingOnRangeTombstoneBoundForward
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testQueryingOnRangeTombstoneBoundReverse
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testRandomDeletions
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testRangeDeletion[False-False]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testRangeDeletion[False-True]
@@ -48,6 +61,8 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_te
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testRangeDeletion[True-True]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testRemoveRangeSlice
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testRowDeletion
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testStaticColumnDeletionWithMultipleStaticColumns
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testStaticColumnDeletionWithMultipleStaticColumnsAndRegularColumns
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testThatDeletesWithEmptyInRestrictionDoNotCreateMutations
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testWithEmptyRange
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/drop_test.py::testDropTableWithDroppedColumns
@@ -58,12 +73,33 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_te
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testInsert[True]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_limit_test.py::testFilteringWithPartitionWithoutRows
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_limit_test.py::testSparseTable
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testInOrderByWithTwoPartitionKeyColumns
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testInvalidOrderBy
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testMultiordering
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testNormalSelectionOrderMultipleClustering
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testReversedComparator
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testSelectInStatementWithDesc
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testSelectOrderBy
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testSelectWithReversedTypeInReverseOrderWithStaticColumnsWithStaticRow
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testSelectWithReversedTypeInReverseOrderWithStaticColumnsWithoutStaticRow
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testClusteringOrder
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testClusteringOrderWithSlice
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testCustomIndexWithFiltering
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testDifferentOrdering
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testFilteringWithCounters
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testFilteringWithSecondaryIndex
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testMultipleClausesOnPrimaryKey
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testRangeQuery
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testSelectCount
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testSelectCountPaging
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testSelectDistinctWithDeletions
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testSelectDistinctWithWhereClause
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testSelectInClauseAtOne
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testSelectInFinalColumn
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testSelectKeyIn
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testSingleClustering
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testWithDistinctAndJsonAsColumnName
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testfilteringOnStaticColumnTest
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/update_test.py::testThatUpdatesWithEmptyInRestrictionDoNotCreateMutations
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/update_test.py::testUpdateWithAStaticColumn[False]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/update_test.py::testUpdateWithAStaticColumn[True]

@@ -64,6 +64,9 @@ namespace cql::native {
         assert_true(p + 4 <= end, "truncated value length");
         S32 len = read_be_s32(p);
         p += 4;
+        if (len == -2) {
+            return Constant{.value = Unset{}};
+        }
         if (len < 0) {
             return Constant{.value = Null{}};
         }

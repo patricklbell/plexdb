@@ -582,6 +582,37 @@ namespace cql::schema {
         return info;
     }
 
+    static bool type_is_counter(const type::Type& t) {
+        return type_matches_tag<type::Basic>(t.value) &&
+               get<type::Basic>(t.value) == type::Basic::counter;
+    }
+
+    static bool type_contains_counter(const type::Type& t) {
+        return visit(t.value, [](const auto& v) -> bool {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, type::Basic>) {
+                return v == type::Basic::counter;
+            } else if constexpr (SameAs<T, type::List>) {
+                return type_contains_counter(v.element);
+            } else if constexpr (SameAs<T, type::Set>) {
+                return type_contains_counter(v.key);
+            } else if constexpr (SameAs<T, type::Map>) {
+                return type_contains_counter(v.key) || type_contains_counter(v.value);
+            } else if constexpr (SameAs<T, type::Vector>) {
+                return type_contains_counter(v.element);
+            } else if constexpr (SameAs<T, type::Tuple>) {
+                for (const auto& e : v.elements) {
+                    if (type_contains_counter(e)) {
+                        return true;
+                    }
+                }
+                return false;
+            } else {
+                return false;
+            }
+        });
+    }
+
     coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
         assert_true(read_table_impl(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
 
@@ -590,6 +621,57 @@ namespace cql::schema {
             co_return Result<Table*>{nullptr, Error::MissingPrimaryKey, "table needs a primary key"};
         }
         PrimaryKeyInfo& pk_info = *pk_info_opt;
+
+        // @note Cassandra prohibits counters in PKs, inside collections, and mixed with non-counter
+        // regular columns. Rejected at CREATE TABLE so callers see a clear error.
+        auto is_pk_def = [&](U64 def_idx) -> bool {
+            for (U64 i : pk_info.partition_col_def_indices) {
+                if (i == def_idx) {
+                    return true;
+                }
+            }
+            for (U64 i : pk_info.clustering_col_def_indices) {
+                if (i == def_idx) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        for (U64 i = 0; i < pk_info.partition_col_def_indices.length; i++) {
+            const auto& col = create.column_definitions[pk_info.partition_col_def_indices[i]];
+            if (type_is_counter(col.type)) {
+                co_return Result<Table*>{nullptr, Error::InvalidOptions, "counter type is not supported for PRIMARY KEY"};
+            }
+        }
+        for (U64 i = 0; i < pk_info.clustering_col_def_indices.length; i++) {
+            const auto& col = create.column_definitions[pk_info.clustering_col_def_indices[i]];
+            if (type_is_counter(col.type)) {
+                co_return Result<Table*>{nullptr, Error::InvalidOptions, "counter type is not supported for PRIMARY KEY"};
+            }
+        }
+
+        for (const auto& col : create.column_definitions) {
+            if (!type_is_counter(col.type) && type_contains_counter(col.type)) {
+                co_return Result<Table*>{nullptr, Error::InvalidOptions, "counter type is not allowed inside collections"};
+            }
+        }
+
+        bool any_counter     = false;
+        bool any_non_counter = false;
+        for (U64 i = 0; i < create.column_definitions.length; i++) {
+            if (is_pk_def(i)) {
+                continue;
+            }
+            if (type_is_counter(create.column_definitions[i].type)) {
+                any_counter = true;
+            } else {
+                any_non_counter = true;
+            }
+        }
+        if (any_counter && any_non_counter) {
+            co_return Result<Table*>{nullptr, Error::InvalidOptions, "Cannot mix counter and non counter columns in the same table"};
+        }
 
         // Build the per-CK direction map from any CLUSTERING ORDER BY directive in WITH options.
         DynamicArray<Sort> ck_orders;

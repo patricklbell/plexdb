@@ -99,6 +99,7 @@ export namespace cql::planner {
         NonKeyColumnInMutationWhere,
         NonEqInOnPartitionKeyMutation,
         CounterOperationOnNonCounter,
+        CounterAssignmentNotIncrement,
         NullValueForCounter,
         DistinctRestrictionInvalid,
     };
@@ -130,4 +131,6 @@ export namespace cql::planner {
     SelectPlan   plan_select(const Select& stmt, const schema::Table& tbl, const EvalContext& ctx);
     MutationPlan plan_update(const Update& stmt, const schema::Table& tbl, const EvalContext& ctx);
     MutationPlan plan_delete(const Delete& stmt, const schema::Table& tbl, const EvalContext& ctx);
+
+    bool table_has_counter(const schema::Table& tbl);
 }

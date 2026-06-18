@@ -35,49 +35,6 @@ the engine and returns a synthesized `VirtualRows` row, avoiding deferred-tx lif
 
 ---
 
-## Phase 7 — Counter Columns (non-constant/non-bind UPDATE assignments)
-
-**Impact: ~7 unique tests in counters_test.py. Depends on Phase 3 (`apply_mutation`).**
-
-The parser already produces `TermWithIdentifiers` with `TOIArithmeticOperation` for
-`col = col + n`. The evaluator's `evaluate_toi` already resolves `AutoString8` column refs
-via `ctx.row_values`. The only missing piece: `apply_mutation` must provide a row context.
-
-### Changes to MutationSpec / ColumnUpdate
-
-```
-struct ColumnUpdate:
-    col_idx:   U64
-    new_value: TaggedUnion<Evaluated, TermWithIdentifiers>
-    // Evaluated  → constant/bind; applied directly
-    // TermWithIdentifiers → counter expression; resolved at apply time with row_ctx
-```
-
-`plan_mutation` stores `TermWithIdentifiers` in `new_value` when the assignment RHS has
-column references (detected by `type_matches_tag<AutoString8>` anywhere in the term).
-`MutationSpec` gains a `needed_cols: DynamicArray<U64>` field (mirroring `ProjectionPlan`)
-extended to include the source column of the counter expression.
-
-### Changes to apply_updates_to_row
-
-```
-apply_updates(col_values, col_present, updates, row_ctx):
-    for each ColumnUpdate(col_idx, new_value) in updates:
-        if type_matches_tag<TermWithIdentifiers>(new_value):
-            evaluated = evaluate_toi(get<TermWithIdentifiers>(new_value), row_ctx)
-        else:
-            evaluated = get<Evaluated>(new_value)
-        // then same as before
-```
-
-`row_ctx` is built inside `apply_mutation` after reading `col_values`:
-```
-row_ctx = ctx
-row_ctx.row_values = col_values.ptr
-```
-
----
-
 ## Phase 8 — Collection DML
 
 **Impact: ~22 unique tests in collections_test.py. Complex; isolated from other phases.**

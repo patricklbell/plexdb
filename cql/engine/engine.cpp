@@ -310,6 +310,11 @@ namespace cql::engine {
             } else {
                 eval = get<Evaluated>(upd.new_value);
             }
+            // UNSET → column unchanged (Cassandra semantics for both counter and non-counter).
+            if (type_matches_tag<Constant>(eval.value) &&
+                type_matches_tag<Unset>(get<Constant>(eval.value).value)) {
+                continue;
+            }
             if (type_matches_tag<ColumnValue>(eval.value)) {
                 const ColumnValue& cv = get<ColumnValue>(eval.value);
                 if (type_matches_tag<Null>(cv)) {
@@ -810,6 +815,13 @@ namespace cql::engine {
                 ExecutionResult r;
                 r.status          = ExecutionStatus::Invalid;
                 r.message_storage = "Cannot apply counter operations on non-counter column " + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
+            case planner::PlanError::CounterAssignmentNotIncrement: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = "Invalid operation for counter column " + result.context;
                 r.message         = String8(r.message_storage.c_str, r.message_storage.length);
                 return r;
             }
@@ -1683,6 +1695,13 @@ namespace cql::engine {
                 auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
                 if (tbl == nullptr) {
                     co_return create_table_not_found(ks_name, stmt.table.table_name);
+                }
+
+                if (planner::table_has_counter(*tbl)) {
+                    co_return ExecutionResult{
+                        .status  = ExecutionStatus::Invalid,
+                        .message = "INSERT statements are not allowed on counter tables, use UPDATE instead",
+                    };
                 }
 
                 co_return co_await visit(stmt.insert_clause, [&engine, ks, tbl, &stmt, ctx](const auto& v) -> coroutine::Task<ExecutionResult> {
