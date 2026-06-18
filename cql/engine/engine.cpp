@@ -286,15 +286,30 @@ namespace cql::engine {
         co_return page;
     }
 
-    // Apply a MutationSpec's updates to col_values/col_present in place.
+    // @note an absent counter cell reads as 0 for `c = c + n` style RHS — primed
+    // here so the TWI evaluation under `row_values` sees a defined value.
     static coroutine::Task<void> apply_updates_to_row(const schema::Table*         tbl,
                                                       DynamicArray<ColumnValue>&   col_values,
                                                       DynamicArray<bool>&          col_present,
                                                       const planner::MutationSpec& spec,
                                                       const EvalContext&           ctx) {
         for (const auto& upd : spec.updates) {
-            U64              idx  = upd.col_idx;
-            const Evaluated& eval = upd.new_value;
+            U64       idx = upd.col_idx;
+            Evaluated eval;
+            if (type_matches_tag<TermWithIdentifiers>(upd.new_value)) {
+                bool is_counter = type_matches_tag<type::Basic>(tbl->cols[idx].type.value) &&
+                                  get<type::Basic>(tbl->cols[idx].type.value) == type::Basic::counter;
+                if (is_counter && !col_present[idx]) {
+                    col_values[idx]  = S64(0);
+                    col_present[idx] = true;
+                }
+                EvalContext row_ctx = ctx;
+                row_ctx.table       = tbl;
+                row_ctx.row_values  = col_values.ptr;
+                eval                = evaluate(get<TermWithIdentifiers>(upd.new_value), row_ctx);
+            } else {
+                eval = get<Evaluated>(upd.new_value);
+            }
             if (type_matches_tag<ColumnValue>(eval.value)) {
                 const ColumnValue& cv = get<ColumnValue>(eval.value);
                 if (type_matches_tag<Null>(cv)) {
@@ -798,6 +813,11 @@ namespace cql::engine {
                 r.message         = String8(r.message_storage.c_str, r.message_storage.length);
                 return r;
             }
+            case planner::PlanError::NullValueForCounter:
+                return ExecutionResult{
+                    .status  = ExecutionStatus::Invalid,
+                    .message = "Invalid null value for counter increment/decrement",
+                };
             case planner::PlanError::DistinctRestrictionInvalid:
                 return ExecutionResult{
                     .status  = ExecutionStatus::Invalid,
@@ -811,8 +831,7 @@ namespace cql::engine {
     static coroutine::Task<ExecutionResult> execute_select_index(
         Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
         const planner::SelectPlan& sp, DynamicArray<U64> select_col_indices,
-        U64 limit_count, EvalContext ctx
-    ) {
+        U64 limit_count, EvalContext ctx) {
         schema::Index* active_idx = nullptr;
         for (auto& idx : tbl->indexes) {
             if (!idx.tombstone && idx.col_idx == *sp.locator.index_col_idx) {
@@ -905,8 +924,7 @@ namespace cql::engine {
     static coroutine::Task<ExecutionResult> execute_select_pk_in_ordered(
         Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
         const planner::SelectPlan& sp, DynamicArray<U64> select_col_indices,
-        U64 limit_count, EvalContext ctx
-    ) {
+        U64 limit_count, EvalContext ctx) {
         DynamicArray<U64> col_order = build_select_col_order(*tbl, select_col_indices);
         VirtualRows       vr        = make_virtual_rows_shell(*tbl, ks_name, table_name, col_order);
 
@@ -1011,8 +1029,7 @@ namespace cql::engine {
     // @todo collapse the index-walk duplication with execute_select_index.
     static coroutine::Task<ExecutionResult> execute_select_aggregate(
         Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
-        const Select& stmt, const planner::SelectPlan& sp, EvalContext ctx
-    ) {
+        const Select& stmt, const planner::SelectPlan& sp, EvalContext ctx) {
         VirtualRows vr;
         vr.keyspace      = AutoString8(ks_name);
         vr.table         = AutoString8(table_name);
@@ -1139,8 +1156,7 @@ namespace cql::engine {
         Engine& engine, schema::Table* tbl,
         const planner::RowLocator&   locator,
         const planner::MutationSpec& spec,
-        const EvalContext&           ctx
-    ) {
+        const EvalContext&           ctx) {
         const DynamicArray<U8>& pk_bytes     = locator.pk.begin;
         bool                    have_indexes = tbl->indexes.length > 0;
 
@@ -1872,7 +1888,8 @@ namespace cql::engine {
                                     if (is_static_col(ci) && !tbl->cols[ci].tombstone) {
                                         auto ni = try_get_names_idx(tbl->cols[ci].name);
                                         if (ni) {
-                                            push_back(static_spec.updates, planner::ColumnUpdate{ci, evaluate(v.values[*ni])});
+                                            push_back(static_spec.updates,
+                                                      planner::ColumnUpdate{ci, TaggedUnion<Evaluated, TermWithIdentifiers>{evaluate(v.values[*ni])}});
                                         }
                                     }
                                 }
@@ -2288,6 +2305,42 @@ namespace cql::engine {
         });
     }
 
+    static void collect_bind_in_twi(const TermWithIdentifiers& twi, type::Type hint_type, DynamicArray<BindVariableSpec>& out) {
+        visit(twi.value, [&](const auto& v) {
+            using V = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<V, BindMarker>) {
+                emplace_back(out, BindVariableSpec{.name = AutoString8(v.identifier), .type = hint_type});
+            } else if constexpr (SameAs<V, TOIArithmeticOperation>) {
+                visit(v.value, [&](const auto& arith) {
+                    using AT = RemoveCVRef<decltype(arith)>;
+                    if constexpr (SameAs<AT, TOIUnaryMinus>) {
+                        collect_bind_in_twi(arith.operand, hint_type, out);
+                    } else if constexpr (SameAs<AT, TOIBinaryArithmetic>) {
+                        collect_bind_in_twi(arith.lhs, hint_type, out);
+                        collect_bind_in_twi(arith.rhs, hint_type, out);
+                    }
+                });
+            } else if constexpr (SameAs<V, ListOrVectorLiteral> || SameAs<V, TupleLiteral>) {
+                for (U64 i = 0; i < v.elements.length; i++) {
+                    collect_bind_in_term(v.elements[i], hint_type, out);
+                }
+            } else if constexpr (SameAs<V, SetLiteral>) {
+                for (U64 i = 0; i < v.keys.length; i++) {
+                    collect_bind_in_term(v.keys[i], hint_type, out);
+                }
+            } else if constexpr (SameAs<V, MapLiteral>) {
+                for (U64 i = 0; i < v.key_values.length; i++) {
+                    collect_bind_in_term(v.key_values[i].first, hint_type, out);
+                    collect_bind_in_term(v.key_values[i].second, hint_type, out);
+                }
+            } else if constexpr (SameAs<V, FunctionCall>) {
+                for (U64 i = 0; i < v.arguments.length; i++) {
+                    collect_bind_in_term(v.arguments[i], hint_type, out);
+                }
+            }
+        });
+    }
+
     static void collect_bind_in_using_params(const DynamicArray<UpdateParameter>& params, DynamicArray<BindVariableSpec>& out) {
         for (U64 i = 0; i < params.length; i++) {
             if (type_matches_tag<BindMarker>(params[i].value)) {
@@ -2382,10 +2435,8 @@ namespace cql::engine {
         collect_bind_in_using_params(stmt.using_parameters, out);
         for (U64 i = 0; i < stmt.assignments.length; i++) {
             const auto& asgn = stmt.assignments[i];
-            if (type_matches_tag<BindMarker>(asgn.value.value)) {
-                type::Type t = col_type_in_table(*tbl, String8(asgn.target.column.identifier));
-                emplace_back(out, BindVariableSpec{.name = AutoString8(asgn.target.column.identifier), .type = t});
-            }
+            type::Type  t    = col_type_in_table(*tbl, String8(asgn.target.column.identifier));
+            collect_bind_in_twi(asgn.value, t, out);
         }
         collect_bind_in_where(stmt.where, *tbl, out);
     }
@@ -2484,6 +2535,46 @@ namespace cql::engine {
         });
     }
 
+    static void bind_in_twi(TermWithIdentifiers& twi, DynamicArray<Term>& bv, U64& idx) {
+        if (type_matches_tag<BindMarker>(twi.value)) {
+            if (idx < bv.length) {
+                twi = TermWithIdentifiers(move(bv[idx++]));
+            }
+            return;
+        }
+        visit(twi.value, [&](auto& v) {
+            using V = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<V, TOIArithmeticOperation>) {
+                visit(v.value, [&](auto& arith) {
+                    using AT = RemoveCVRef<decltype(arith)>;
+                    if constexpr (SameAs<AT, TOIUnaryMinus>) {
+                        bind_in_twi(arith.operand, bv, idx);
+                    } else if constexpr (SameAs<AT, TOIBinaryArithmetic>) {
+                        bind_in_twi(arith.lhs, bv, idx);
+                        bind_in_twi(arith.rhs, bv, idx);
+                    }
+                });
+            } else if constexpr (SameAs<V, ListOrVectorLiteral> || SameAs<V, TupleLiteral>) {
+                for (U64 i = 0; i < v.elements.length; i++) {
+                    bind_in_term(v.elements[i], bv, idx);
+                }
+            } else if constexpr (SameAs<V, SetLiteral>) {
+                for (U64 i = 0; i < v.keys.length; i++) {
+                    bind_in_term(v.keys[i], bv, idx);
+                }
+            } else if constexpr (SameAs<V, MapLiteral>) {
+                for (U64 i = 0; i < v.key_values.length; i++) {
+                    bind_in_term(v.key_values[i].first, bv, idx);
+                    bind_in_term(v.key_values[i].second, bv, idx);
+                }
+            } else if constexpr (SameAs<V, FunctionCall>) {
+                for (U64 i = 0; i < v.arguments.length; i++) {
+                    bind_in_term(v.arguments[i], bv, idx);
+                }
+            }
+        });
+    }
+
     static void bind_in_where(WhereClause& where, DynamicArray<Term>& bv, U64& idx) {
         for (U64 i = 0; i < where.relations.length; i++) {
             visit(where.relations[i].value, [&](auto& rel) {
@@ -2530,10 +2621,8 @@ namespace cql::engine {
                         idx++;
                     }
                 }
-                for (U64 i = 0; i < s.assignments.length && idx < bound_values.length; i++) {
-                    if (type_matches_tag<BindMarker>(s.assignments[i].value.value)) {
-                        s.assignments[i].value = TermWithIdentifiers(move(bound_values[idx++]));
-                    }
+                for (U64 i = 0; i < s.assignments.length; i++) {
+                    bind_in_twi(s.assignments[i].value, bound_values, idx);
                 }
                 bind_in_where(s.where, bound_values, idx);
             } else if constexpr (SameAs<T, Delete>) {

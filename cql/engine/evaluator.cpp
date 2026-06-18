@@ -132,17 +132,6 @@ namespace cql {
         return result;
     }
 
-    // Extract top-level Constant from Evaluated.
-    static const Constant* get_if_constant(const Evaluated& e) {
-        return visit(e.value, [](const auto& v) -> const Constant* {
-            if constexpr (SameAs<Decay<decltype(v)>, Constant>) {
-                return &v;
-            } else {
-                return nullptr;
-            }
-        });
-    }
-
     // Look up a column by name and return its value as Evaluated.
     static Evaluated lookup_column_value(const AutoString8& col_name, const EvalContext& ctx) {
         if (!ctx.table || !ctx.row_values) {
@@ -397,30 +386,36 @@ namespace cql {
     static Evaluated evaluate_term(const Term& term, const EvalContext& ctx);
     static Evaluated evaluate_toi(const TermWithIdentifiers& twi, const EvalContext& ctx);
     static Evaluated evaluate_function_call(const FunctionCall& call, const EvalContext& ctx);
+    static bool      as_s64(const Evaluated& e, S64& out);
+    static bool      as_f64(const Evaluated& e, F64& out);
+    static bool      eval_is_null(const Evaluated& e);
 
-    static Evaluated evaluate_binary_arithmetic(const Constant& lhs, ArithmeticOperator op, const Constant& rhs) {
-        if (type_matches_tag<Null>(lhs.value) || type_matches_tag<Null>(rhs.value)) {
+    static bool eval_is_float_like(const Evaluated& e) {
+        return as_value<F64>(e) != nullptr || as_value<F32>(e) != nullptr;
+    }
+
+    static Evaluated evaluate_binary_arithmetic(const Evaluated& lhs, ArithmeticOperator op, const Evaluated& rhs) {
+        if (eval_is_null(lhs) || eval_is_null(rhs)) {
             return Evaluated{Constant{Null{}}};
         }
 
-        if (type_matches_tag<AutoString8>(lhs.value) && type_matches_tag<AutoString8>(rhs.value)) {
+        const AutoString8* ls = as_value<AutoString8>(lhs);
+        const AutoString8* rs = as_value<AutoString8>(rhs);
+        if (ls && rs) {
             if (op != ArithmeticOperator::plus) {
                 return Evaluated{Constant{Null{}}};
             }
-            return Evaluated{Constant{get<AutoString8>(lhs.value) + get<AutoString8>(rhs.value)}};
+            return Evaluated{Constant{*ls + *rs}};
         }
 
-        bool lhs_is_float = type_matches_tag<F64>(lhs.value);
-        bool rhs_is_float = type_matches_tag<F64>(rhs.value);
-        bool lhs_is_int   = type_matches_tag<S64>(lhs.value);
-        bool rhs_is_int   = type_matches_tag<S64>(rhs.value);
-
-        if (lhs_is_float || rhs_is_float) {
+        if (eval_is_float_like(lhs) || eval_is_float_like(rhs)) {
             if (op == ArithmeticOperator::mod) {
                 return Evaluated{Constant{Null{}}};
             }
-            F64 l = lhs_is_float ? get<F64>(lhs.value) : static_cast<F64>(get<S64>(lhs.value));
-            F64 r = rhs_is_float ? get<F64>(rhs.value) : static_cast<F64>(get<S64>(rhs.value));
+            F64 l, r;
+            if (!as_f64(lhs, l) || !as_f64(rhs, r)) {
+                return Evaluated{Constant{Null{}}};
+            }
             switch (op) {
                 case ArithmeticOperator::plus:
                     return Evaluated{Constant{l + r}};
@@ -433,13 +428,13 @@ namespace cql {
                 case ArithmeticOperator::mod:
                     break;
             }
-        }
-
-        if (!lhs_is_int || !rhs_is_int) {
             return Evaluated{Constant{Null{}}};
         }
-        S64 l = get<S64>(lhs.value);
-        S64 r = get<S64>(rhs.value);
+
+        S64 l, r;
+        if (!as_s64(lhs, l) || !as_s64(rhs, r)) {
+            return Evaluated{Constant{Null{}}};
+        }
         if ((op == ArithmeticOperator::divide || op == ArithmeticOperator::mod) && r == 0) {
             return Evaluated{Constant{Null{}}};
         }
@@ -458,17 +453,22 @@ namespace cql {
         return Evaluated{Constant{Null{}}};
     }
 
-    static Evaluated evaluate_unary_minus(const Constant& value) {
-        if (type_matches_tag<Null>(value.value)) {
+    static Evaluated evaluate_unary_minus(const Evaluated& value) {
+        if (eval_is_null(value)) {
             return Evaluated{Constant{Null{}}};
         }
-        if (type_matches_tag<S64>(value.value)) {
-            return Evaluated{Constant{-get<S64>(value.value)}};
+        if (eval_is_float_like(value)) {
+            F64 v;
+            if (!as_f64(value, v)) {
+                return Evaluated{Constant{Null{}}};
+            }
+            return Evaluated{Constant{-v}};
         }
-        if (type_matches_tag<F64>(value.value)) {
-            return Evaluated{Constant{-get<F64>(value.value)}};
+        S64 v;
+        if (!as_s64(value, v)) {
+            return Evaluated{Constant{Null{}}};
         }
-        return Evaluated{Constant{Null{}}};
+        return Evaluated{Constant{-v}};
     }
 
     // Shared handler for all term variants that are identical between Term and TermWithIdentifiers.
@@ -496,21 +496,10 @@ namespace cql {
             return visit(v.value, [&](const auto& arith_v) -> Evaluated {
                 using AT = Decay<decltype(arith_v)>;
                 if constexpr (SameAs<AT, UnaryMinusArithmeticOperation>) {
-                    Evaluated       operand = evaluate_term(arith_v.operand, ctx);
-                    const Constant* c       = get_if_constant(operand);
-                    if (!c) {
-                        return Evaluated{Constant{Null{}}};
-                    }
-                    return evaluate_unary_minus(*c);
+                    return evaluate_unary_minus(evaluate_term(arith_v.operand, ctx));
                 } else if constexpr (SameAs<AT, BinaryArithmeticOperation>) {
-                    Evaluated       lhs = evaluate_term(arith_v.lhs, ctx);
-                    Evaluated       rhs = evaluate_term(arith_v.rhs, ctx);
-                    const Constant* lc  = get_if_constant(lhs);
-                    const Constant* rc  = get_if_constant(rhs);
-                    if (!lc || !rc) {
-                        return Evaluated{Constant{Null{}}};
-                    }
-                    return evaluate_binary_arithmetic(*lc, arith_v.op, *rc);
+                    return evaluate_binary_arithmetic(evaluate_term(arith_v.lhs, ctx), arith_v.op,
+                                                      evaluate_term(arith_v.rhs, ctx));
                 } else {
                     static_assert(!SameAs<AT, AT>, "missing ArithmeticOperation case");
                     return Evaluated{Constant{Null{}}};
@@ -550,21 +539,10 @@ namespace cql {
                 return visit(v.value, [&](const auto& arith_v) -> Evaluated {
                     using AT = Decay<decltype(arith_v)>;
                     if constexpr (SameAs<AT, TOIUnaryMinus>) {
-                        Evaluated       operand = evaluate_toi(arith_v.operand, ctx);
-                        const Constant* c       = get_if_constant(operand);
-                        if (!c) {
-                            return Evaluated{Constant{Null{}}};
-                        }
-                        return evaluate_unary_minus(*c);
+                        return evaluate_unary_minus(evaluate_toi(arith_v.operand, ctx));
                     } else if constexpr (SameAs<AT, TOIBinaryArithmetic>) {
-                        Evaluated       lhs = evaluate_toi(arith_v.lhs, ctx);
-                        Evaluated       rhs = evaluate_toi(arith_v.rhs, ctx);
-                        const Constant* lc  = get_if_constant(lhs);
-                        const Constant* rc  = get_if_constant(rhs);
-                        if (!lc || !rc) {
-                            return Evaluated{Constant{Null{}}};
-                        }
-                        return evaluate_binary_arithmetic(*lc, arith_v.op, *rc);
+                        return evaluate_binary_arithmetic(evaluate_toi(arith_v.lhs, ctx), arith_v.op,
+                                                          evaluate_toi(arith_v.rhs, ctx));
                     } else {
                         static_assert(!SameAs<AT, AT>, "missing TOIArithmeticOperation case");
                         return Evaluated{Constant{Null{}}};

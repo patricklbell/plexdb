@@ -45,6 +45,64 @@ namespace cql::planner {
         return false;
     }
 
+    static bool twi_has_column_ref(const TermWithIdentifiers& twi) {
+        return visit(twi.value, [](const auto& v) -> bool {
+            using T = Decay<decltype(v)>;
+            if constexpr (SameAs<T, AutoString8>) {
+                return true;
+            } else if constexpr (SameAs<T, TOIArithmeticOperation>) {
+                return visit(v.value, [](const auto& arith) -> bool {
+                    using AT = Decay<decltype(arith)>;
+                    if constexpr (SameAs<AT, TOIUnaryMinus>) {
+                        return twi_has_column_ref(arith.operand);
+                    } else if constexpr (SameAs<AT, TOIBinaryArithmetic>) {
+                        return twi_has_column_ref(arith.lhs) || twi_has_column_ref(arith.rhs);
+                    } else {
+                        return false;
+                    }
+                });
+            } else {
+                return false;
+            }
+        });
+    }
+
+    static bool col_is_counter(const schema::Column& col) {
+        return type_matches_tag<type::Basic>(col.type.value) &&
+               get<type::Basic>(col.type.value) == type::Basic::counter;
+    }
+
+    static bool term_is_literal_null(const Term& t) {
+        return type_matches_tag<Constant>(t.value) &&
+               type_matches_tag<Null>(get<Constant>(t.value).value);
+    }
+
+    // @note Cassandra reports counter-specific message for any predicate that
+    // compares a counter column to a literal null — match that behavior.
+    static bool where_has_null_counter_predicate(const WhereClause& where, const schema::Table& tbl) {
+        for (const auto& rel : where.relations) {
+            bool hit = visit(rel.value, [&](const auto& r) -> bool {
+                using T = RemoveCVRef<decltype(r)>;
+                if constexpr (SameAs<T, WhereClause::ColumnExpressionRelation>) {
+                    if (!term_is_literal_null(r.value)) {
+                        return false;
+                    }
+                    String8 cname(r.column.identifier.c_str, r.column.identifier.length);
+                    for (const auto& col : tbl.cols) {
+                        if (!col.tombstone && col.name == cname && col_is_counter(col)) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            });
+            if (hit) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Apply a single-column range bound to `bounds`. When `direction == DESC`,
     // logical </> map onto byte >/< since DESC values are encoded byte-inverted,
     // so the begin/end roles swap. `partial` marks bounds that cover a prefix
@@ -600,6 +658,11 @@ namespace cql::planner {
     SelectPlan plan_select(const Select& stmt, const schema::Table& tbl, const EvalContext& ctx) {
         SelectPlan plan{};
 
+        if (stmt.where && where_has_null_counter_predicate(*stmt.where, tbl)) {
+            plan.result.error = PlanError::NullValueForCounter;
+            return plan;
+        }
+
         if (stmt.where) {
             auto [loc, flt] = build_row_locator(*stmt.where, tbl, ctx);
             plan.locator    = move(loc);
@@ -874,17 +937,22 @@ namespace cql::planner {
                 return plan;
             }
 
-            if (type_matches_tag<TOIArithmeticOperation>(assign.value.value)) {
+            bool has_col_ref = twi_has_column_ref(assign.value);
+            if (has_col_ref && !col_is_counter(tbl.cols[*col_idx])) {
                 plan.result.error   = PlanError::CounterOperationOnNonCounter;
                 plan.result.context = AutoString8(col_name);
                 return plan;
             }
-            assert_true_not_implemented(!type_matches_tag<AutoString8>(assign.value.value),
-                                        "column reference in UPDATE assignment is not implemented");
             if (!tbl.cols[*col_idx].is_static) {
                 has_non_static_assignment = true;
             }
-            push_back(plan.spec.updates, ColumnUpdate{*col_idx, evaluate(assign.value, ctx)});
+            if (has_col_ref) {
+                push_back(plan.spec.updates,
+                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers>{assign.value}});
+            } else {
+                push_back(plan.spec.updates,
+                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers>{evaluate(assign.value, ctx)}});
+            }
         }
 
         if (tbl.clustering_key_col_indices.length > 0) {
@@ -910,13 +978,15 @@ namespace cql::planner {
                         String8 col_name(r.column.identifier.c_str, r.column.identifier.length);
                         for (U64 pk_ci : tbl.partition_key_col_indices) {
                             if (!tbl.cols[pk_ci].tombstone && tbl.cols[pk_ci].name == col_name) {
-                                push_back(plan.spec.updates, ColumnUpdate{pk_ci, evaluate(r.value, ctx)});
+                                push_back(plan.spec.updates,
+                                          ColumnUpdate{pk_ci, TaggedUnion<Evaluated, TermWithIdentifiers>{evaluate(r.value, ctx)}});
                                 break;
                             }
                         }
                         for (U64 ck_ci : tbl.clustering_key_col_indices) {
                             if (!tbl.cols[ck_ci].tombstone && tbl.cols[ck_ci].name == col_name) {
-                                push_back(plan.spec.updates, ColumnUpdate{ck_ci, evaluate(r.value, ctx)});
+                                push_back(plan.spec.updates,
+                                          ColumnUpdate{ck_ci, TaggedUnion<Evaluated, TermWithIdentifiers>{evaluate(r.value, ctx)}});
                                 break;
                             }
                         }
@@ -981,7 +1051,8 @@ namespace cql::planner {
                     plan.result.context = AutoString8(col_name);
                     return plan;
                 }
-                push_back(plan.spec.updates, ColumnUpdate{*col_idx, Evaluated{Constant{Null{}}}});
+                push_back(plan.spec.updates,
+                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers>{Evaluated{Constant{Null{}}}}});
             }
 
             if (is_static_only && ck_specified) {

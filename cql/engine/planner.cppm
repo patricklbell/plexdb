@@ -67,14 +67,15 @@ export namespace cql::planner {
         // @note de-duplicated set of columns the executor must materialize per row:
         // projected columns plus any column referenced by WHERE filter predicates.
         // Empty means no column data is needed (e.g. COUNT(*) with no filter).
-        DynamicArray<U64>      needed_cols;
-        bool                   is_aggregate = false;
+        DynamicArray<U64> needed_cols;
+        bool              is_aggregate = false;
     };
 
-    // ── Mutation spec (UPDATE / DELETE / INSERT) ──────────────────────────────
+    // @note `TermWithIdentifiers` carries an RHS that reads the current row
+    // (counter expressions like `c = c + 1`); `Evaluated` is already resolved.
     struct ColumnUpdate {
-        U64       col_idx;
-        Evaluated new_value; // Null means clear this column
+        U64                                         col_idx;
+        TaggedUnion<Evaluated, TermWithIdentifiers> new_value;
     };
 
     struct MutationSpec {
@@ -98,6 +99,7 @@ export namespace cql::planner {
         NonKeyColumnInMutationWhere,
         NonEqInOnPartitionKeyMutation,
         CounterOperationOnNonCounter,
+        NullValueForCounter,
         DistinctRestrictionInvalid,
     };
 
