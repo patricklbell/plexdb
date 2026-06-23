@@ -702,11 +702,16 @@ export namespace cql::key {
     }
 
     // @note partial CK prefixes are legal; trailing positions with no bytes left are simply absent.
+    // The first component is always decoded so a single-column non-composite CK with an empty
+    // blob/text value (0-byte key) round-trips back to an empty value rather than absent.
     DynamicArray<ColumnValue> deserialize_clustering(const schema::Table& tbl, TArrayView<const U8, U16> key_bytes) {
         DynamicArray<ColumnValue> out;
         bool                      composite = tbl.clustering_key_col_indices.length > 1;
         U16                       pos       = 0;
-        for (U64 i = 0; i < tbl.clustering_key_col_indices.length && pos < key_bytes.length; i++) {
+        for (U64 i = 0; i < tbl.clustering_key_col_indices.length; i++) {
+            if (i > 0 && pos >= key_bytes.length) {
+                break;
+            }
             U64                   col_idx = tbl.clustering_key_col_indices[i];
             const schema::Column& col     = tbl.cols[col_idx];
             type::Basic           dtype   = get<type::Basic>(col.type.value);

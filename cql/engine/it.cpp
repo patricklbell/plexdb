@@ -40,47 +40,59 @@ namespace cql {
         co_return io::ROW_METADATA_BYTES + io::COLUMN_COUNT_BYTE_COUNT + mask_words* io::MASK_BYTE_COUNT;
     }
 
-    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, DynamicArray<ColumnValue> injected_pk) {
+    // The no-keys overload owns the blob-reading work and clears injection state.
+    // The with-keys overloads delegate to it then populate injected_*_values.
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx) {
         it.table = table;
         assert_true(it.table->cols.length != 0, "column cannot be empty, it must at least have a PK");
 
         // Open cursors and read all mask words. Opens its own short transaction
         // if none is currently active; otherwise uses the caller's transaction.
-        {
-            bool               own_tx = !pager->transaction_active;
-            pager::Transaction tx{pager};
-            if (own_tx) {
-                co_await tx.begin();
-            }
-
-            it.row_column_count = table->cols.length;
-            it.metadata         = {};
-            if (page_idx != 0) {
-                it.row_cursor   = co_await blob::create_cursor(pager, page_idx);
-                U64 data_offset = co_await read_blob_header(
-                    it.row_cursor.blob, it.metadata, it.row_column_count, it.masks
-                );
-                it.row_cursor.offset = data_offset;
-            }
-
-            if (static_page_idx != 0 && table->static_col_indices.length > 0) {
-                it.static_cursor                 = co_await blob::create_cursor(pager, static_page_idx);
-                U64             static_col_count = 0;
-                io::RowMetadata static_meta{};
-                U64             static_data_offset = co_await read_blob_header(
-                    it.static_cursor.blob, static_meta, static_col_count, it.static_masks
-                );
-                it.static_cursor.offset = static_data_offset;
-            }
-
-            if (own_tx) {
-                co_await tx.commit();
-            }
+        bool               own_tx = !pager->transaction_active;
+        pager::Transaction tx{pager};
+        if (own_tx) {
+            co_await tx.begin();
         }
 
-        it.injected_pk_values     = move(injected_pk);
+        it.row_column_count = table->cols.length;
+        it.metadata         = {};
+        if (page_idx != 0) {
+            it.row_cursor   = co_await blob::create_cursor(pager, page_idx);
+            U64 data_offset = co_await read_blob_header(
+                it.row_cursor.blob, it.metadata, it.row_column_count, it.masks
+            );
+            it.row_cursor.offset = data_offset;
+        }
+
+        if (static_page_idx != 0 && table->static_col_indices.length > 0) {
+            it.static_cursor                 = co_await blob::create_cursor(pager, static_page_idx);
+            U64             static_col_count = 0;
+            io::RowMetadata static_meta{};
+            U64             static_data_offset = co_await read_blob_header(
+                it.static_cursor.blob, static_meta, static_col_count, it.static_masks
+            );
+            it.static_cursor.offset = static_data_offset;
+        }
+
+        if (own_tx) {
+            co_await tx.commit();
+        }
+
+        it.injected_pk_values     = {};
+        it.injected_ck_values     = {};
         it.current_column_idx     = 0;
         it.current_value_consumed = false;
+    }
+
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes) {
+        co_await load(it, pager, table, page_idx, static_page_idx);
+        it.injected_pk_values = key::deserialize_partition(*table, pk_bytes);
+    }
+
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes, TArrayView<const U8, U16> ck_bytes) {
+        co_await load(it, pager, table, page_idx, static_page_idx);
+        it.injected_pk_values = key::deserialize_partition(*table, pk_bytes);
+        it.injected_ck_values = key::deserialize_clustering(*table, ck_bytes);
     }
 
     coroutine::Task<ColumnValue> ColumnIterator::deref() {
@@ -92,13 +104,14 @@ namespace cql {
         }
 
         if (this->current_is_null()) {
-            if (this->injected_pk_values.length > 0) {
-                for (U64 ki = 0; ki < this->table->partition_key_col_indices.length; ki++) {
-                    if (this->table->partition_key_col_indices[ki] == this->current_column_idx) {
-                        this->current_value_consumed = true;
-                        co_return this->injected_pk_values[ki];
-                    }
-                }
+            const schema::Column& col = this->table->cols[this->current_column_idx];
+            if (col.key_kind == schema::KeyKind::PartitionKey && col.key_position < this->injected_pk_values.length) {
+                this->current_value_consumed = true;
+                co_return this->injected_pk_values[col.key_position];
+            }
+            if (col.key_kind == schema::KeyKind::ClusteringKey && col.key_position < this->injected_ck_values.length) {
+                this->current_value_consumed = true;
+                co_return this->injected_ck_values[col.key_position];
             }
             co_return ColumnValue{Null{}};
         }
@@ -149,20 +162,17 @@ namespace cql {
     // ========================================================================
 
     coroutine::Task<ColumnRange> RowIterator::deref() {
-        auto partition_entry = *partition_it;
-        U64  row_page;
+        auto           partition_entry = *partition_it;
+        ColumnIterator col_it;
         if (schema::has_clustering_keys(*table)) {
-            row_page = static_only_row ? 0 : *clustering_it;
+            if (static_only_row) {
+                co_await load(col_it, this->pager, this->table, 0, partition_entry.static_page, partition_it.key());
+            } else {
+                co_await load(col_it, this->pager, this->table, *clustering_it, partition_entry.static_page, partition_it.key(), clustering_it.key());
+            }
         } else {
-            row_page = partition_entry.data_page;
+            co_await load(col_it, this->pager, this->table, partition_entry.data_page, partition_entry.static_page, partition_it.key());
         }
-        ColumnIterator            col_it;
-        DynamicArray<ColumnValue> injected_pk;
-        if (static_only_row) {
-            auto pk_key_bytes = partition_it.key();
-            injected_pk       = key::deserialize_partition(*table, pk_key_bytes);
-        }
-        co_await load(col_it, this->pager, this->table, row_page, partition_entry.static_page, move(injected_pk));
         co_return ColumnRange{
             .start = move(col_it),
             .stop  = ColumnIterator{},

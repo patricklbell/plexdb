@@ -34,7 +34,9 @@ export namespace cql {
             return !(*this == other);
         }
 
-        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, DynamicArray<ColumnValue> injected_pk);
+        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx);
+        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes);
+        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes, TArrayView<const U8, U16> ck_bytes);
 
         // @note row-blob metadata loaded by load(); inspect after load to enforce TTL expiry.
         io::RowMetadata metadata{};
@@ -52,8 +54,10 @@ export namespace cql {
         DynamicArray<U64> masks;
         DynamicArray<U64> static_masks;
 
-        // @note non-empty only for static-only rows; parallel to table->partition_key_col_indices.
+        // @note PK/CK values are not stored in the row blob; the with-keys load() overloads
+        // decode them from the encoded key bytes and deref() returns them by key_position.
         DynamicArray<ColumnValue> injected_pk_values;
+        DynamicArray<ColumnValue> injected_ck_values;
 
         // Set by deref() when it reads a non-null value, cleared by advance().
         // advance() skips bytes only when this is false (caller skipped deref).
@@ -73,7 +77,9 @@ export namespace cql {
         }
     };
 
-    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx = 0, DynamicArray<ColumnValue> injected_pk = {});
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx = 0);
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes);
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes, TArrayView<const U8, U16> ck_bytes);
 
     struct ColumnRange {
         ColumnIterator start;

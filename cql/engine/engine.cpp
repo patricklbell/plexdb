@@ -160,9 +160,21 @@ namespace cql::engine {
         return out;
     }
 
-    // Read a row blob (and optional static blob) into parallel col_values/col_present arrays.
-    // If page_idx == 0 and static_page_idx == 0, leaves all entries as Null/absent.
-    // out_metadata, when non-null, receives the row blob's metadata header (zeroed when page_idx == 0).
+    // Drain `col_it` into parallel col_values/col_present arrays sized to tbl->cols.length.
+    static coroutine::Task<void> drain_columns(const schema::Table* tbl, ColumnIterator& col_it, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present) {
+        resize(col_values, tbl->cols.length);
+        resize(col_present, tbl->cols.length);
+        ColumnIterator col_end{};
+        U64            ci = 0;
+        while (col_it != col_end && ci < tbl->cols.length) {
+            ColumnValue val = co_await col_it.deref();
+            col_present[ci] = !type_matches_tag<Null>(val);
+            col_values[ci]  = move(val);
+            co_await col_it.advance();
+            ++ci;
+        }
+    }
+
     static coroutine::Task<void> read_row_into(Engine& engine, const schema::Table* tbl, U64 page_idx, U64 static_page_idx, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, io::RowMetadata* out_metadata = nullptr) {
         resize(col_values, tbl->cols.length);
         resize(col_present, tbl->cols.length);
@@ -177,15 +189,25 @@ namespace cql::engine {
         if (out_metadata != nullptr) {
             *out_metadata = col_it.metadata;
         }
-        ColumnIterator col_end{};
-        U64            ci = 0;
-        while (col_it != col_end && ci < tbl->cols.length) {
-            ColumnValue val = co_await col_it.deref();
-            col_present[ci] = !type_matches_tag<Null>(val);
-            col_values[ci]  = move(val);
-            co_await col_it.advance();
-            ++ci;
+        co_await drain_columns(tbl, col_it, col_values, col_present);
+    }
+
+    static coroutine::Task<void> read_row_into(Engine& engine, const schema::Table* tbl, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, io::RowMetadata* out_metadata = nullptr) {
+        ColumnIterator col_it;
+        co_await load(col_it, engine.pager, tbl, page_idx, static_page_idx, pk_bytes);
+        if (out_metadata != nullptr) {
+            *out_metadata = col_it.metadata;
         }
+        co_await drain_columns(tbl, col_it, col_values, col_present);
+    }
+
+    static coroutine::Task<void> read_row_into(Engine& engine, const schema::Table* tbl, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes, TArrayView<const U8, U16> ck_bytes, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, io::RowMetadata* out_metadata = nullptr) {
+        ColumnIterator col_it;
+        co_await load(col_it, engine.pager, tbl, page_idx, static_page_idx, pk_bytes, ck_bytes);
+        if (out_metadata != nullptr) {
+            *out_metadata = col_it.metadata;
+        }
+        co_await drain_columns(tbl, col_it, col_values, col_present);
     }
 
     // Build the projected column order for a SELECT. If select_col_indices is
@@ -240,31 +262,6 @@ namespace cql::engine {
         return vrow;
     }
 
-    // @note PK/CK columns are not stored in the row blob; inject them from the encoded
-    // key bytes into any absent slots of col_values so apply_updates_to_row, filter
-    // evaluation, and index maintenance see a complete row image.
-    // Passing a zero-length view skips that side.
-    static void inject_key_columns(const schema::Table& tbl, TArrayView<const U8, U16> pk_bytes, TArrayView<const U8, U16> ck_bytes, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present) {
-        auto inject = [&](const DynamicArray<U64>&   indices,
-                          DynamicArray<ColumnValue>& vals) {
-            for (U64 i = 0; i < indices.length && i < vals.length; i++) {
-                U64 ci = indices[i];
-                if (ci < col_values.length && !col_present[ci]) {
-                    col_values[ci]  = move(vals[i]);
-                    col_present[ci] = true;
-                }
-            }
-        };
-        if (pk_bytes.length > 0) {
-            DynamicArray<ColumnValue> pk_vals = key::deserialize_partition(tbl, pk_bytes);
-            inject(tbl.partition_key_col_indices, pk_vals);
-        }
-        if (ck_bytes.length > 0) {
-            DynamicArray<ColumnValue> ck_vals = key::deserialize_clustering(tbl, ck_bytes);
-            inject(tbl.clustering_key_col_indices, ck_vals);
-        }
-    }
-
     // @note explicit USING TTL of 0 disables TTL (overrides default_ttl_ms); only a missing/unset USING TTL falls back to the default.
     static io::RowMetadata compute_insert_metadata(const DynamicArray<UpdateParameter>& params, S64 default_ttl_ms) {
         S64 ttl_ms = default_ttl_ms;
@@ -285,15 +282,15 @@ namespace cql::engine {
         return io::RowMetadata{.flags = io::ROW_FLAG_HAS_TTL, .expiry_unix_ms = S64(os::unix_ms_now()) + ttl_ms};
     }
 
-    // Serialise non-static columns (or all columns for non-clustering tables) from
-    // col_values/col_present into a new dynamic-paged blob; returns the new page index.
+    // Serialise non-key, non-static columns from col_values/col_present into a new
+    // dynamic-paged blob; returns the new page index. PK and CK columns are stored
+    // in the encoded key bytes, so they are never written to the blob.
     static coroutine::Task<U64> write_row_blob(Engine& engine, const schema::Table* tbl, const DynamicArray<ColumnValue>& col_values, const DynamicArray<bool>& col_present, const io::RowMetadata& metadata = {}) {
-        bool             has_ck = schema::has_clustering_keys(*tbl);
         DynamicArray<U8> buf;
         auto             write_fn  = create_sync_buffer_writer(buf);
         auto             write     = io::to_writer(write_fn);
         auto             is_active = [&](U64 idx) {
-            return idx < col_present.length && col_present[idx] && !(has_ck && tbl->cols[idx].is_static);
+            return idx < col_present.length && col_present[idx] && !tbl->cols[idx].is_static && tbl->cols[idx].key_kind == schema::KeyKind::None;
         };
         io::write_row_metadata(write, metadata);
         io::write_column_mask(write, io::to_checker(is_active), tbl->cols.length);
@@ -1004,7 +1001,7 @@ namespace cql::engine {
 
                     DynamicArray<ColumnValue> cv;
                     DynamicArray<bool>        present;
-                    co_await read_row_into(engine, tbl, *ck_it, entry.static_page, cv, present);
+                    co_await read_row_into(engine, tbl, *ck_it, entry.static_page, pk_bytes, ck_bytes, cv, present);
 
                     if (ci < cv.length && present[ci] && !type_matches_tag<Null>(cv[ci])) {
                         if (is_basic) {
@@ -1030,7 +1027,7 @@ namespace cql::engine {
                 TArrayView<const U8, U16> ck_bytes{nullptr, 0};
                 DynamicArray<ColumnValue> cv;
                 DynamicArray<bool>        present;
-                co_await read_row_into(engine, tbl, entry.data_page, entry.static_page, cv, present);
+                co_await read_row_into(engine, tbl, entry.data_page, entry.static_page, pk_bytes, cv, present);
 
                 if (ci < cv.length && present[ci] && !type_matches_tag<Null>(cv[ci])) {
                     if (is_basic) {
@@ -1497,12 +1494,13 @@ namespace cql::engine {
                     DynamicArray<ColumnValue> cv;
                     DynamicArray<bool>        present;
                     io::RowMetadata           row_meta;
-                    co_await read_row_into(engine, tbl, row_page, entry_opt->static_page, cv, present, &row_meta);
+                    auto                      pk_v = TArrayView<const U8, U16>{pk_buf.ptr, pk_len};
+                    auto                      ck_v = TArrayView<const U8, U16>{ck_buf.ptr, ck_len};
+                    co_await read_row_into(engine, tbl, row_page, entry_opt->static_page, pk_v, ck_v, cv, present, &row_meta);
                     if (io::row_is_expired(row_meta, now_unix_ms)) {
                         co_await idx_it.advance();
                         continue;
                     }
-                    inject_key_columns(*tbl, TArrayView<const U8, U16>{pk_buf.ptr, pk_len}, TArrayView<const U8, U16>{nullptr, 0}, cv, present);
 
                     EvalContext row_ctx = ctx;
                     row_ctx.table       = tbl;
@@ -1564,12 +1562,12 @@ namespace cql::engine {
                     DynamicArray<ColumnValue> cv;
                     DynamicArray<bool>        present;
                     io::RowMetadata           row_meta;
-                    co_await read_row_into(engine, tbl, *ck_it, entry_opt->static_page, cv, present, &row_meta);
+                    auto                      ck_v = TArrayView<const U8, U16>{ck_buf.ptr, static_cast<U16>(ck_buf.length)};
+                    co_await read_row_into(engine, tbl, *ck_it, entry_opt->static_page, pk_v, ck_v, cv, present, &row_meta);
                     if (io::row_is_expired(row_meta, now_unix_ms)) {
                         co_await ck_it.advance();
                         continue;
                     }
-                    inject_key_columns(*tbl, pk_v, TArrayView<const U8, U16>{ck_buf.ptr, static_cast<U16>(ck_buf.length)}, cv, present);
 
                     EvalContext row_ctx = ctx;
                     row_ctx.table       = tbl;
@@ -1584,11 +1582,10 @@ namespace cql::engine {
                 DynamicArray<ColumnValue> cv;
                 DynamicArray<bool>        present;
                 io::RowMetadata           row_meta;
-                co_await read_row_into(engine, tbl, entry_opt->data_page, entry_opt->static_page, cv, present, &row_meta);
+                co_await read_row_into(engine, tbl, entry_opt->data_page, entry_opt->static_page, pk_v, cv, present, &row_meta);
                 if (io::row_is_expired(row_meta, now_unix_ms)) {
                     continue;
                 }
-                inject_key_columns(*tbl, pk_v, TArrayView<const U8, U16>{nullptr, 0}, cv, present);
                 EvalContext row_ctx = ctx;
                 row_ctx.table       = tbl;
                 row_ctx.row_values  = cv.ptr;
@@ -1720,12 +1717,13 @@ namespace cql::engine {
                         DynamicArray<ColumnValue> cv;
                         DynamicArray<bool>        present;
                         io::RowMetadata           row_meta;
-                        co_await read_row_into(engine, tbl, row_page, entry_opt->static_page, cv, present, &row_meta);
+                        auto                      pk_v = TArrayView<const U8, U16>{pk_buf.ptr, pk_len};
+                        auto                      ck_v = TArrayView<const U8, U16>{ck_buf.ptr, ck_len};
+                        co_await read_row_into(engine, tbl, row_page, entry_opt->static_page, pk_v, ck_v, cv, present, &row_meta);
                         if (io::row_is_expired(row_meta, now_unix_ms)) {
                             co_await idx_it.advance();
                             continue;
                         }
-                        inject_key_columns(*tbl, TArrayView<const U8, U16>{pk_buf.ptr, pk_len}, TArrayView<const U8, U16>{nullptr, 0}, cv, present);
                         if (!has_filter || eval_filter(cv)) {
                             count++;
                         }
@@ -1967,10 +1965,11 @@ namespace cql::engine {
                 auto row_page_opt  = co_await btree::tfind<U64>(ck_btree, ck_bytes);
                 U64  existing_page = row_page_opt ? *row_page_opt : 0;
 
+                auto                      pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                auto                      ck_v = TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length));
                 DynamicArray<ColumnValue> col_values;
                 DynamicArray<bool>        col_present;
-                co_await read_row_into(engine, tbl, existing_page, entry.static_page, col_values, col_present);
-                inject_key_columns(*tbl, TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length)), TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length)), col_values, col_present);
+                co_await read_row_into(engine, tbl, existing_page, entry.static_page, pk_v, ck_v, col_values, col_present);
 
                 DynamicArray<ColumnValue> old_cv      = have_indexes ? col_values : DynamicArray<ColumnValue>{};
                 DynamicArray<bool>        old_present = have_indexes ? col_present : DynamicArray<bool>{};
@@ -2003,8 +2002,6 @@ namespace cql::engine {
                 }
 
                 if (have_indexes) {
-                    auto pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
-                    auto ck_v = TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length));
                     co_await update_indexes(engine, tbl, pk_v, ck_v, old_cv, old_present, col_values, col_present);
                 }
             }
@@ -2034,10 +2031,10 @@ namespace cql::engine {
             } else {
                 schema::PartitionEntry entry = entry_opt ? *entry_opt : schema::PartitionEntry{0, 0};
 
+                auto                      pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
                 DynamicArray<ColumnValue> col_values;
                 DynamicArray<bool>        col_present;
-                co_await read_row_into(engine, tbl, entry.data_page, entry.static_page, col_values, col_present);
-                inject_key_columns(*tbl, TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length)), TArrayView<const U8, U16>{nullptr, 0}, col_values, col_present);
+                co_await read_row_into(engine, tbl, entry.data_page, entry.static_page, pk_v, col_values, col_present);
 
                 DynamicArray<ColumnValue> old_cv      = have_indexes ? col_values : DynamicArray<ColumnValue>{};
                 DynamicArray<bool>        old_present = have_indexes ? col_present : DynamicArray<bool>{};
@@ -2054,7 +2051,6 @@ namespace cql::engine {
 
                 if (have_indexes) {
                     TArrayView<const U8, U16> empty_ck{nullptr, 0};
-                    auto                      pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
                     co_await update_indexes(engine, tbl, pk_v, empty_ck, old_cv, old_present, col_values, col_present);
                 }
             }
@@ -2407,22 +2403,19 @@ namespace cql::engine {
 
                         io::RowMetadata row_meta = compute_insert_metadata(stmt.using_parameters, tbl->default_ttl_ms);
 
-                        // collect regular (non-static) row bytes into buffer (sync)
+                        // collect regular (non-key, non-static) row bytes into buffer (sync)
                         DynamicArray<U8> row_buffer;
                         auto             write_fn      = create_sync_buffer_writer(row_buffer);
                         auto             write         = io::to_writer(write_fn);
                         auto             row_is_active = [&](U64 col_idx) {
-                            return !tbl->cols[col_idx].tombstone && static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name)) && !is_static_col(col_idx);
+                            return !tbl->cols[col_idx].tombstone && static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name)) && !tbl->cols[col_idx].is_static && tbl->cols[col_idx].key_kind == schema::KeyKind::None;
                         };
                         io::write_row_metadata(write, row_meta);
                         io::write_column_mask(write, io::to_checker(row_is_active), tbl->cols.length);
                         for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                            if (!is_static_col(ci) && !tbl->cols[ci].tombstone) {
-                                auto names_idx_opt = try_get_names_idx(tbl->cols[ci].name);
-                                if (names_idx_opt) {
-                                    const auto& eval = evaluate(v.values[*names_idx_opt], ctx);
-                                    io::cast_write_evaluated_as_column_value(write, eval, tbl->cols[ci].type);
-                                }
+                            if (row_is_active(ci)) {
+                                const auto& eval = evaluate(v.values[*try_get_names_idx(tbl->cols[ci].name)], ctx);
+                                io::cast_write_evaluated_as_column_value(write, eval, tbl->cols[ci].type);
                             }
                         }
 

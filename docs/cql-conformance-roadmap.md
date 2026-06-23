@@ -40,132 +40,11 @@ the engine and returns a synthesized `VirtualRows` row, avoiding deferred-tx lif
 
 ---
 
-## Phase 11 — Drop PK/CK duplication from the row blob
-
-**Net code reduction; no conformance gain directly, but simplifies Phase 12
-(TTL projection) and shrinks every row blob. Breaking on-disk format change —
-recreate the database.**
-
-Today the row blob's column mask covers PK and CK columns even though their
-values are already encoded in the partition/clustering keys. `ColumnIterator`
-already knows how to recover PK values from the encoded key bytes — the
-`static_only_row` branch in `RowIterator::deref` deserializes the partition key
-and passes it as `injected_pk` to `load`, and `ColumnIterator::deref` returns
-those values when the mask says the cell is absent. Extending the same
-mechanism to CK (and making it unconditional, not just for `static_only_row`)
-makes the blob smaller and eliminates the engine-level `inject_key_columns`
-helper plus its eight callers.
-
-### Writer — exclude PK and CK alongside static
-
-Three writers compute "is this column live in the row blob": the INSERT
-inline writer (`row_is_active`), `write_row_blob` (`is_active`), and
-`rewrite_static` (`is_active`). All three already exclude static columns.
-Extend each to also exclude PK and CK:
-
-```
-is_active(ci) = present[ci]
-              && !cols[ci].is_static
-              && cols[ci].key_kind == KeyKind::None
-```
-
-Mask bits for PK/CK positions are then always zero; their values are
-never written to the blob.
-
-### Reader — inject PK and CK from key bytes inside `load`
-
-Replace `injected_pk` (a `DynamicArray<ColumnValue>` parameter to `load`)
-with a pair of byte spans the iterator deserializes itself:
-
-```
-load(it, pager, tbl, page_idx, static_page_idx,
-     pk_bytes: TArrayView<const U8, U16>,
-     ck_bytes: TArrayView<const U8, U16>):
-    ... existing blob open + read_blob_header ...
-    it.injected_pk = pk_bytes.length > 0
-                       ? key::deserialize_partition(*tbl, pk_bytes)
-                       : {}
-    it.injected_ck = ck_bytes.length > 0
-                       ? key::deserialize_clustering(*tbl, ck_bytes)
-                       : {}
-```
-
-`deref()` keeps its current shape but consults `key_kind` directly
-instead of a linear search through `partition_key_col_indices`:
-
-```
-deref():
-    if current_is_null():
-        col = table.cols[current_column_idx]
-        if col.key_kind == PartitionKey  && injected_pk.length > 0:
-            return injected_pk[col.key_position]
-        if col.key_kind == ClusteringKey && injected_ck.length > 0:
-            return injected_ck[col.key_position]
-        return Null
-    ...
-```
-
-`RowIterator::deref` already has both byte spans at hand —
-`partition_it.key()` for PK, `clustering_it.key()` for CK on
-clustering tables — and forwards them to `load`. The
-`static_only_row` branch passes its PK bytes and an empty CK span,
-which matches today's behavior.
-
-### Caller simplification
-
-The eight engine-level call sites that today do
-
-```
-co_await read_row_into(engine, tbl, row_page, static_page, cv, present, ...);
-inject_key_columns(*tbl, pk_view, ck_view, cv, present);
-```
-
-collapse to a single `read_row_into` call once that helper grows
-`pk_bytes` / `ck_bytes` parameters and forwards them to `load`. The
-free function `inject_key_columns` is then unreferenced and deletable.
-
-`read_row_into`'s `out_metadata` parameter from Phase 10 stays as-is.
-
-### What gets deleted
-
-- `inject_key_columns` (the static helper in `engine.cpp`).
-- The eight inline `inject_key_columns(...)` calls.
-- The `injected_pk` parameter on `load(ColumnIterator)`, replaced by
-  byte-span params.
-- The linear-search `for (ki = 0; ki < partition_key_col_indices.length; ki++)`
-  in `ColumnIterator::deref` — replaced by an O(1) `key_position` index.
-- Per-INSERT/UPDATE/DELETE bytes written: one mask bit per PK and CK
-  column was 0 and is now structurally absent — same; but every PK and
-  CK column's encoded value (often the bulk of small rows) leaves the
-  blob.
-
-### Migration
-
-Row blobs written by prior builds carry PK/CK values in their masks.
-The new reader would see those as duplicate-but-consistent data and
-the new injection would not run for them, so `deref()` would return
-the blob value — accidentally correct, but only because the blob and
-key agree. Rather than rely on that, treat the format as breaking and
-require database recreation, consistent with Phase 10.
-
-### Why before Phase 12
-
-Phase 12 adds a per-cell metadata mask (one bit per column) and
-per-cell `CellMetadata` for cells that carry TTL or WRITETIME. PK
-and CK columns can never carry either. With them removed from the
-blob, the cell-meta mask naturally only ranges over columns that can
-have metadata; without this phase, Phase 12 would have to add an
-explicit "skip PK/CK" carve-out in both the mask writer and the
-INSERT/UPDATE handler when populating cell metadata.
-
----
-
 ## Phase 12 — TTL projection (`SELECT TTL(col)`, `WRITETIME(col)`)
 
 **Impact: unblocks `testInsertWithTtl`, `testInsertWithDefaultTtl`,
 `testUpdateWithTtl`, `testUpdateWithDefaultTtl`, `testMixedTTLOnColumns`,
-`testMixedTTLOnColumnsWide`, `testTimestampTTL`, plus the UPDATE-side of the
-Phase 10 deferral. Breaking on-disk format change — databases must be recreated.**
+`testMixedTTLOnColumnsWide`, `testTimestampTTL` Breaking on-disk format change.**
 
 The Phase 10 row metadata is per-row; `TTL(col)` needs per-cell answers. The
 remaining work splits into three layers: storage (per-cell metadata in the row
@@ -335,20 +214,6 @@ for op in projection.ops:
 `make_virtual_rows_shell` and `build_select_col_order` need parallel updates so
 the result column metadata reports `TTL(col)` as `int` and `WRITETIME(col)` as
 `bigint`, with the alias from `SelectColumn.as` when present.
-
-### 7. Migration
-
-Same approach as Phase 10: the on-disk row blob shape changes, so existing
-databases will not load. No migration code — recreate the database. The Phase 10
-`row_meta` field stays in place (it remains the default expiry when a column has
-no cell-meta bit set).
-
-### Test seam
-
-After the storage + writer + reader pieces land, the SELECT side can be staged
-behind the parser/planner work — a feature flag in the engine that returns
-`Invalid` for `TTL()` / `WRITETIME()` until the projection wire-up is complete
-keeps mustpass green during the multi-PR rollout.
 
 ---
 
