@@ -138,7 +138,8 @@ namespace {
             forward<ClientFn>(client_fn),
             [&](auto on_ready, auto& signal_consumer, auto& poll) {
                 resp::run((U16)port, eng, on_ready, false, signal_consumer, poll);
-            });
+            }
+        );
     }
 }
 

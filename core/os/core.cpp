@@ -380,8 +380,7 @@ namespace plexdb::os {
 
         U32 count = 0;
         for (long i = 0; i < ret && count < max; i++) {
-            assert_true(events[i].res >= 0 || events[i].res == -EINPROGRESS,
-                        "unexpected negative result in drain");
+            assert_true(events[i].res >= 0 || events[i].res == -EINPROGRESS, "unexpected negative result in drain");
 
             out[count].token = events[i].data;
             out[count].bytes = static_cast<U32>(events[i].res >= 0 ? events[i].res : 0);

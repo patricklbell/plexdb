@@ -104,10 +104,7 @@ public:
         // fold 256 bit state into one single 64 bit value
         uint64_t result;
         if (totalLength >= MaxBufferSize) {
-            result = rotateLeft(state[0], 1) +
-                     rotateLeft(state[1], 7) +
-                     rotateLeft(state[2], 12) +
-                     rotateLeft(state[3], 18);
+            result = rotateLeft(state[0], 1) + rotateLeft(state[1], 7) + rotateLeft(state[2], 12) + rotateLeft(state[3], 18);
             result = (result ^ processSingle(0, state[0])) * Prime1 + Prime4;
             result = (result ^ processSingle(0, state[1])) * Prime1 + Prime4;
             result = (result ^ processSingle(0, state[2])) * Prime1 + Prime4;

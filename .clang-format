@@ -22,6 +22,7 @@ RequiresClausePosition: OwnLine
 BreakBeforeConceptDeclarations: Always
 
 # --- Line length ---
+# No automatic wrapping; manual line breaks are preserved.
 ColumnLimit: 0
 
 # --- Braces ---
@@ -29,6 +30,14 @@ ColumnLimit: 0
 BreakBeforeBraces: Attach
 # Insert braces around single-statement control flow bodies.
 InsertBraces: true
+
+# --- Multi-line wrapping ---
+# When a call / declaration / condition / braced list breaks across lines,
+# the open delimiter stays on the parent line, arguments indent one level,
+# and the close delimiter sits on its own line at the parent's indent.
+AlignAfterOpenBracket: BlockIndent
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
 
 # --- No short constructs ---
 AllowShortBlocksOnASingleLine: Never
@@ -85,7 +94,12 @@ AlignArrayOfStructures: Right
 AlignTrailingComments:
   Kind: Always
   OverEmptyLines: 0
-AlignOperands: Align
+# Align continuation operands so the operator lines up with the `=` in
+# assignments and with the first operand in other contexts.
+AlignOperands: AlignAfterOperator
+# Wrapped binary expressions break BEFORE the operator (operator starts the
+# continuation line); assignment operators stay at end of line.
+BreakBeforeBinaryOperators: NonAssignment
 
 # --- Miscellaneous ---
 ReflowComments: false

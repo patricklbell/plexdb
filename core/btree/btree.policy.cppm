@@ -89,9 +89,7 @@ export namespace plexdb::btree {
         friend TArrayView<const U8, U16> read_key(const VarlenKeyPolicy&, const U8* src, U16 len) noexcept {
             return {const_cast<U8*>(src), len};
         }
-        friend Ordering compare_key(const VarlenKeyPolicy&    p,
-                                    TArrayView<const U8, U16> a,
-                                    TArrayView<const U8, U16> b) noexcept {
+        friend Ordering compare_key(const VarlenKeyPolicy& p, TArrayView<const U8, U16> a, TArrayView<const U8, U16> b) noexcept {
             return p.comparator(a, b);
         }
     };

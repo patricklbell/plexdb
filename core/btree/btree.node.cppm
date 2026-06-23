@@ -13,20 +13,20 @@ export namespace plexdb::btree {
     // capacity helpers
     // ========================================================================
     inline CountType max_keys_internal(U32 node_size, U16 key_stride) noexcept {
-        assert_true(node_size >= sizeof(Node) + key_stride + 2 * sizeof(NodeRef),
-                    "enough bytes for at least one key in internal node");
+        assert_true(node_size >= sizeof(Node) + key_stride + 2 * sizeof(NodeRef), "enough bytes for at least one key in internal node");
         U64 count = min(
             static_cast<U64>((node_size - sizeof(Node) - sizeof(NodeRef)) / (key_stride + sizeof(NodeRef))),
-            static_cast<U64>(NumericLimits<CountType>::max()));
+            static_cast<U64>(NumericLimits<CountType>::max())
+        );
         return static_cast<CountType>(count);
     }
 
     inline CountType max_keys_leaf(U32 node_size, U16 key_stride, U16 val_stride) noexcept {
-        assert_true(node_size >= sizeof(Node) + key_stride + val_stride,
-                    "enough bytes for at least one key in leaf node");
+        assert_true(node_size >= sizeof(Node) + key_stride + val_stride, "enough bytes for at least one key in leaf node");
         U64 count = min(
             static_cast<U64>((node_size - sizeof(Node)) / (key_stride + val_stride)),
-            static_cast<U64>(NumericLimits<CountType>::max()));
+            static_cast<U64>(NumericLimits<CountType>::max())
+        );
         return static_cast<CountType>(count);
     }
 
@@ -173,7 +173,8 @@ export namespace plexdb::btree {
         U8*       base         = reinterpret_cast<U8*>(node) + sizeof(Node);
         U16       page_cap     = static_cast<U16>(node_size - sizeof(Node));
         CountType max_children = static_cast<CountType>(
-            (page_cap) / (sizeof(SlotEntry<true, false>) + 1 + sizeof(NodeRef)) + 1);
+            (page_cap) / (sizeof(SlotEntry<true, false>) + 1 + sizeof(NodeRef)) + 1
+        );
         U16       children_region = static_cast<U16>(max_children * sizeof(NodeRef));
         U16       usable_cap      = static_cast<U16>(page_cap - children_region);
         CountType n               = node->key_count;
@@ -209,11 +210,9 @@ export namespace plexdb::btree {
     // binary search on nodes
     // ========================================================================
     template<BinarySearchPolicy Policy, KeyPolicy KP, ValuePolicy VP>
-    CountType leaf_bsearch(const Node* node, U32 ns, KP kp, VP vp,
-                           typename KP::key_type key) noexcept {
+    CountType leaf_bsearch(const Node* node, U32 ns, KP kp, VP vp, typename KP::key_type key) noexcept {
         if constexpr (KP::is_fixed_size) {
-            return binary_search<Policy>(keys<typename KP::key_type>(node).cbegin(),
-                                         node->key_count, key);
+            return binary_search<Policy>(keys<typename KP::key_type>(node).cbegin(), node->key_count, key);
         } else {
             auto      page = leaf_page(node, ns, kp, vp);
             CountType lo = 0, hi = page.count;
@@ -241,11 +240,9 @@ export namespace plexdb::btree {
     }
 
     template<BinarySearchPolicy Policy, KeyPolicy KP>
-    CountType internal_bsearch(const Node* node, U32 ns, KP kp,
-                               typename KP::key_type key) noexcept {
+    CountType internal_bsearch(const Node* node, U32 ns, KP kp, typename KP::key_type key) noexcept {
         if constexpr (KP::is_fixed_size) {
-            return binary_search<Policy>(keys<typename KP::key_type>(node).cbegin(),
-                                         node->key_count, key);
+            return binary_search<Policy>(keys<typename KP::key_type>(node).cbegin(), node->key_count, key);
         } else {
             auto      page = internal_page(node, ns, kp);
             CountType lo = 0, hi = page.count;
@@ -274,34 +271,29 @@ export namespace plexdb::btree {
 
     // named wrappers
     template<KeyPolicy KP, ValuePolicy VP>
-    CountType leaf_bsearch_geq(const Node* node, U32 ns, KP kp, VP vp,
-                               typename KP::key_type key) noexcept {
+    CountType leaf_bsearch_geq(const Node* node, U32 ns, KP kp, VP vp, typename KP::key_type key) noexcept {
         return leaf_bsearch<BinarySearchPolicy::GreaterEqual>(node, ns, kp, vp, key);
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    CountType leaf_bsearch_gt(const Node* node, U32 ns, KP kp, VP vp,
-                              typename KP::key_type key) noexcept {
+    CountType leaf_bsearch_gt(const Node* node, U32 ns, KP kp, VP vp, typename KP::key_type key) noexcept {
         return leaf_bsearch<BinarySearchPolicy::Greater>(node, ns, kp, vp, key);
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    CountType leaf_bsearch_leq(const Node* node, U32 ns, KP kp, VP vp,
-                               typename KP::key_type key) noexcept {
+    CountType leaf_bsearch_leq(const Node* node, U32 ns, KP kp, VP vp, typename KP::key_type key) noexcept {
         auto idx = leaf_bsearch<BinarySearchPolicy::Greater>(node, ns, kp, vp, key);
         return idx == 0 ? node->key_count : static_cast<CountType>(idx - 1);
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    CountType leaf_bsearch_lt(const Node* node, U32 ns, KP kp, VP vp,
-                              typename KP::key_type key) noexcept {
+    CountType leaf_bsearch_lt(const Node* node, U32 ns, KP kp, VP vp, typename KP::key_type key) noexcept {
         auto idx = leaf_bsearch<BinarySearchPolicy::GreaterEqual>(node, ns, kp, vp, key);
         return idx == 0 ? node->key_count : static_cast<CountType>(idx - 1);
     }
 
     template<KeyPolicy KP>
-    CountType internal_bsearch_gt(const Node* node, U32 ns, KP kp,
-                                  typename KP::key_type key) noexcept {
+    CountType internal_bsearch_gt(const Node* node, U32 ns, KP kp, typename KP::key_type key) noexcept {
         return internal_bsearch<BinarySearchPolicy::Greater>(node, ns, kp, key);
     }
 
@@ -327,8 +319,7 @@ export namespace plexdb::btree {
     }
 
     template<KeyPolicy KP>
-    typename KP::key_type internal_get_key(const Node* node, U32 ns, KP kp,
-                                           CountType i) noexcept {
+    typename KP::key_type internal_get_key(const Node* node, U32 ns, KP kp, CountType i) noexcept {
         if constexpr (KP::is_fixed_size) {
             return keys<typename KP::key_type>(node)[i];
         } else {
@@ -339,15 +330,13 @@ export namespace plexdb::btree {
     }
 
     template<KeyPolicy KP>
-    void internal_set_sep(Node* node, U32 ns, KP kp, CountType i,
-                          TArrayView<const U8, U16> key_bytes) noexcept {
+    void internal_set_sep(Node* node, U32 ns, KP kp, CountType i, TArrayView<const U8, U16> key_bytes) noexcept {
         auto page = internal_page(node, ns, kp);
         replace_key(page, i, key_bytes);
     }
 
     template<KeyPolicy KP>
-    void internal_insert_entry(Node* node, U32 ns, KP kp, CountType idx,
-                               TArrayView<const U8, U16> key_bytes, NodeRef right_child) noexcept {
+    void internal_insert_entry(Node* node, U32 ns, KP kp, CountType idx, TArrayView<const U8, U16> key_bytes, NodeRef right_child) noexcept {
         auto page = internal_page(node, ns, kp);
         bool ok   = insert_key(page, idx, key_bytes);
         assert_true(ok, "internal_insert_entry: insert_key failed — internal node unexpectedly full");
@@ -376,8 +365,7 @@ export namespace plexdb::btree {
 
     // bytes of internal key at index i (raw bytes, for passing to parent during split)
     template<KeyPolicy KP>
-    TArrayView<const U8, U16> internal_get_key_bytes(const Node* node, U32 ns, KP kp,
-                                                     CountType i) noexcept {
+    TArrayView<const U8, U16> internal_get_key_bytes(const Node* node, U32 ns, KP kp, CountType i) noexcept {
         auto page = internal_page(node, ns, kp);
         return key_at(page, i);
     }
@@ -386,8 +374,7 @@ export namespace plexdb::btree {
     // generic leaf node helpers
     // ========================================================================
     template<KeyPolicy KP, ValuePolicy VP>
-    bool leaf_key_eq(const Node* node, U32 ns, KP kp, VP vp,
-                     CountType idx, typename KP::key_type key) noexcept {
+    bool leaf_key_eq(const Node* node, U32 ns, KP kp, VP vp, CountType idx, typename KP::key_type key) noexcept {
         if constexpr (KP::is_fixed_size) {
             return idx < node->key_count && keys<typename KP::key_type>(node)[idx] == key;
         } else {
@@ -402,8 +389,7 @@ export namespace plexdb::btree {
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    TArrayView<const U8, U16> leaf_get_key_bytes(const Node* node, U32 ns, KP kp, VP vp,
-                                                 CountType idx) noexcept {
+    TArrayView<const U8, U16> leaf_get_key_bytes(const Node* node, U32 ns, KP kp, VP vp, CountType idx) noexcept {
         if constexpr (KP::is_fixed_size) {
             return {reinterpret_cast<const U8*>(keys_raw<typename KP::key_type>(node)) + idx * KP::key_stride, KP::key_stride};
         } else {
@@ -413,8 +399,7 @@ export namespace plexdb::btree {
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    TArrayView<U8, U16> leaf_value_mut(Node* node, U32 ns, KP kp, VP vp,
-                                       CountType idx) noexcept {
+    TArrayView<U8, U16> leaf_value_mut(Node* node, U32 ns, KP kp, VP vp, CountType idx) noexcept {
         if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
             return {values_raw(node, ns, KP::key_stride, VP::value_stride) + idx * VP::value_stride, VP::value_stride};
         } else {
@@ -424,8 +409,7 @@ export namespace plexdb::btree {
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    TArrayView<const U8, U16> leaf_value_const(const Node* node, U32 ns, KP kp, VP vp,
-                                               CountType idx) noexcept {
+    TArrayView<const U8, U16> leaf_value_const(const Node* node, U32 ns, KP kp, VP vp, CountType idx) noexcept {
         if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
             return {values_raw(node, ns, KP::key_stride, VP::value_stride) + idx * VP::value_stride, VP::value_stride};
         } else {
@@ -435,9 +419,7 @@ export namespace plexdb::btree {
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    bool leaf_upsert(Node* node, U32 ns, KP kp, VP vp,
-                     CountType idx, typename KP::key_type key,
-                     TArrayView<const U8, U16> val_bytes) noexcept {
+    bool leaf_upsert(Node* node, U32 ns, KP kp, VP vp, CountType idx, typename KP::key_type key, TArrayView<const U8, U16> val_bytes) noexcept {
         if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
             using KT         = typename KP::key_type;
             constexpr U16 ks = KP::key_stride;
@@ -502,8 +484,7 @@ export namespace plexdb::btree {
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    void leaf_copy_suffix(const Node* src, Node* dst, U32 ns, KP kp, VP vp,
-                          CountType from) noexcept {
+    void leaf_copy_suffix(const Node* src, Node* dst, U32 ns, KP kp, VP vp, CountType from) noexcept {
         auto sp = leaf_page(src, ns, kp, vp);
         auto dp = leaf_page(dst, ns, kp, vp);
         copy_suffix_to(sp, from, dp);
@@ -526,8 +507,7 @@ export namespace plexdb::btree {
     // fullness checks
     // ========================================================================
     template<KeyPolicy KP, ValuePolicy VP>
-    bool is_leaf_full(const Node* node, U32 node_size, KP kp, VP vp,
-                      U16 next_key_bytes, U16 next_val_bytes) noexcept {
+    bool is_leaf_full(const Node* node, U32 node_size, KP kp, VP vp, U16 next_key_bytes, U16 next_val_bytes) noexcept {
         auto page = leaf_page(node, node_size, kp, vp);
         if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
             return page.count >= page.capacity;

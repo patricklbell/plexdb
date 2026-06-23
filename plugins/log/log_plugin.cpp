@@ -105,8 +105,7 @@ namespace {
         append_line(s, std::move(line));
     }
 
-    void handle_message(FilePluginState* s, uint32_t producer_id, uint32_t level,
-                        const char* text, size_t text_len, const char* id, size_t id_len) {
+    void handle_message(FilePluginState* s, uint32_t producer_id, uint32_t level, const char* text, size_t text_len, const char* id, size_t id_len) {
         static constexpr const char* level_tags[] = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"};
         constexpr size_t             n_levels     = sizeof(level_tags) / sizeof(level_tags[0]);
         const char*                  tag          = (level < n_levels) ? level_tags[level] : "???";
@@ -154,36 +153,19 @@ namespace {
         auto* s = static_cast<FilePluginState*>(ctx);
         switch (event->type) {
             case PLEXDB_LOG_PRODUCER_REGISTERED:
-                handle_producer_registered(s,
-                                           event->producer_registered.producer_id,
-                                           event->producer_registered.name);
+                handle_producer_registered(s, event->producer_registered.producer_id, event->producer_registered.name);
                 break;
             case PLEXDB_LOG_PRODUCER_META:
-                handle_producer_meta(s,
-                                     event->producer_meta.producer_id,
-                                     event->producer_meta.key,
-                                     event->producer_meta.value);
+                handle_producer_meta(s, event->producer_meta.producer_id, event->producer_meta.key, event->producer_meta.value);
                 break;
             case PLEXDB_LOG_MESSAGE:
-                handle_message(s,
-                               event->message.producer_id,
-                               event->message.level,
-                               event->message.text,
-                               event->message.text_len,
-                               event->message.message_id,
-                               event->message.message_len);
+                handle_message(s, event->message.producer_id, event->message.level, event->message.text, event->message.text_len, event->message.message_id, event->message.message_len);
                 break;
             case PLEXDB_LOG_STAT:
-                handle_stat(s,
-                            event->stat.producer_id,
-                            event->stat.stat_id,
-                            event->stat.value);
+                handle_stat(s, event->stat.producer_id, event->stat.stat_id, event->stat.value);
                 break;
             case PLEXDB_LOG_STAT_META:
-                handle_stat_meta(s,
-                                 event->stat_meta.producer_id,
-                                 event->stat_meta.stat_id,
-                                 event->stat_meta.name);
+                handle_stat_meta(s, event->stat_meta.producer_id, event->stat_meta.stat_id, event->stat_meta.name);
                 break;
             default:
                 break;
@@ -228,7 +210,7 @@ namespace {
         delete s;
     }
 
-} // namespace
+}
 
 __attribute__((constructor)) static void init() {
     g_state = file_plugin_init();

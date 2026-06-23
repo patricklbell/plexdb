@@ -134,7 +134,8 @@ int main(int argc, char* argv[]) {
             auto              signal_consumer = aio::create_notifier_consumer(g_signal_notifier, io_poll);
             Optional<String8> err             = native::run(
                 port, engine, on_ready, !no_uring,
-                file_io_consumer, signal_consumer, io_poll);
+                file_io_consumer, signal_consumer, io_poll
+            );
             if (err) {
                 println(*err);
             }
@@ -159,8 +160,7 @@ static void assert_handler(const char* msg, const char* file_name, const char* f
     // Write to stderr (unbuffered) so the message is visible even when the
     // process is about to crash via PLEXDB_TRAP.
     char buf[512];
-    int  n = snprintf(buf, sizeof(buf), "Assert failed \"%s\" at %s in %s:%u\n",
-                      msg, function_name, file_name, line_number);
+    int  n = snprintf(buf, sizeof(buf), "Assert failed \"%s\" at %s in %s:%u\n", msg, function_name, file_name, line_number);
     if (n > 0) {
         write(2, buf, static_cast<size_t>(n) < sizeof(buf) ? static_cast<size_t>(n) : sizeof(buf) - 1);
     }

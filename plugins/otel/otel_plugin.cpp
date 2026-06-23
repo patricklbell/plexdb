@@ -129,8 +129,7 @@ namespace {
         s->producers[id] = name;
     }
 
-    void handle_stat_meta(OtelState* s, uint32_t pid, uint32_t sid,
-                          uint32_t stat_type, const char* name) {
+    void handle_stat_meta(OtelState* s, uint32_t pid, uint32_t sid, uint32_t stat_type, const char* name) {
         std::lock_guard<std::mutex> guard(s->mtx);
         MetricKey                   key{pid, sid};
         if (s->instruments.count(key)) {
@@ -170,8 +169,7 @@ namespace {
         }
     }
 
-    void handle_message(OtelState* s, uint32_t pid, uint32_t level,
-                        const char* text, size_t text_len, const char* message_id) {
+    void handle_message(OtelState* s, uint32_t pid, uint32_t level, const char* text, size_t text_len, const char* message_id) {
         if (!message_id) {
             return;
         }
@@ -203,30 +201,16 @@ namespace {
         auto* s = static_cast<OtelState*>(ctx);
         switch (event->type) {
             case PLEXDB_LOG_PRODUCER_REGISTERED:
-                handle_producer_registered(s,
-                                           event->producer_registered.producer_id,
-                                           event->producer_registered.name);
+                handle_producer_registered(s, event->producer_registered.producer_id, event->producer_registered.name);
                 break;
             case PLEXDB_LOG_STAT_META:
-                handle_stat_meta(s,
-                                 event->stat_meta.producer_id,
-                                 event->stat_meta.stat_id,
-                                 event->stat_meta.stat_type,
-                                 event->stat_meta.name);
+                handle_stat_meta(s, event->stat_meta.producer_id, event->stat_meta.stat_id, event->stat_meta.stat_type, event->stat_meta.name);
                 break;
             case PLEXDB_LOG_STAT:
-                handle_stat(s,
-                            event->stat.producer_id,
-                            event->stat.stat_id,
-                            event->stat.value);
+                handle_stat(s, event->stat.producer_id, event->stat.stat_id, event->stat.value);
                 break;
             case PLEXDB_LOG_MESSAGE:
-                handle_message(s,
-                               event->message.producer_id,
-                               event->message.level,
-                               event->message.text,
-                               event->message.text_len,
-                               event->message.message_id);
+                handle_message(s, event->message.producer_id, event->message.level, event->message.text, event->message.text_len, event->message.message_id);
                 break;
             default:
                 break;
@@ -265,10 +249,12 @@ namespace {
         reader_opts.export_interval_millis = std::chrono::milliseconds(interval_ms);
         reader_opts.export_timeout_millis  = std::chrono::milliseconds(interval_ms / 2);
         auto reader                        = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
-            std::move(metric_exporter), reader_opts);
+            std::move(metric_exporter), reader_opts
+        );
 
         s->meter_provider = std::make_shared<metrics_sdk::MeterProvider>(
-            std::make_unique<metrics_sdk::ViewRegistry>(), res);
+            std::make_unique<metrics_sdk::ViewRegistry>(), res
+        );
         s->meter_provider->AddMetricReader(std::move(reader));
         s->meter = s->meter_provider->GetMeter("plexdb.plugin");
 
@@ -278,14 +264,15 @@ namespace {
         log_opts.use_ssl_credentials = false;
         auto log_exporter            = otlp::OtlpGrpcLogRecordExporterFactory::Create(log_opts);
         auto log_processor           = logs_sdk::SimpleLogRecordProcessorFactory::Create(
-            std::move(log_exporter));
+            std::move(log_exporter)
+        );
 
         s->logger_provider = std::make_shared<logs_sdk::LoggerProvider>(
-            std::move(log_processor), res);
+            std::move(log_processor), res
+        );
         s->logger = s->logger_provider->GetLogger("plexdb.plugin", "plexdb");
 
-        std::fprintf(stderr, "[otel] exporting to %s every %d ms (service: %s)\n",
-                     endpoint.c_str(), interval_ms, service.c_str());
+        std::fprintf(stderr, "[otel] exporting to %s every %d ms (service: %s)\n", endpoint.c_str(), interval_ms, service.c_str());
 
         return s;
     }
@@ -303,7 +290,7 @@ namespace {
         delete s;
     }
 
-} // namespace
+}
 
 __attribute__((constructor)) static void init() {
     g_state = otel_init();

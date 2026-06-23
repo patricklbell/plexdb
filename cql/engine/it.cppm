@@ -28,16 +28,13 @@ export namespace cql {
         coroutine::Task<void>        advance();
 
         bool operator==(const ColumnIterator& other) const {
-            return (table == nullptr && other.table == nullptr) ||
-                   (table == other.table && current_column_idx == other.current_column_idx);
+            return (table == nullptr && other.table == nullptr) || (table == other.table && current_column_idx == other.current_column_idx);
         }
         bool operator!=(const ColumnIterator& other) const {
             return !(*this == other);
         }
 
-        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table,
-                                      U64 page_idx, U64 static_page_idx,
-                                      DynamicArray<ColumnValue> injected_pk);
+        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, DynamicArray<ColumnValue> injected_pk);
 
         // @note row-blob metadata loaded by load(); inspect after load to enforce TTL expiry.
         io::RowMetadata metadata{};
@@ -76,9 +73,7 @@ export namespace cql {
         }
     };
 
-    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table,
-                           U64 page_idx, U64 static_page_idx = 0,
-                           DynamicArray<ColumnValue> injected_pk = {});
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx = 0, DynamicArray<ColumnValue> injected_pk = {});
 
     struct ColumnRange {
         ColumnIterator start;
@@ -153,8 +148,7 @@ export namespace cql {
         coroutine::Task<void>        advance_partition();
 
         bool operator==(const RowIterator& other) const {
-            assert_true(table == other.table || table == nullptr || other.table == nullptr,
-                        "invalid iterator comparison");
+            assert_true(table == other.table || table == nullptr || other.table == nullptr, "invalid iterator comparison");
             return partition_it == other.partition_it;
         }
         bool operator!=(const RowIterator& other) const {

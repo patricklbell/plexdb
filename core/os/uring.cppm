@@ -112,8 +112,7 @@ export namespace plexdb::uring {
         U64   token;
     };
 
-    using CQE = TaggedUnion<ReadEvent, WriteEvent, AcceptEvent, MultishotAcceptEvent, CloseEvent,
-                            FileReadEvent, FileWriteEvent, FileSyncEvent>;
+    using CQE = TaggedUnion<ReadEvent, WriteEvent, AcceptEvent, MultishotAcceptEvent, CloseEvent, FileReadEvent, FileWriteEvent, FileSyncEvent>;
 
     U32  cqe_get_size(const Ring& ring);
     CQE  cqe_top(Ring& ring);
@@ -207,7 +206,8 @@ export namespace plexdb::uring {
                 co_await coroutine::Awaitable{
                     [this](std::coroutine_handle<> h) { push_front(waiters, h); },
                     []() {
-                    }};
+                    }
+                };
             }
         }
 

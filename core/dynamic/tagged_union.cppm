@@ -576,8 +576,7 @@ namespace plexdb {
     }
 
     export template<typename... STs, typename... DTs>
-    bool operator==(const HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>& a,
-                    const HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>& b) {
+    bool operator==(const HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>& a, const HybridTaggedUnion<TypeList<STs...>, TypeList<DTs...>>& b) {
         if (a.index != b.index) {
             return false;
         }

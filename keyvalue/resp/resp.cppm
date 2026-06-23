@@ -27,7 +27,8 @@ export namespace keyvalue::resp {
         const OnReady auto& on_ready_callback,
         bool                use_uring,
         aio::EventConsumer& signal_consumer,
-        os::Poll&           io_poll) {
+        os::Poll&           io_poll
+    ) {
         const auto try_append = [](const tcp::Request& req, DynamicArray<U8>& buf) -> coroutine::Task<bool> {
             RWBuffer rbuf = co_await tcp::acquire(req);
             Error    err  = co_await tcp::read(req, &rbuf);

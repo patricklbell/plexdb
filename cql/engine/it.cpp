@@ -26,30 +26,23 @@ namespace cql {
 
     static coroutine::Task<U64> read_blob_header(
         blob::BlobDynamicPaged& b,
-        io::RowMetadata& out_meta,
-        U64& out_col_count, DynamicArray<U64>& out_masks) {
-        co_await blob::get(b, reinterpret_cast<U8*>(&out_meta.flags),
-                           sizeof(out_meta.flags), 0);
-        co_await blob::get(b, reinterpret_cast<U8*>(&out_meta.expiry_unix_ms),
-                           sizeof(out_meta.expiry_unix_ms), sizeof(out_meta.flags));
-        co_await blob::get(b, reinterpret_cast<U8*>(&out_col_count),
-                           io::COLUMN_COUNT_BYTE_COUNT, io::ROW_METADATA_BYTES);
+        io::RowMetadata&        out_meta,
+        U64& out_col_count, DynamicArray<U64>& out_masks
+    ) {
+        co_await blob::get(b, reinterpret_cast<U8*>(&out_meta.flags), sizeof(out_meta.flags), 0);
+        co_await blob::get(b, reinterpret_cast<U8*>(&out_meta.expiry_unix_ms), sizeof(out_meta.expiry_unix_ms), sizeof(out_meta.flags));
+        co_await blob::get(b, reinterpret_cast<U8*>(&out_col_count), io::COLUMN_COUNT_BYTE_COUNT, io::ROW_METADATA_BYTES);
         U64 mask_words = ceil_div(out_col_count, io::MASK_BIT_COUNT);
         resize(out_masks, mask_words);
         if (mask_words > 0) {
-            co_await blob::get(b, reinterpret_cast<U8*>(out_masks.ptr),
-                               mask_words * io::MASK_BYTE_COUNT,
-                               io::ROW_METADATA_BYTES + io::COLUMN_COUNT_BYTE_COUNT);
+            co_await blob::get(b, reinterpret_cast<U8*>(out_masks.ptr), mask_words * io::MASK_BYTE_COUNT, io::ROW_METADATA_BYTES + io::COLUMN_COUNT_BYTE_COUNT);
         }
-        co_return io::ROW_METADATA_BYTES + io::COLUMN_COUNT_BYTE_COUNT + mask_words * io::MASK_BYTE_COUNT;
+        co_return io::ROW_METADATA_BYTES + io::COLUMN_COUNT_BYTE_COUNT + mask_words* io::MASK_BYTE_COUNT;
     }
 
-    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table,
-                           U64 page_idx, U64 static_page_idx,
-                           DynamicArray<ColumnValue> injected_pk) {
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, DynamicArray<ColumnValue> injected_pk) {
         it.table = table;
-        assert_true(it.table->cols.length != 0,
-                    "column cannot be empty, it must at least have a PK");
+        assert_true(it.table->cols.length != 0, "column cannot be empty, it must at least have a PK");
 
         // Open cursors and read all mask words. Opens its own short transaction
         // if none is currently active; otherwise uses the caller's transaction.
@@ -65,16 +58,18 @@ namespace cql {
             if (page_idx != 0) {
                 it.row_cursor   = co_await blob::create_cursor(pager, page_idx);
                 U64 data_offset = co_await read_blob_header(
-                    it.row_cursor.blob, it.metadata, it.row_column_count, it.masks);
+                    it.row_cursor.blob, it.metadata, it.row_column_count, it.masks
+                );
                 it.row_cursor.offset = data_offset;
             }
 
             if (static_page_idx != 0 && table->static_col_indices.length > 0) {
-                it.static_cursor       = co_await blob::create_cursor(pager, static_page_idx);
-                U64 static_col_count   = 0;
+                it.static_cursor                 = co_await blob::create_cursor(pager, static_page_idx);
+                U64             static_col_count = 0;
                 io::RowMetadata static_meta{};
-                U64 static_data_offset = co_await read_blob_header(
-                    it.static_cursor.blob, static_meta, static_col_count, it.static_masks);
+                U64             static_data_offset = co_await read_blob_header(
+                    it.static_cursor.blob, static_meta, static_col_count, it.static_masks
+                );
                 it.static_cursor.offset = static_data_offset;
             }
 
@@ -90,8 +85,7 @@ namespace cql {
 
     coroutine::Task<ColumnValue> ColumnIterator::deref() {
         ZoneScopedN("it::column_read");
-        assert_true(this->table != nullptr,
-                    "cannot dereference an end iterator, this should never happen!");
+        assert_true(this->table != nullptr, "cannot dereference an end iterator, this should never happen!");
 
         if (this->current_column_idx >= this->row_column_count) {
             co_return ColumnValue{Null{}};
@@ -110,8 +104,8 @@ namespace cql {
         }
 
         blob::BlobCursor& cursor = this->current_is_static()
-                                       ? this->static_cursor
-                                       : this->row_cursor;
+                                     ? this->static_cursor
+                                     : this->row_cursor;
 
         auto r_fn = [&cursor](U8* dst, U64 size) -> coroutine::Task<void> {
             co_await blob::read(cursor, dst, size);
@@ -131,8 +125,8 @@ namespace cql {
 
         if (!this->current_is_null() && !this->current_value_consumed) {
             blob::BlobCursor& cursor = this->current_is_static()
-                                           ? this->static_cursor
-                                           : this->row_cursor;
+                                         ? this->static_cursor
+                                         : this->row_cursor;
             auto              r_fn   = [&cursor](U8* dst, U64 size) -> coroutine::Task<void> {
                 if (dst != nullptr) {
                     co_await blob::read(cursor, dst, size);
@@ -168,8 +162,7 @@ namespace cql {
             auto pk_key_bytes = partition_it.key();
             injected_pk       = key::deserialize_partition(*table, pk_key_bytes);
         }
-        co_await load(col_it, this->pager, this->table, row_page, partition_entry.static_page,
-                      move(injected_pk));
+        co_await load(col_it, this->pager, this->table, row_page, partition_entry.static_page, move(injected_pk));
         co_return ColumnRange{
             .start = move(col_it),
             .stop  = ColumnIterator{},
@@ -186,7 +179,8 @@ namespace cql {
     static coroutine::Task<void> setup_clustering_for_partition(RowIterator& it, Pager* pager, const schema::PartitionEntry& entry) {
         it.clustering_btree = ClusteringBTree{
             pager, entry.data_page,
-            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}};
+            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(U64)>{}
+        };
 
         if (it.reverse_clustering) {
             // Position the start at the highest key satisfying the upper bound. For
@@ -335,10 +329,7 @@ namespace cql {
                         auto entry = *partition_it;
                         co_await setup_clustering_for_partition(*this, pager, entry);
                     }
-                } while (partition_it != end_it &&
-                         partition_it != stop.partition_it &&
-                         !static_only_row &&
-                         clustering_it == clustering_end_it);
+                } while (partition_it != end_it && partition_it != stop.partition_it && !static_only_row && clustering_it == clustering_end_it);
             }
         }
         if (own_tx) {
@@ -364,8 +355,7 @@ namespace cql {
     }
 
     static coroutine::Task<void> create_clustering(RowIterator& it, Pager* pager, schema::Table* table) {
-        if (schema::has_clustering_keys(*table) &&
-            it.partition_it != btree::end<schema::PartitionEntry>(table->btree)) {
+        if (schema::has_clustering_keys(*table) && it.partition_it != btree::end<schema::PartitionEntry>(table->btree)) {
             auto entry = *it.partition_it;
             co_await setup_clustering_for_partition(it, pager, entry);
         }
@@ -395,8 +385,7 @@ namespace cql {
             co_return;
         }
         auto part_end = btree::end<schema::PartitionEntry>(it.table->btree);
-        while (it.partition_it != part_end && it.partition_it != stop.partition_it &&
-               !it.static_only_row && it.clustering_it == it.clustering_end_it) {
+        while (it.partition_it != part_end && it.partition_it != stop.partition_it && !it.static_only_row && it.clustering_it == it.clustering_end_it) {
             bool               own_tx = !it.pager->transaction_active;
             pager::Transaction tx{it.pager};
             if (own_tx) {

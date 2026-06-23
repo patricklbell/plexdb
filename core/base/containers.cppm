@@ -791,7 +791,8 @@ export namespace plexdb {
         Array<Pair<K, V>, C> key_values = Array<Pair<K, V>, C>::transform(
             [](Pair<K, V>& pair) {
                 pair.first = sentinel;
-            });
+            }
+        );
 
         MapFixedSentinel() = default;
 

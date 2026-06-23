@@ -53,9 +53,7 @@ namespace cql::schema {
         for (U64 i = 0; i < schema.storage.type_entries.length; i++) {
             const TypeRegistryEntry& existing = schema.storage.type_entries[i];
             // @todo comparison operator, map
-            if (existing.kind == entry.kind && existing.elem_id == entry.elem_id &&
-                existing.val_id == entry.val_id && existing.vec_count == entry.vec_count &&
-                existing.frozen == entry.frozen) {
+            if (existing.kind == entry.kind && existing.elem_id == entry.elem_id && existing.val_id == entry.val_id && existing.vec_count == entry.vec_count && existing.frozen == entry.frozen) {
                 return static_cast<U32>(type_registry_base + i);
             }
         }
@@ -216,8 +214,9 @@ namespace cql::schema {
                     .indexes                    = {},
                     .btree                      = PartitionBTree{
                                                    in_pager, tbl_storage.header.btree_page,
-                                                   btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}},
-                    .default_ttl_ms             = tbl_storage.header.default_ttl_ms,
+                                                   btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
+                    },
+                    .default_ttl_ms = tbl_storage.header.default_ttl_ms,
                 };
 
                 reserve(tbl.cols, tbl_storage.columns.length);
@@ -244,8 +243,7 @@ namespace cql::schema {
                     if (col.key_kind == KeyKind::PartitionKey) {
                         U64 insert_pos = tbl.partition_key_col_indices.length;
                         push_back(tbl.partition_key_col_indices, ci);
-                        while (insert_pos > 0 &&
-                               tbl.cols[tbl.partition_key_col_indices[insert_pos - 1]].key_position > col.key_position) {
+                        while (insert_pos > 0 && tbl.cols[tbl.partition_key_col_indices[insert_pos - 1]].key_position > col.key_position) {
                             tbl.partition_key_col_indices[insert_pos]     = tbl.partition_key_col_indices[insert_pos - 1];
                             tbl.partition_key_col_indices[insert_pos - 1] = ci;
                             insert_pos--;
@@ -253,8 +251,7 @@ namespace cql::schema {
                     } else if (col.key_kind == KeyKind::ClusteringKey) {
                         U64 insert_pos = tbl.clustering_key_col_indices.length;
                         push_back(tbl.clustering_key_col_indices, ci);
-                        while (insert_pos > 0 &&
-                               tbl.cols[tbl.clustering_key_col_indices[insert_pos - 1]].key_position > col.key_position) {
+                        while (insert_pos > 0 && tbl.cols[tbl.clustering_key_col_indices[insert_pos - 1]].key_position > col.key_position) {
                             tbl.clustering_key_col_indices[insert_pos]     = tbl.clustering_key_col_indices[insert_pos - 1];
                             tbl.clustering_key_col_indices[insert_pos - 1] = ci;
                             insert_pos--;
@@ -289,7 +286,8 @@ namespace cql::schema {
                         .kind      = idx_storage.header.kind,
                         .btree     = IndexBTree{
                                                 in_pager, idx_storage.header.btree_page,
-                                                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}},
+                                                btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}
+                        },
                     };
                     push_back(tbl.indexes, move(idx));
                     break;
@@ -495,9 +493,8 @@ namespace cql::schema {
         KeyspaceStorage& ks_storage_ref = push_back(schema.storage.keyspaces, move(ks_storage));
 
         co_await blob::resize(
-            schema.keyspaces_blob, offset_bytes +
-                                       sizeof(ks_storage_ref.header) +
-                                       ks_storage_ref.name.length);
+            schema.keyspaces_blob, offset_bytes + sizeof(ks_storage_ref.header) + ks_storage_ref.name.length
+        );
 
         co_await blob::tupdate(schema.keyspaces_blob, &ks_storage_ref.header, &offset_bytes);
         co_await update_str(schema.keyspaces_blob, ks_storage_ref.name, &offset_bytes);
@@ -585,8 +582,7 @@ namespace cql::schema {
     }
 
     static bool type_is_counter(const type::Type& t) {
-        return type_matches_tag<type::Basic>(t.value) &&
-               get<type::Basic>(t.value) == type::Basic::counter;
+        return type_matches_tag<type::Basic>(t.value) && get<type::Basic>(t.value) == type::Basic::counter;
     }
 
     static bool type_contains_counter(const type::Type& t) {
@@ -698,10 +694,8 @@ namespace cql::schema {
                             return;
                         }
                         U64     ck_def_idx = pk_info.clustering_col_def_indices[i];
-                        String8 ck_name(create.column_definitions[ck_def_idx].name.identifier.c_str,
-                                        create.column_definitions[ck_def_idx].name.identifier.length);
-                        String8 directive_name(o.column_orders[i].column.identifier.c_str,
-                                               o.column_orders[i].column.identifier.length);
+                        String8 ck_name(create.column_definitions[ck_def_idx].name.identifier.c_str, create.column_definitions[ck_def_idx].name.identifier.length);
+                        String8 directive_name(o.column_orders[i].column.identifier.c_str, o.column_orders[i].column.identifier.length);
                         if (ck_name != directive_name) {
                             order_err = Error::InvalidOptions;
                             return;
@@ -717,7 +711,8 @@ namespace cql::schema {
 
         U64 btree_page = co_await btree::create_paged(
             *schema.tables_blob.pager,
-            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{});
+            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
+        );
 
         U64 offset_bytes = schema.tables_blob.size_bytes;
 
@@ -736,9 +731,8 @@ namespace cql::schema {
         TableStorage& tbl_storage_ref = push_back(schema.storage.tables, move(tbl_storage));
 
         co_await blob::resize(
-            schema.tables_blob, offset_bytes +
-                                    sizeof(tbl_storage_ref.header) +
-                                    tbl_storage_ref.name.length);
+            schema.tables_blob, offset_bytes + sizeof(tbl_storage_ref.header) + tbl_storage_ref.name.length
+        );
 
         co_await blob::tupdate(schema.tables_blob, &tbl_storage_ref.header, &offset_bytes);
         co_await update_str(schema.tables_blob, tbl_storage_ref.name, &offset_bytes);
@@ -754,8 +748,9 @@ namespace cql::schema {
             .indexes                    = {},
             .btree                      = PartitionBTree{
                                            schema.tables_blob.pager, tbl_storage_ref.header.btree_page,
-                                           btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}},
-            .default_ttl_ms             = tbl_storage_ref.header.default_ttl_ms,
+                                           btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
+            },
+            .default_ttl_ms = tbl_storage_ref.header.default_ttl_ms,
         };
         // @todo avoid this copy
         for (U64 i = 0; i < pk_info.partition_col_def_indices.length; i++) {
@@ -809,10 +804,10 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<void>> set_default_ttl_ms(Schema& schema, Table& tbl, S64 default_ttl_ms) {
-        TableStorage& tbl_storage          = schema.storage.tables[tbl.idx];
-        tbl_storage.header.default_ttl_ms  = default_ttl_ms;
-        tbl.default_ttl_ms                 = default_ttl_ms;
-        U64 offset                         = tbl_storage.offset_in_blob_bytes + offsetof(TableHeader, default_ttl_ms);
+        TableStorage& tbl_storage         = schema.storage.tables[tbl.idx];
+        tbl_storage.header.default_ttl_ms = default_ttl_ms;
+        tbl.default_ttl_ms                = default_ttl_ms;
+        U64 offset                        = tbl_storage.offset_in_blob_bytes + offsetof(TableHeader, default_ttl_ms);
         co_await blob::tupdate(schema.tables_blob, &tbl_storage.header.default_ttl_ms, &offset);
         co_return Result<void>{};
     }
@@ -833,8 +828,7 @@ namespace cql::schema {
         co_return Result<void>{tbl_res.error, tbl_res.message};
     }
 
-    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create,
-                                                   KeyKind key_kind, U16 key_position, Sort clustering_order) {
+    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create, KeyKind key_kind, U16 key_position, Sort clustering_order) {
         if (create._static) {
             if (tbl.clustering_key_col_indices.length == 0) {
                 co_return Result<Column*>{nullptr, Error::InvalidOptions, "static columns require at least one clustering column"};
@@ -854,9 +848,7 @@ namespace cql::schema {
             U64 new_types_offset = prev_type_count * sizeof(TypeRegistryEntry);
             co_await blob::resize(schema.types_blob, schema.storage.type_entries.length * sizeof(TypeRegistryEntry));
             for (U64 i = prev_type_count; i < schema.storage.type_entries.length; i++) {
-                co_await blob::update(schema.types_blob,
-                                      reinterpret_cast<const U8*>(&schema.storage.type_entries[i]),
-                                      sizeof(TypeRegistryEntry), new_types_offset);
+                co_await blob::update(schema.types_blob, reinterpret_cast<const U8*>(&schema.storage.type_entries[i]), sizeof(TypeRegistryEntry), new_types_offset);
                 new_types_offset += sizeof(TypeRegistryEntry);
             }
         }
@@ -880,9 +872,8 @@ namespace cql::schema {
         ColumnStorage& col_storage_ref = push_back(schema.storage.columns, move(col_storage));
 
         co_await blob::resize(
-            schema.columns_blob, offset_bytes +
-                                     sizeof(col_storage_ref.header) +
-                                     col_storage_ref.name.length);
+            schema.columns_blob, offset_bytes + sizeof(col_storage_ref.header) + col_storage_ref.name.length
+        );
 
         co_await blob::tupdate(schema.columns_blob, &col_storage_ref.header, &offset_bytes);
         co_await update_str(schema.columns_blob, col_storage_ref.name, &offset_bytes);
@@ -911,9 +902,7 @@ namespace cql::schema {
             col->tombstone  = true;
 
             for (auto& col_storage : schema.storage.columns) {
-                if (!col_storage.header.tombstone &&
-                    col_storage.header.table_idx == tbl.idx &&
-                    String8(col_storage.name.c_str, col_storage.name.length) == name) {
+                if (!col_storage.header.tombstone && col_storage.header.table_idx == tbl.idx && String8(col_storage.name.c_str, col_storage.name.length) == name) {
                     col_storage.header.tombstone = true;
                     U64 offset                   = col_storage.offset_in_blob_bytes + offsetof(ColumnHeader, tombstone);
                     co_await blob::tupdate(schema.columns_blob, &col_storage.header.tombstone, &offset);
@@ -937,7 +926,8 @@ namespace cql::schema {
     coroutine::Task<Result<Index*>> create_index(Schema& schema, Table& tbl, U64 col_idx, String8 index_name, IndexKind kind) {
         U64 btree_page = co_await btree::create_paged(
             *schema.indexes_blob.pager,
-            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{});
+            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}
+        );
 
         U64 offset_bytes = schema.indexes_blob.size_bytes;
 
@@ -957,7 +947,8 @@ namespace cql::schema {
 
         co_await blob::resize(
             schema.indexes_blob,
-            offset_bytes + sizeof(idx_storage_ref.header) + idx_storage_ref.name.length);
+            offset_bytes + sizeof(idx_storage_ref.header) + idx_storage_ref.name.length
+        );
 
         co_await blob::tupdate(schema.indexes_blob, &idx_storage_ref.header, &offset_bytes);
         co_await update_str(schema.indexes_blob, idx_storage_ref.name, &offset_bytes);
@@ -971,7 +962,8 @@ namespace cql::schema {
             .kind      = kind,
             .btree     = IndexBTree{
                                     schema.indexes_blob.pager, btree_page,
-                                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}},
+                                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}
+            },
         };
         co_return Result<Index*>{&push_back(tbl.indexes, move(idx))};
     }

@@ -37,7 +37,8 @@ export namespace plexdb::btree {
             .depth  = 0,
             .size   = 0,
             .root   = {},
-            .leaves = {}};
+            .leaves = {}
+        };
 
         // @todo avoid extra page for header
         U64 header_page = co_await pager::new_page(pager);

@@ -77,8 +77,7 @@ namespace plexdb::argparse {
                 bool found = false;
                 for (U64 oi = 0; oi < parser.options.cap; oi++) {
                     const OptionDef& opt = parser.options[oi];
-                    if (strcmp(arg, opt.long_name) == 0 ||
-                        (opt.short_name[0] != '\0' && strcmp(arg, opt.short_name) == 0)) {
+                    if (strcmp(arg, opt.long_name) == 0 || (opt.short_name[0] != '\0' && strcmp(arg, opt.short_name) == 0)) {
                         if (i + 1 >= argc) {
                             String8 view{result.error, MAX_DESC_LEN - 1};
                             fmt_raw(view, "%s requires a value", arg);
@@ -97,8 +96,7 @@ namespace plexdb::argparse {
 
                 for (U64 fi = 0; fi < parser.flags.cap; fi++) {
                     const FlagDef& flag = parser.flags[fi];
-                    if (strcmp(arg, flag.long_name) == 0 ||
-                        (flag.short_name[0] != '\0' && strcmp(arg, flag.short_name) == 0)) {
+                    if (strcmp(arg, flag.long_name) == 0 || (flag.short_name[0] != '\0' && strcmp(arg, flag.short_name) == 0)) {
                         result.flag_bits |= (U32(1) << fi);
                         found = true;
                         break;
@@ -166,8 +164,8 @@ namespace plexdb::argparse {
             print("\nArguments:\n");
             for (U64 i = 0; i < parser.positionals.cap; i++) {
                 auto display = parser.positionals[i].optional
-                                   ? fmt("[<%s>]", parser.positionals[i].name)
-                                   : fmt("<%s>", parser.positionals[i].name);
+                                 ? fmt("[<%s>]", parser.positionals[i].name)
+                                 : fmt("<%s>", parser.positionals[i].name);
                 print(fmt("  %-20s  %s\n", display.c_str, parser.positionals[i].description));
             }
         }

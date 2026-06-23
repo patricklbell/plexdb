@@ -342,8 +342,8 @@ namespace keyvalue::engine {
                 DynamicArray<AutoString8> result;
 
                 auto it     = v.cursor == 0
-                                  ? co_await btree::begin<U64>(engine.index)
-                                  : co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(engine.index, v.cursor);
+                                ? co_await btree::begin<U64>(engine.index)
+                                : co_await btree::find_it<U64, btree::SearchStrategy::FirstGreaterEqual>(engine.index, v.cursor);
                 auto end_it = btree::end<U64>(engine.index);
 
                 U64 scanned = 0;
@@ -395,7 +395,8 @@ namespace keyvalue::engine {
             } else if constexpr (SameAs<T, Info>) {
                 U64 db_size = co_await btree::size(engine.index);
                 co_return create_bulk(
-                    "# Server\r\nredis_version:7.0.0\r\narch_bits:64\r\n# Keyspace\r\ndb0:keys="_as + to_str(db_size) + ",expires=0\r\n"_as);
+                    "# Server\r\nredis_version:7.0.0\r\narch_bits:64\r\n# Keyspace\r\ndb0:keys="_as + to_str(db_size) + ",expires=0\r\n"_as
+                );
             } else if constexpr (SameAs<T, Unknown>) {
                 co_return create_error("unknown command '"_as + v.name + "'"_as);
             } else {

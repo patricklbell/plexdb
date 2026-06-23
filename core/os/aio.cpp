@@ -33,8 +33,7 @@ namespace plexdb::os {
     static long _io_submit(aio_context_t ctx, long nr, struct iocb** iocbpp) {
         return ::syscall(SYS_io_submit, ctx, nr, iocbpp);
     }
-    static long _io_getevents(aio_context_t ctx, long min_nr, long nr,
-                              struct io_event* events, struct timespec* timeout) {
+    static long _io_getevents(aio_context_t ctx, long min_nr, long nr, struct io_event* events, struct timespec* timeout) {
         return ::syscall(SYS_io_getevents, ctx, min_nr, nr, events, timeout);
     }
 
@@ -190,7 +189,8 @@ namespace plexdb::os {
         struct timespec timeout    = {0, 0};
         long            n          = _io_getevents(
             reinterpret_cast<aio_context_t>(ctx.ctx_ptr),
-            0, static_cast<long>(to_collect), events, &timeout);
+            0, static_cast<long>(to_collect), events, &timeout
+        );
         if (n <= 0) {
             return 0;
         }

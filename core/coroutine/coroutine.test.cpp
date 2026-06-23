@@ -147,7 +147,8 @@ TEST_CASE("Awaitable suspends and resumes with result", "[coroutine]") {
             [&](std::coroutine_handle<> h) { stored = h; },
             [&]() -> int {
                 return result;
-            }};
+            }
+        };
         co_return v * 2;
     }();
 
@@ -170,7 +171,8 @@ TEST_CASE("Awaitable<void> fire-and-forget", "[coroutine]") {
             [&](std::coroutine_handle<> h) { stored = h; },
             [&]() {
                 completed = true;
-            }};
+            }
+        };
     }();
 
     task.resume();

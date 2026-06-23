@@ -24,8 +24,7 @@ export namespace plexdb::btree {
     // rebalancing helpers
     // ========================================================================
     template<KeyPolicy KP, ValuePolicy VP>
-    void move_from_left(Node* parent, Node* left, Node* node, CountType node_idx,
-                        U32 ns, KP kp, VP vp, bool is_leaf) {
+    void move_from_left(Node* parent, Node* left, Node* node, CountType node_idx, U32 ns, KP kp, VP vp, bool is_leaf) {
         if (is_leaf) {
             auto      left_page = leaf_page(left, ns, kp, vp);
             auto      node_page = leaf_page(node, ns, kp, vp);
@@ -67,8 +66,7 @@ export namespace plexdb::btree {
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    void move_from_right(Node* parent, Node* right, Node* node, CountType node_idx,
-                         U32 ns, KP kp, VP vp, bool is_leaf) {
+    void move_from_right(Node* parent, Node* right, Node* node, CountType node_idx, U32 ns, KP kp, VP vp, bool is_leaf) {
         if (is_leaf) {
             auto right_page = leaf_page(right, ns, kp, vp);
             auto node_page  = leaf_page(node, ns, kp, vp);
@@ -109,8 +107,7 @@ export namespace plexdb::btree {
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    void merge(Node* a, Node* b, Node* parent, CountType a_idx,
-               U32 ns, KP kp, VP vp, bool is_leaf) {
+    void merge(Node* a, Node* b, Node* parent, CountType a_idx, U32 ns, KP kp, VP vp, bool is_leaf) {
         a->next = b->next;
         if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
             using KT          = typename KP::key_type;
@@ -163,9 +160,7 @@ export namespace plexdb::btree {
     // insert
     // ========================================================================
     template<BTree BT>
-    coroutine::Task<void> insert_child_to_right(BT& t, U32 ns, Node* parent, CountType idx,
-                                                TArrayView<const U8, U16> key_bytes,
-                                                NodeRef child_ref, Node* child) {
+    coroutine::Task<void> insert_child_to_right(BT& t, U32 ns, Node* parent, CountType idx, TArrayView<const U8, U16> key_bytes, NodeRef child_ref, Node* child) {
         auto kp = key_policy(t);
         internal_insert_entry(parent, ns, kp, idx, key_bytes, child_ref);
         NodeRef prev_ref = internal_children(parent, ns, kp)[idx];
@@ -176,8 +171,7 @@ export namespace plexdb::btree {
     }
 
     template<BTree BT, KeyPolicy KP, ValuePolicy VP>
-    coroutine::Task<void> split_child(BT& t, U32 ns, KP kp, VP vp, Node* parent,
-                                      CountType child_idx, bool is_child_leaf) {
+    coroutine::Task<void> split_child(BT& t, U32 ns, KP kp, VP vp, Node* parent, CountType child_idx, bool is_child_leaf) {
         ZoneScopedN("btree::split");
 
         NodeRef left_ref = internal_children(parent, ns, kp)[child_idx];
@@ -213,9 +207,7 @@ export namespace plexdb::btree {
     }
 
     template<BTree BT, KeyPolicy KP, ValuePolicy VP>
-    coroutine::Task<bool> insert_recursive(BT& t, const Header& h, U32 ns, KP kp, VP vp,
-                                           NodeRef n_ref, CountType depth,
-                                           BTreeKeyType<BT> key, TArrayView<const U8, U16> value) {
+    coroutine::Task<bool> insert_recursive(BT& t, const Header& h, U32 ns, KP kp, VP vp, NodeRef n_ref, CountType depth, BTreeKeyType<BT> key, TArrayView<const U8, U16> value) {
         if (depth == h.depth) {
             Node*     n      = co_await update_node(t, n_ref);
             CountType idx    = leaf_bsearch_geq(n, ns, kp, vp, key);
@@ -238,8 +230,8 @@ export namespace plexdb::btree {
             const Node* child     = co_await read_node(t, child_ref);
 
             bool child_full = is_child_leaf
-                                  ? is_leaf_full(child, ns, kp, vp, key_bytes, val_bytes)
-                                  : is_internal_full(child, ns, kp, key_bytes);
+                                ? is_leaf_full(child, ns, kp, vp, key_bytes, val_bytes)
+                                : is_internal_full(child, ns, kp, key_bytes);
 
             if (child_full) {
                 co_await split_child(t, ns, kp, vp, co_await update_node(t, n_ref), child_idx, is_child_leaf);
@@ -254,8 +246,7 @@ export namespace plexdb::btree {
             }
         }
 
-        co_return co_await insert_recursive(t, h, ns, kp, vp, child_ref,
-                                            static_cast<CountType>(depth + 1), key, value);
+        co_return co_await insert_recursive(t, h, ns, kp, vp, child_ref, static_cast<CountType>(depth + 1), key, value);
     }
 
     template<BTree BT>
@@ -273,8 +264,8 @@ export namespace plexdb::btree {
             bool        is_root_leaf = h0.depth == 0;
             const Node* root         = co_await read_node(t, h0.root);
             bool        root_full    = is_root_leaf
-                                           ? is_leaf_full(root, ns, kp, vp, key_bytes, val_bytes)
-                                           : is_internal_full(root, ns, kp, key_bytes);
+                                         ? is_leaf_full(root, ns, kp, vp, key_bytes, val_bytes)
+                                         : is_internal_full(root, ns, kp, key_bytes);
             if (root_full) {
                 NodeRef new_root_ref                   = co_await create_internal(t);
                 Node*   new_root                       = co_await update_node(t, new_root_ref);
@@ -382,8 +373,8 @@ export namespace plexdb::btree {
         bool is_leaf = true;
         while (true) {
             bool underfull = is_leaf
-                                 ? is_underfull_leaf(node, ns, kp, vp)
-                                 : is_underfull_internal(node, ns, kp);
+                               ? is_underfull_leaf(node, ns, kp, vp)
+                               : is_underfull_internal(node, ns, kp);
             if (!underfull) {
                 break;
             }
@@ -408,29 +399,25 @@ export namespace plexdb::btree {
             Node*      parent     = co_await update_node(t, parent_ref);
 
             NodeRef left_ref = (item_idx > 0)
-                                   ? internal_children(parent, ns, kp)[item_idx - 1]
-                                   : 0;
+                                 ? internal_children(parent, ns, kp)[item_idx - 1]
+                                 : 0;
             Node*   left     = nullptr;
             if (left_ref != 0) {
                 left = co_await update_node(t, left_ref);
             }
-            if (left && !(is_leaf
-                              ? is_underfull_leaf(left, ns, kp, vp)
-                              : is_underfull_internal(left, ns, kp))) {
+            if (left && !(is_leaf ? is_underfull_leaf(left, ns, kp, vp) : is_underfull_internal(left, ns, kp))) {
                 move_from_left(parent, left, node, item_idx, ns, kp, vp, is_leaf);
                 break;
             }
 
             NodeRef right_ref = (item_idx < parent->key_count)
-                                    ? internal_children(parent, ns, kp)[item_idx + 1]
-                                    : 0;
+                                  ? internal_children(parent, ns, kp)[item_idx + 1]
+                                  : 0;
             Node*   right     = nullptr;
             if (right_ref != 0) {
                 right = co_await update_node(t, right_ref);
             }
-            if (right && !(is_leaf
-                               ? is_underfull_leaf(right, ns, kp, vp)
-                               : is_underfull_internal(right, ns, kp))) {
+            if (right && !(is_leaf ? is_underfull_leaf(right, ns, kp, vp) : is_underfull_internal(right, ns, kp))) {
                 move_from_right(parent, right, node, item_idx, ns, kp, vp, is_leaf);
                 break;
             }
@@ -553,7 +540,8 @@ export namespace plexdb::btree {
     // active if the iterator is backed by a paged btree.
     template<BTree BT>
     coroutine::Task<void> next_iterator_inplace(
-        BT& t, IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>& it) {
+        BT& t, IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>& it
+    ) {
         assert_true(it.leaf != nullptr, "cannot advance past end");
 
         if (it.idx == it.leaf->key_count - 1) {
@@ -581,7 +569,8 @@ export namespace plexdb::btree {
     // compares equal to end() and serves as the reverse-iteration sentinel.
     template<BTree BT>
     coroutine::Task<void> prev_iterator_inplace(
-        BT& t, IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>& it) {
+        BT& t, IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>& it
+    ) {
         assert_true(it.leaf != nullptr, "cannot advance past end");
 
         if (it.idx == 0) {
@@ -639,7 +628,8 @@ export namespace plexdb::btree {
 
     template<SearchStrategy Strategy, BTree BT>
     coroutine::Task<IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>> search_iterator_impl(
-        BT& t, BTreeKeyType<BT> key) {
+        BT& t, BTreeKeyType<BT> key
+    ) {
         using Impl        = IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>;
         const auto& h     = *(co_await read_header(t));
         auto        kp    = key_policy(t);

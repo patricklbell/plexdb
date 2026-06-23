@@ -23,6 +23,7 @@ export namespace plexdb {
             [](void* ctx, Args... args) -> Ret {
                 return (*static_cast<F*>(ctx))(args...);
             },
-            &f};
+            &f
+        };
     }
 }

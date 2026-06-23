@@ -202,7 +202,8 @@ export namespace plexdb {
         append_fmt_impl(
             str.buffer.ptr, str.buffer.length, &str.length,
             &str, buffered_string_flush_wrapper<F>,
-            fmt, forward<Args>(args)...);
+            fmt, forward<Args>(args)...
+        );
     }
 
     template<BufferedString8Flush F>

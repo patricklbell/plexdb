@@ -862,7 +862,8 @@ PAGER_TEST_CASE("concurrent begin_transaction serializes second writer via queue
         co_await coroutine::Awaitable{
             [&](std::coroutine_handle<> h) { yield_point = h; },
             [] {
-            }};
+            }
+        };
         co_await tx.commit();
         co_return p1;
     }();

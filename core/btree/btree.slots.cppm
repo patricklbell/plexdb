@@ -65,8 +65,7 @@ export namespace plexdb::btree {
     TArrayView<const U8, U16> value_at(const FixedLeafSlots& s, CountType i) noexcept {
         return {s.vals_base() + i * s.val_stride, s.val_stride};
     }
-    bool insert(FixedLeafSlots& s, CountType i,
-                TArrayView<const U8, U16> k, TArrayView<const U8, U16> v) noexcept {
+    bool insert(FixedLeafSlots& s, CountType i, TArrayView<const U8, U16> k, TArrayView<const U8, U16> v) noexcept {
         if (s.count >= s.capacity) {
             return false;
         }
@@ -260,8 +259,7 @@ export namespace plexdb::btree {
     }
 
     template<bool VK>
-    bool insert(SlottedLeafPage<VK>& p, CountType i,
-                TArrayView<const U8, U16> k, TArrayView<const U8, U16> v) noexcept {
+    bool insert(SlottedLeafPage<VK>& p, CountType i, TArrayView<const U8, U16> k, TArrayView<const U8, U16> v) noexcept {
         static_assert(VK, "SlottedLeafPage insert requires varlen key");
         U16 needed = static_cast<U16>(sizeof(SlotEntry<VK, true>) + k.length + v.length);
         if (p.free_space() < needed) {
@@ -335,8 +333,7 @@ export namespace plexdb::btree {
     }
 
     template<bool VK>
-    void copy_suffix_to(const SlottedLeafPage<VK>& src, CountType from,
-                        SlottedLeafPage<VK>& dst) noexcept {
+    void copy_suffix_to(const SlottedLeafPage<VK>& src, CountType from, SlottedLeafPage<VK>& dst) noexcept {
         static_assert(VK, "copy_suffix_to requires varlen key");
         CountType   n         = static_cast<CountType>(src.count - from);
         const auto* src_slots = src.slots();
@@ -442,8 +439,7 @@ export namespace plexdb::btree {
 
     // replace key at index i without touching children
     template<bool VK>
-    bool replace_key(SlottedInternalPage<VK>& p, CountType i,
-                     TArrayView<const U8, U16> k) noexcept {
+    bool replace_key(SlottedInternalPage<VK>& p, CountType i, TArrayView<const U8, U16> k) noexcept {
         static_assert(VK, "replace_key on SlottedInternalPage requires varlen key");
         auto& e = p.slots()[i];
         // reclaim old key bytes
@@ -470,8 +466,7 @@ export namespace plexdb::btree {
     }
 
     template<bool VK>
-    bool insert_key(SlottedInternalPage<VK>& p, CountType i,
-                    TArrayView<const U8, U16> k) noexcept {
+    bool insert_key(SlottedInternalPage<VK>& p, CountType i, TArrayView<const U8, U16> k) noexcept {
         static_assert(VK, "insert_key on SlottedInternalPage requires varlen key");
         U16 needed = static_cast<U16>(sizeof(SlotEntry<VK, false>) + k.length);
         if (p.free_space() < needed) {
@@ -554,8 +549,7 @@ export namespace plexdb::btree {
     }
 
     template<bool VK>
-    void copy_suffix_to(const SlottedInternalPage<VK>& src, CountType from,
-                        SlottedInternalPage<VK>& dst) noexcept {
+    void copy_suffix_to(const SlottedInternalPage<VK>& src, CountType from, SlottedInternalPage<VK>& dst) noexcept {
         static_assert(VK, "copy_suffix_to requires varlen key");
         CountType   n  = static_cast<CountType>(src.count - from);
         const auto* ss = src.slots();

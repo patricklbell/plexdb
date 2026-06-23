@@ -26,8 +26,8 @@ namespace cql::native {
 
     S64 read_be_s64(const U8* p) {
         return S64(
-            (U64(p[0]) << 56) | (U64(p[1]) << 48) | (U64(p[2]) << 40) | (U64(p[3]) << 32) |
-            (U64(p[4]) << 24) | (U64(p[5]) << 16) | (U64(p[6]) << 8) | U64(p[7]));
+            (U64(p[0]) << 56) | (U64(p[1]) << 48) | (U64(p[2]) << 40) | (U64(p[3]) << 32) | (U64(p[4]) << 24) | (U64(p[5]) << 16) | (U64(p[6]) << 8) | U64(p[7])
+        );
     }
 
     String8 read_cql_long_string(const U8*& p, const U8* end) {
@@ -99,8 +99,7 @@ namespace cql::native {
             }
             case type::Basic::double_: {
                 assert_true(len == 8, "double value must be 8 bytes");
-                U64 bits = (U64(val[0]) << 56) | (U64(val[1]) << 48) | (U64(val[2]) << 40) | (U64(val[3]) << 32) |
-                           (U64(val[4]) << 24) | (U64(val[5]) << 16) | (U64(val[6]) << 8) | U64(val[7]);
+                U64 bits = (U64(val[0]) << 56) | (U64(val[1]) << 48) | (U64(val[2]) << 40) | (U64(val[3]) << 32) | (U64(val[4]) << 24) | (U64(val[5]) << 16) | (U64(val[6]) << 8) | U64(val[7]);
                 F64 d;
                 os::memory_copy(&d, &bits, sizeof(d));
                 return Constant{.value = d};
@@ -356,7 +355,8 @@ namespace cql::native {
             U8(0x80u | Version), resp_flags,
             U8(U16(f.stream) >> 8), U8(f.stream),
             f.op,
-            U8(body_len >> 24), U8(body_len >> 16), U8(body_len >> 8), U8(body_len)};
+            U8(body_len >> 24), U8(body_len >> 16), U8(body_len >> 8), U8(body_len)
+        };
 
         log::native_info(fmt(
             "TX frame: op=%02x stream=%d body_len=%u hdr=%02x%02x%02x%02x%02x%02x%02x%02x%02x body[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x",
@@ -367,7 +367,8 @@ namespace cql::native {
             body_len > 0 ? f.body.ptr[0] : 0u, body_len > 1 ? f.body.ptr[1] : 0u,
             body_len > 2 ? f.body.ptr[2] : 0u, body_len > 3 ? f.body.ptr[3] : 0u,
             body_len > 4 ? f.body.ptr[4] : 0u, body_len > 5 ? f.body.ptr[5] : 0u,
-            body_len > 6 ? f.body.ptr[6] : 0u, body_len > 7 ? f.body.ptr[7] : 0u));
+            body_len > 6 ? f.body.ptr[6] : 0u, body_len > 7 ? f.body.ptr[7] : 0u
+        ));
 
         if constexpr (Version < 5) {
             co_await send_block(*f.req, envelope_header, V4_FRAME_HEADER_BYTE_COUNT);
@@ -502,7 +503,8 @@ namespace cql::native {
                 bool is_vec = type_matches_tag<type::Vector>(cdtype.value);
                 assert_true(
                     type_matches_tag<type::List>(cdtype.value) || is_vec,
-                    "static value type requires ctype list/vector, this should never happen");
+                    "static value type requires ctype list/vector, this should never happen"
+                );
                 U64        elem_count = is_vec ? get<type::Vector>(cdtype.value).count : v.length;
                 const auto elem_dtype = is_vec ? get<type::Basic>(get<type::Vector>(cdtype.value).element.value) : get<type::Basic>(get<type::List>(cdtype.value).element.value);
                 S32        body       = 4;
@@ -579,10 +581,7 @@ namespace cql::native {
                 }
             }
             for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                if (!tbl->cols[ci].tombstone &&
-                    !col_in_list(tbl->partition_key_col_indices, ci) &&
-                    !col_in_list(tbl->clustering_key_col_indices, ci) &&
-                    !col_in_list(tbl->static_col_indices, ci)) {
+                if (!tbl->cols[ci].tombstone && !col_in_list(tbl->partition_key_col_indices, ci) && !col_in_list(tbl->clustering_key_col_indices, ci) && !col_in_list(tbl->static_col_indices, ci)) {
                     push_back(effective_cols, ci);
                 }
             }
@@ -811,16 +810,19 @@ namespace cql::native {
         // must never be wrapped in v5 outer frames per spec)
         const auto send_unframed_response = [&](
                                                 U8 resp_op, U8 resp_ver, U8 resp_flags, S16 stream,
-                                                const U8* body, U32 body_len) -> coroutine::Task<> {
+                                                const U8* body, U32 body_len
+                                            ) -> coroutine::Task<> {
             log::native_info(fmt(
                 "TX negotiate: op=%02x(%s) flags=%02x stream=%d",
-                resp_op, (const char*)op_codes_to_str(resp_op), resp_flags, (int)stream));
+                resp_op, (const char*)op_codes_to_str(resp_op), resp_flags, (int)stream
+            ));
 
             U8 hdr[V4_FRAME_HEADER_BYTE_COUNT] = {
                 U8(0x80u | resp_ver), resp_flags,
                 U8(U16(stream) >> 8), U8(stream),
                 resp_op,
-                U8(body_len >> 24), U8(body_len >> 16), U8(body_len >> 8), U8(body_len)};
+                U8(body_len >> 24), U8(body_len >> 16), U8(body_len >> 8), U8(body_len)
+            };
             co_await send_block(req, hdr, V4_FRAME_HEADER_BYTE_COUNT);
             if (body_len > 0) {
                 co_await send_block(req, body, body_len);
@@ -850,7 +852,8 @@ namespace cql::native {
 
             log::native_info(fmt(
                 "RX negotiate: op=%02x(%s) version=%d stream=%d",
-                op, (const char*)op_codes_to_str(op), (int)version, (int)stream));
+                op, (const char*)op_codes_to_str(op), (int)version, (int)stream
+            ));
 
             if (op == op_codes::OPTIONS) {
                 // Advertise supported CQL_VERSION and COMPRESSION options.
@@ -926,7 +929,8 @@ namespace cql::native {
         const U8*           header,
         const U8*           body,
         S32                 body_length,
-        AutoString8&        conn_keyspace) {
+        AutoString8&        conn_keyspace
+    ) {
         ZoneScopedN("frame_handler");
         S16 stream = read_be_s16(header + 2);
         U8  op     = header[4];
@@ -937,7 +941,8 @@ namespace cql::native {
             "RX frame: op=%02x(%s) stream=%d body_len=%d hdr=%02x%02x%02x%02x%02x%02x%02x%02x%02x",
             op, (const char*)op_codes_to_str(op), (int)(S16)stream, body_length,
             header[0], header[1], header[2], header[3], header[4],
-            header[5], header[6], header[7], header[8]));
+            header[5], header[6], header[7], header[8]
+        ));
 
         switch (op) {
             case op_codes::STARTUP: {

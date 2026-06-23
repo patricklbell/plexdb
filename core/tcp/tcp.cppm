@@ -48,7 +48,8 @@ export namespace plexdb::tcp {
         os::Handle                    socket,
         const ConnectionHandler auto* in_handler,
         os::Poll&                     poll,
-        bool                          try_uring = true) {
+        bool                          try_uring = true
+    ) {
         if (try_uring) {
             auto ring_settings = uring::get_ring_settings();
             if (ring_settings->recommended) {
@@ -56,7 +57,8 @@ export namespace plexdb::tcp {
                     socket,
                     ring_settings->recommended_queue_depth,
                     ring_settings->recommended_buffer_size,
-                    ring_settings->recommended_buffer_count};
+                    ring_settings->recommended_buffer_count
+                };
                 if (ring && !os::is_zero_handle(ring.event_fd)) {
                     return TcpServer{UringListenerState{move(ring)}, in_handler, poll};
                 }

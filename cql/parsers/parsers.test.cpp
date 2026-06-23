@@ -1256,7 +1256,8 @@ TEST_CASE("Conformance: ALTER TABLE DROP with USING TIMESTAMP", "[cql.conformanc
         auto r = parse("ALTER TABLE ks.tbl ADD myCollection map<text, text>;");
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<AlterTable::AddColumnInstruction>(
-            get<AlterTable>(r->value).alter_table_instruction));
+            get<AlterTable>(r->value).alter_table_instruction
+        ));
     }
 }
 
@@ -1644,7 +1645,8 @@ TEST_CASE("CREATE TABLE WITH options parsing", "[cql.parser]") {
             "CREATE TABLE ks.t (k int PRIMARY KEY) "
             "WITH compaction = {'class': 'SizeTieredCompactionStrategy'} "
             "AND compression = {'sstable_compression': 'LZ4Compressor'} "
-            "AND gc_grace_seconds = 864000;");
+            "AND gc_grace_seconds = 864000;"
+        );
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.options.value.length == 3);

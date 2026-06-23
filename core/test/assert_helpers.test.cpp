@@ -26,14 +26,15 @@ namespace {
             bool is_shortened = false;
             if (
                 // file.find("catch2") != std::string::npos ||
-                file.find("/bits/") != std::string::npos ||
-                file.find("/include/c++/") != std::string::npos) {
+                file.find("/bits/") != std::string::npos || file.find("/include/c++/") != std::string::npos
+            ) {
                 is_shortened = true;
             }
 
             if (
                 // desc.find("CATCH2_INTERNAL") != std::string::npos ||
-                desc.find("assert_true") != std::string::npos) {
+                desc.find("assert_true") != std::string::npos
+            ) {
                 is_shortened = true;
             }
 
@@ -51,7 +52,8 @@ namespace {
 
     void catch2_assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
         FAIL_CHECK(
-            "Assert failed \"" << msg << "\" at " << function_name << " in " << file_name << ":" << line_number);
+            "Assert failed \"" << msg << "\" at " << function_name << " in " << file_name << ":" << line_number
+        );
     }
 
     struct AssertHandlerInstaller {
@@ -61,4 +63,4 @@ namespace {
     };
     static AssertHandlerInstaller g_assert_install;
 
-} // namespace
+}

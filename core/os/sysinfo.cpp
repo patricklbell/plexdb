@@ -327,8 +327,7 @@ namespace plexdb::os {
         }
 
         B32 probe_large_pages_allowed() {
-            void* ptr = mmap(nullptr, 2 * 1024 * 1024, PROT_READ | PROT_WRITE,
-                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+            void* ptr = mmap(nullptr, 2 * 1024 * 1024, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
             if (ptr == MAP_FAILED) {
                 return 0;
             }

@@ -32,7 +32,8 @@ export namespace plexdb {
         static Vtable* get_vtable() {
             static Vtable vt = {
                 .invoke  = &invoke_impl<F>,
-                .destroy = &destroy_impl<F>};
+                .destroy = &destroy_impl<F>
+            };
             return &vt;
         }
 

@@ -94,35 +94,40 @@ namespace {
                 log_buffer_register_producer(
                     g_log_buffer,
                     event->producer_registered.producer_id,
-                    event->producer_registered.name);
+                    event->producer_registered.name
+                );
                 break;
             case PLEXDB_LOG_MESSAGE:
                 log_buffer_push_message(
                     g_log_buffer,
                     level_str(event->message.level),
                     event->message.text,
-                    event->message.text_len);
+                    event->message.text_len
+                );
                 break;
             case PLEXDB_LOG_STAT:
                 log_buffer_push_stat(
                     g_log_buffer,
                     event->stat.producer_id,
                     event->stat.stat_id,
-                    event->stat.value);
+                    event->stat.value
+                );
                 break;
             case PLEXDB_LOG_STAT_META:
                 log_buffer_register_stat_name(
                     g_log_buffer,
                     event->stat_meta.producer_id,
                     event->stat_meta.stat_id,
-                    event->stat_meta.name);
+                    event->stat_meta.name
+                );
                 break;
             case PLEXDB_LOG_PRODUCER_META:
                 log_buffer_register_producer_meta(
                     g_log_buffer,
                     event->producer_meta.producer_id,
                     event->producer_meta.key,
-                    event->producer_meta.value);
+                    event->producer_meta.value
+                );
                 break;
             default:
                 break;

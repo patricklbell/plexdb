@@ -28,22 +28,26 @@ export namespace plexdb::btree {
     template<KeyPolicy KP, ValuePolicy VP>
     coroutine::Task<const Header*> read_header(BTreePaged<KP, VP>& b) {
         co_return reinterpret_cast<const Header*>(
-            co_await pager::rpage(*b.pager, b.header_page));
+            co_await pager::rpage(*b.pager, b.header_page)
+        );
     }
     template<KeyPolicy KP, ValuePolicy VP>
     coroutine::Task<Header*> update_header(BTreePaged<KP, VP>& b) {
         co_return reinterpret_cast<Header*>(
-            co_await pager::rwpage(*b.pager, b.header_page));
+            co_await pager::rwpage(*b.pager, b.header_page)
+        );
     }
     template<KeyPolicy KP, ValuePolicy VP>
     coroutine::Task<const Node*> read_node(BTreePaged<KP, VP>& b, const NodeRef& ref) {
         co_return reinterpret_cast<const Node*>(
-            co_await pager::rpage(*b.pager, ref));
+            co_await pager::rpage(*b.pager, ref)
+        );
     }
     template<KeyPolicy KP, ValuePolicy VP>
     coroutine::Task<Node*> update_node(BTreePaged<KP, VP>& b, const NodeRef& ref) {
         co_return reinterpret_cast<Node*>(
-            co_await pager::rwpage(*b.pager, ref));
+            co_await pager::rwpage(*b.pager, ref)
+        );
     }
     template<KeyPolicy KP, ValuePolicy VP>
     coroutine::Task<NodeRef> create_internal(BTreePaged<KP, VP>& b) {

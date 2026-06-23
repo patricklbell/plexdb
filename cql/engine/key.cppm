@@ -43,7 +43,8 @@ namespace cql::key {
         U64 bits     = static_cast<U64>(v) ^ 0x8000000000000000ULL;
         U8  bytes[8] = {
             U8(bits >> 56), U8(bits >> 48), U8(bits >> 40), U8(bits >> 32),
-            U8(bits >> 24), U8(bits >> 16), U8(bits >> 8), U8(bits & 0xFF)};
+            U8(bits >> 24), U8(bits >> 16), U8(bits >> 8), U8(bits & 0xFF)
+        };
         append_bytes(out, bytes, 8);
     }
 
@@ -65,7 +66,8 @@ namespace cql::key {
         bits        = (bits & 0x8000000000000000ULL) ? ~bits : (bits ^ 0x8000000000000000ULL);
         U8 bytes[8] = {
             U8(bits >> 56), U8(bits >> 48), U8(bits >> 40), U8(bits >> 32),
-            U8(bits >> 24), U8(bits >> 16), U8(bits >> 8), U8(bits & 0xFF)};
+            U8(bits >> 24), U8(bits >> 16), U8(bits >> 8), U8(bits & 0xFF)
+        };
         append_bytes(out, bytes, 8);
     }
 
@@ -137,9 +139,7 @@ namespace cql::key {
     // @note `direction == Sort::DESC` inverts the value bytes (not the length prefix) so that
     // forward lex iteration produces the value in descending logical order. Variable-width
     // types assert on DESC — their escape/terminator scheme cannot be byte-inverted in place.
-    static void append_component(DynamicArray<U8>& out, const Evaluated& eval,
-                                 type::Basic dtype, bool is_composite,
-                                 Sort direction = Sort::ASC) {
+    static void append_component(DynamicArray<U8>& out, const Evaluated& eval, type::Basic dtype, bool is_composite, Sort direction = Sort::ASC) {
         const Constant& c           = get<Constant>(eval.value);
         U64             value_start = out.length;
         switch (dtype) {
@@ -271,9 +271,7 @@ namespace cql::key {
     // Decode one key component from `src` starting at `*pos`. Advances *pos past the component.
     // @note when `direction == Sort::DESC` the value bytes (not the length prefix) were
     // inverted at encode time; we XOR with 0xFF before decoding to recover the original.
-    static ColumnValue decode_component(const U8* src, U16 total_len, U16* pos,
-                                        type::Basic dtype, bool composite,
-                                        Sort direction = Sort::ASC) {
+    static ColumnValue decode_component(const U8* src, U16 total_len, U16* pos, type::Basic dtype, bool composite, Sort direction = Sort::ASC) {
         const U8 m = (direction == Sort::DESC) ? U8(0xFFu) : U8(0x00u);
         if (composite) {
             switch (dtype) {
@@ -291,8 +289,7 @@ namespace cql::key {
                 }
                 case type::Basic::int_: {
                     *pos += 2;
-                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) |
-                               (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
+                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) | (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
                     *pos += 4;
                     return ColumnValue{static_cast<S32>(bits ^ 0x80000000U)};
                 }
@@ -328,8 +325,7 @@ namespace cql::key {
                 }
                 case type::Basic::float_: {
                     *pos += 2;
-                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) |
-                               (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
+                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) | (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
                     *pos += 4;
                     bits = (bits & 0x80000000U) ? (bits ^ 0x80000000U) : ~bits;
                     F32 v;
@@ -409,8 +405,7 @@ namespace cql::key {
                     return ColumnValue{static_cast<S64>(bits ^ 0x8000000000000000ULL)};
                 }
                 case type::Basic::int_: {
-                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) |
-                               (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
+                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) | (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
                     *pos += 4;
                     return ColumnValue{static_cast<S32>(bits ^ 0x80000000U)};
                 }
@@ -441,8 +436,7 @@ namespace cql::key {
                     return ColumnValue{v};
                 }
                 case type::Basic::float_: {
-                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) |
-                               (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
+                    U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) | (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
                     *pos += 4;
                     bits = (bits & 0x80000000U) ? (bits ^ 0x80000000U) : ~bits;
                     F32 v;
@@ -487,9 +481,7 @@ namespace cql::key {
 namespace cql::key {
     // Returns true for types whose encoding length is not determined by dtype alone.
     static bool is_variable_length_basic(type::Basic dtype) {
-        return dtype == type::Basic::text || dtype == type::Basic::varchar ||
-               dtype == type::Basic::ascii || dtype == type::Basic::blob ||
-               dtype == type::Basic::hex;
+        return dtype == type::Basic::text || dtype == type::Basic::varchar || dtype == type::Basic::ascii || dtype == type::Basic::blob || dtype == type::Basic::hex;
     }
 
     // @note append_component encodes from Constant, so widen ColumnValue's narrow
@@ -558,10 +550,8 @@ export namespace cql::key {
 
     // Serialize partition key bytes from a parallel array of evaluated values.
     // partition_vals[i] corresponds to tbl.partition_key_col_indices[i].
-    DynamicArray<U8> serialize_partition(const schema::Table&             tbl,
-                                         TArrayView<const Evaluated, U64> partition_vals) {
-        assert_true(partition_vals.length == tbl.partition_key_col_indices.length,
-                    "partition val count must match partition key column count");
+    DynamicArray<U8> serialize_partition(const schema::Table& tbl, TArrayView<const Evaluated, U64> partition_vals) {
+        assert_true(partition_vals.length == tbl.partition_key_col_indices.length, "partition val count must match partition key column count");
         DynamicArray<U8> out;
         bool             composite = tbl.partition_key_col_indices.length > 1;
         for (U64 i = 0; i < tbl.partition_key_col_indices.length; i++) {
@@ -589,8 +579,7 @@ export namespace cql::key {
 
     // Serialize clustering key bytes from a parallel array of evaluated values.
     DynamicArray<U8> serialize_clustering(const schema::Table& tbl, TArrayView<const Evaluated, U64> clustering_vals) {
-        assert_true(clustering_vals.length == tbl.clustering_key_col_indices.length,
-                    "clustering val count must match clustering key column count");
+        assert_true(clustering_vals.length == tbl.clustering_key_col_indices.length, "clustering val count must match clustering key column count");
         DynamicArray<U8> out;
         bool             composite = tbl.clustering_key_col_indices.length > 1;
         for (U64 i = 0; i < tbl.clustering_key_col_indices.length; i++) {
@@ -603,8 +592,7 @@ export namespace cql::key {
     }
 
     DynamicArray<U8> serialize_clustering_prefix(const schema::Table& tbl, TArrayView<const Evaluated, U64> vals) {
-        assert_true(vals.length <= tbl.clustering_key_col_indices.length,
-                    "prefix length exceeds clustering key column count");
+        assert_true(vals.length <= tbl.clustering_key_col_indices.length, "prefix length exceeds clustering key column count");
         DynamicArray<U8> out;
         bool             composite = tbl.clustering_key_col_indices.length > 1;
         for (U64 i = 0; i < vals.length; i++) {
@@ -687,9 +675,7 @@ export namespace cql::key {
     }
 
     // @note index key layout: col_prefix || [U16 pk_len] || pk_bytes || ck_bytes
-    DynamicArray<U8> make_full_index_key(const DynamicArray<U8>&   prefix,
-                                         TArrayView<const U8, U16> pk_bytes,
-                                         TArrayView<const U8, U16> ck_bytes) {
+    DynamicArray<U8> make_full_index_key(const DynamicArray<U8>& prefix, TArrayView<const U8, U16> pk_bytes, TArrayView<const U8, U16> ck_bytes) {
         DynamicArray<U8> out;
         append_bytes(out, prefix.ptr, static_cast<U16>(prefix.length));
         append_u16_be(out, pk_bytes.length);

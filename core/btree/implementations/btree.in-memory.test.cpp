@@ -49,7 +49,8 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.in-memory]") {
             for (int max_internal = 3; max_internal <= 5; max_internal++) {
                 U32           nb = static_cast<U32>(std::max(
                     sizeof(Node) + max_internal * sizeof(U64) + (max_internal + 1) * sizeof(NodeRef),
-                    sizeof(Node) + max_leaf * (sizeof(U64) + sizeof(int))));
+                    sizeof(Node) + max_leaf * (sizeof(U64) + sizeof(int))
+                ));
                 BTreeInMemory t(FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{}, nb);
 
                 for (int key = 0; key < max_leaf * max_internal + 1; key++) {
@@ -140,7 +141,8 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.in-memory]") {
 
     SECTION("varlen key and value basic insert, find, and remove") {
         BTreeInMemory<VarlenKeyPolicy<>, VarlenValuePolicy> t(
-            VarlenKeyPolicy<>{}, VarlenValuePolicy{}, 256u);
+            VarlenKeyPolicy<>{}, VarlenValuePolicy{}, 256u
+        );
 
         auto k = [](const char* s) {
             return TArrayView<const U8, U16>{reinterpret_cast<const U8*>(s), static_cast<U16>(strlen(s))};
@@ -217,7 +219,8 @@ PAGER_TEST_CASE("remove", "[plexdb.btree.in-memory]") {
             for (int max_internal = 3; max_internal <= 5; max_internal++) {
                 U32           nb = static_cast<U32>(std::max(
                     sizeof(Node) + max_internal * sizeof(U64) + (max_internal + 1) * sizeof(NodeRef),
-                    sizeof(Node) + max_leaf * (sizeof(U64) + sizeof(int))));
+                    sizeof(Node) + max_leaf * (sizeof(U64) + sizeof(int))
+                ));
                 BTreeInMemory t(FixedKeyPolicy<U64>{}, FixedValuePolicy<sizeof(int)>{}, nb);
 
                 for (int key = 0; key < max_leaf * max_internal * max_internal; key++) {

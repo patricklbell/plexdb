@@ -422,8 +422,7 @@ namespace cql::engine {
                     if (col.tombstone) {
                         continue;
                     }
-                    bool       is_k = (col.key_kind == schema::KeyKind::PartitionKey ||
-                                 col.key_kind == schema::KeyKind::ClusteringKey);
+                    bool       is_k = (col.key_kind == schema::KeyKind::PartitionKey || col.key_kind == schema::KeyKind::ClusteringKey);
                     VirtualRow row;
                     emplace_back(row.values, AutoString8(ks.name));
                     emplace_back(row.values, AutoString8(tbl.name));

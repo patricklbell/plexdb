@@ -24,8 +24,8 @@ namespace plexdb {
                 res += to_str(keys<typename KP::key_type>(node)[i]);
             } else {
                 auto kb = is_leaf
-                              ? leaf_get_key_bytes(node, ns, kp, vp, i)
-                              : internal_get_key_bytes(node, ns, kp, i);
+                            ? leaf_get_key_bytes(node, ns, kp, vp, i)
+                            : internal_get_key_bytes(node, ns, kp, i);
                 res += to_str(String8{const_cast<U8*>(kb.ptr), kb.length});
             }
 
@@ -42,8 +42,7 @@ namespace plexdb {
     }
 
     template<typename T, BTree BT>
-    coroutine::Task<AutoString8> btree_to_str_recursive(BT& t, const Node* node, U64 depth,
-                                                        const String8& prepend, bool end) {
+    coroutine::Task<AutoString8> btree_to_str_recursive(BT& t, const Node* node, U64 depth, const String8& prepend, bool end) {
         const Header& h  = *(co_await read_header(t));
         U32           ns = node_size(t);
         auto          kp = key_policy(t);
@@ -59,7 +58,8 @@ namespace plexdb {
                 res += co_await btree_to_str_recursive<T>(
                     t, child, depth + 1,
                     prepend + (end ? "   " : " | "),
-                    i == child_count - 1);
+                    i == child_count - 1
+                );
             }
         }
         co_return res;

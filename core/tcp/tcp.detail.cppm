@@ -133,7 +133,8 @@ export namespace plexdb::tcp {
     aio::EventConsumer listen_uring_start(
         UringListenerState*           in_s,
         const ConnectionHandler auto* in_handler,
-        os::Poll&                     poll) {
+        os::Poll&                     poll
+    ) {
         assert_true(static_cast<bool>(in_s->ring), "cannot listen to invalid uring");
         assert_true(!os::is_zero_handle(in_s->ring.event_fd), "uring ring missing event_fd");
 
@@ -156,8 +157,7 @@ export namespace plexdb::tcp {
         in_s->read_fn = ReadToBufferFunctor{[in_s](Connection* connection, RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(connection->client), "invalid read on closed connection");
             assert_true(!connection->waiting_rwc, "connection already has coroutine pending");
-            assert_true(in_s->buffer_infos[buffer->idx].client == connection->client,
-                        "buffer not acquired for this connection");
+            assert_true(in_s->buffer_infos[buffer->idx].client == connection->client, "buffer not acquired for this connection");
 
             U32 byte_offset    = bounds_checked_cast<U32>(buffer->view.ptr - (in_s->ring.buffers + buffer->idx * in_s->ring.buffer_size));
             U32 max_byte_count = bounds_checked_cast<U32>(buffer->length);
@@ -171,7 +171,8 @@ export namespace plexdb::tcp {
                     buffer->view.length     = connection->count_rwc;
                     connection->waiting_rwc = std::coroutine_handle<>{};
                     return connection->error_rwc;
-                }};
+                }
+            };
         }};
 
         in_s->write_fn = WriteFromBufferFunctor{[in_s](Connection* connection, const RWBuffer* buffer) -> coroutine::Task<Error> {
@@ -188,10 +189,10 @@ export namespace plexdb::tcp {
                 },
                 [connection, target_byte_count]() -> Error {
                     connection->waiting_rwc = std::coroutine_handle<>{};
-                    assert_true(connection->error_rwc != Error::None || connection->count_rwc == target_byte_count,
-                                "unexpected partial write resumption");
+                    assert_true(connection->error_rwc != Error::None || connection->count_rwc == target_byte_count, "unexpected partial write resumption");
                     return connection->error_rwc;
-                }};
+                }
+            };
         }};
 
         uring::sqe_push_multishot_accept(in_s->ring);
@@ -284,13 +285,16 @@ export namespace plexdb::tcp {
 
                     uring::sqe_submit_non_blocking(in_s->ring);
                     return true;
-                }}};
+                }
+            }
+        };
     }
 
     aio::EventConsumer listen_socket_start(
         SocketListenerState*          in_s,
         const ConnectionHandler auto* in_handler,
-        os::Poll&                     poll) {
+        os::Poll&                     poll
+    ) {
         os::socket_set_option(in_s->socket, os::SocketOption::NonBlocking, true);
 
         constexpr U32 BUFFER_SIZE = SocketListenerState::BUFFER_SIZE;
@@ -336,7 +340,8 @@ export namespace plexdb::tcp {
                             },
                             [conn]() -> bool {
                                 return !os::is_zero_handle(conn->client);
-                            }};
+                            }
+                        };
                         if (!ready) {
                             co_return Error::ConnectionClosed;
                         }
@@ -386,7 +391,8 @@ export namespace plexdb::tcp {
                                 }
                                 os::poll_update_mask(*in_s->poll, conn->client, SocketListenerState::DEFAULT_EVENTS);
                                 return true;
-                            }};
+                            }
+                        };
                         if (!ready) {
                             co_return Error::ConnectionClosed;
                         }
@@ -507,8 +513,7 @@ export namespace plexdb::tcp {
                         auto waiting_it = find_it(in_s->waiting_op, event.handle);
                         if (waiting_it != in_s->waiting_op.end()) {
                             bool ready =
-                                (waiting_it->second == SocketListenerState::Op::WaitRead && has_read) ||
-                                (waiting_it->second == SocketListenerState::Op::WaitWrite && has_write);
+                                (waiting_it->second == SocketListenerState::Op::WaitRead && has_read) || (waiting_it->second == SocketListenerState::Op::WaitWrite && has_write);
                             if (ready) {
                                 std::coroutine_handle<> h = conn->waiting_rwc;
                                 conn->waiting_rwc         = std::coroutine_handle<>{};
@@ -521,6 +526,8 @@ export namespace plexdb::tcp {
                         }
                     }
                     return true;
-                }}};
+                }
+            }
+        };
     }
 }

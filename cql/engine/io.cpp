@@ -149,10 +149,7 @@ namespace {
             w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
             w(src.value.ptr, src.value.length);
         } else if constexpr (SameAs<T, Blob>) {
-            assert_true(dtype == type::Basic::blob || dtype == type::Basic::inet || dtype == type::Basic::varint ||
-                            dtype == type::Basic::decimal || dtype == type::Basic::duration ||
-                            dtype == type::Basic::hex,
-                        "blob value written to incompatible column dtype");
+            assert_true(dtype == type::Basic::blob || dtype == type::Basic::inet || dtype == type::Basic::varint || dtype == type::Basic::decimal || dtype == type::Basic::duration || dtype == type::Basic::hex, "blob value written to incompatible column dtype");
             w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
             w(src.value.ptr, src.value.length);
         } else if constexpr (SameAs<T, Duration>) {
@@ -710,8 +707,7 @@ namespace cql::io {
         return visit(evaluated.value, [&cdtype](const auto& cv) -> bool {
             using T = Decay<decltype(cv)>;
             if constexpr (SameAs<T, Constant>) {
-                return type_matches_tag<type::Basic>(cdtype.value) &&
-                       can_cast_write_constant_as_column_value(cv, get<type::Basic>(cdtype.value));
+                return type_matches_tag<type::Basic>(cdtype.value) && can_cast_write_constant_as_column_value(cv, get<type::Basic>(cdtype.value));
             } else if constexpr (SameAs<T, MapLiteral>) {
                 return type_matches_tag<type::Map>(cdtype.value);
             } else if constexpr (SameAs<T, SetLiteral>) {
@@ -738,8 +734,7 @@ namespace cql::io {
             using T = Decay<decltype(v)>;
 
             if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
-                return type_matches_tag<type::Basic>(cdtype.value) &&
-                       can_write_typed_basic_as_column_value<T>(get<type::Basic>(cdtype.value));
+                return type_matches_tag<type::Basic>(cdtype.value) && can_write_typed_basic_as_column_value<T>(get<type::Basic>(cdtype.value));
             } else if constexpr (SameAs<T, DynamicArray<NestedColumnValue>>) {
                 return type_matches_tag<type::List>(cdtype.value) || type_matches_tag<type::Vector>(cdtype.value);
             } else if constexpr (SameAs<T, DynamicSet<NestedColumnValue>>) {
@@ -924,22 +919,16 @@ namespace plexdb {
                     }
                     return result;
                 } else {
-                    return to_str(static_cast<U64>(v.v4[0])) + "." +
-                           to_str(static_cast<U64>(v.v4[1])) + "." +
-                           to_str(static_cast<U64>(v.v4[2])) + "." +
-                           to_str(static_cast<U64>(v.v4[3]));
+                    return to_str(static_cast<U64>(v.v4[0])) + "." + to_str(static_cast<U64>(v.v4[1])) + "." + to_str(static_cast<U64>(v.v4[2])) + "." + to_str(static_cast<U64>(v.v4[3]));
                 }
             } else if constexpr (SameAs<T, cql::VarInt>) {
                 AutoString8 prefix = v.negative ? "-0x"_as : "0x"_as;
                 return prefix + bytes_to_hex(v.magnitude.ptr, v.magnitude.length);
             } else if constexpr (SameAs<T, cql::Decimal>) {
                 AutoString8 prefix = v.unscaled.negative ? "-0x"_as : "0x"_as;
-                return prefix + bytes_to_hex(v.unscaled.magnitude.ptr, v.unscaled.magnitude.length) +
-                       "e-" + to_str(static_cast<S64>(v.scale));
+                return prefix + bytes_to_hex(v.unscaled.magnitude.ptr, v.unscaled.magnitude.length) + "e-" + to_str(static_cast<S64>(v.scale));
             } else if constexpr (SameAs<T, cql::Duration>) {
-                return to_str(static_cast<S64>(v.months)) + "mo" +
-                       to_str(static_cast<S64>(v.days)) + "d" +
-                       to_str(v.nanoseconds) + "ns";
+                return to_str(static_cast<S64>(v.months)) + "mo" + to_str(static_cast<S64>(v.days)) + "d" + to_str(v.nanoseconds) + "ns";
             }
             assert_not_implemented("to_str for collection ColumnValue types is not implemented");
             return ""_as;

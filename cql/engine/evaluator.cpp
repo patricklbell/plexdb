@@ -86,8 +86,9 @@ namespace cql {
             node.values[i] = entropy.values[i];
         }
         U16 clock_seq = static_cast<U16>(
-                            static_cast<U16>(entropy.values[6]) | (static_cast<U16>(entropy.values[7]) << 8)) &
-                        0x3fff_u16;
+                            static_cast<U16>(entropy.values[6]) | (static_cast<U16>(entropy.values[7]) << 8)
+                        )
+                      & 0x3fff_u16;
         return make_timeuuid_from_unix_ms(static_cast<S64>(os::unix_ms_now()), clock_seq, node);
     }
 
@@ -496,9 +497,7 @@ namespace cql {
                 return {*c};
             }
             return Evaluated{Constant{Null{}}};
-        } else if constexpr (SameAs<T, MapLiteral> || SameAs<T, SetLiteral> ||
-                             SameAs<T, ListOrVectorLiteral> || SameAs<T, UdtLiteral> ||
-                             SameAs<T, TupleLiteral>) {
+        } else if constexpr (SameAs<T, MapLiteral> || SameAs<T, SetLiteral> || SameAs<T, ListOrVectorLiteral> || SameAs<T, UdtLiteral> || SameAs<T, TupleLiteral>) {
             return {v};
         } else if constexpr (SameAs<T, FunctionCall>) {
             return evaluate_function_call(v, ctx);
@@ -508,8 +507,7 @@ namespace cql {
                 if constexpr (SameAs<AT, UnaryMinusArithmeticOperation>) {
                     return evaluate_unary_minus(evaluate_term(arith_v.operand, ctx));
                 } else if constexpr (SameAs<AT, BinaryArithmeticOperation>) {
-                    return evaluate_binary_arithmetic(evaluate_term(arith_v.lhs, ctx), arith_v.op,
-                                                      evaluate_term(arith_v.rhs, ctx));
+                    return evaluate_binary_arithmetic(evaluate_term(arith_v.lhs, ctx), arith_v.op, evaluate_term(arith_v.rhs, ctx));
                 } else {
                     static_assert(!SameAs<AT, AT>, "missing ArithmeticOperation case");
                     return Evaluated{Constant{Null{}}};
@@ -554,8 +552,7 @@ namespace cql {
                     if constexpr (SameAs<AT, TOIUnaryMinus>) {
                         return evaluate_unary_minus(evaluate_toi(arith_v.operand, ctx));
                     } else if constexpr (SameAs<AT, TOIBinaryArithmetic>) {
-                        return evaluate_binary_arithmetic(evaluate_toi(arith_v.lhs, ctx), arith_v.op,
-                                                          evaluate_toi(arith_v.rhs, ctx));
+                        return evaluate_binary_arithmetic(evaluate_toi(arith_v.lhs, ctx), arith_v.op, evaluate_toi(arith_v.rhs, ctx));
                     } else {
                         static_assert(!SameAs<AT, AT>, "missing TOIArithmeticOperation case");
                         return Evaluated{Constant{Null{}}};
@@ -729,8 +726,7 @@ namespace cql {
     }
 
     // @note CONTAINS scans element values; CONTAINS KEY scans only the key half of a map.
-    static bool evaluate_contains(const Evaluated& lhs, const Evaluated& rhs, bool match_keys,
-                                  const EvalContext& ctx) {
+    static bool evaluate_contains(const Evaluated& lhs, const Evaluated& rhs, bool match_keys, const EvalContext& ctx) {
         if (!type_matches_tag<ColumnValue>(lhs.value)) {
             return false;
         }
@@ -763,7 +759,7 @@ namespace cql {
                 return false;
             } else if constexpr (SameAs<T, DynamicMap<NestedColumnValue, NestedColumnValue>>) {
                 for (auto it = col.begin(); it != col.end(); ++it) {
-                    const NestedColumnValue& side = match_keys ? (*it).first : (*it).second;
+                    const NestedColumnValue& side       = match_keys ? (*it).first : (*it).second;
                     bool                     comparable = false;
                     S64                      cmp        = compare_evaluated(Evaluated{side.value}, rhs, comparable);
                     if (comparable && cmp == 0) {

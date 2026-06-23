@@ -112,12 +112,14 @@ namespace plexdb::wal {
             ctx,
             wal.file,
             Rng1U64{.start = offset, .end = offset + sizeof(Frame)},
-            &frame);
+            &frame
+        );
         co_await aio::file_write(
             ctx,
             wal.file,
             Rng1U64{.start = offset + sizeof(Frame), .end = offset + sizeof(Frame) + data_size},
-            data);
+            data
+        );
 
         wal.header.frame_count++;
         co_return frame_idx;
@@ -132,7 +134,8 @@ namespace plexdb::wal {
             ctx,
             wal.file,
             Rng1U64{.start = offsetof(Header, frame_count), .end = offsetof(Header, frame_count) + sizeof(U64)},
-            &wal.header.frame_count);
+            &wal.header.frame_count
+        );
         co_await aio::file_sync(ctx, wal.file);
     }
 
@@ -147,7 +150,8 @@ namespace plexdb::wal {
             ctx,
             wal.file,
             Rng1U64{.start = offset, .end = offset + sizeof(Frame)},
-            reinterpret_cast<U8*>(&frame_out));
+            reinterpret_cast<U8*>(&frame_out)
+        );
 
         if (frame_out.page_idx == HEADER_FRAME_IDX) {
             data_size = sizeof(Header);
@@ -157,7 +161,8 @@ namespace plexdb::wal {
             ctx,
             wal.file,
             Rng1U64{.start = offset + sizeof(Frame), .end = offset + sizeof(Frame) + data_size},
-            data_out);
+            data_out
+        );
 
         U64 expected = frame_checksum(wal.header.salt, frame_out.page_idx, data_out);
         assert_true(frame_out.checksum == expected, "WAL frame checksum mismatch");
@@ -172,7 +177,8 @@ namespace plexdb::wal {
             ctx,
             wal.file,
             Rng1U64{.start = offsetof(Header, frame_count), .end = offsetof(Header, frame_count) + sizeof(U64)},
-            &wal.header.frame_count);
+            &wal.header.frame_count
+        );
         co_await aio::file_sync(ctx, wal.file);
     }
 }

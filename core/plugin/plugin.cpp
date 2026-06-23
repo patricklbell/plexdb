@@ -111,8 +111,7 @@ namespace plexdb::plugin {
         for (unsigned i = 0; i < stat_count; ++i) {
             PlexdbLogEvent e{};
             e.type      = PLEXDB_LOG_STAT_META;
-            e.stat_meta = {known_stats[i].producer_id, known_stats[i].stat_id,
-                           known_stats[i].stat_type, known_stats[i].name};
+            e.stat_meta = {known_stats[i].producer_id, known_stats[i].stat_id, known_stats[i].stat_type, known_stats[i].name};
             fn(&e, ctx);
         }
     }

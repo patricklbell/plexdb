@@ -484,8 +484,8 @@ export namespace plexdb {
     // ========================================================================
     template<class T, class U = T>
     constexpr T exchange(T& obj, U&& new_value) noexcept(
-        NoThrowMoveConstructible<T> &&
-        NoThrowAssignable<T&, U>) {
+        NoThrowMoveConstructible<T> && NoThrowAssignable<T&, U>
+    ) {
         T old_value = move(obj);
         obj         = forward<U>(new_value);
         return old_value;
@@ -493,9 +493,8 @@ export namespace plexdb {
 
     template<typename T>
     constexpr void swap(T& a, T& b) noexcept(
-        noexcept(T(move(a))) &&
-        noexcept(a = move(b)) &&
-        noexcept(b = move(a))) {
+        noexcept(T(move(a))) && noexcept(a = move(b)) && noexcept(b = move(a))
+    ) {
         T tmp = move(a);
         a     = move(b);
         b     = move(tmp);
@@ -942,15 +941,13 @@ export namespace plexdb {
 
     // not strictly necessary but can be clearer
     template<typename T, typename Length>
-    constexpr Length binary_search_last_leq(const TArrayView<T, Length>& view,
-                                            const RemoveCV<T>&           key) noexcept {
+    constexpr Length binary_search_last_leq(const TArrayView<T, Length>& view, const RemoveCV<T>& key) noexcept {
         auto idx = binary_search_first_gt(view, key);
         return idx == 0 ? 0 : idx - 1;
     }
 
     template<typename T, typename Length>
-    constexpr Length binary_search_last_lt(const TArrayView<T, Length>& view,
-                                           const RemoveCV<T>&           key) noexcept {
+    constexpr Length binary_search_last_lt(const TArrayView<T, Length>& view, const RemoveCV<T>& key) noexcept {
         auto idx = binary_search_first_geq(view, key);
         return idx == 0 ? 0 : idx - 1;
     }

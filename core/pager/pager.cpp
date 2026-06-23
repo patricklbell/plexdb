@@ -40,7 +40,8 @@ namespace plexdb::pager {
                 .start = pager.base_offset,
                 .end   = pager.base_offset + sizeof(pager.header),
             },
-            &pager.header);
+            &pager.header
+        );
     }
 
     coroutine::Task<Header> create(aio::FileIOContext& file_io_ctx, os::Handle file, U64 page_size, U64 base_offset) {
@@ -74,14 +75,16 @@ namespace plexdb::pager {
                 co_await aio::file_write(
                     ctx, pager.file,
                     Rng1U64{.start = offset, .end = offset + pager.header.page_size},
-                    pair.second.data.ptr);
+                    pair.second.data.ptr
+                );
             }
         }
         if (pager.header_in_write_set) {
             co_await aio::file_write(
                 ctx, pager.file,
                 Rng1U64{.start = pager.base_offset, .end = pager.base_offset + sizeof(pager.header)},
-                &pager.header);
+                &pager.header
+            );
             pager.header_in_write_set = false;
         }
         os::file_resize_zero(pager.file, pager.base_offset + pager.header.page_count * pager.header.page_size);
@@ -128,8 +131,10 @@ namespace plexdb::pager {
             pager.wal.file,
             Rng1U64{
                 .start = offsetof(wal::Header, frame_count),
-                .end   = offsetof(wal::Header, frame_count) + sizeof(U64)},
-            &pager.wal.header.frame_count);
+                .end   = offsetof(wal::Header, frame_count) + sizeof(U64)
+            },
+            &pager.wal.header.frame_count
+        );
         co_await aio::file_sync(*pager.file_io_ctx, pager.wal.file);
 
         co_await read_header(pager);
@@ -251,7 +256,8 @@ namespace plexdb::pager {
                 []() {},
                 [p = &pager, n = &node]() {
                     remove(p->tx_waiters, n);
-                }};
+                }
+            };
         }
         pager.saved_header       = pager.header;
         pager.transaction_active = true;
@@ -264,8 +270,7 @@ namespace plexdb::pager {
             co_await flush_direct(pager);
             finish_transaction(pager);
             plugin::stat(stat_tx_committed, 1);
-            plugin::message(pager_producer, plugin::Level::Debug,
-                            fmt("pager: transaction committed, page_count=%" PRIu64, pager.header.page_count));
+            plugin::message(pager_producer, plugin::Level::Debug, fmt("pager: transaction committed, page_count=%" PRIu64, pager.header.page_count));
             co_return;
         }
 
@@ -298,8 +303,7 @@ namespace plexdb::pager {
         clear(pager.page_cache);
         finish_transaction(pager);
         plugin::stat(stat_tx_committed, 1);
-        plugin::message(pager_producer, plugin::Level::Debug,
-                        fmt("pager: transaction committed, page_count=%" PRIu64, pager.header.page_count));
+        plugin::message(pager_producer, plugin::Level::Debug, fmt("pager: transaction committed, page_count=%" PRIu64, pager.header.page_count));
     }
 
     static void rollback_transaction(Pager& pager) {
@@ -353,8 +357,7 @@ namespace plexdb::pager {
         assert_true(!started_transaction, "Transaction::begin called on already-started transaction (double-begin)");
         co_await begin_transaction(*p);
         started_transaction = true;
-        plugin::message(pager_producer, plugin::Level::Debug,
-                        fmt("pager: transaction begun, page_count=%" PRIu64, p->header.page_count));
+        plugin::message(pager_producer, plugin::Level::Debug, fmt("pager: transaction begun, page_count=%" PRIu64, p->header.page_count));
     }
 
     coroutine::Task<> Transaction::commit() {
@@ -390,7 +393,8 @@ namespace plexdb::pager {
                 co_await aio::file_write(
                     ctx, pager.file,
                     Rng1U64{pager.base_offset, pager.base_offset + sizeof(Header)},
-                    &pager.header);
+                    &pager.header
+                );
             } else {
                 auto* entry = find(pager.page_cache, page_idx);
                 if (entry) {
@@ -398,7 +402,8 @@ namespace plexdb::pager {
                     co_await aio::file_write(
                         ctx, pager.file,
                         Rng1U64{.start = db_start, .end = db_start + page_size},
-                        entry->data.ptr);
+                        entry->data.ptr
+                    );
                 } else {
                     wal::Frame frame{};
                     co_await wal::read_frame(pager.wal, ctx, frame_idx, frame, buf);
@@ -406,7 +411,8 @@ namespace plexdb::pager {
                     co_await aio::file_write(
                         ctx, pager.file,
                         Rng1U64{.start = db_start, .end = db_start + page_size},
-                        buf);
+                        buf
+                    );
                 }
             }
         }
@@ -455,7 +461,8 @@ namespace plexdb::pager {
             co_await aio::file_read(
                 *pager.file_io_ctx, pager.file,
                 Rng1U64{.start = offset, .end = offset + pager.header.page_size},
-                data);
+                data
+            );
         }
         insert(pager.page_cache, idx, PageCacheEntry{UniquePtr<U8>{data}, false});
         co_return data;
@@ -488,7 +495,8 @@ namespace plexdb::pager {
             co_await aio::file_read(
                 *pager.file_io_ctx, pager.file,
                 Rng1U64{.start = offset, .end = offset + pager.header.page_size},
-                data);
+                data
+            );
         }
         insert(pager.page_cache, idx, PageCacheEntry{UniquePtr<U8>{data}, true});
         co_return data;

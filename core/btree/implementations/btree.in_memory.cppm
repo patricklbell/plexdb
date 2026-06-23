@@ -35,7 +35,8 @@ namespace plexdb::btree {
                 .depth  = 0,
                 .size   = 0,
                 .root   = {},
-                .leaves = {}};
+                .leaves = {}
+            };
 
             Node* root          = reinterpret_cast<Node*>(os::allocate(nb));
             root->key_count     = 0;

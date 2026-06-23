@@ -57,11 +57,7 @@ namespace plexdb::uring {
 
         U64 page_size = os::get_system_info()->page_size;
 
-        settings->available = os::get_kernel_features()->io_uring.supported &&
-                              (settings->available_buffer_bytes > 0) &&
-                              (settings->available_buffer_count > 0) &&
-                              (settings->available_ring_count > 0) &&
-                              (page_size >= minimum_recommended_buffer_size);
+        settings->available = os::get_kernel_features()->io_uring.supported && (settings->available_buffer_bytes > 0) && (settings->available_buffer_count > 0) && (settings->available_ring_count > 0) && (page_size >= minimum_recommended_buffer_size);
 
         // @note buffer_size must be page-aligned for io_uring_register_buffers mlock accounting
         settings->recommended = settings->available;
@@ -76,13 +72,15 @@ namespace plexdb::uring {
         settings->recommended_buffer_size  = align_down(settings->available_buffer_bytes / settings->available_buffer_count, page_size);
         settings->recommended_buffer_count = min(
             settings->available_buffer_bytes / max(settings->recommended_buffer_size, 1_u64),
-            settings->available_buffer_count);
+            settings->available_buffer_count
+        );
 
         if (settings->recommended_buffer_size < minimum_recommended_buffer_size) {
             settings->recommended_buffer_size  = align_down(minimum_recommended_buffer_size, page_size);
             settings->recommended_buffer_count = min(
                 settings->available_buffer_bytes / max(minimum_recommended_buffer_size, 1_u64),
-                settings->available_buffer_count);
+                settings->available_buffer_count
+            );
 
             if (settings->recommended_buffer_count == 0 || settings->recommended_buffer_size == 0) {
                 settings->recommended = false;
@@ -105,10 +103,12 @@ namespace plexdb::uring {
                 .available                = false,
                 .available_queue_depth    = min(
                     os::get_kernel_features()->io_uring.max_sq_entries,
-                    os::get_kernel_features()->io_uring.max_cq_entries),
+                    os::get_kernel_features()->io_uring.max_cq_entries
+                ),
                 .available_buffer_bytes = min(
                     usable_mlock,
-                    os::get_system_info()->total_memory),
+                    os::get_system_info()->total_memory
+                ),
                 // @note assumes we register an iovec for each buffer
                 .available_buffer_count = os::get_kernel_features()->io_uring.max_iovecs,
                 .available_ring_count   = os::get_system_info()->vma_limit,

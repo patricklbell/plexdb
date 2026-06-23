@@ -189,48 +189,37 @@ namespace cql::native {
         using TT = Decay<T>;
 
         if constexpr (SameAs<TT, S64>) {
-            assert_true(dtype == type::Basic::bigint || dtype == type::Basic::counter || dtype == type::Basic::timestamp || dtype == type::Basic::time,
-                        "S64 does not match basic type");
+            assert_true(dtype == type::Basic::bigint || dtype == type::Basic::counter || dtype == type::Basic::timestamp || dtype == type::Basic::time, "S64 does not match basic type");
             return 8;
         } else if constexpr (SameAs<TT, S32>) {
-            assert_true(dtype == type::Basic::int_ || dtype == type::Basic::date,
-                        "S32 does not match basic type");
+            assert_true(dtype == type::Basic::int_ || dtype == type::Basic::date, "S32 does not match basic type");
             return 4;
         } else if constexpr (SameAs<TT, S16>) {
-            assert_true(dtype == type::Basic::smallint,
-                        "S16 does not match basic type");
+            assert_true(dtype == type::Basic::smallint, "S16 does not match basic type");
             return 2;
         } else if constexpr (SameAs<TT, U8>) {
-            assert_true(dtype == type::Basic::boolean || dtype == type::Basic::tinyint,
-                        "U8 does not match basic type");
+            assert_true(dtype == type::Basic::boolean || dtype == type::Basic::tinyint, "U8 does not match basic type");
             return 1;
         } else if constexpr (SameAs<TT, F64>) {
-            assert_true(dtype == type::Basic::double_,
-                        "F64 does not match basic type");
+            assert_true(dtype == type::Basic::double_, "F64 does not match basic type");
             return 8;
         } else if constexpr (SameAs<TT, F32>) {
-            assert_true(dtype == type::Basic::float_,
-                        "F32 does not match basic type");
+            assert_true(dtype == type::Basic::float_, "F32 does not match basic type");
             return 4;
         } else if constexpr (SameAs<TT, AutoString8>) {
             assert_true(
-                dtype == type::Basic::ascii ||
-                    dtype == type::Basic::text ||
-                    dtype == type::Basic::varchar,
-                "AutoString8 does not match basic type");
+                dtype == type::Basic::ascii || dtype == type::Basic::text || dtype == type::Basic::varchar,
+                "AutoString8 does not match basic type"
+            );
             return value.length;
         } else if constexpr (SameAs<TT, UUID>) {
             assert_true(dtype == type::Basic::uuid || dtype == type::Basic::timeuuid, "UUID value does not match basic type");
             return UUID::length;
         } else if constexpr (SameAs<TT, Blob>) {
             assert_true(
-                dtype == type::Basic::blob ||
-                    dtype == type::Basic::inet ||
-                    dtype == type::Basic::varint ||
-                    dtype == type::Basic::decimal ||
-                    dtype == type::Basic::duration ||
-                    dtype == type::Basic::hex,
-                "Blob value does not match basic type");
+                dtype == type::Basic::blob || dtype == type::Basic::inet || dtype == type::Basic::varint || dtype == type::Basic::decimal || dtype == type::Basic::duration || dtype == type::Basic::hex,
+                "Blob value does not match basic type"
+            );
             return value.value.length;
         } else if constexpr (SameAs<TT, Hex>) {
             assert_true(dtype == type::Basic::hex, "Hex value does not match basic type");
@@ -318,10 +307,9 @@ namespace cql::native {
 
         if constexpr (SameAs<TT, AutoString8>) {
             assert_true(
-                dtype == type::Basic::ascii ||
-                    dtype == type::Basic::text ||
-                    dtype == type::Basic::varchar,
-                "AutoString8 value does not match type::Basic");
+                dtype == type::Basic::ascii || dtype == type::Basic::text || dtype == type::Basic::varchar,
+                "AutoString8 value does not match type::Basic"
+            );
 
             append_cql_bytes_raw(f, reinterpret_cast<const U8*>(v.c_str), S32(v.length));
         } else if constexpr (SameAs<TT, UUID>) {
@@ -330,11 +318,9 @@ namespace cql::native {
             append_cql_bytes_raw(f, &v.value[0], v.length);
         } else if constexpr (SameAs<TT, S64>) {
             assert_true(
-                dtype == type::Basic::bigint ||
-                    dtype == type::Basic::counter ||
-                    dtype == type::Basic::timestamp ||
-                    dtype == type::Basic::time,
-                "S64 value does not match type::Basic");
+                dtype == type::Basic::bigint || dtype == type::Basic::counter || dtype == type::Basic::timestamp || dtype == type::Basic::time,
+                "S64 value does not match type::Basic"
+            );
 
             S64 vv = v;
             U8  data[8];
@@ -345,9 +331,9 @@ namespace cql::native {
             append_cql_bytes_raw(f, data, 8);
         } else if constexpr (SameAs<TT, S32>) {
             assert_true(
-                dtype == type::Basic::int_ ||
-                    dtype == type::Basic::date,
-                "S32 value does not match type::Basic");
+                dtype == type::Basic::int_ || dtype == type::Basic::date,
+                "S32 value does not match type::Basic"
+            );
             U8 data[4] = {U8(U32(v) >> 24), U8(U32(v) >> 16), U8(U32(v) >> 8), U8(U32(v))};
             append_cql_bytes_raw(f, data, 4);
 
@@ -358,9 +344,9 @@ namespace cql::native {
 
         } else if constexpr (SameAs<TT, U8>) {
             assert_true(
-                dtype == type::Basic::boolean ||
-                    dtype == type::Basic::tinyint,
-                "U8 value does not match type::Basic");
+                dtype == type::Basic::boolean || dtype == type::Basic::tinyint,
+                "U8 value does not match type::Basic"
+            );
             append_cql_bytes_raw(f, &v, 1);
 
         } else if constexpr (SameAs<TT, F32>) {
@@ -382,13 +368,9 @@ namespace cql::native {
             append_cql_bytes_raw(f, data, 8);
         } else if constexpr (SameAs<TT, Blob>) {
             assert_true(
-                dtype == type::Basic::blob ||
-                    dtype == type::Basic::inet ||
-                    dtype == type::Basic::varint ||
-                    dtype == type::Basic::decimal ||
-                    dtype == type::Basic::duration ||
-                    dtype == type::Basic::hex,
-                "Blob value does not match type::Basic");
+                dtype == type::Basic::blob || dtype == type::Basic::inet || dtype == type::Basic::varint || dtype == type::Basic::decimal || dtype == type::Basic::duration || dtype == type::Basic::hex,
+                "Blob value does not match type::Basic"
+            );
             append_cql_bytes_raw(f, v.value.ptr, S32(v.value.length));
         } else if constexpr (SameAs<TT, Hex>) {
             assert_true(dtype == type::Basic::hex, "Hex value does not match type::Basic");
@@ -448,11 +430,13 @@ namespace cql::native {
                     U8(c >> 8),
                     U8(U8(c >> 16 & 0x01u) | U8((u & 0x7Fu) << 1)),
                     U8(u >> 7),
-                    U8(U8(u >> 15 & 0x03u) | U8(U8(self_contained) << 2))};
+                    U8(U8(u >> 15 & 0x03u) | U8(U8(self_contained) << 2))
+                };
                 U32 hcrc                                                  = crc::crc24(bits, 5);
                 U8  hdr[V5_COMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT] = {
                     bits[0], bits[1], bits[2], bits[3], bits[4],
-                    U8(hcrc), U8(hcrc >> 8), U8(hcrc >> 16)};
+                    U8(hcrc), U8(hcrc >> 8), U8(hcrc >> 16)
+                };
                 U32 pcrc       = crc::crc32(cbuf.ptr, U64(comp_len), crc::CRC32_CQL_V5_INIT);
                 U8  trailer[4] = {U8(pcrc), U8(pcrc >> 8), U8(pcrc >> 16), U8(pcrc >> 24)};
                 co_await send_block(req, hdr, V5_COMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT);
@@ -462,11 +446,13 @@ namespace cql::native {
                 U32 pl      = U32(chunk);
                 U8  bits[3] = {
                     U8(pl), U8(pl >> 8),
-                    U8(U8(pl >> 16 & 0x01u) | U8(U8(self_contained) << 1))};
+                    U8(U8(pl >> 16 & 0x01u) | U8(U8(self_contained) << 1))
+                };
                 U32 hcrc                                                    = crc::crc24(bits, 3);
                 U8  hdr[V5_UNCOMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT] = {
                     bits[0], bits[1], bits[2],
-                    U8(hcrc), U8(hcrc >> 8), U8(hcrc >> 16)};
+                    U8(hcrc), U8(hcrc >> 8), U8(hcrc >> 16)
+                };
                 U32 pcrc       = crc::crc32(data + offset, chunk, crc::CRC32_CQL_V5_INIT);
                 U8  trailer[4] = {U8(pcrc), U8(pcrc >> 8), U8(pcrc >> 16), U8(pcrc >> 24)};
                 co_await send_block(req, hdr, V5_UNCOMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT);
@@ -575,7 +561,8 @@ namespace cql::native {
                             resize(envelope_buf, old_len + uncomp_len);
                             S32 result = lz4::decompress(
                                 read_buf.ptr, envelope_buf.ptr + old_len,
-                                S32(payload_len), S32(uncomp_len));
+                                S32(payload_len), S32(uncomp_len)
+                            );
                             if (result != S32(uncomp_len)) {
                                 log::native_error("v5 frame LZ4 decompression failed, dropping connection");
                                 ok = false;
@@ -659,7 +646,8 @@ export namespace cql::native {
     Optional<String8> run(
         U16 port, Engine& engine,
         const OnReady auto& on_ready_callback, bool use_uring,
-        aio::EventConsumer& file_io_consumer, aio::EventConsumer& signal_consumer, os::Poll& io_poll) {
+        aio::EventConsumer& file_io_consumer, aio::EventConsumer& signal_consumer, os::Poll& io_poll
+    ) {
         const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> {
             ZoneScopedN("request");
             NegotiatedProtocol negotiated_protocol{};

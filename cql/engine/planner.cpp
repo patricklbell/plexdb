@@ -69,8 +69,7 @@ namespace cql::planner {
     }
 
     static bool col_is_counter(const schema::Column& col) {
-        return type_matches_tag<type::Basic>(col.type.value) &&
-               get<type::Basic>(col.type.value) == type::Basic::counter;
+        return type_matches_tag<type::Basic>(col.type.value) && get<type::Basic>(col.type.value) == type::Basic::counter;
     }
 
     bool table_has_counter(const schema::Table& tbl) {
@@ -84,9 +83,7 @@ namespace cql::planner {
 
     static bool col_is_collection(const schema::Column& col) {
         const auto& tv = col.type.value;
-        return type_matches_tag<type::List>(tv) ||
-               type_matches_tag<type::Set>(tv) ||
-               type_matches_tag<type::Map>(tv);
+        return type_matches_tag<type::List>(tv) || type_matches_tag<type::Set>(tv) || type_matches_tag<type::Map>(tv);
     }
 
     // @note matches `c OP X` or `X OP c` where `c` is the target column name
@@ -149,8 +146,7 @@ namespace cql::planner {
     }
 
     static bool term_is_literal_null(const Term& t) {
-        return type_matches_tag<Constant>(t.value) &&
-               type_matches_tag<Null>(get<Constant>(t.value).value);
+        return type_matches_tag<Constant>(t.value) && type_matches_tag<Null>(get<Constant>(t.value).value);
     }
 
     // @note Unset is only meaningful in INSERT/UPDATE assignment positions, where it
@@ -182,8 +178,7 @@ namespace cql::planner {
                 return false;
             } else if constexpr (SameAs<T, MapLiteral>) {
                 for (const auto& p : v.key_values) {
-                    if (term_contains_unset_binding(p.first, ctx) ||
-                        term_contains_unset_binding(p.second, ctx)) {
+                    if (term_contains_unset_binding(p.first, ctx) || term_contains_unset_binding(p.second, ctx)) {
                         return true;
                     }
                 }
@@ -250,8 +245,7 @@ namespace cql::planner {
     // logical </> map onto byte >/< since DESC values are encoded byte-inverted,
     // so the begin/end roles swap. `partial` marks bounds that cover a prefix
     // shorter than the full composite key (forces prefix-aware comparison).
-    static void apply_range_bound(KeyBounds& bounds, Operator op, Sort direction,
-                                  DynamicArray<U8> bytes, bool partial) {
+    static void apply_range_bound(KeyBounds& bounds, Operator op, Sort direction, DynamicArray<U8> bytes, bool partial) {
         if (direction == Sort::DESC) {
             switch (op) {
                 case Operator::lt:
@@ -358,8 +352,7 @@ namespace cql::planner {
     }
 
     template<typename Serialize>
-    static void build_cartesian_combos(const KeyConstraints& kc, U64 n, Serialize&& serialize,
-                                       DynamicArray<DynamicArray<U8>>& out) {
+    static void build_cartesian_combos(const KeyConstraints& kc, U64 n, Serialize&& serialize, DynamicArray<DynamicArray<U8>>& out) {
         DynamicArray<U64> sizes;
         resize(sizes, n);
         U64 total = 1;
@@ -382,12 +375,11 @@ namespace cql::planner {
     // @note matches the kind a collection-index lookup needs for `col CONTAINS x`
     // (Values for list/set/map) or `col CONTAINS KEY x` (Keys for map). Returns
     // false when no compatible index exists or the operator is wrong for the column.
-    static bool try_capture_collection_index(RowLocator& locator, const schema::Table& tbl, U64 ci,
-                                             Operator op, const Evaluated& eval) {
+    static bool try_capture_collection_index(RowLocator& locator, const schema::Table& tbl, U64 ci, Operator op, const Evaluated& eval) {
         if (locator.index_col_idx) {
             return false;
         }
-        const auto& col_type = tbl.cols[ci].type;
+        const auto&           col_type = tbl.cols[ci].type;
         schema::IndexKind     want_kind;
         Optional<type::Basic> elem_basic;
         visit(col_type.value, [&](const auto& v) {
@@ -460,7 +452,8 @@ namespace cql::planner {
             }
             locator.index_col_idx    = ci;
             locator.index_key_prefix = key::make_index_prefix(
-                eval, get<type::Basic>(tbl.cols[ci].type.value));
+                eval, get<type::Basic>(tbl.cols[ci].type.value)
+            );
         };
 
         KeyConstraints pk;
@@ -559,8 +552,7 @@ namespace cql::planner {
                             push_back(filter.predicates, rel);
                         } else if (*ck_pos == 0) {
                             Sort dir = tbl.cols[tbl.clustering_key_col_indices[0]].clustering_order;
-                            apply_range_bound(locator.ck, r.operator_, dir,
-                                              key::serialize_clustering_single(tbl, eval), n_ck > 1);
+                            apply_range_bound(locator.ck, r.operator_, dir, key::serialize_clustering_single(tbl, eval), n_ck > 1);
                             // @note CK range also goes to filter for post-scan evaluation;
                             // does not set needs_allow_filtering — CK filtering is efficient.
                             push_back(filter.predicates, rel);
@@ -590,7 +582,8 @@ namespace cql::planner {
                                     Evaluated eval = evaluate(r.value, ctx);
                                     if (!is_null_eval(eval)) {
                                         covered_by_index = try_capture_collection_index(
-                                            locator, tbl, ci, r.operator_, eval);
+                                            locator, tbl, ci, r.operator_, eval
+                                        );
                                     }
                                     break;
                                 }
@@ -655,9 +648,7 @@ namespace cql::planner {
                             }
                         }
                         push_back(filter.predicates, rel);
-                    } else if (r.operator_ == Operator::eq &&
-                               r.columns.length > 0 &&
-                               r.columns.length == r.values.length) {
+                    } else if (r.operator_ == Operator::eq && r.columns.length > 0 && r.columns.length == r.values.length) {
                         // Determine whether all named columns belong to the PK or CK.
                         bool all_pk = (r.columns.length <= n_pk);
                         for (U64 i = 0; i < r.columns.length && all_pk; i++) {
@@ -690,8 +681,7 @@ namespace cql::planner {
                             if (ck_pos && *ck_pos == 0) {
                                 Evaluated eval = evaluate(r.values[0], ctx);
                                 Sort      dir  = tbl.cols[tbl.clustering_key_col_indices[0]].clustering_order;
-                                apply_range_bound(locator.ck, r.operator_, dir,
-                                                  key::serialize_clustering_single(tbl, eval), n_ck > 1);
+                                apply_range_bound(locator.ck, r.operator_, dir, key::serialize_clustering_single(tbl, eval), n_ck > 1);
                             }
                         }
                         push_back(filter.predicates, rel);
@@ -793,8 +783,7 @@ namespace cql::planner {
         }
 
         // @note partial CK prefix EQ (c1=0 on 3-CK table) is not ck_is_equality; convert to prefix range
-        if (n_ck > 1 && !locator.ck.is_equality && !locator.ck.has_begin && !locator.ck.has_end &&
-            locator.ck.in_values.length == 0 && !locator.ck.has_in) {
+        if (n_ck > 1 && !locator.ck.is_equality && !locator.ck.has_begin && !locator.ck.has_end && locator.ck.in_values.length == 0 && !locator.ck.has_in) {
             U64 n_prefix = 0;
             for (U64 i = 0; i < n_ck; i++) {
                 if (ck.eq_vals[i]) {
@@ -827,8 +816,7 @@ namespace cql::planner {
 
         // @note CK eq on position N with a smaller-N position missing is filtering inside
         // the partition; a global secondary index on N does not avoid the partition scan.
-        bool partition_scoped = locator.pk.is_equality || locator.pk.has_in ||
-                                locator.ck.has_begin || locator.ck.has_end;
+        bool partition_scoped = locator.pk.is_equality || locator.pk.has_in || locator.ck.has_begin || locator.ck.has_end;
         if (n_ck > 0 && !locator.ck.is_equality && partition_scoped) {
             bool prefix_broken = false;
             for (U64 i = 0; i < n_ck; i++) {
@@ -927,16 +915,14 @@ namespace cql::planner {
             // ORDER BY requires the partition key to be fully restricted (eq or IN) so
             // the scan stays within partitions whose iteration we can deterministically
             // order.
-            if (!plan.locator.pk.is_equality && !plan.locator.pk.has_in &&
-                plan.locator.pk.in_values.length == 0) {
+            if (!plan.locator.pk.is_equality && !plan.locator.pk.has_in && plan.locator.pk.in_values.length == 0) {
                 plan.result.error = PlanError::OrderByOnNonClusteringColumn;
                 return plan;
             }
             // @note ORDER BY column[0] may sit anywhere from CK[0] through the last
             // equality-restricted CK position; columns past it must follow CK order
             // positionally.
-            String8 first_name(stmt.order_by->columns[0].column.identifier.c_str,
-                               stmt.order_by->columns[0].column.identifier.length);
+            String8 first_name(stmt.order_by->columns[0].column.identifier.c_str, stmt.order_by->columns[0].column.identifier.length);
             U64     ck_start = MAX_U64;
             for (U64 p = 0; p < tbl.clustering_key_col_indices.length; p++) {
                 if (tbl.cols[tbl.clustering_key_col_indices[p]].name == first_name) {
@@ -958,8 +944,7 @@ namespace cql::planner {
                 const auto& col_order = stmt.order_by->columns[i];
                 String8     name(col_order.column.identifier.c_str, col_order.column.identifier.length);
                 U64         ck_pos = ck_start + i;
-                if (ck_pos >= tbl.clustering_key_col_indices.length ||
-                    tbl.cols[tbl.clustering_key_col_indices[ck_pos]].name != name) {
+                if (ck_pos >= tbl.clustering_key_col_indices.length || tbl.cols[tbl.clustering_key_col_indices[ck_pos]].name != name) {
                     plan.result.error   = PlanError::OrderByOnNonClusteringColumn;
                     plan.result.context = AutoString8(name);
                     return plan;
@@ -1055,8 +1040,7 @@ namespace cql::planner {
             if (!pk_pos && !ck_pos) {
                 return {PlanError::NonKeyColumnInMutationWhere, AutoString8(cer.column.identifier)};
             }
-            if (static_cast<bool>(pk_pos) &&
-                cer.operator_ != Operator::eq && cer.operator_ != Operator::in) {
+            if (static_cast<bool>(pk_pos) && cer.operator_ != Operator::eq && cer.operator_ != Operator::in) {
                 AutoString8 op_name;
                 switch (cer.operator_) {
                     case Operator::lt:
@@ -1176,16 +1160,15 @@ namespace cql::planner {
                     plan.result.context = AutoString8("Element-based assignment must not reference other columns: ") + col_name;
                     return plan;
                 }
-                const auto&         sub_term = get<SimpleSelection::Subscript>(*assign.target.access);
-                CollectionPatch     patch;
+                const auto&     sub_term = get<SimpleSelection::Subscript>(*assign.target.access);
+                CollectionPatch patch;
                 patch.op    = CollectionPatch::Op::SubscriptSet;
                 patch.key   = evaluate(sub_term.index, ctx);
                 patch.value = evaluate(assign.value, ctx);
                 if (!col.is_static) {
                     has_non_static_assignment = true;
                 }
-                push_back(plan.spec.updates,
-                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});
+                push_back(plan.spec.updates, ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});
                 continue;
             }
 
@@ -1195,8 +1178,8 @@ namespace cql::planner {
                     plan.result.context = AutoString8(col_name);
                     return plan;
                 }
-                bool is_list = type_matches_tag<type::List>(col.type.value);
-                bool is_map  = type_matches_tag<type::Map>(col.type.value);
+                bool            is_list = type_matches_tag<type::List>(col.type.value);
+                bool            is_map  = type_matches_tag<type::Map>(col.type.value);
                 CollectionPatch patch;
                 if (cf->op == ArithmeticOperator::plus) {
                     // @note `X + s` / `X + m` is equivalent to append for set/map; only list distinguishes prepend.
@@ -1220,8 +1203,8 @@ namespace cql::planner {
                 patch.value = evaluate(*cf->other, ctx);
                 // @note `Map - X` expects `set<map.key>` on the RHS; all other compound forms take the column's own type.
                 bool rhs_ok = (is_map && patch.op == CollectionPatch::Op::Subtract)
-                                  ? io::can_cast_write_evaluated_as_column_value(patch.value, type::create_set(get<type::Map>(col.type.value).key))
-                                  : io::can_cast_write_evaluated_as_column_value(patch.value, col.type);
+                                ? io::can_cast_write_evaluated_as_column_value(patch.value, type::create_set(get<type::Map>(col.type.value).key))
+                                : io::can_cast_write_evaluated_as_column_value(patch.value, col.type);
                 if (!rhs_ok) {
                     plan.result.error   = PlanError::InvalidCollectionMutation;
                     plan.result.context = AutoString8("Incompatible right-hand side collection for ") + col_name;
@@ -1230,8 +1213,7 @@ namespace cql::planner {
                 if (!col.is_static) {
                     has_non_static_assignment = true;
                 }
-                push_back(plan.spec.updates,
-                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});
+                push_back(plan.spec.updates, ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});
                 continue;
             }
 
@@ -1250,11 +1232,9 @@ namespace cql::planner {
                 has_non_static_assignment = true;
             }
             if (has_col_ref) {
-                push_back(plan.spec.updates,
-                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{assign.value}});
+                push_back(plan.spec.updates, ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{assign.value}});
             } else {
-                push_back(plan.spec.updates,
-                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(assign.value, ctx)}});
+                push_back(plan.spec.updates, ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(assign.value, ctx)}});
             }
         }
 
@@ -1281,15 +1261,13 @@ namespace cql::planner {
                         String8 col_name(r.column.identifier.c_str, r.column.identifier.length);
                         for (U64 pk_ci : tbl.partition_key_col_indices) {
                             if (!tbl.cols[pk_ci].tombstone && tbl.cols[pk_ci].name == col_name) {
-                                push_back(plan.spec.updates,
-                                          ColumnUpdate{pk_ci, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(r.value, ctx)}});
+                                push_back(plan.spec.updates, ColumnUpdate{pk_ci, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(r.value, ctx)}});
                                 break;
                             }
                         }
                         for (U64 ck_ci : tbl.clustering_key_col_indices) {
                             if (!tbl.cols[ck_ci].tombstone && tbl.cols[ck_ci].name == col_name) {
-                                push_back(plan.spec.updates,
-                                          ColumnUpdate{ck_ci, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(r.value, ctx)}});
+                                push_back(plan.spec.updates, ColumnUpdate{ck_ci, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(r.value, ctx)}});
                                 break;
                             }
                         }
@@ -1333,8 +1311,7 @@ namespace cql::planner {
             return plan;
         }
 
-        bool ck_specified = plan.locator.ck.is_equality || plan.locator.ck.in_values.length > 0 ||
-                            plan.locator.ck.has_in || plan.locator.ck.has_begin || plan.locator.ck.has_end;
+        bool ck_specified = plan.locator.ck.is_equality || plan.locator.ck.in_values.length > 0 || plan.locator.ck.has_in || plan.locator.ck.has_begin || plan.locator.ck.has_end;
 
         if (stmt.selections.length == 0) {
             plan.spec.is_full_delete = true;
@@ -1373,12 +1350,10 @@ namespace cql::planner {
                     CollectionPatch patch;
                     patch.op  = CollectionPatch::Op::SubscriptDelete;
                     patch.key = evaluate(sub_term.index, ctx);
-                    push_back(plan.spec.updates,
-                              ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});
+                    push_back(plan.spec.updates, ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});
                     continue;
                 }
-                push_back(plan.spec.updates,
-                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{Evaluated{Constant{Null{}}}}});
+                push_back(plan.spec.updates, ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{Evaluated{Constant{Null{}}}}});
             }
 
             if (is_static_only && ck_specified) {
@@ -1416,4 +1391,4 @@ namespace cql::planner {
         return plan;
     }
 
-} // namespace cql::planner
+}

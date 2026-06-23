@@ -107,8 +107,7 @@ export namespace plexdb::coroutine::debug {
         U64          depth = 0;
         while (frame) {
             if (frame->function) {
-                println("  #", to_str(depth), " ", frame->function,
-                        " (", frame->file, ":", to_str(frame->line), ")");
+                println("  #", to_str(depth), " ", frame->function, " (", frame->file, ":", to_str(frame->line), ")");
             } else {
                 println("  #", to_str(depth), " <unnamed coroutine>");
             }

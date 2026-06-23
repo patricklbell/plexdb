@@ -25,25 +25,13 @@ namespace plexdb::support::lexy {
 
                 AutoString8 msg;
                 if constexpr (SameAs<Tag, ::lexy::expected_literal>) {
-                    msg = fmt("error: while parsing %s at %u:%u: expected '%.*s'",
-                              context.production(),
-                              location.line_nr(), location.column_nr(),
-                              static_cast<int>(error.length()), reinterpret_cast<const char*>(error.string()));
+                    msg = fmt("error: while parsing %s at %u:%u: expected '%.*s'", context.production(), location.line_nr(), location.column_nr(), static_cast<int>(error.length()), reinterpret_cast<const char*>(error.string()));
                 } else if constexpr (SameAs<Tag, ::lexy::expected_keyword>) {
-                    msg = fmt("error: while parsing %s at %u:%u: expected keyword '%.*s'",
-                              context.production(),
-                              location.line_nr(), location.column_nr(),
-                              static_cast<int>(error.length()), reinterpret_cast<const char*>(error.string()));
+                    msg = fmt("error: while parsing %s at %u:%u: expected keyword '%.*s'", context.production(), location.line_nr(), location.column_nr(), static_cast<int>(error.length()), reinterpret_cast<const char*>(error.string()));
                 } else if constexpr (SameAs<Tag, ::lexy::expected_char_class>) {
-                    msg = fmt("error: while parsing %s at %u:%u: expected %s",
-                              context.production(),
-                              location.line_nr(), location.column_nr(),
-                              error.name());
+                    msg = fmt("error: while parsing %s at %u:%u: expected %s", context.production(), location.line_nr(), location.column_nr(), error.name());
                 } else {
-                    msg = fmt("error: while parsing %s at %u:%u: %s",
-                              context.production(),
-                              location.line_nr(), location.column_nr(),
-                              error.message());
+                    msg = fmt("error: while parsing %s at %u:%u: %s", context.production(), location.line_nr(), location.column_nr(), error.message());
                 }
 
                 fn(msg);

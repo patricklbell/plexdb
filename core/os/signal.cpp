@@ -167,7 +167,8 @@ namespace plexdb::os {
         poll_unblock_on(
             poll,
             file_or_socket,
-            PollEventMask::Read | PollEventMask::Error | PollEventMask::HangUp);
+            PollEventMask::Read | PollEventMask::Error | PollEventMask::HangUp
+        );
     }
     void poll_unblock_on(Poll& poll, const Handle& file_or_socket, PollEventMask events) {
         assert_true(!is_zero_handle(file_or_socket), "invalid notifier, cannot poll");
@@ -200,7 +201,8 @@ namespace plexdb::os {
             handle_to_fd(poll.handle),
             EPOLL_CTL_DEL,
             handle_to_fd(file_or_socket),
-            &ev);
+            &ev
+        );
         assert_true(res != -1 || errno == ENOENT, "epoll_ctl call failed while removing file from epoll");
     }
 
@@ -236,7 +238,8 @@ namespace plexdb::os {
             handle_to_fd(poll.handle),
             epoll_events_scratch.ptr,
             max_out_events_count,
-            -1);
+            -1
+        );
 
         assert_true(static_cast<U64>(max(n, 0)) <= max_out_events_count, "too many events from epoll_wait");
         for (S32 i = 0; i < n; ++i) {

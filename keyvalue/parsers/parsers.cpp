@@ -105,9 +105,7 @@ namespace keyvalue::parsers {
             return Statement{Keys{args.length >= 2 ? move(args[1]) : AutoString8{"*"}}};
         }
         if (arg_eq(args[0], "INFO")) {
-            return Statement{Info{args.length >= 2
-                                      ? Optional<AutoString8>{move(args[1])}
-                                      : Optional<AutoString8>{}}};
+            return Statement{Info{args.length >= 2 ? Optional<AutoString8>{move(args[1])} : Optional<AutoString8>{}}};
         }
         if (arg_eq(args[0], "SET")) {
             if (args.length < 3) {
@@ -121,8 +119,7 @@ namespace keyvalue::parsers {
                     nx = true;
                 } else if (arg_eq(args[i], "XX")) {
                     xx = true;
-                } else if (arg_eq(args[i], "EX") || arg_eq(args[i], "PX") ||
-                           arg_eq(args[i], "EXAT") || arg_eq(args[i], "PXAT")) {
+                } else if (arg_eq(args[i], "EX") || arg_eq(args[i], "PX") || arg_eq(args[i], "EXAT") || arg_eq(args[i], "PXAT")) {
                     assert_not_implemented("key expiry");
                     i++;
                 }
