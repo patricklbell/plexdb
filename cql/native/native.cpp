@@ -611,8 +611,18 @@ namespace cql::native {
             RowIterator& row_end    = rows.stop;
             const bool   has_filter = result.filter_predicates.length > 0;
 
+            S64 now_unix_ms = S64(os::unix_ms_now());
             while (row_it != row_end && U64(row_count) < row_limit) {
                 ColumnRange col_range = co_await row_it.deref();
+
+                if (io::row_is_expired(col_range.start.metadata, now_unix_ms)) {
+                    if (result.is_distinct) {
+                        co_await row_it.advance_partition();
+                    } else {
+                        co_await row_it.advance(row_end);
+                    }
+                    continue;
+                }
 
                 // Materialize all columns to support arbitrary output ordering and filter evaluation.
                 DynamicArray<ColumnValue> row_values;

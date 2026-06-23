@@ -7,6 +7,7 @@ import plexdb.dynamic.tagged_union;
 
 import cql.engine.column_value;
 import cql.engine.evaluator;
+import cql.engine.io;
 import cql.engine.key;
 import cql.engine.schema;
 import cql.engine.statements;
@@ -81,6 +82,47 @@ namespace cql::planner {
         return false;
     }
 
+    static bool col_is_collection(const schema::Column& col) {
+        const auto& tv = col.type.value;
+        return type_matches_tag<type::List>(tv) ||
+               type_matches_tag<type::Set>(tv) ||
+               type_matches_tag<type::Map>(tv);
+    }
+
+    // @note matches `c OP X` or `X OP c` where `c` is the target column name
+    // and the other operand contains no further column references.
+    struct CompoundForm {
+        ArithmeticOperator         op;
+        bool                       col_on_left;
+        const TermWithIdentifiers* other;
+    };
+    static Optional<CompoundForm> match_compound_form(const TermWithIdentifiers& twi, const String8& target_col) {
+        if (!type_matches_tag<TOIArithmeticOperation>(twi.value)) {
+            return {};
+        }
+        const auto& arith = get<TOIArithmeticOperation>(twi.value);
+        if (!type_matches_tag<TOIBinaryArithmetic>(arith.value)) {
+            return {};
+        }
+        const auto& bin       = get<TOIBinaryArithmetic>(arith.value);
+        auto        is_target = [&](const TermWithIdentifiers& side) -> bool {
+            if (!type_matches_tag<AutoString8>(side.value)) {
+                return false;
+            }
+            const auto& name = get<AutoString8>(side.value);
+            return String8(name.c_str, name.length) == target_col;
+        };
+        bool lhs_is_target = is_target(bin.lhs);
+        bool rhs_is_target = is_target(bin.rhs);
+        if (lhs_is_target && !twi_has_column_ref(bin.rhs)) {
+            return CompoundForm{bin.op, true, &bin.rhs};
+        }
+        if (rhs_is_target && !twi_has_column_ref(bin.lhs)) {
+            return CompoundForm{bin.op, false, &bin.lhs};
+        }
+        return {};
+    }
+
     // Cassandra allows counter writes only in the form `c = c + n` or `c = c - n`,
     // where the LHS column reference matches the assignment target and the RHS contains
     // no further column references (constants, bind markers, or arithmetic over those).
@@ -109,6 +151,73 @@ namespace cql::planner {
     static bool term_is_literal_null(const Term& t) {
         return type_matches_tag<Constant>(t.value) &&
                type_matches_tag<Null>(get<Constant>(t.value).value);
+    }
+
+    // @note Unset is only meaningful in INSERT/UPDATE assignment positions, where it
+    // means "leave this column unchanged". In a WHERE relation it has no meaning, so
+    // Cassandra rejects it as Invalid. The check has to descend through tuple/list/set/
+    // map literals because `IN (?, ?, ?)` style binds each `?` as a child element.
+    static bool term_contains_unset_binding(const Term& term, const EvalContext& ctx) {
+        return visit(term.value, [&](const auto& v) -> bool {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, BindMarker> || SameAs<T, Constant>) {
+                Evaluated e = evaluate(term, ctx);
+                if (!type_matches_tag<Constant>(e.value)) {
+                    return false;
+                }
+                return type_matches_tag<Unset>(get<Constant>(e.value).value);
+            } else if constexpr (SameAs<T, ListOrVectorLiteral> || SameAs<T, TupleLiteral>) {
+                for (const auto& e : v.elements) {
+                    if (term_contains_unset_binding(e, ctx)) {
+                        return true;
+                    }
+                }
+                return false;
+            } else if constexpr (SameAs<T, SetLiteral>) {
+                for (const auto& e : v.keys) {
+                    if (term_contains_unset_binding(e, ctx)) {
+                        return true;
+                    }
+                }
+                return false;
+            } else if constexpr (SameAs<T, MapLiteral>) {
+                for (const auto& p : v.key_values) {
+                    if (term_contains_unset_binding(p.first, ctx) ||
+                        term_contains_unset_binding(p.second, ctx)) {
+                        return true;
+                    }
+                }
+                return false;
+            } else {
+                return false;
+            }
+        });
+    }
+
+    static bool where_has_unset_binding(const WhereClause& where, const EvalContext& ctx) {
+        for (const auto& rel : where.relations) {
+            bool hit = visit(rel.value, [&](const auto& r) -> bool {
+                using T = RemoveCVRef<decltype(r)>;
+                if constexpr (SameAs<T, WhereClause::ColumnExpressionRelation>) {
+                    return term_contains_unset_binding(r.value, ctx);
+                } else if constexpr (SameAs<T, WhereClause::TupleExpressionRelation>) {
+                    for (const auto& val : r.values) {
+                        if (term_contains_unset_binding(val, ctx)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                } else if constexpr (SameAs<T, WhereClause::TokenRelation>) {
+                    return term_contains_unset_binding(r.value, ctx);
+                } else {
+                    return false;
+                }
+            });
+            if (hit) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // @note Cassandra reports counter-specific message for any predicate that
@@ -270,6 +379,57 @@ namespace cql::planner {
         }
     }
 
+    // @note matches the kind a collection-index lookup needs for `col CONTAINS x`
+    // (Values for list/set/map) or `col CONTAINS KEY x` (Keys for map). Returns
+    // false when no compatible index exists or the operator is wrong for the column.
+    static bool try_capture_collection_index(RowLocator& locator, const schema::Table& tbl, U64 ci,
+                                             Operator op, const Evaluated& eval) {
+        if (locator.index_col_idx) {
+            return false;
+        }
+        const auto& col_type = tbl.cols[ci].type;
+        schema::IndexKind     want_kind;
+        Optional<type::Basic> elem_basic;
+        visit(col_type.value, [&](const auto& v) {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, type::List> || SameAs<T, type::Vector>) {
+                if (op == Operator::contains && type_matches_tag<type::Basic>(v.element.value)) {
+                    want_kind  = schema::IndexKind::Values;
+                    elem_basic = get<type::Basic>(v.element.value);
+                }
+            } else if constexpr (SameAs<T, type::Set>) {
+                if (op == Operator::contains && type_matches_tag<type::Basic>(v.key.value)) {
+                    want_kind  = schema::IndexKind::Values;
+                    elem_basic = get<type::Basic>(v.key.value);
+                }
+            } else if constexpr (SameAs<T, type::Map>) {
+                if (op == Operator::contains && type_matches_tag<type::Basic>(v.value.value)) {
+                    want_kind  = schema::IndexKind::Values;
+                    elem_basic = get<type::Basic>(v.value.value);
+                } else if (op == Operator::contains_key && type_matches_tag<type::Basic>(v.key.value)) {
+                    want_kind  = schema::IndexKind::Keys;
+                    elem_basic = get<type::Basic>(v.key.value);
+                }
+            }
+        });
+        if (!elem_basic) {
+            return false;
+        }
+        const schema::Index* matched = nullptr;
+        for (const auto& idx : tbl.indexes) {
+            if (!idx.tombstone && idx.col_idx == ci && idx.kind == want_kind) {
+                matched = &idx;
+                break;
+            }
+        }
+        if (matched == nullptr) {
+            return false;
+        }
+        locator.index_col_idx    = ci;
+        locator.index_key_prefix = key::make_index_prefix(eval, *elem_basic);
+        return true;
+    }
+
     Pair<RowLocator, FilterPlan> build_row_locator(const WhereClause& where, const schema::Table& tbl, const EvalContext& ctx) {
         RowLocator locator{};
         FilterPlan filter{};
@@ -419,6 +579,18 @@ namespace cql::planner {
                                             try_capture_index(ci, eval);
                                             covered_by_index = true;
                                         }
+                                    }
+                                    break;
+                                }
+                            }
+                        } else if (r.operator_ == Operator::contains || r.operator_ == Operator::contains_key) {
+                            String8 col_name(r.column.identifier.c_str, r.column.identifier.length);
+                            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                                if (tbl.cols[ci].name == col_name && !tbl.cols[ci].tombstone) {
+                                    Evaluated eval = evaluate(r.value, ctx);
+                                    if (!is_null_eval(eval)) {
+                                        covered_by_index = try_capture_collection_index(
+                                            locator, tbl, ci, r.operator_, eval);
                                     }
                                     break;
                                 }
@@ -692,6 +864,11 @@ namespace cql::planner {
     SelectPlan plan_select(const Select& stmt, const schema::Table& tbl, const EvalContext& ctx) {
         SelectPlan plan{};
 
+        if (stmt.where && where_has_unset_binding(*stmt.where, ctx)) {
+            plan.result.error = PlanError::UnsetValueInWhere;
+            return plan;
+        }
+
         if (stmt.where && where_has_null_counter_predicate(*stmt.where, tbl)) {
             plan.result.error = PlanError::NullValueForCounter;
             return plan;
@@ -916,6 +1093,11 @@ namespace cql::planner {
     MutationPlan plan_update(const Update& stmt, const schema::Table& tbl, const EvalContext& ctx) {
         MutationPlan plan{};
 
+        if (where_has_unset_binding(stmt.where, ctx)) {
+            plan.result.error = PlanError::UnsetValueInWhere;
+            return plan;
+        }
+
         for (const auto& rel : stmt.where.relations) {
             if (type_matches_tag<WhereClause::TokenRelation>(rel.value)) {
                 plan.result.error = PlanError::TokenFunctionInMutation;
@@ -955,8 +1137,6 @@ namespace cql::planner {
         // Static-only updates don't need the clustering key.
         bool has_non_static_assignment = false;
         for (const auto& assign : stmt.assignments) {
-            assert_true_not_implemented(!assign.target.access, "subscript/field access in UPDATE SET is not implemented");
-
             Optional<U64> col_idx;
             String8       col_name(assign.target.column.identifier.c_str, assign.target.column.identifier.length);
             for (U64 ci = 0; ci < tbl.cols.length; ci++) {
@@ -971,8 +1151,91 @@ namespace cql::planner {
                 return plan;
             }
 
+            const schema::Column& col           = tbl.cols[*col_idx];
+            bool                  is_counter    = col_is_counter(col);
+            bool                  is_collection = col_is_collection(col);
+
+            if (assign.target.access) {
+                if (!is_collection) {
+                    plan.result.error   = PlanError::InvalidSubscriptTarget;
+                    plan.result.context = AutoString8("Element-based access is only supported on collection columns: ") + col_name;
+                    return plan;
+                }
+                if (type_matches_tag<type::Set>(col.type.value)) {
+                    plan.result.error   = PlanError::InvalidSubscriptTarget;
+                    plan.result.context = AutoString8("Subscript-based assignment is not supported on sets: ") + col_name;
+                    return plan;
+                }
+                if (type_matches_tag<SimpleSelection::FieldAccess>(*assign.target.access)) {
+                    plan.result.error   = PlanError::InvalidSubscriptTarget;
+                    plan.result.context = AutoString8("Field access on non-UDT column: ") + col_name;
+                    return plan;
+                }
+                if (twi_has_column_ref(assign.value)) {
+                    plan.result.error   = PlanError::InvalidCollectionMutation;
+                    plan.result.context = AutoString8("Element-based assignment must not reference other columns: ") + col_name;
+                    return plan;
+                }
+                const auto&         sub_term = get<SimpleSelection::Subscript>(*assign.target.access);
+                CollectionPatch     patch;
+                patch.op    = CollectionPatch::Op::SubscriptSet;
+                patch.key   = evaluate(sub_term.index, ctx);
+                patch.value = evaluate(assign.value, ctx);
+                if (!col.is_static) {
+                    has_non_static_assignment = true;
+                }
+                push_back(plan.spec.updates,
+                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});
+                continue;
+            }
+
+            if (auto cf = match_compound_form(assign.value, col_name); cf && !is_counter) {
+                if (!is_collection) {
+                    plan.result.error   = PlanError::CounterOperationOnNonCounter;
+                    plan.result.context = AutoString8(col_name);
+                    return plan;
+                }
+                bool is_list = type_matches_tag<type::List>(col.type.value);
+                bool is_map  = type_matches_tag<type::Map>(col.type.value);
+                CollectionPatch patch;
+                if (cf->op == ArithmeticOperator::plus) {
+                    // @note `X + s` / `X + m` is equivalent to append for set/map; only list distinguishes prepend.
+                    if (cf->col_on_left || !is_list) {
+                        patch.op = CollectionPatch::Op::Append;
+                    } else {
+                        patch.op = CollectionPatch::Op::Prepend;
+                    }
+                } else if (cf->op == ArithmeticOperator::minus) {
+                    if (!cf->col_on_left) {
+                        plan.result.error   = PlanError::InvalidCollectionMutation;
+                        plan.result.context = AutoString8("Subtraction with a collection on the right is not supported: ") + col_name;
+                        return plan;
+                    }
+                    patch.op = CollectionPatch::Op::Subtract;
+                } else {
+                    plan.result.error   = PlanError::InvalidCollectionMutation;
+                    plan.result.context = AutoString8("Only + and - are valid compound operators on collections: ") + col_name;
+                    return plan;
+                }
+                patch.value = evaluate(*cf->other, ctx);
+                // @note `Map - X` expects `set<map.key>` on the RHS; all other compound forms take the column's own type.
+                bool rhs_ok = (is_map && patch.op == CollectionPatch::Op::Subtract)
+                                  ? io::can_cast_write_evaluated_as_column_value(patch.value, type::create_set(get<type::Map>(col.type.value).key))
+                                  : io::can_cast_write_evaluated_as_column_value(patch.value, col.type);
+                if (!rhs_ok) {
+                    plan.result.error   = PlanError::InvalidCollectionMutation;
+                    plan.result.context = AutoString8("Incompatible right-hand side collection for ") + col_name;
+                    return plan;
+                }
+                if (!col.is_static) {
+                    has_non_static_assignment = true;
+                }
+                push_back(plan.spec.updates,
+                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});
+                continue;
+            }
+
             bool has_col_ref = twi_has_column_ref(assign.value);
-            bool is_counter  = col_is_counter(tbl.cols[*col_idx]);
             if (has_col_ref && !is_counter) {
                 plan.result.error   = PlanError::CounterOperationOnNonCounter;
                 plan.result.context = AutoString8(col_name);
@@ -983,15 +1246,15 @@ namespace cql::planner {
                 plan.result.context = AutoString8(col_name);
                 return plan;
             }
-            if (!tbl.cols[*col_idx].is_static) {
+            if (!col.is_static) {
                 has_non_static_assignment = true;
             }
             if (has_col_ref) {
                 push_back(plan.spec.updates,
-                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers>{assign.value}});
+                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{assign.value}});
             } else {
                 push_back(plan.spec.updates,
-                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers>{evaluate(assign.value, ctx)}});
+                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(assign.value, ctx)}});
             }
         }
 
@@ -1019,14 +1282,14 @@ namespace cql::planner {
                         for (U64 pk_ci : tbl.partition_key_col_indices) {
                             if (!tbl.cols[pk_ci].tombstone && tbl.cols[pk_ci].name == col_name) {
                                 push_back(plan.spec.updates,
-                                          ColumnUpdate{pk_ci, TaggedUnion<Evaluated, TermWithIdentifiers>{evaluate(r.value, ctx)}});
+                                          ColumnUpdate{pk_ci, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(r.value, ctx)}});
                                 break;
                             }
                         }
                         for (U64 ck_ci : tbl.clustering_key_col_indices) {
                             if (!tbl.cols[ck_ci].tombstone && tbl.cols[ck_ci].name == col_name) {
                                 push_back(plan.spec.updates,
-                                          ColumnUpdate{ck_ci, TaggedUnion<Evaluated, TermWithIdentifiers>{evaluate(r.value, ctx)}});
+                                          ColumnUpdate{ck_ci, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(r.value, ctx)}});
                                 break;
                             }
                         }
@@ -1040,6 +1303,11 @@ namespace cql::planner {
 
     MutationPlan plan_delete(const Delete& stmt, const schema::Table& tbl, const EvalContext& ctx) {
         MutationPlan plan{};
+
+        if (where_has_unset_binding(stmt.where, ctx)) {
+            plan.result.error = PlanError::UnsetValueInWhere;
+            return plan;
+        }
 
         for (const auto& rel : stmt.where.relations) {
             if (type_matches_tag<WhereClause::TokenRelation>(rel.value)) {
@@ -1073,8 +1341,6 @@ namespace cql::planner {
         } else {
             bool is_static_only = true;
             for (const auto& sel : stmt.selections) {
-                assert_true_not_implemented(!sel.access, "subscript/field access in DELETE is not implemented");
-
                 Optional<U64> col_idx;
                 String8       col_name(sel.column.identifier.c_str, sel.column.identifier.length);
                 for (U64 ci = 0; ci < tbl.cols.length; ci++) {
@@ -1091,8 +1357,28 @@ namespace cql::planner {
                     plan.result.context = AutoString8(col_name);
                     return plan;
                 }
+                const schema::Column& col = tbl.cols[*col_idx];
+                if (sel.access) {
+                    if (!col_is_collection(col)) {
+                        plan.result.error   = PlanError::InvalidSubscriptTarget;
+                        plan.result.context = AutoString8("Element-based access is only supported on collection columns: ") + col_name;
+                        return plan;
+                    }
+                    if (type_matches_tag<SimpleSelection::FieldAccess>(*sel.access)) {
+                        plan.result.error   = PlanError::InvalidSubscriptTarget;
+                        plan.result.context = AutoString8("Field access on non-UDT column: ") + col_name;
+                        return plan;
+                    }
+                    const auto&     sub_term = get<SimpleSelection::Subscript>(*sel.access);
+                    CollectionPatch patch;
+                    patch.op  = CollectionPatch::Op::SubscriptDelete;
+                    patch.key = evaluate(sub_term.index, ctx);
+                    push_back(plan.spec.updates,
+                              ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});
+                    continue;
+                }
                 push_back(plan.spec.updates,
-                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers>{Evaluated{Constant{Null{}}}}});
+                          ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{Evaluated{Constant{Null{}}}}});
             }
 
             if (is_static_only && ck_specified) {

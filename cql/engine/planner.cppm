@@ -71,11 +71,26 @@ export namespace cql::planner {
         bool              is_aggregate = false;
     };
 
+    // @note `key` is the list index or map key for Subscript*; `value` is the
+    // RHS collection for compound ops and the scalar element for SubscriptSet.
+    struct CollectionPatch {
+        enum class Op : U8 {
+            Append,
+            Prepend,
+            Subtract,
+            SubscriptSet,
+            SubscriptDelete,
+        };
+        Op        op;
+        Evaluated key{};
+        Evaluated value{};
+    };
+
     // @note `TermWithIdentifiers` carries an RHS that reads the current row
     // (counter expressions like `c = c + 1`); `Evaluated` is already resolved.
     struct ColumnUpdate {
-        U64                                         col_idx;
-        TaggedUnion<Evaluated, TermWithIdentifiers> new_value;
+        U64                                                          col_idx;
+        TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch> new_value;
     };
 
     struct MutationSpec {
@@ -102,6 +117,9 @@ export namespace cql::planner {
         CounterAssignmentNotIncrement,
         NullValueForCounter,
         DistinctRestrictionInvalid,
+        InvalidCollectionMutation,
+        InvalidSubscriptTarget,
+        UnsetValueInWhere,
     };
 
     struct PlanResult {

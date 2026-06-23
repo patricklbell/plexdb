@@ -26,16 +26,22 @@ namespace cql {
 
     static coroutine::Task<U64> read_blob_header(
         blob::BlobDynamicPaged& b,
+        io::RowMetadata& out_meta,
         U64& out_col_count, DynamicArray<U64>& out_masks) {
+        co_await blob::get(b, reinterpret_cast<U8*>(&out_meta.flags),
+                           sizeof(out_meta.flags), 0);
+        co_await blob::get(b, reinterpret_cast<U8*>(&out_meta.expiry_unix_ms),
+                           sizeof(out_meta.expiry_unix_ms), sizeof(out_meta.flags));
         co_await blob::get(b, reinterpret_cast<U8*>(&out_col_count),
-                           io::COLUMN_COUNT_BYTE_COUNT, 0);
+                           io::COLUMN_COUNT_BYTE_COUNT, io::ROW_METADATA_BYTES);
         U64 mask_words = ceil_div(out_col_count, io::MASK_BIT_COUNT);
         resize(out_masks, mask_words);
         if (mask_words > 0) {
             co_await blob::get(b, reinterpret_cast<U8*>(out_masks.ptr),
-                               mask_words * io::MASK_BYTE_COUNT, io::COLUMN_COUNT_BYTE_COUNT);
+                               mask_words * io::MASK_BYTE_COUNT,
+                               io::ROW_METADATA_BYTES + io::COLUMN_COUNT_BYTE_COUNT);
         }
-        co_return io::COLUMN_COUNT_BYTE_COUNT + mask_words* io::MASK_BYTE_COUNT;
+        co_return io::ROW_METADATA_BYTES + io::COLUMN_COUNT_BYTE_COUNT + mask_words * io::MASK_BYTE_COUNT;
     }
 
     coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table,
@@ -55,18 +61,20 @@ namespace cql {
             }
 
             it.row_column_count = table->cols.length;
+            it.metadata         = {};
             if (page_idx != 0) {
                 it.row_cursor   = co_await blob::create_cursor(pager, page_idx);
                 U64 data_offset = co_await read_blob_header(
-                    it.row_cursor.blob, it.row_column_count, it.masks);
+                    it.row_cursor.blob, it.metadata, it.row_column_count, it.masks);
                 it.row_cursor.offset = data_offset;
             }
 
             if (static_page_idx != 0 && table->static_col_indices.length > 0) {
                 it.static_cursor       = co_await blob::create_cursor(pager, static_page_idx);
                 U64 static_col_count   = 0;
+                io::RowMetadata static_meta{};
                 U64 static_data_offset = co_await read_blob_header(
-                    it.static_cursor.blob, static_col_count, it.static_masks);
+                    it.static_cursor.blob, static_meta, static_col_count, it.static_masks);
                 it.static_cursor.offset = static_data_offset;
             }
 

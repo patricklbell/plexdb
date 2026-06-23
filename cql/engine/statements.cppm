@@ -354,6 +354,8 @@ export namespace cql {
         Optional<AutoString8> index_name;
         TableName             table;
         AutoString8           column_name;
+        // @note set when target uses `values(col)`, `keys(col)`, or `entries(col)`.
+        Optional<AutoString8> selector;
     };
 
     struct DropIndex {

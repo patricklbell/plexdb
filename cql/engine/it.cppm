@@ -39,6 +39,9 @@ export namespace cql {
                                       U64 page_idx, U64 static_page_idx,
                                       DynamicArray<ColumnValue> injected_pk);
 
+        // @note row-blob metadata loaded by load(); inspect after load to enforce TTL expiry.
+        io::RowMetadata metadata{};
+
     private:
         const schema::Table* table = nullptr;
 

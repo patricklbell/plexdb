@@ -205,6 +205,20 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
         REQUIRE(nv.values.length == 2);
     }
 
+    SECTION("whitespace before comma in column name list") {
+        auto result = parse("INSERT INTO tbl (id , name) VALUES (1, 'hello');");
+        REQUIRE(result.has_value());
+        auto& nv = get<Insert::NamesValues>(get<Insert>(result->value).insert_clause);
+        REQUIRE(nv.names.length == 2);
+    }
+
+    SECTION("whitespace before comma in values list") {
+        auto result = parse("INSERT INTO tbl (id, name) VALUES (1 , 'hello');");
+        REQUIRE(result.has_value());
+        auto& nv = get<Insert::NamesValues>(get<Insert>(result->value).insert_clause);
+        REQUIRE(nv.values.length == 2);
+    }
+
     SECTION("CREATE TABLE with multiple columns") {
         auto query  = "CREATE TABLE ks.users (id int PRIMARY KEY, name text, age int);";
         auto result = parse(query);
@@ -694,18 +708,53 @@ TEST_CASE("CQL Invalid syntax handling", "[cql.parser]") {
 }
 
 TEST_CASE("CQL UPDATE", "[cql.cql]") {
-    auto result = parse("UPDATE tbl SET name = 'new' WHERE id = 1;");
-    REQUIRE(result.has_value());
-    auto& stmt = get<Update>(result->value);
-    REQUIRE(stmt.table.table_name == "tbl");
-    REQUIRE(stmt.assignments.length == 1);
+    SECTION("basic") {
+        auto result = parse("UPDATE tbl SET name = 'new' WHERE id = 1;");
+        REQUIRE(result.has_value());
+        auto& stmt = get<Update>(result->value);
+        REQUIRE(stmt.table.table_name == "tbl");
+        REQUIRE(stmt.assignments.length == 1);
+    }
+    SECTION("whitespace before comma in SET list") {
+        auto result = parse("UPDATE tbl SET a = 1 , b = 2 WHERE id = 1;");
+        REQUIRE(result.has_value());
+        REQUIRE(get<Update>(result->value).assignments.length == 2);
+    }
 }
 
 TEST_CASE("CQL DELETE", "[cql.cql]") {
-    auto result = parse("DELETE FROM tbl WHERE id = 1;");
-    REQUIRE(result.has_value());
-    auto& stmt = get<Delete>(result->value);
-    REQUIRE(stmt.table.table_name == "tbl");
+    SECTION("basic") {
+        auto result = parse("DELETE FROM tbl WHERE id = 1;");
+        REQUIRE(result.has_value());
+        auto& stmt = get<Delete>(result->value);
+        REQUIRE(stmt.table.table_name == "tbl");
+    }
+    SECTION("whitespace before comma in selection list") {
+        auto result = parse("DELETE a , b FROM tbl WHERE id = 1;");
+        REQUIRE(result.has_value());
+        REQUIRE(get<Delete>(result->value).selections.length == 2);
+    }
+}
+
+TEST_CASE("CQL whitespace before comma is tolerated", "[cql.cql][cql.parser]") {
+    SECTION("collection literal: list") {
+        REQUIRE(parse("INSERT INTO tbl (k, l) VALUES (1, [1 , 2 , 3]);").has_value());
+    }
+    SECTION("collection literal: set") {
+        REQUIRE(parse("INSERT INTO tbl (k, s) VALUES (1, {1 , 2 , 3});").has_value());
+    }
+    SECTION("collection literal: map") {
+        REQUIRE(parse("INSERT INTO tbl (k, m) VALUES (1, {'a': 1 , 'b': 2});").has_value());
+    }
+    SECTION("CREATE TABLE column definitions") {
+        REQUIRE(parse("CREATE TABLE t (id int PRIMARY KEY , name text , age int);").has_value());
+    }
+    SECTION("SELECT projection list") {
+        REQUIRE(parse("SELECT a , b , c FROM tbl WHERE k = 1;").has_value());
+    }
+    SECTION("composite PRIMARY KEY column list") {
+        REQUIRE(parse("CREATE TABLE t (a int, b int, c int, PRIMARY KEY ((a , b) , c));").has_value());
+    }
 }
 
 TEST_CASE("CQL case insensitive keywords", "[cql.cql]") {

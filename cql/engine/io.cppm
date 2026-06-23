@@ -67,6 +67,26 @@ export namespace cql::io {
     constexpr U64 MASK_BYTE_COUNT         = sizeof(U64);
     constexpr U64 MASK_BIT_COUNT          = MASK_BYTE_COUNT * 8_u64;
 
+    // @note prepended to every row/static blob so the layout is uniform.
+    // Bit 0 = HAS_TTL; when set, expiry_unix_ms is the absolute expiry time.
+    constexpr U8  ROW_FLAG_HAS_TTL   = 0x01_u8;
+    constexpr U64 ROW_METADATA_BYTES = sizeof(U8) + sizeof(S64);
+
+    struct RowMetadata {
+        U8  flags          = 0;
+        S64 expiry_unix_ms = 0;
+    };
+
+    inline bool row_has_ttl(const RowMetadata& m) {
+        return (m.flags & ROW_FLAG_HAS_TTL) != 0;
+    }
+    inline bool row_is_expired(const RowMetadata& m, S64 now_unix_ms) {
+        return row_has_ttl(m) && m.expiry_unix_ms <= now_unix_ms;
+    }
+
+    void                         write_row_metadata(Writer w, const RowMetadata& m);
+    coroutine::Task<RowMetadata> read_row_metadata(Reader r);
+
     // Declarations — all bodies live in io.cpp
     coroutine::Task<ColumnValue> read_column_value(Reader r, type::Basic dtype);
     coroutine::Task<ColumnValue> read_column_value(Reader r, const type::Type& cdtype);

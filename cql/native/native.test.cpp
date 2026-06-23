@@ -953,6 +953,271 @@ CQL_NATIVE_TEST_CASE("UPDATE: collection literal assignment", "[cql.native]") {
     co_return;
 }
 
+CQL_NATIVE_TEST_CASE("UPDATE: list append, prepend, subtract, subscript-set, subscript-delete", "[cql.native][collection]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, l list<text>);").opcode == op::RESULT);
+
+        CHECK(send_query(client, "INSERT INTO ks.t (id, l) VALUES (1, ['a', 'b']);").opcode == op::RESULT);
+        CHECK(send_query(client, "UPDATE ks.t SET l = l + ['c'] WHERE id = 1;").opcode == op::RESULT);
+        Frame sel1 = send_query(client, "SELECT l FROM ks.t WHERE id = 1;");
+        CHECK(result_kind(sel1) == result::ROWS);
+        CHECK(body_contains(sel1, "a"));
+        CHECK(body_contains(sel1, "b"));
+        CHECK(body_contains(sel1, "c"));
+
+        CHECK(send_query(client, "UPDATE ks.t SET l = ['z'] + l WHERE id = 1;").opcode == op::RESULT);
+        Frame sel2 = send_query(client, "SELECT l FROM ks.t WHERE id = 1;");
+        CHECK(body_contains(sel2, "z"));
+
+        CHECK(send_query(client, "UPDATE ks.t SET l = l - ['b'] WHERE id = 1;").opcode == op::RESULT);
+        Frame sel3 = send_query(client, "SELECT l FROM ks.t WHERE id = 1;");
+        CHECK(!body_contains(sel3, "b"));
+        CHECK(body_contains(sel3, "a"));
+
+        CHECK(send_query(client, "UPDATE ks.t SET l[0] = 'X' WHERE id = 1;").opcode == op::RESULT);
+        Frame sel4 = send_query(client, "SELECT l FROM ks.t WHERE id = 1;");
+        CHECK(body_contains(sel4, "X"));
+
+        CHECK(send_query(client, "DELETE l[0] FROM ks.t WHERE id = 1;").opcode == op::RESULT);
+        Frame sel5 = send_query(client, "SELECT l FROM ks.t WHERE id = 1;");
+        CHECK(!body_contains(sel5, "X"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("UPDATE: set union, difference, subscript-delete", "[cql.native][collection]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, s set<text>);").opcode == op::RESULT);
+
+        CHECK(send_query(client, "INSERT INTO ks.t (id, s) VALUES (1, {'a', 'b'});").opcode == op::RESULT);
+        CHECK(send_query(client, "UPDATE ks.t SET s = s + {'c'} WHERE id = 1;").opcode == op::RESULT);
+        Frame sel1 = send_query(client, "SELECT s FROM ks.t WHERE id = 1;");
+        CHECK(body_contains(sel1, "c"));
+
+        CHECK(send_query(client, "UPDATE ks.t SET s = s - {'b'} WHERE id = 1;").opcode == op::RESULT);
+        Frame sel2 = send_query(client, "SELECT s FROM ks.t WHERE id = 1;");
+        CHECK(!body_contains(sel2, "b"));
+        CHECK(body_contains(sel2, "a"));
+
+        CHECK(send_query(client, "DELETE s['a'] FROM ks.t WHERE id = 1;").opcode == op::RESULT);
+        Frame sel3 = send_query(client, "SELECT s FROM ks.t WHERE id = 1;");
+        CHECK(!body_contains(sel3, "a"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("UPDATE: map merge, subtract-keys, subscript-set, subscript-delete", "[cql.native][collection]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, m map<text,int>);").opcode == op::RESULT);
+
+        CHECK(send_query(client, "INSERT INTO ks.t (id, m) VALUES (1, {'a': 1, 'b': 2});").opcode == op::RESULT);
+        CHECK(send_query(client, "UPDATE ks.t SET m = m + {'c': 3} WHERE id = 1;").opcode == op::RESULT);
+        Frame sel1 = send_query(client, "SELECT m FROM ks.t WHERE id = 1;");
+        CHECK(body_contains(sel1, "c"));
+
+        CHECK(send_query(client, "UPDATE ks.t SET m = m - {'b'} WHERE id = 1;").opcode == op::RESULT);
+        Frame sel2 = send_query(client, "SELECT m FROM ks.t WHERE id = 1;");
+        CHECK(!body_contains(sel2, "b"));
+        CHECK(body_contains(sel2, "a"));
+
+        CHECK(send_query(client, "UPDATE ks.t SET m['a'] = 42 WHERE id = 1;").opcode == op::RESULT);
+        Frame sel3 = send_query(client, "SELECT m FROM ks.t WHERE id = 1;");
+        CHECK(body_contains(sel3, "a"));
+
+        CHECK(send_query(client, "DELETE m['a'] FROM ks.t WHERE id = 1;").opcode == op::RESULT);
+        Frame sel4 = send_query(client, "SELECT m FROM ks.t WHERE id = 1;");
+        CHECK(!body_contains(sel4, "a"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("CREATE INDEX: collection columns accept values/keys/entries selectors", "[cql.native][collection][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t (id int PRIMARY KEY, l list<text>, s set<int>, m map<text,int>);")
+                  .opcode == op::RESULT);
+
+        // List/set: plain identifier defaults to values().
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (l);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (s);").opcode == op::RESULT);
+
+        // Map: plain identifier defaults to values(), matching Cassandra/Scylla behavior.
+        CHECK(send_query(client, "CREATE INDEX m_default ON ks.t (m);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX m_keys ON ks.t (keys(m));").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX m_values ON ks.t (values(m));").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX m_entries ON ks.t (entries(m));").opcode == op::RESULT);
+
+        // Selector on a scalar column is rejected.
+        CHECK(send_query(client, "CREATE INDEX id_sel ON ks.t (values(id));").opcode == op::ERROR);
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("CREATE INDEX: index maintenance survives collection mutations", "[cql.native][collection][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t (id int PRIMARY KEY, l list<text>, s set<int>, m map<text,int>);")
+                  .opcode == op::RESULT);
+
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (l);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (s);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX m_keys ON ks.t (keys(m));").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX m_values ON ks.t (values(m));").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX m_entries ON ks.t (entries(m));").opcode == op::RESULT);
+
+        // Initial insert exercises insertion side of maintenance for all index kinds.
+        CHECK(send_query(client,
+                         "INSERT INTO ks.t (id, l, s, m) VALUES (1, ['a','b'], {1,2}, {'k':10,'j':20});")
+                  .opcode == op::RESULT);
+
+        // Compound op on list: removal of 'b', insertion of 'c'.
+        CHECK(send_query(client, "UPDATE ks.t SET l = l + ['c'] WHERE id = 1;").opcode == op::RESULT);
+        CHECK(send_query(client, "UPDATE ks.t SET l = l - ['b'] WHERE id = 1;").opcode == op::RESULT);
+
+        // Set union/difference.
+        CHECK(send_query(client, "UPDATE ks.t SET s = s + {3} WHERE id = 1;").opcode == op::RESULT);
+        CHECK(send_query(client, "UPDATE ks.t SET s = s - {1} WHERE id = 1;").opcode == op::RESULT);
+
+        // Map subscript-set then subscript-delete.
+        CHECK(send_query(client, "UPDATE ks.t SET m['k'] = 99 WHERE id = 1;").opcode == op::RESULT);
+        CHECK(send_query(client, "DELETE m['j'] FROM ks.t WHERE id = 1;").opcode == op::RESULT);
+
+        // Backfill path: CREATE INDEX after the rows already exist.
+        CHECK(send_query(client, "CREATE TABLE ks.t2 (id int PRIMARY KEY, l list<text>);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t2 (id, l) VALUES (2, ['x','y']);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX ON ks.t2 (l);").opcode == op::RESULT);
+
+        // Full row delete should remove every index entry.
+        CHECK(send_query(client, "DELETE FROM ks.t WHERE id = 1;").opcode == op::RESULT);
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("SELECT: CONTAINS on indexed set returns matching row", "[cql.native][collection][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client,
+                         "CREATE TABLE ks.t (account text, id int, categories set<text>, PRIMARY KEY (account, id));")
+                  .opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (categories);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (account, id, categories) VALUES ('test', 5, {'lmn'});").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT * FROM ks.t WHERE categories CONTAINS 'lmn';");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "test"));
+        CHECK(body_contains(sel, "lmn"));
+
+        Frame sel2 = send_query(client, "SELECT * FROM ks.t WHERE categories CONTAINS 'xyz';");
+        CHECK(result_kind(sel2) == result::ROWS);
+        CHECK(!body_contains(sel2, "test"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("SELECT: CONTAINS on indexed list returns matching row", "[cql.native][collection][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, tags list<text>);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (tags);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, tags) VALUES (1, ['a','b','c']);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, tags) VALUES (2, ['b','c','d']);").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT id FROM ks.t WHERE tags CONTAINS 'b';");
+        CHECK(result_kind(sel) == result::ROWS);
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("SELECT: CONTAINS KEY on indexed map returns matching row", "[cql.native][collection][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, m map<text,int>);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (keys(m));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, m) VALUES (1, {'a': 10, 'b': 20});").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT id FROM ks.t WHERE m CONTAINS KEY 'a';");
+        CHECK(result_kind(sel) == result::ROWS);
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("SELECT/UPDATE/DELETE: UNSET bound in WHERE returns Invalid", "[cql.native][unset]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, v int);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, v) VALUES (1, 10);").opcode == op::RESULT);
+
+        auto run_with_unset = [&](String8 cql) -> Frame {
+            Frame prep = send_prepare(client, cql, 1);
+            REQUIRE(result_kind(prep) == result::PREPARED);
+            TArrayView<const U8> pid = read_prepared_id(prep);
+
+            DynamicArray<U8> ex;
+            append_cql_short_bytes(ex, pid.ptr, U16(pid.length));
+            append_be_u16(ex, 0x0001);    // consistency = ONE
+            append_u8(ex, 0x01);          // flags: values present
+            append_be_u16(ex, 1);         // value count
+            append_cql_bytes(ex, nullptr, -2); // [bytes] length -2 = UNSET
+            prepend_v4_header(ex, op::EXECUTE, 7);
+            send_frame(client, ex);
+            return recv_frame(client);
+        };
+
+        Frame sel = run_with_unset("SELECT * FROM ks.t WHERE id = ?");
+        CHECK(sel.opcode == op::ERROR);
+        CHECK(body_contains(sel, "unset value"));
+
+        Frame upd = run_with_unset("UPDATE ks.t SET v = 0 WHERE id = ?");
+        CHECK(upd.opcode == op::ERROR);
+        CHECK(body_contains(upd, "unset value"));
+
+        Frame del = run_with_unset("DELETE FROM ks.t WHERE id = ?");
+        CHECK(del.opcode == op::ERROR);
+        CHECK(body_contains(del, "unset value"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("UPDATE: collection compound assignment rejected on non-collection", "[cql.native][collection]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, n int);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, n) VALUES (1, 1);").opcode == op::RESULT);
+
+        Frame bad = send_query(client, "UPDATE ks.t SET n = n + 1 WHERE id = 1;");
+        CHECK(bad.opcode == op::ERROR);
+
+        Frame bad2 = send_query(client, "UPDATE ks.t SET n[0] = 1 WHERE id = 1;");
+        CHECK(bad2.opcode == op::ERROR);
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
 CQL_NATIVE_TEST_CASE("CREATE TABLE: frozen collection column", "[cql.native]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
         CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);

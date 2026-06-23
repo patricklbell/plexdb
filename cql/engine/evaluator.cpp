@@ -517,7 +517,10 @@ namespace cql {
             });
         } else if constexpr (SameAs<T, TypeHint>) {
             return evaluate_term(v.operand, ctx);
+        } else if constexpr (SameAs<T, ColumnValue>) {
+            return Evaluated{v};
         } else {
+            static_assert(!SameAs<T, T>, "evaluate_term_content missing Term variant case");
             return Evaluated{Constant{Null{}}};
         }
     }
@@ -699,6 +702,7 @@ namespace cql {
         return 0;
     }
 
+    // @todo `contains` / `contains_key` residual evaluation: return false today so unindexed
     static bool apply_operator(S64 cmp, Operator op) {
         switch (op) {
             case Operator::eq:
@@ -713,13 +717,80 @@ namespace cql {
                 return cmp > 0;
             case Operator::ge:
                 return cmp >= 0;
-            default:
+            case Operator::in:
+                assert_not_implemented("apply_operator reached with IN; should be dispatched earlier");
+                return false;
+            case Operator::contains:
+            case Operator::contains_key:
                 return false;
         }
+        assert_true(false, "unhandled Operator in apply_operator");
+        return false;
+    }
+
+    // @note CONTAINS scans element values; CONTAINS KEY scans only the key half of a map.
+    static bool evaluate_contains(const Evaluated& lhs, const Evaluated& rhs, bool match_keys,
+                                  const EvalContext& ctx) {
+        if (!type_matches_tag<ColumnValue>(lhs.value)) {
+            return false;
+        }
+        const ColumnValue& cv = get<ColumnValue>(lhs.value);
+        return visit(cv, [&](const auto& col) -> bool {
+            using T = RemoveCVRef<decltype(col)>;
+            if constexpr (SameAs<T, DynamicArray<NestedColumnValue>>) {
+                if (match_keys) {
+                    return false; // CONTAINS KEY is invalid on list/vector
+                }
+                for (const auto& e : col) {
+                    bool comparable = false;
+                    S64  cmp        = compare_evaluated(Evaluated{e.value}, rhs, comparable);
+                    if (comparable && cmp == 0) {
+                        return true;
+                    }
+                }
+                return false;
+            } else if constexpr (SameAs<T, DynamicSet<NestedColumnValue>>) {
+                if (match_keys) {
+                    return false;
+                }
+                for (auto it = col.begin(); it != col.end(); ++it) {
+                    bool comparable = false;
+                    S64  cmp        = compare_evaluated(Evaluated{(*it).value}, rhs, comparable);
+                    if (comparable && cmp == 0) {
+                        return true;
+                    }
+                }
+                return false;
+            } else if constexpr (SameAs<T, DynamicMap<NestedColumnValue, NestedColumnValue>>) {
+                for (auto it = col.begin(); it != col.end(); ++it) {
+                    const NestedColumnValue& side = match_keys ? (*it).first : (*it).second;
+                    bool                     comparable = false;
+                    S64                      cmp        = compare_evaluated(Evaluated{side.value}, rhs, comparable);
+                    if (comparable && cmp == 0) {
+                        return true;
+                    }
+                }
+                return false;
+            } else {
+                return false; // CONTAINS on non-collection column type — caller already rejected at plan time.
+            }
+        });
+        (void)ctx;
     }
 
     static bool evaluate_column_relation(const WhereClause::ColumnExpressionRelation& cer, const EvalContext& ctx) {
         Evaluated lhs = lookup_column_value(cer.column.identifier, ctx);
+
+        if (cer.operator_ == Operator::contains || cer.operator_ == Operator::contains_key) {
+            if (eval_is_null(lhs)) {
+                return false;
+            }
+            Evaluated rhs = evaluate_term(cer.value, ctx);
+            if (eval_is_null(rhs)) {
+                return false;
+            }
+            return evaluate_contains(lhs, rhs, cer.operator_ == Operator::contains_key, ctx);
+        }
 
         if (cer.operator_ == Operator::in) {
             // Check membership: rhs is a TupleLiteral or ListOrVectorLiteral.

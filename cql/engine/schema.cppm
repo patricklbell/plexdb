@@ -48,11 +48,19 @@ export namespace cql::schema {
     // Secondary index BTree: index_key → dummy (1 byte); all data is in the key
     using IndexBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<1>>;
 
+    enum class IndexKind : U8 {
+        Values  = 0,
+        Keys    = 1,
+        Entries = 2,
+        Full    = 3,
+    };
+
     struct Index {
         U64        idx; // index into storage.indexes
         bool       tombstone;
         String8    name;
         U64        col_idx; // which column in tbl.cols is indexed
+        IndexKind  kind;
         IndexBTree btree;
     };
 
@@ -66,6 +74,7 @@ export namespace cql::schema {
         DynamicArray<U64>    static_col_indices;         // col indices where is_static == true
         DynamicArray<Index>  indexes;
         PartitionBTree       btree;
+        S64                  default_ttl_ms = 0;
     };
 
     bool has_clustering_keys(const Table& tbl) {
@@ -96,6 +105,8 @@ export namespace cql::schema {
         U64  name_length;
         U64  keyspace_idx;
         U64  btree_page;
+        // @note WITH default_time_to_live in milliseconds; 0 = no default TTL.
+        S64 default_ttl_ms;
     };
 
     enum TypeRegistryKind : U8 {
@@ -126,11 +137,12 @@ export namespace cql::schema {
         Sort    clustering_order;
     };
     struct IndexHeader {
-        bool tombstone;
-        U64  name_length;
-        U64  table_idx;
-        U64  col_idx;
-        U64  btree_page;
+        bool      tombstone;
+        U64       name_length;
+        U64       table_idx;
+        U64       col_idx;
+        U64       btree_page;
+        IndexKind kind;
     };
 #pragma pack(pop)
 
@@ -221,13 +233,14 @@ export namespace cql::schema {
     coroutine::Task<Result<Keyspace*>> create_keyspace(Schema& schema, const CreateKeyspace& create);
     coroutine::Task<Result<void>>      delete_keyspace(Schema& schema, String8 name);
 
-    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create);
+    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create, S64 default_ttl_ms = 0);
+    coroutine::Task<Result<void>>   set_default_ttl_ms(Schema& schema, Table& tbl, S64 default_ttl_ms);
     coroutine::Task<Result<void>>   delete_table(Schema& schema, Keyspace& ks, String8 name);
 
     coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create, KeyKind key_kind = KeyKind::None, U16 key_position = 0, Sort clustering_order = Sort::ASC);
     coroutine::Task<Result<void>>    delete_column(Schema& schema, Table& tbl, String8 name);
 
     Result<Index*>                  read_index(Schema& schema, Table& tbl, String8 name);
-    coroutine::Task<Result<Index*>> create_index(Schema& schema, Table& tbl, U64 col_idx, String8 index_name);
+    coroutine::Task<Result<Index*>> create_index(Schema& schema, Table& tbl, U64 col_idx, String8 index_name, IndexKind kind);
     coroutine::Task<Result<void>>   drop_index(Schema& schema, Table& tbl, String8 name);
 }

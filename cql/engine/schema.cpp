@@ -217,6 +217,7 @@ namespace cql::schema {
                     .btree                      = PartitionBTree{
                                                    in_pager, tbl_storage.header.btree_page,
                                                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}},
+                    .default_ttl_ms             = tbl_storage.header.default_ttl_ms,
                 };
 
                 reserve(tbl.cols, tbl_storage.columns.length);
@@ -285,6 +286,7 @@ namespace cql::schema {
                         .tombstone = idx_storage.header.tombstone,
                         .name      = idx_storage.name,
                         .col_idx   = idx_storage.header.col_idx,
+                        .kind      = idx_storage.header.kind,
                         .btree     = IndexBTree{
                                                 in_pager, idx_storage.header.btree_page,
                                                 btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}},
@@ -613,7 +615,7 @@ namespace cql::schema {
         });
     }
 
-    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
+    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create, S64 default_ttl_ms) {
         assert_true(read_table_impl(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
 
         auto pk_info_opt = get_primary_key_info(create);
@@ -722,10 +724,11 @@ namespace cql::schema {
         TableStorage tbl_storage{
             .offset_in_blob_bytes = offset_bytes,
             .header               = TableHeader{
-                                                .tombstone    = false,
-                                                .name_length  = create.name.table_name.length,
-                                                .keyspace_idx = ks.idx,
-                                                .btree_page   = btree_page,
+                                                .tombstone      = false,
+                                                .name_length    = create.name.table_name.length,
+                                                .keyspace_idx   = ks.idx,
+                                                .btree_page     = btree_page,
+                                                .default_ttl_ms = default_ttl_ms,
                                                 },
             .name    = AutoString8(create.name.table_name),
             .columns = {},
@@ -752,6 +755,7 @@ namespace cql::schema {
             .btree                      = PartitionBTree{
                                            schema.tables_blob.pager, tbl_storage_ref.header.btree_page,
                                            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}},
+            .default_ttl_ms             = tbl_storage_ref.header.default_ttl_ms,
         };
         // @todo avoid this copy
         for (U64 i = 0; i < pk_info.partition_col_def_indices.length; i++) {
@@ -802,6 +806,15 @@ namespace cql::schema {
         }
 
         co_return Result<Table*>{&tbl_ref};
+    }
+
+    coroutine::Task<Result<void>> set_default_ttl_ms(Schema& schema, Table& tbl, S64 default_ttl_ms) {
+        TableStorage& tbl_storage          = schema.storage.tables[tbl.idx];
+        tbl_storage.header.default_ttl_ms  = default_ttl_ms;
+        tbl.default_ttl_ms                 = default_ttl_ms;
+        U64 offset                         = tbl_storage.offset_in_blob_bytes + offsetof(TableHeader, default_ttl_ms);
+        co_await blob::tupdate(schema.tables_blob, &tbl_storage.header.default_ttl_ms, &offset);
+        co_return Result<void>{};
     }
 
     coroutine::Task<Result<void>> delete_table(Schema& schema, Keyspace& ks, String8 name) {
@@ -921,7 +934,7 @@ namespace cql::schema {
         return {nullptr, Error::MissingIndex};
     }
 
-    coroutine::Task<Result<Index*>> create_index(Schema& schema, Table& tbl, U64 col_idx, String8 index_name) {
+    coroutine::Task<Result<Index*>> create_index(Schema& schema, Table& tbl, U64 col_idx, String8 index_name, IndexKind kind) {
         U64 btree_page = co_await btree::create_paged(
             *schema.indexes_blob.pager,
             btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{});
@@ -936,6 +949,7 @@ namespace cql::schema {
                                                 .table_idx   = tbl.idx,
                                                 .col_idx     = col_idx,
                                                 .btree_page  = btree_page,
+                                                .kind        = kind,
                                                 },
             .name = AutoString8(index_name),
         };
@@ -954,6 +968,7 @@ namespace cql::schema {
             .tombstone = false,
             .name      = idx_storage_ref.name,
             .col_idx   = col_idx,
+            .kind      = kind,
             .btree     = IndexBTree{
                                     schema.indexes_blob.pager, btree_page,
                                     btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}},

@@ -628,6 +628,16 @@ export namespace cql::key {
         return make_index_prefix(cv_to_const_eval(cv, dtype), dtype);
     }
 
+    // @note composite form: prepends a 2-byte length for fixed-width and uses
+    // escape-terminated encoding for variable-length, so the boundary is
+    // recoverable when concatenated with further components (e.g. entries(map)
+    // indexes whose prefix is key ++ value).
+    DynamicArray<U8> make_index_prefix_composite_from_cv(const ColumnValue& cv, type::Basic dtype) {
+        DynamicArray<U8> out;
+        append_component(out, cv_to_const_eval(cv, dtype), dtype, true);
+        return out;
+    }
+
     U16 index_prefix_len(type::Basic dtype, const U8* key_ptr) {
         if (!is_variable_length_basic(dtype)) {
             switch (dtype) {
@@ -664,6 +674,16 @@ export namespace cql::key {
             }
         }
         return i;
+    }
+
+    // @note inverse of make_index_prefix_composite_from_cv: fixed-width types are prefixed
+    // with a U16-BE length; variable-length types use the same escape-terminated scheme.
+    U16 index_prefix_len_composite(type::Basic dtype, const U8* key_ptr) {
+        if (!is_variable_length_basic(dtype)) {
+            U16 stored = static_cast<U16>((U16(key_ptr[0]) << 8) | U16(key_ptr[1]));
+            return static_cast<U16>(2 + stored);
+        }
+        return index_prefix_len(dtype, key_ptr);
     }
 
     // @note index key layout: col_prefix || [U16 pk_len] || pk_bytes || ck_bytes

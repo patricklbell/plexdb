@@ -213,6 +213,21 @@ namespace {
 
 namespace cql::io {
     // ========================================================================
+    // row metadata
+    // ========================================================================
+    void write_row_metadata(Writer w, const RowMetadata& m) {
+        w(reinterpret_cast<const U8*>(&m.flags), sizeof(m.flags));
+        w(reinterpret_cast<const U8*>(&m.expiry_unix_ms), sizeof(m.expiry_unix_ms));
+    }
+
+    coroutine::Task<RowMetadata> read_row_metadata(Reader r) {
+        RowMetadata m;
+        co_await r(reinterpret_cast<U8*>(&m.flags), sizeof(m.flags));
+        co_await r(reinterpret_cast<U8*>(&m.expiry_unix_ms), sizeof(m.expiry_unix_ms));
+        co_return m;
+    }
+
+    // ========================================================================
     // read
     // ========================================================================
     coroutine::Task<ColumnValue> read_column_value(Reader r, type::Basic dtype) {
