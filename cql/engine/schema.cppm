@@ -74,7 +74,11 @@ export namespace cql::schema {
         DynamicArray<U64>    static_col_indices;         // col indices where is_static == true
         DynamicArray<Index>  indexes;
         PartitionBTree       btree;
-        S64                  default_ttl_ms = 0;
+        S64                  default_ttl_ms              = 0;
+        S32                  gc_grace_seconds            = 864000;
+        S32                  min_index_interval          = 128;
+        S32                  max_index_interval          = 2048;
+        S32                  memtable_flush_period_in_ms = 0;
     };
 
     bool has_clustering_keys(const Table& tbl) {
@@ -107,6 +111,10 @@ export namespace cql::schema {
         U64  btree_page;
         // @note WITH default_time_to_live in milliseconds; 0 = no default TTL.
         S64 default_ttl_ms;
+        S32 gc_grace_seconds;
+        S32 min_index_interval;
+        S32 max_index_interval;
+        S32 memtable_flush_period_in_ms;
     };
 
     enum TypeRegistryKind : U8 {
@@ -233,8 +241,16 @@ export namespace cql::schema {
     coroutine::Task<Result<Keyspace*>> create_keyspace(Schema& schema, const CreateKeyspace& create);
     coroutine::Task<Result<void>>      delete_keyspace(Schema& schema, String8 name);
 
-    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create, S64 default_ttl_ms = 0);
+    struct TableExtraOptions {
+        S32 gc_grace_seconds            = 864000;
+        S32 min_index_interval          = 128;
+        S32 max_index_interval          = 2048;
+        S32 memtable_flush_period_in_ms = 0;
+    };
+
+    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create, S64 default_ttl_ms = 0, TableExtraOptions extras = {});
     coroutine::Task<Result<void>>   set_default_ttl_ms(Schema& schema, Table& tbl, S64 default_ttl_ms);
+    coroutine::Task<Result<void>>   set_table_extra_options(Schema& schema, Table& tbl, TableExtraOptions extras);
     coroutine::Task<Result<void>>   delete_table(Schema& schema, Keyspace& ks, String8 name);
 
     coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create, KeyKind key_kind = KeyKind::None, U16 key_position = 0, Sort clustering_order = Sort::ASC);

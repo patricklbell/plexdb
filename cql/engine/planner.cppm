@@ -66,7 +66,14 @@ export namespace cql::planner {
         struct WritetimeOf {
             U64 col_idx;
         };
+        struct Conversion {
+            // applied to the value produced by `value`, in order. `from` is the input type
+            // (matches the previous conversion's `to` or the base type for the first step).
+            type::Basic from;
+            type::Basic to;
+        };
         TaggedUnion<ColumnRef, CountStar, TtlOf, WritetimeOf> value;
+        DynamicArray<Conversion>                              conversions;
     };
 
     struct ProjectionPlan {

@@ -860,7 +860,19 @@ namespace cql {
                         }
                         return false;
                     }
-                    return true; // non-IN tuple relations pass through (not filtering)
+                    if (value.operator_ == Operator::eq && value.columns.length > 0 && value.columns.length == value.values.length) {
+                        for (U64 ci = 0; ci < value.columns.length; ci++) {
+                            Evaluated lhs  = lookup_column_value(value.columns[ci].identifier, ctx);
+                            Evaluated rhs  = evaluate_term(value.values[ci], ctx);
+                            bool      comp = false;
+                            if (compare_evaluated(lhs, rhs, comp) != 0 || !comp) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    }
+                    // @todo lexicographic compare for inequality tuple RHS
+                    return true;
                 } else if constexpr (SameAs<T, WhereClause::TokenRelation>) {
                     return true; // token relations not evaluated in filter
                 } else {

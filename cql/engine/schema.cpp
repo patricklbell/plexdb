@@ -216,7 +216,11 @@ namespace cql::schema {
                                                    in_pager, tbl_storage.header.btree_page,
                                                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
                     },
-                    .default_ttl_ms = tbl_storage.header.default_ttl_ms,
+                    .default_ttl_ms              = tbl_storage.header.default_ttl_ms,
+                    .gc_grace_seconds            = tbl_storage.header.gc_grace_seconds,
+                    .min_index_interval          = tbl_storage.header.min_index_interval,
+                    .max_index_interval          = tbl_storage.header.max_index_interval,
+                    .memtable_flush_period_in_ms = tbl_storage.header.memtable_flush_period_in_ms,
                 };
 
                 reserve(tbl.cols, tbl_storage.columns.length);
@@ -611,7 +615,7 @@ namespace cql::schema {
         });
     }
 
-    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create, S64 default_ttl_ms) {
+    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create, S64 default_ttl_ms, TableExtraOptions extras) {
         assert_true(read_table_impl(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
 
         auto pk_info_opt = get_primary_key_info(create);
@@ -719,11 +723,15 @@ namespace cql::schema {
         TableStorage tbl_storage{
             .offset_in_blob_bytes = offset_bytes,
             .header               = TableHeader{
-                                                .tombstone      = false,
-                                                .name_length    = create.name.table_name.length,
-                                                .keyspace_idx   = ks.idx,
-                                                .btree_page     = btree_page,
-                                                .default_ttl_ms = default_ttl_ms,
+                                                .tombstone                   = false,
+                                                .name_length                 = create.name.table_name.length,
+                                                .keyspace_idx                = ks.idx,
+                                                .btree_page                  = btree_page,
+                                                .default_ttl_ms              = default_ttl_ms,
+                                                .gc_grace_seconds            = extras.gc_grace_seconds,
+                                                .min_index_interval          = extras.min_index_interval,
+                                                .max_index_interval          = extras.max_index_interval,
+                                                .memtable_flush_period_in_ms = extras.memtable_flush_period_in_ms,
                                                 },
             .name    = AutoString8(create.name.table_name),
             .columns = {},
@@ -750,7 +758,11 @@ namespace cql::schema {
                                            schema.tables_blob.pager, tbl_storage_ref.header.btree_page,
                                            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
             },
-            .default_ttl_ms = tbl_storage_ref.header.default_ttl_ms,
+            .default_ttl_ms              = tbl_storage_ref.header.default_ttl_ms,
+            .gc_grace_seconds            = tbl_storage_ref.header.gc_grace_seconds,
+            .min_index_interval          = tbl_storage_ref.header.min_index_interval,
+            .max_index_interval          = tbl_storage_ref.header.max_index_interval,
+            .memtable_flush_period_in_ms = tbl_storage_ref.header.memtable_flush_period_in_ms,
         };
         // @todo avoid this copy
         for (U64 i = 0; i < pk_info.partition_col_def_indices.length; i++) {
@@ -809,6 +821,23 @@ namespace cql::schema {
         tbl.default_ttl_ms                = default_ttl_ms;
         U64 offset                        = tbl_storage.offset_in_blob_bytes + offsetof(TableHeader, default_ttl_ms);
         co_await blob::tupdate(schema.tables_blob, &tbl_storage.header.default_ttl_ms, &offset);
+        co_return Result<void>{};
+    }
+
+    coroutine::Task<Result<void>> set_table_extra_options(Schema& schema, Table& tbl, TableExtraOptions extras) {
+        TableStorage& tbl_storage                      = schema.storage.tables[tbl.idx];
+        tbl_storage.header.gc_grace_seconds            = extras.gc_grace_seconds;
+        tbl_storage.header.min_index_interval          = extras.min_index_interval;
+        tbl_storage.header.max_index_interval          = extras.max_index_interval;
+        tbl_storage.header.memtable_flush_period_in_ms = extras.memtable_flush_period_in_ms;
+        tbl.gc_grace_seconds                           = extras.gc_grace_seconds;
+        tbl.min_index_interval                         = extras.min_index_interval;
+        tbl.max_index_interval                         = extras.max_index_interval;
+        tbl.memtable_flush_period_in_ms                = extras.memtable_flush_period_in_ms;
+        // @note these four S32 fields are contiguous in TableHeader; persisted in one write.
+        U64 offset = tbl_storage.offset_in_blob_bytes + offsetof(TableHeader, gc_grace_seconds);
+        U64 size   = offsetof(TableHeader, memtable_flush_period_in_ms) + sizeof(S32) - offsetof(TableHeader, gc_grace_seconds);
+        co_await blob::update(schema.tables_blob, reinterpret_cast<const U8*>(&tbl_storage.header.gc_grace_seconds), size, offset);
         co_return Result<void>{};
     }
 

@@ -164,6 +164,9 @@ namespace cql::native {
                 assert_true(p + 4 <= end, "truncated list bind value length");
                 S32 outer_len = read_be_s32(p);
                 p += 4;
+                if (outer_len == -2) {
+                    return Term{.value = Constant{.value = Unset{}}};
+                }
                 if (outer_len < 0) {
                     return Term{.value = Constant{.value = Null{}}};
                 }
@@ -183,6 +186,9 @@ namespace cql::native {
                 assert_true(p + 4 <= end, "truncated set bind value length");
                 S32 outer_len = read_be_s32(p);
                 p += 4;
+                if (outer_len == -2) {
+                    return Term{.value = Constant{.value = Unset{}}};
+                }
                 if (outer_len < 0) {
                     return Term{.value = Constant{.value = Null{}}};
                 }
@@ -202,6 +208,9 @@ namespace cql::native {
                 assert_true(p + 4 <= end, "truncated map bind value length");
                 S32 outer_len = read_be_s32(p);
                 p += 4;
+                if (outer_len == -2) {
+                    return Term{.value = Constant{.value = Unset{}}};
+                }
                 if (outer_len < 0) {
                     return Term{.value = Constant{.value = Null{}}};
                 }

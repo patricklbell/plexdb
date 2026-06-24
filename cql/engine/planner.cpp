@@ -16,6 +16,61 @@ import cql.engine.types;
 using namespace plexdb;
 
 namespace cql::planner {
+    // @note parser lowercases identifiers (see unquoted_identifier), so all matches are lowercase-only.
+    struct ConversionTypeName {
+        const char* name;
+        type::Basic type;
+    };
+    static constexpr ConversionTypeName kConversionTypeNames[] = {
+        {      "int",      type::Basic::int_},
+        {   "bigint",    type::Basic::bigint},
+        { "smallint",  type::Basic::smallint},
+        {  "tinyint",   type::Basic::tinyint},
+        {  "counter",   type::Basic::counter},
+        {    "float",    type::Basic::float_},
+        {   "double",   type::Basic::double_},
+        {     "text",      type::Basic::text},
+        {    "ascii",     type::Basic::ascii},
+        {  "varchar",   type::Basic::varchar},
+        {"timestamp", type::Basic::timestamp},
+        {     "date",      type::Basic::date},
+        {     "time",      type::Basic::time},
+        {     "uuid",      type::Basic::uuid},
+        { "timeuuid",  type::Basic::timeuuid},
+        {  "boolean",   type::Basic::boolean},
+        {     "inet",      type::Basic::inet},
+        {     "blob",      type::Basic::blob},
+    };
+    static Optional<type::Basic> typed_conversion_type_from_token(String8 tok) {
+        for (const auto& e : kConversionTypeNames) {
+            if (e.name == tok) {
+                return e.type;
+            }
+        }
+        return {};
+    }
+
+    // Parse a function name like `bigintasblob` into (from, to) types — the `<T1>As<T2>` pattern.
+    static Optional<Pair<type::Basic, type::Basic>> parse_typed_conversion_name(String8 name) {
+        for (U64 i = 1; i + 2 < name.length; i++) {
+            if (name.data[i] != 'a' || name.data[i + 1] != 's') {
+                continue;
+            }
+            auto from = typed_conversion_type_from_token(String8{name.data, i});
+            auto to   = typed_conversion_type_from_token(String8{name.data + i + 2, name.length - i - 2});
+            if (from && to) {
+                return Pair<type::Basic, type::Basic>{*from, *to};
+            }
+        }
+        return {};
+    }
+
+    static void reverse_conversions_into(DynamicArray<SelectOp::Conversion>& dst, const DynamicArray<SelectOp::Conversion>& src) {
+        for (U64 i = src.length; i > 0; i--) {
+            push_back(dst, src[i - 1]);
+        }
+    }
+
     static Optional<U64> find_pk_position(const schema::Table& tbl, const AutoString8& col_name) {
         String8 name(col_name.c_str, col_name.length);
         for (U64 pos = 0; pos < tbl.partition_key_col_indices.length; pos++) {
@@ -981,7 +1036,7 @@ namespace cql::planner {
                     plan.result.context = AutoString8("Cannot use selection function ") + AutoString8(fn_label) + AutoString8(" on PRIMARY KEY part ") + AutoString8(cn.identifier);
                     return false;
                 }
-                push_back(plan.projection.ops, is_ttl ? SelectOp{SelectOp::TtlOf{ci}} : SelectOp{SelectOp::WritetimeOf{ci}});
+                push_back(plan.projection.ops, is_ttl ? SelectOp{SelectOp::TtlOf{ci}, {}} : SelectOp{SelectOp::WritetimeOf{ci}, {}});
                 return true;
             }
             plan.result.error   = PlanError::ColumnNotFound;
@@ -996,13 +1051,13 @@ namespace cql::planner {
                     String8 name(sel.identifier.c_str, sel.identifier.length);
                     for (U64 ci = 0; ci < tbl.cols.length; ci++) {
                         if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == name) {
-                            push_back(plan.projection.ops, SelectOp{SelectOp::ColumnRef{ci}});
+                            push_back(plan.projection.ops, SelectOp{SelectOp::ColumnRef{ci}, {}});
                             break;
                         }
                     }
                     return true;
                 } else if constexpr (SameAs<ST, Select::Count>) {
-                    push_back(plan.projection.ops, SelectOp{SelectOp::CountStar{}});
+                    push_back(plan.projection.ops, SelectOp{SelectOp::CountStar{}, {}});
                     plan.projection.is_aggregate = true;
                     return true;
                 } else if constexpr (SameAs<ST, Select::Function>) {
@@ -1012,6 +1067,86 @@ namespace cql::planner {
                     }
                     if (fname == "writetime" || fname == "WRITETIME") {
                         return resolve_meta_selector(sel, false);
+                    }
+                    // @note Recursively unwraps nested `<T>As<U>` calls into a conversion stack; the
+                    // innermost argument is a ColumnName, ttl(c), or writetime(c).
+                    if (auto from_to = parse_typed_conversion_name(fname)) {
+                        DynamicArray<SelectOp::Conversion> conversions;
+                        const Select::Function*            inner_fn = &sel;
+                        type::Basic                        cur_from = from_to->first;
+                        type::Basic                        cur_to   = from_to->second;
+                        while (true) {
+                            push_back(conversions, SelectOp::Conversion{cur_from, cur_to});
+                            if (inner_fn->arguments.length != 1) {
+                                plan.result.error   = PlanError::ColumnNotFound;
+                                plan.result.context = AutoString8("Type conversion function requires a single argument");
+                                return false;
+                            }
+                            const Select::Selector& arg = inner_fn->arguments[0];
+                            if (type_matches_tag<ColumnName>(arg.value)) {
+                                const auto& cn = get<ColumnName>(arg.value);
+                                String8     name(cn.identifier.c_str, cn.identifier.length);
+                                for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                                    if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == name) {
+                                        if (!type_matches_tag<type::Basic>(tbl.cols[ci].type.value)) {
+                                            plan.result.error   = PlanError::ColumnNotFound;
+                                            plan.result.context = AutoString8("Type conversion requires a basic-typed column");
+                                            return false;
+                                        }
+                                        if (get<type::Basic>(tbl.cols[ci].type.value) != cur_from) {
+                                            plan.result.error   = PlanError::ColumnNotFound;
+                                            plan.result.context = AutoString8("Type conversion argument type does not match column type");
+                                            return false;
+                                        }
+                                        SelectOp op{SelectOp::ColumnRef{ci}, {}};
+                                        reverse_conversions_into(op.conversions, conversions);
+                                        push_back(plan.projection.ops, move(op));
+                                        return true;
+                                    }
+                                }
+                                plan.result.error   = PlanError::ColumnNotFound;
+                                plan.result.context = AutoString8(cn.identifier);
+                                return false;
+                            }
+                            if (type_matches_tag<Select::Function>(arg.value)) {
+                                const auto& fc = get<Select::Function>(arg.value);
+                                String8     inner_name(fc.function_name.c_str, fc.function_name.length);
+                                if (inner_name == "ttl" || inner_name == "writetime") {
+                                    bool        is_ttl_inner = inner_name == "ttl";
+                                    type::Basic meta_type    = is_ttl_inner ? type::Basic::int_ : type::Basic::bigint;
+                                    if (cur_from != meta_type) {
+                                        plan.result.error   = PlanError::ColumnNotFound;
+                                        plan.result.context = AutoString8("Type conversion argument type does not match inner function result type");
+                                        return false;
+                                    }
+                                    U64 ops_before = plan.projection.ops.length;
+                                    if (!resolve_meta_selector(fc, is_ttl_inner)) {
+                                        return false;
+                                    }
+                                    if (plan.projection.ops.length != ops_before + 1) {
+                                        plan.result.error = PlanError::ColumnNotFound;
+                                        return false;
+                                    }
+                                    auto& last_op = plan.projection.ops[plan.projection.ops.length - 1];
+                                    reverse_conversions_into(last_op.conversions, conversions);
+                                    return true;
+                                }
+                                if (auto nested = parse_typed_conversion_name(inner_name)) {
+                                    if (cur_from != nested->second) {
+                                        plan.result.error   = PlanError::ColumnNotFound;
+                                        plan.result.context = AutoString8("Type conversion argument type does not match inner conversion result type");
+                                        return false;
+                                    }
+                                    cur_from = nested->first;
+                                    cur_to   = nested->second;
+                                    inner_fn = &fc;
+                                    continue;
+                                }
+                            }
+                            plan.result.error   = PlanError::ColumnNotFound;
+                            plan.result.context = AutoString8("Unsupported argument for type conversion function");
+                            return false;
+                        }
                     }
                     plan.result.error   = PlanError::ColumnNotFound;
                     plan.result.context = AutoString8("Unknown function ") + AutoString8(sel.function_name);
@@ -1215,6 +1350,9 @@ namespace cql::planner {
                 patch.op    = CollectionPatch::Op::SubscriptSet;
                 patch.key   = evaluate(sub_term.index, ctx);
                 patch.value = evaluate(assign.value, ctx);
+                if (type_matches_tag<Constant>(patch.value.value) && type_matches_tag<Unset>(get<Constant>(patch.value.value).value)) {
+                    continue;
+                }
                 if (!col.is_static) {
                     has_non_static_assignment = true;
                 }
@@ -1251,6 +1389,9 @@ namespace cql::planner {
                     return plan;
                 }
                 patch.value = evaluate(*cf->other, ctx);
+                if (type_matches_tag<Constant>(patch.value.value) && type_matches_tag<Unset>(get<Constant>(patch.value.value).value)) {
+                    continue;
+                }
                 // @note `Map - X` expects `set<map.key>` on the RHS; all other compound forms take the column's own type.
                 bool rhs_ok = (is_map && patch.op == CollectionPatch::Op::Subtract)
                                 ? io::can_cast_write_evaluated_as_column_value(patch.value, type::create_set(get<type::Map>(col.type.value).key))

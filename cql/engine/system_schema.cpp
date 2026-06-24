@@ -358,17 +358,17 @@ namespace cql::engine {
                 emplace_back(row.values, default_compression());
                 emplace_back(row.values, F64(1.0));
                 emplace_back(row.values, F64(0.0));
-                emplace_back(row.values, S32(0));
+                emplace_back(row.values, S32(tbl.default_ttl_ms / 1000));
                 {
                     DynamicSet<NestedColumnValue> s{};
                     insert(s, ncv("compound"_as));
                     emplace_back(row.values, move(s));
                 }
-                emplace_back(row.values, S32(864000));
+                emplace_back(row.values, tbl.gc_grace_seconds);
                 emplace_back(row.values, table_uuid(ks.name, tbl.name));
-                emplace_back(row.values, S32(2048));
-                emplace_back(row.values, S32(0));
-                emplace_back(row.values, S32(128));
+                emplace_back(row.values, tbl.max_index_interval);
+                emplace_back(row.values, tbl.memtable_flush_period_in_ms);
+                emplace_back(row.values, tbl.min_index_interval);
                 emplace_back(row.values, "BLOCKING"_as);
                 emplace_back(row.values, F64(0.0));
                 emplace_back(row.values, "99PERCENTILE"_as);
