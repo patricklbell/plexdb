@@ -71,9 +71,27 @@ namespace cql::key {
         append_bytes(out, bytes, 8);
     }
 
+    // @note DESC encoding inverts every emitted value byte so forward lex iteration produces
+    // logical descending order. Length prefixes are not inverted.
+    static constexpr U8 desc_mask(Sort d) {
+        return d == Sort::DESC ? U8(0xFFu) : U8(0x00u);
+    }
+    static void xor_range_inplace(U8* p, U64 n, U8 mask) {
+        if (mask == 0) {
+            return;
+        }
+        for (U64 i = 0; i < n; i++) {
+            p[i] = static_cast<U8>(p[i] ^ mask);
+        }
+    }
+    static void xor_tail_inplace(DynamicArray<U8>& out, U64 start, U8 mask) {
+        xor_range_inplace(out.ptr + start, out.length - start, mask);
+    }
+
     // Escape 0x00 bytes as 0x00 0xFF, then write terminator 0x00 0x00.
     // Used for variable-length composite key components to preserve lexicographic ordering.
-    static void append_escaped_terminated(DynamicArray<U8>& out, const U8* src, U16 len) {
+    static void append_escaped_terminated(DynamicArray<U8>& out, const U8* src, U16 len, Sort direction = Sort::ASC) {
+        U64 start = out.length;
         for (U16 i = 0; i < len; i++) {
             push_back(out, src[i]);
             if (src[i] == 0x00) {
@@ -82,6 +100,7 @@ namespace cql::key {
         }
         push_back(out, U8(0x00));
         push_back(out, U8(0x00));
+        xor_tail_inplace(out, start, desc_mask(direction));
     }
 
     static S64 eval_as_s64(const Evaluated& eval) {
@@ -210,16 +229,14 @@ namespace cql::key {
             case type::Basic::text:
             case type::Basic::varchar:
             case type::Basic::ascii: {
-                if (direction == Sort::DESC) {
-                    assert_not_implemented("DESC ordering on variable-width clustering column is not implemented");
-                }
                 const AutoString8& s = get<AutoString8>(c.value);
                 const U8*          p = reinterpret_cast<const U8*>(s.c_str);
                 const U16          n = static_cast<U16>(s.length);
                 if (is_composite) {
-                    append_escaped_terminated(out, p, n);
+                    append_escaped_terminated(out, p, n, direction);
                 } else {
                     append_bytes(out, p, n);
+                    xor_tail_inplace(out, value_start, desc_mask(direction));
                 }
                 return;
             }
@@ -234,26 +251,22 @@ namespace cql::key {
                 break;
             }
             case type::Basic::blob: {
-                if (direction == Sort::DESC) {
-                    assert_not_implemented("DESC ordering on variable-width clustering column is not implemented");
-                }
                 const Blob& b = get<Blob>(c.value);
                 if (is_composite) {
-                    append_escaped_terminated(out, b.value.ptr, static_cast<U16>(b.value.length));
+                    append_escaped_terminated(out, b.value.ptr, static_cast<U16>(b.value.length), direction);
                 } else {
                     append_bytes(out, b.value.ptr, static_cast<U16>(b.value.length));
+                    xor_tail_inplace(out, value_start, desc_mask(direction));
                 }
                 return;
             }
             case type::Basic::hex: {
-                if (direction == Sort::DESC) {
-                    assert_not_implemented("DESC ordering on variable-width clustering column is not implemented");
-                }
                 const Hex& h = get<Hex>(c.value);
                 if (is_composite) {
-                    append_escaped_terminated(out, h.value.ptr, static_cast<U16>(h.value.length));
+                    append_escaped_terminated(out, h.value.ptr, static_cast<U16>(h.value.length), direction);
                 } else {
                     append_bytes(out, h.value.ptr, static_cast<U16>(h.value.length));
+                    xor_tail_inplace(out, value_start, desc_mask(direction));
                 }
                 return;
             }
@@ -261,11 +274,7 @@ namespace cql::key {
                 assert_not_implemented("key serialization for this type is not implemented");
                 return;
         }
-        if (direction == Sort::DESC) {
-            for (U64 i = value_start; i < out.length; i++) {
-                out[i] = static_cast<U8>(out[i] ^ 0xFFu);
-            }
-        }
+        xor_tail_inplace(out, value_start, desc_mask(direction));
     }
 
     // Decode one key component from `src` starting at `*pos`. Advances *pos past the component.
@@ -348,10 +357,11 @@ namespace cql::key {
                 case type::Basic::ascii: {
                     DynamicArray<U8> buf;
                     while (*pos + 1 < total_len) {
-                        U8 c = src[*pos];
+                        U8 c = static_cast<U8>(src[*pos] ^ m);
                         *pos += 1;
                         if (c == 0x00) {
-                            if (src[*pos] == 0xFF) {
+                            U8 next = static_cast<U8>(src[*pos] ^ m);
+                            if (next == 0xFF) {
                                 *pos += 1;
                                 push_back(buf, U8(0x00));
                             } else {
@@ -370,10 +380,11 @@ namespace cql::key {
                 case type::Basic::hex: {
                     DynamicArray<U8> buf;
                     while (*pos + 1 < total_len) {
-                        U8 c = src[*pos];
+                        U8 c = static_cast<U8>(src[*pos] ^ m);
                         *pos += 1;
                         if (c == 0x00) {
-                            if (src[*pos] == 0xFF) {
+                            U8 next = static_cast<U8>(src[*pos] ^ m);
+                            if (next == 0xFF) {
                                 *pos += 1;
                                 push_back(buf, U8(0x00));
                             } else {
@@ -458,6 +469,7 @@ namespace cql::key {
                     U16         slen = static_cast<U16>(total_len - *pos);
                     AutoString8 s{slen};
                     os::memory_copy(s.c_str, src + *pos, slen);
+                    xor_range_inplace(reinterpret_cast<U8*>(s.c_str), slen, m);
                     *pos += slen;
                     return ColumnValue{move(s)};
                 }
@@ -467,6 +479,7 @@ namespace cql::key {
                     Blob b;
                     resize(b.value, U64(slen));
                     os::memory_copy(b.value.ptr, src + *pos, slen);
+                    xor_range_inplace(b.value.ptr, slen, m);
                     *pos += slen;
                     return ColumnValue{move(b)};
                 }
