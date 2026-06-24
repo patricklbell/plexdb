@@ -26,5 +26,11 @@ export namespace cql::engine {
         AutoString8                 table;
         DynamicArray<VirtualColumn> columns;
         DynamicArray<VirtualRow>    rows;
+        // Owns label bytes when a column name is dynamically computed (aliases,
+        // ttl(...)/writetime(...) labels). Static literals and schema-owned column
+        // names go directly into VirtualColumn::name without an entry here.
+        // @note callers must reserve capacity to match `columns.length` before pushing
+        // so the String8 views stay valid across appends.
+        DynamicArray<AutoString8> column_name_storage;
     };
 }

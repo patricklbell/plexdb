@@ -40,6 +40,11 @@ export namespace cql {
 
         // @note row-blob metadata loaded by load(); inspect after load to enforce TTL expiry.
         io::RowMetadata metadata{};
+        io::RowMetadata static_metadata{};
+
+        // Set by deref() to the per-cell metadata for the column it just read.
+        // When the cell_meta_mask bit is unset, derived from the appropriate row metadata.
+        io::CellMetadata current_cell_metadata{};
 
     private:
         const schema::Table* table = nullptr;
@@ -53,6 +58,8 @@ export namespace cql {
         // All mask words loaded upfront in load(); safe to hold across transactions.
         DynamicArray<U64> masks;
         DynamicArray<U64> static_masks;
+        DynamicArray<U64> cell_meta_mask;
+        DynamicArray<U64> static_cell_meta_mask;
 
         // @note PK/CK values are not stored in the row blob; the with-keys load() overloads
         // decode them from the encoded key bytes and deref() returns them by key_position.
@@ -74,6 +81,15 @@ export namespace cql {
 
         bool current_is_static() const {
             return static_cast<bool>(static_cursor) && table->cols[current_column_idx].is_static;
+        }
+
+        bool current_has_cell_meta() const {
+            U64 word = current_column_idx / io::MASK_BIT_COUNT;
+            U64 bit  = current_column_idx % io::MASK_BIT_COUNT;
+            if (current_is_static()) {
+                return word < static_cell_meta_mask.length && (static_cell_meta_mask[word] & (1_u64 << bit));
+            }
+            return word < cell_meta_mask.length && (cell_meta_mask[word] & (1_u64 << bit));
         }
     };
 

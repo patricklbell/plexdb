@@ -960,8 +960,37 @@ namespace cql::planner {
             plan.locator.reverse_clustering = opposite_decision.has_value() && *opposite_decision;
         }
 
+        // Lower a Function selector for `ttl(c)` or `writetime(c)` into the matching SelectOp.
+        // Returns false (with plan.result.error set) when the argument shape or column kind is invalid.
+        auto resolve_meta_selector = [&](const Select::Function& fn, bool is_ttl) -> bool {
+            PlanError   shape_error = is_ttl ? PlanError::InvalidTtlArgument : PlanError::InvalidWritetimeArgument;
+            const char* fn_label    = is_ttl ? "ttl" : "writetime";
+            if (fn.arguments.length != 1 || !type_matches_tag<ColumnName>(fn.arguments[0].value)) {
+                plan.result.error   = shape_error;
+                plan.result.context = AutoString8(fn_label) + AutoString8(" requires a single column argument");
+                return false;
+            }
+            const auto& cn = get<ColumnName>(fn.arguments[0].value);
+            String8     name(cn.identifier.c_str, cn.identifier.length);
+            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                if (tbl.cols[ci].tombstone || tbl.cols[ci].name != name) {
+                    continue;
+                }
+                if (tbl.cols[ci].key_kind != schema::KeyKind::None) {
+                    plan.result.error   = shape_error;
+                    plan.result.context = AutoString8("Cannot use selection function ") + AutoString8(fn_label) + AutoString8(" on PRIMARY KEY part ") + AutoString8(cn.identifier);
+                    return false;
+                }
+                push_back(plan.projection.ops, is_ttl ? SelectOp{SelectOp::TtlOf{ci}} : SelectOp{SelectOp::WritetimeOf{ci}});
+                return true;
+            }
+            plan.result.error   = PlanError::ColumnNotFound;
+            plan.result.context = AutoString8(cn.identifier);
+            return false;
+        };
+
         for (const auto& sc : stmt.select.clauses) {
-            visit(sc.column.value, [&](const auto& sel) {
+            bool ok = visit(sc.column.value, [&](const auto& sel) -> bool {
                 using ST = RemoveCVRef<decltype(sel)>;
                 if constexpr (SameAs<ST, ColumnName>) {
                     String8 name(sel.identifier.c_str, sel.identifier.length);
@@ -971,13 +1000,30 @@ namespace cql::planner {
                             break;
                         }
                     }
+                    return true;
                 } else if constexpr (SameAs<ST, Select::Count>) {
                     push_back(plan.projection.ops, SelectOp{SelectOp::CountStar{}});
                     plan.projection.is_aggregate = true;
+                    return true;
+                } else if constexpr (SameAs<ST, Select::Function>) {
+                    String8 fname(sel.function_name.c_str, sel.function_name.length);
+                    if (fname == "ttl" || fname == "TTL") {
+                        return resolve_meta_selector(sel, true);
+                    }
+                    if (fname == "writetime" || fname == "WRITETIME") {
+                        return resolve_meta_selector(sel, false);
+                    }
+                    plan.result.error   = PlanError::ColumnNotFound;
+                    plan.result.context = AutoString8("Unknown function ") + AutoString8(sel.function_name);
+                    return false;
                 } else {
-                    assert_not_implemented("SELECT clause type (function/cast/term) is not implemented");
+                    assert_not_implemented("SELECT clause type (cast) is not implemented");
+                    return true;
                 }
             });
+            if (!ok) {
+                return plan;
+            }
         }
 
         auto add_needed = [&](U64 ci) {
@@ -991,6 +1037,10 @@ namespace cql::planner {
         for (const auto& op : plan.projection.ops) {
             if (type_matches_tag<SelectOp::ColumnRef>(op.value)) {
                 add_needed(get<SelectOp::ColumnRef>(op.value).col_idx);
+            } else if (type_matches_tag<SelectOp::TtlOf>(op.value)) {
+                add_needed(get<SelectOp::TtlOf>(op.value).col_idx);
+            } else if (type_matches_tag<SelectOp::WritetimeOf>(op.value)) {
+                add_needed(get<SelectOp::WritetimeOf>(op.value).col_idx);
             }
         }
         auto add_needed_by_name = [&](const AutoString8& ident) {

@@ -59,7 +59,14 @@ export namespace cql::planner {
             U64 col_idx;
         };
         struct CountStar {};
-        TaggedUnion<ColumnRef, CountStar> value;
+        // @note arg col_idx must be a non-key, non-static regular column.
+        struct TtlOf {
+            U64 col_idx;
+        };
+        struct WritetimeOf {
+            U64 col_idx;
+        };
+        TaggedUnion<ColumnRef, CountStar, TtlOf, WritetimeOf> value;
     };
 
     struct ProjectionPlan {
@@ -120,6 +127,8 @@ export namespace cql::planner {
         InvalidCollectionMutation,
         InvalidSubscriptTarget,
         UnsetValueInWhere,
+        InvalidTtlArgument,
+        InvalidWritetimeArgument,
     };
 
     struct PlanResult {

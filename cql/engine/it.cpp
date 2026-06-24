@@ -27,17 +27,22 @@ namespace cql {
     static coroutine::Task<U64> read_blob_header(
         blob::BlobDynamicPaged& b,
         io::RowMetadata&        out_meta,
-        U64& out_col_count, DynamicArray<U64>& out_masks
+        U64& out_col_count, DynamicArray<U64>& out_masks, DynamicArray<U64>& out_cell_meta_mask
     ) {
         co_await blob::get(b, reinterpret_cast<U8*>(&out_meta.flags), sizeof(out_meta.flags), 0);
         co_await blob::get(b, reinterpret_cast<U8*>(&out_meta.expiry_unix_ms), sizeof(out_meta.expiry_unix_ms), sizeof(out_meta.flags));
         co_await blob::get(b, reinterpret_cast<U8*>(&out_col_count), io::COLUMN_COUNT_BYTE_COUNT, io::ROW_METADATA_BYTES);
         U64 mask_words = ceil_div(out_col_count, io::MASK_BIT_COUNT);
         resize(out_masks, mask_words);
+        resize(out_cell_meta_mask, mask_words);
+        U64 off = io::ROW_METADATA_BYTES + io::COLUMN_COUNT_BYTE_COUNT;
         if (mask_words > 0) {
-            co_await blob::get(b, reinterpret_cast<U8*>(out_masks.ptr), mask_words * io::MASK_BYTE_COUNT, io::ROW_METADATA_BYTES + io::COLUMN_COUNT_BYTE_COUNT);
+            co_await blob::get(b, reinterpret_cast<U8*>(out_masks.ptr), mask_words * io::MASK_BYTE_COUNT, off);
+            off += mask_words * io::MASK_BYTE_COUNT;
+            co_await blob::get(b, reinterpret_cast<U8*>(out_cell_meta_mask.ptr), mask_words * io::MASK_BYTE_COUNT, off);
+            off += mask_words * io::MASK_BYTE_COUNT;
         }
-        co_return io::ROW_METADATA_BYTES + io::COLUMN_COUNT_BYTE_COUNT + mask_words* io::MASK_BYTE_COUNT;
+        co_return off;
     }
 
     // The no-keys overload owns the blob-reading work and clears injection state.
@@ -56,20 +61,20 @@ namespace cql {
 
         it.row_column_count = table->cols.length;
         it.metadata         = {};
+        it.static_metadata  = {};
         if (page_idx != 0) {
             it.row_cursor   = co_await blob::create_cursor(pager, page_idx);
             U64 data_offset = co_await read_blob_header(
-                it.row_cursor.blob, it.metadata, it.row_column_count, it.masks
+                it.row_cursor.blob, it.metadata, it.row_column_count, it.masks, it.cell_meta_mask
             );
             it.row_cursor.offset = data_offset;
         }
 
         if (static_page_idx != 0 && table->static_col_indices.length > 0) {
-            it.static_cursor                 = co_await blob::create_cursor(pager, static_page_idx);
-            U64             static_col_count = 0;
-            io::RowMetadata static_meta{};
-            U64             static_data_offset = co_await read_blob_header(
-                it.static_cursor.blob, static_meta, static_col_count, it.static_masks
+            it.static_cursor       = co_await blob::create_cursor(pager, static_page_idx);
+            U64 static_col_count   = 0;
+            U64 static_data_offset = co_await read_blob_header(
+                it.static_cursor.blob, it.static_metadata, static_col_count, it.static_masks, it.static_cell_meta_mask
             );
             it.static_cursor.offset = static_data_offset;
         }
@@ -95,16 +100,27 @@ namespace cql {
         it.injected_ck_values = key::deserialize_clustering(*table, ck_bytes);
     }
 
+    static io::CellMetadata derive_cell_meta_from_row(const io::RowMetadata& rm) {
+        io::CellMetadata cm{};
+        if (io::row_has_ttl(rm)) {
+            cm.flags |= io::CELL_FLAG_HAS_TTL;
+            cm.expiry_unix_ms = rm.expiry_unix_ms;
+        }
+        return cm;
+    }
+
     coroutine::Task<ColumnValue> ColumnIterator::deref() {
         ZoneScopedN("it::column_read");
         assert_true(this->table != nullptr, "cannot dereference an end iterator, this should never happen!");
 
         if (this->current_column_idx >= this->row_column_count) {
+            this->current_cell_metadata = {};
             co_return ColumnValue{Null{}};
         }
 
         if (this->current_is_null()) {
-            const schema::Column& col = this->table->cols[this->current_column_idx];
+            this->current_cell_metadata = {};
+            const schema::Column& col   = this->table->cols[this->current_column_idx];
             if (col.key_kind == schema::KeyKind::PartitionKey && col.key_position < this->injected_pk_values.length) {
                 this->current_value_consumed = true;
                 co_return this->injected_pk_values[col.key_position];
@@ -116,13 +132,17 @@ namespace cql {
             co_return ColumnValue{Null{}};
         }
 
-        blob::BlobCursor& cursor = this->current_is_static()
-                                     ? this->static_cursor
-                                     : this->row_cursor;
+        bool              is_static = this->current_is_static();
+        blob::BlobCursor& cursor    = is_static ? this->static_cursor : this->row_cursor;
 
         auto r_fn = [&cursor](U8* dst, U64 size) -> coroutine::Task<void> {
             co_await blob::read(cursor, dst, size);
         };
+        if (this->current_has_cell_meta()) {
+            this->current_cell_metadata = co_await io::read_cell_metadata(io::to_reader(r_fn));
+        } else {
+            this->current_cell_metadata = derive_cell_meta_from_row(is_static ? this->static_metadata : this->metadata);
+        }
         ColumnValue result           = co_await io::read_column_value(io::to_reader(r_fn), this->table->cols[this->current_column_idx].type);
         this->current_value_consumed = true;
         co_return result;
@@ -147,6 +167,11 @@ namespace cql {
                     cursor.skip(size);
                 }
             };
+            if (this->current_has_cell_meta()) {
+                U8 flags;
+                co_await r_fn(&flags, sizeof(flags));
+                co_await io::skip_cell_metadata(io::to_reader(r_fn), flags);
+            }
             co_await io::skip_column_value(io::to_reader(r_fn), this->table->cols[this->current_column_idx].type);
         }
         this->current_value_consumed = false;

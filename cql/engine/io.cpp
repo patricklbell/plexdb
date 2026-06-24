@@ -224,6 +224,59 @@ namespace cql::io {
         co_return m;
     }
 
+    void write_cell_metadata(Writer w, const CellMetadata& m) {
+        w(reinterpret_cast<const U8*>(&m.flags), sizeof(m.flags));
+        if (cell_has_ttl(m)) {
+            w(reinterpret_cast<const U8*>(&m.expiry_unix_ms), sizeof(m.expiry_unix_ms));
+        }
+        if (cell_has_writetime(m)) {
+            w(reinterpret_cast<const U8*>(&m.writetime_us), sizeof(m.writetime_us));
+        }
+    }
+
+    coroutine::Task<CellMetadata> read_cell_metadata(Reader r) {
+        CellMetadata m;
+        co_await r(reinterpret_cast<U8*>(&m.flags), sizeof(m.flags));
+        if (cell_has_ttl(m)) {
+            co_await r(reinterpret_cast<U8*>(&m.expiry_unix_ms), sizeof(m.expiry_unix_ms));
+        }
+        if (cell_has_writetime(m)) {
+            co_await r(reinterpret_cast<U8*>(&m.writetime_us), sizeof(m.writetime_us));
+        }
+        co_return m;
+    }
+
+    coroutine::Task<void> skip_cell_metadata(Reader r, U8 flags) {
+        U64 to_skip = 0;
+        if ((flags & CELL_FLAG_HAS_TTL) != 0) {
+            to_skip += sizeof(S64);
+        }
+        if ((flags & CELL_FLAG_HAS_WRITETIME) != 0) {
+            to_skip += sizeof(S64);
+        }
+        if (to_skip > 0) {
+            co_await r(nullptr, to_skip);
+        }
+    }
+
+    static void write_mask_bits(Writer w, ColumnActiveChecker is_set, U64 column_count) {
+        U64 mask = 0;
+        for (U64 idx = 0; idx < column_count; idx++) {
+            mask |= (static_cast<U64>(is_set(idx)) << (idx % MASK_BIT_COUNT));
+            if (idx % MASK_BIT_COUNT == MASK_BIT_COUNT - 1) {
+                w(reinterpret_cast<const U8*>(&mask), sizeof(mask));
+                mask = 0;
+            }
+        }
+        if (column_count % MASK_BIT_COUNT != 0) {
+            w(reinterpret_cast<const U8*>(&mask), sizeof(mask));
+        }
+    }
+
+    void write_cell_meta_mask(Writer w, ColumnActiveChecker has_meta, U64 column_count) {
+        write_mask_bits(w, has_meta, column_count);
+    }
+
     // ========================================================================
     // read
     // ========================================================================
@@ -858,18 +911,7 @@ namespace cql::io {
     void write_column_mask(Writer w, ColumnActiveChecker is_active, U64 column_count) {
         w(reinterpret_cast<const U8*>(&column_count), sizeof(column_count));
         static_assert(sizeof(column_count) == COLUMN_COUNT_BYTE_COUNT);
-
-        U64 mask = 0;
-        for (U64 idx = 0; idx < column_count; idx++) {
-            mask |= (static_cast<U64>(is_active(idx)) << (idx % MASK_BIT_COUNT));
-            if (idx % MASK_BIT_COUNT == MASK_BIT_COUNT - 1) {
-                w(reinterpret_cast<const U8*>(&mask), sizeof(mask));
-                mask = 0;
-            }
-        }
-        if (column_count % MASK_BIT_COUNT != 0) {
-            w(reinterpret_cast<const U8*>(&mask), sizeof(mask));
-        }
+        write_mask_bits(w, is_active, column_count);
     }
 }
 

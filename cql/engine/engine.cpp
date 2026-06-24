@@ -161,25 +161,35 @@ namespace cql::engine {
     }
 
     // Drain `col_it` into parallel col_values/col_present arrays sized to tbl->cols.length.
-    static coroutine::Task<void> drain_columns(const schema::Table* tbl, ColumnIterator& col_it, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present) {
+    // If out_cell_meta is non-null, also populates per-column cell metadata observed during iteration.
+    static coroutine::Task<void> drain_columns(const schema::Table* tbl, ColumnIterator& col_it, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, DynamicArray<Optional<io::CellMetadata>>* out_cell_meta = nullptr) {
         resize(col_values, tbl->cols.length);
         resize(col_present, tbl->cols.length);
+        if (out_cell_meta != nullptr) {
+            resize(*out_cell_meta, tbl->cols.length);
+        }
         ColumnIterator col_end{};
         U64            ci = 0;
         while (col_it != col_end && ci < tbl->cols.length) {
             ColumnValue val = co_await col_it.deref();
             col_present[ci] = !type_matches_tag<Null>(val);
             col_values[ci]  = move(val);
+            if (out_cell_meta != nullptr && col_present[ci] && col_it.current_cell_metadata.flags != 0) {
+                (*out_cell_meta)[ci] = col_it.current_cell_metadata;
+            }
             co_await col_it.advance();
             ++ci;
         }
     }
 
-    static coroutine::Task<void> read_row_into(Engine& engine, const schema::Table* tbl, U64 page_idx, U64 static_page_idx, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, io::RowMetadata* out_metadata = nullptr) {
+    static coroutine::Task<void> read_row_into(Engine& engine, const schema::Table* tbl, U64 page_idx, U64 static_page_idx, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, io::RowMetadata* out_metadata = nullptr, DynamicArray<Optional<io::CellMetadata>>* out_cell_meta = nullptr) {
         resize(col_values, tbl->cols.length);
         resize(col_present, tbl->cols.length);
         if (out_metadata != nullptr) {
             *out_metadata = {};
+        }
+        if (out_cell_meta != nullptr) {
+            resize(*out_cell_meta, tbl->cols.length);
         }
         if (page_idx == 0 && static_page_idx == 0) {
             co_return;
@@ -189,25 +199,25 @@ namespace cql::engine {
         if (out_metadata != nullptr) {
             *out_metadata = col_it.metadata;
         }
-        co_await drain_columns(tbl, col_it, col_values, col_present);
+        co_await drain_columns(tbl, col_it, col_values, col_present, out_cell_meta);
     }
 
-    static coroutine::Task<void> read_row_into(Engine& engine, const schema::Table* tbl, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, io::RowMetadata* out_metadata = nullptr) {
+    static coroutine::Task<void> read_row_into(Engine& engine, const schema::Table* tbl, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, io::RowMetadata* out_metadata = nullptr, DynamicArray<Optional<io::CellMetadata>>* out_cell_meta = nullptr) {
         ColumnIterator col_it;
         co_await load(col_it, engine.pager, tbl, page_idx, static_page_idx, pk_bytes);
         if (out_metadata != nullptr) {
             *out_metadata = col_it.metadata;
         }
-        co_await drain_columns(tbl, col_it, col_values, col_present);
+        co_await drain_columns(tbl, col_it, col_values, col_present, out_cell_meta);
     }
 
-    static coroutine::Task<void> read_row_into(Engine& engine, const schema::Table* tbl, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes, TArrayView<const U8, U16> ck_bytes, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, io::RowMetadata* out_metadata = nullptr) {
+    static coroutine::Task<void> read_row_into(Engine& engine, const schema::Table* tbl, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes, TArrayView<const U8, U16> ck_bytes, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, io::RowMetadata* out_metadata = nullptr, DynamicArray<Optional<io::CellMetadata>>* out_cell_meta = nullptr) {
         ColumnIterator col_it;
         co_await load(col_it, engine.pager, tbl, page_idx, static_page_idx, pk_bytes, ck_bytes);
         if (out_metadata != nullptr) {
             *out_metadata = col_it.metadata;
         }
-        co_await drain_columns(tbl, col_it, col_values, col_present);
+        co_await drain_columns(tbl, col_it, col_values, col_present, out_cell_meta);
     }
 
     // Build the projected column order for a SELECT. If select_col_indices is
@@ -262,40 +272,128 @@ namespace cql::engine {
         return vrow;
     }
 
-    // @note explicit USING TTL of 0 disables TTL (overrides default_ttl_ms); only a missing/unset USING TTL falls back to the default.
-    static io::RowMetadata compute_insert_metadata(const DynamicArray<UpdateParameter>& params, S64 default_ttl_ms) {
-        S64 ttl_ms = default_ttl_ms;
+    // @note explicit USING TTL of 0 disables TTL (overrides default_ttl_ms); only a missing/unset
+    // USING TTL falls back to the default.
+    static S64 resolve_using_ttl_ms(const DynamicArray<UpdateParameter>& params, S64 default_ttl_ms) {
         for (const auto& p : params) {
             if (p.kind != UpdateParameter::Kind::TTL) {
                 continue;
             }
             if (!type_matches_tag<S64>(p.value)) {
-                break;
+                return default_ttl_ms;
             }
             S64 secs = get<S64>(p.value);
-            ttl_ms   = secs > 0 ? secs * 1000 : 0;
+            return secs > 0 ? secs * 1000 : 0;
+        }
+        return default_ttl_ms;
+    }
+
+    // Mirrors Cassandra/Scylla: max TTL is 20 years in seconds, not configurable.
+    constexpr S64 MAX_TTL_SECONDS = 20_s64 * 365_s64 * 24_s64 * 60_s64 * 60_s64;
+
+    static Optional<ExecutionResult> validate_using_ttl(const DynamicArray<UpdateParameter>& params) {
+        for (const auto& p : params) {
+            if (p.kind != UpdateParameter::Kind::TTL) {
+                continue;
+            }
+            if (!type_matches_tag<S64>(p.value)) {
+                return {};
+            }
+            S64 secs = get<S64>(p.value);
+            if (secs < 0) {
+                return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "A TTL must be greater or equal to 0"};
+            }
+            if (secs > MAX_TTL_SECONDS) {
+                return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "ttl is too large."};
+            }
             break;
         }
+        return {};
+    }
+
+    static S64 resolve_using_timestamp_us(const DynamicArray<UpdateParameter>& params) {
+        for (const auto& p : params) {
+            if (p.kind != UpdateParameter::Kind::TIMESTAMP) {
+                continue;
+            }
+            if (!type_matches_tag<S64>(p.value)) {
+                return 0;
+            }
+            return get<S64>(p.value);
+        }
+        return 0;
+    }
+
+    // Compute the per-cell metadata template stamped on every cell that an INSERT or UPDATE
+    // touches. WRITETIME is always present (USING TIMESTAMP or current wall clock);
+    // TTL is present only when USING TTL or default_ttl_ms resolves to a positive value.
+    static io::CellMetadata resolve_mutation_cell_meta(const DynamicArray<UpdateParameter>& params, S64 default_ttl_ms) {
+        S64              ttl_ms       = resolve_using_ttl_ms(params, default_ttl_ms);
+        S64              ts_us        = resolve_using_timestamp_us(params);
+        S64              now_ms       = S64(os::unix_ms_now());
+        S64              writetime_us = ts_us != 0 ? ts_us : os::unix_us_now();
+        io::CellMetadata cm{};
+        cm.flags |= io::CELL_FLAG_HAS_WRITETIME;
+        cm.writetime_us = writetime_us;
+        if (ttl_ms > 0) {
+            cm.flags |= io::CELL_FLAG_HAS_TTL;
+            cm.expiry_unix_ms = now_ms + ttl_ms;
+        }
+        return cm;
+    }
+
+    static io::RowMetadata compute_insert_metadata(const DynamicArray<UpdateParameter>& params, S64 default_ttl_ms) {
+        S64 ttl_ms = resolve_using_ttl_ms(params, default_ttl_ms);
         if (ttl_ms <= 0) {
             return {};
         }
         return io::RowMetadata{.flags = io::ROW_FLAG_HAS_TTL, .expiry_unix_ms = S64(os::unix_ms_now()) + ttl_ms};
     }
 
+    // Recompute row-level TTL from per-cell metadata so row_is_expired stays a conservative
+    // optimization (only fires when every present non-key cell is expired).
+    static io::RowMetadata recompute_row_metadata(const schema::Table* tbl, const DynamicArray<bool>& col_present, const DynamicArray<Optional<io::CellMetadata>>& cell_meta) {
+        bool any_cell     = false;
+        bool all_have_ttl = true;
+        S64  max_expiry   = 0;
+        for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+            if (tbl->cols[ci].is_static || tbl->cols[ci].key_kind != schema::KeyKind::None || !col_present[ci]) {
+                continue;
+            }
+            any_cell = true;
+            if (cell_meta[ci] && io::cell_has_ttl(*cell_meta[ci])) {
+                max_expiry = max(max_expiry, cell_meta[ci]->expiry_unix_ms);
+            } else {
+                all_have_ttl = false;
+            }
+        }
+        if (!any_cell || !all_have_ttl) {
+            return {};
+        }
+        return io::RowMetadata{.flags = io::ROW_FLAG_HAS_TTL, .expiry_unix_ms = max_expiry};
+    }
+
     // Serialise non-key, non-static columns from col_values/col_present into a new
     // dynamic-paged blob; returns the new page index. PK and CK columns are stored
     // in the encoded key bytes, so they are never written to the blob.
-    static coroutine::Task<U64> write_row_blob(Engine& engine, const schema::Table* tbl, const DynamicArray<ColumnValue>& col_values, const DynamicArray<bool>& col_present, const io::RowMetadata& metadata = {}) {
+    static coroutine::Task<U64> write_row_blob(Engine& engine, const schema::Table* tbl, const DynamicArray<ColumnValue>& col_values, const DynamicArray<bool>& col_present, const DynamicArray<Optional<io::CellMetadata>>& cell_meta, const io::RowMetadata& metadata = {}) {
         DynamicArray<U8> buf;
         auto             write_fn  = create_sync_buffer_writer(buf);
         auto             write     = io::to_writer(write_fn);
         auto             is_active = [&](U64 idx) {
             return idx < col_present.length && col_present[idx] && !tbl->cols[idx].is_static && tbl->cols[idx].key_kind == schema::KeyKind::None;
         };
+        auto has_cell_meta = [&](U64 idx) {
+            return is_active(idx) && idx < cell_meta.length && cell_meta[idx].has_value();
+        };
         io::write_row_metadata(write, metadata);
         io::write_column_mask(write, io::to_checker(is_active), tbl->cols.length);
+        io::write_cell_meta_mask(write, io::to_checker(has_cell_meta), tbl->cols.length);
         for (U64 ci = 0; ci < tbl->cols.length; ci++) {
             if (is_active(ci)) {
+                if (has_cell_meta(ci)) {
+                    io::write_cell_metadata(write, *cell_meta[ci]);
+                }
                 io::write_column_value(write, col_values[ci], tbl->cols[ci].type);
             }
         }
@@ -652,11 +750,19 @@ namespace cql::engine {
 
     // @note an absent counter cell reads as 0 for `c = c + n` style RHS — primed
     // here so the TWI evaluation under `row_values` sees a defined value.
-    static coroutine::Task<void> apply_updates_to_row(const schema::Table* tbl, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, const planner::MutationSpec& spec, const EvalContext& ctx) {
+    // Updates the parallel `cell_meta` array so that any cell touched by an assignment,
+    // collection patch, or column delete records `new_cell_meta` (or is cleared when the cell
+    // becomes absent). Cells not in the spec keep their existing metadata — preserving USING TTL
+    // semantics across partial updates.
+    static coroutine::Task<void> apply_updates_to_row(const schema::Table* tbl, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, DynamicArray<Optional<io::CellMetadata>>& cell_meta, const io::CellMetadata& new_cell_meta, const planner::MutationSpec& spec, const EvalContext& ctx) {
+        auto touch_cell = [&](U64 idx) {
+            cell_meta[idx] = col_present[idx] ? Optional<io::CellMetadata>{new_cell_meta} : Optional<io::CellMetadata>{};
+        };
         for (const auto& upd : spec.updates) {
             U64 idx = upd.col_idx;
             if (type_matches_tag<planner::CollectionPatch>(upd.new_value)) {
                 co_await apply_collection_patch(tbl, idx, col_values, col_present, get<planner::CollectionPatch>(upd.new_value), ctx);
+                touch_cell(idx);
                 continue;
             }
             Evaluated eval;
@@ -681,26 +787,19 @@ namespace cql::engine {
                 const ColumnValue& cv = get<ColumnValue>(eval.value);
                 if (type_matches_tag<Null>(cv)) {
                     col_present[idx] = false;
+                    touch_cell(idx);
                 } else if (io::can_write_column_value(cv, tbl->cols[idx].type)) {
                     col_present[idx] = true;
                     col_values[idx]  = cv;
+                    touch_cell(idx);
                 }
             } else if (type_matches_tag<Constant>(eval.value) && type_matches_tag<Null>(get<Constant>(eval.value).value)) {
                 col_present[idx] = false;
+                touch_cell(idx);
             } else if (io::can_cast_write_evaluated_as_column_value(eval, tbl->cols[idx].type)) {
                 col_present[idx] = true;
-                DynamicArray<U8> tmp;
-                auto             w_fn = create_sync_buffer_writer(tmp);
-                io::cast_write_evaluated_as_column_value(io::to_writer(w_fn), eval, tbl->cols[idx].type, ctx);
-                U64  off  = 0;
-                auto r_fn = [&tmp, &off](U8* dst, U64 sz) -> coroutine::Task<void> {
-                    if (dst) {
-                        os::memory_copy(dst, tmp.ptr + off, sz);
-                    }
-                    off += sz;
-                    co_return;
-                };
-                col_values[idx] = co_await io::read_column_value(io::to_reader(r_fn), tbl->cols[idx].type);
+                col_values[idx]  = co_await materialize_as_column_value(eval, tbl->cols[idx].type, ctx);
+                touch_cell(idx);
             }
         }
     }
@@ -708,7 +807,7 @@ namespace cql::engine {
     // Rewrite the static-column blob for a partition entry.
     // Removes the existing static blob (if any), writes a new one from col_values/col_present,
     // and updates entry.static_page in place.
-    static coroutine::Task<void> rewrite_static(Engine& engine, schema::PartitionEntry& entry, const schema::Table* tbl, const DynamicArray<ColumnValue>& col_values, const DynamicArray<bool>& col_present) {
+    static coroutine::Task<void> rewrite_static(Engine& engine, schema::PartitionEntry& entry, const schema::Table* tbl, const DynamicArray<ColumnValue>& col_values, const DynamicArray<bool>& col_present, const DynamicArray<Optional<io::CellMetadata>>& cell_meta = {}) {
         if (entry.static_page != 0) {
             blob::BlobDynamicPaged old_blob;
             co_await blob::load(old_blob, engine.pager, entry.static_page);
@@ -733,11 +832,18 @@ namespace cql::engine {
         auto             is_active = [&](U64 idx) {
             return idx < col_present.length && col_present[idx] && tbl->cols[idx].is_static;
         };
-        // @note static blobs never carry TTL but the header is always present for uniform reading.
+        auto has_cell_meta = [&](U64 idx) {
+            return is_active(idx) && idx < cell_meta.length && cell_meta[idx].has_value();
+        };
+        // @note static blobs never carry row-level TTL but the header is always present for uniform reading.
         io::write_row_metadata(write, io::RowMetadata{});
         io::write_column_mask(write, io::to_checker(is_active), tbl->cols.length);
+        io::write_cell_meta_mask(write, io::to_checker(has_cell_meta), tbl->cols.length);
         for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-            if (tbl->cols[ci].is_static && ci < col_present.length && col_present[ci]) {
+            if (is_active(ci)) {
+                if (has_cell_meta(ci)) {
+                    io::write_cell_metadata(write, *cell_meta[ci]);
+                }
                 io::write_column_value(write, col_values[ci], tbl->cols[ci].type);
             }
         }
@@ -1420,6 +1526,14 @@ namespace cql::engine {
                     .status  = ExecutionStatus::Invalid,
                     .message = "Invalid unset value in where clause",
                 };
+            case planner::PlanError::InvalidTtlArgument:
+            case planner::PlanError::InvalidWritetimeArgument: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
         }
         return {};
     }
@@ -1633,6 +1747,148 @@ namespace cql::engine {
         };
     }
 
+    // Project one (row_values, cell_meta) pair into a VirtualRow following sp.projection.ops.
+    static VirtualRow project_row_via_ops(const DynamicArray<planner::SelectOp>& ops, const DynamicArray<ColumnValue>& cv, const DynamicArray<bool>& present, const DynamicArray<Optional<io::CellMetadata>>& cell_meta, S64 now_unix_ms) {
+        VirtualRow vrow;
+        for (const auto& op : ops) {
+            visit(op.value, [&](const auto& o) {
+                using OT = RemoveCVRef<decltype(o)>;
+                if constexpr (SameAs<OT, planner::SelectOp::ColumnRef>) {
+                    push_back(vrow.values, present[o.col_idx] ? cv[o.col_idx] : ColumnValue{Null{}});
+                } else if constexpr (SameAs<OT, planner::SelectOp::TtlOf>) {
+                    if (present[o.col_idx] && cell_meta[o.col_idx] && io::cell_has_ttl(*cell_meta[o.col_idx])) {
+                        S64 remain = (cell_meta[o.col_idx]->expiry_unix_ms - now_unix_ms) / 1000;
+                        push_back(vrow.values, ColumnValue{S32(max(S64(0), remain))});
+                    } else {
+                        push_back(vrow.values, ColumnValue{Null{}});
+                    }
+                } else if constexpr (SameAs<OT, planner::SelectOp::WritetimeOf>) {
+                    if (present[o.col_idx] && cell_meta[o.col_idx] && io::cell_has_writetime(*cell_meta[o.col_idx])) {
+                        push_back(vrow.values, ColumnValue{cell_meta[o.col_idx]->writetime_us});
+                    } else {
+                        push_back(vrow.values, ColumnValue{Null{}});
+                    }
+                } else if constexpr (SameAs<OT, planner::SelectOp::CountStar>) {
+                    assert_not_implemented("CountStar reached project_row_via_ops; aggregate path should handle it");
+                }
+            });
+        }
+        return vrow;
+    }
+
+    // Build the VirtualRows header from select ops. The order of ops corresponds to the
+    // order of stmt.select.clauses; labels honor AS. Owned labels live in vr.column_name_storage
+    // so the String8 views in vr.columns stay valid for the lifetime of the VirtualRows.
+    static VirtualRows make_virtual_rows_shell_from_ops(const schema::Table& tbl, String8 ks_name, String8 table_name, const Select& stmt, const planner::ProjectionPlan& projection) {
+        VirtualRows vr;
+        vr.keyspace = AutoString8(ks_name);
+        vr.table    = AutoString8(table_name);
+        // @note column_name_storage views are taken into vr.columns; reserve up-front so push_back never reallocates.
+        reserve(vr.column_name_storage, projection.ops.length);
+        auto add_owned_column = [&](AutoString8 label, type::Type t) {
+            push_back(vr.column_name_storage, move(label));
+            const auto& s = vr.column_name_storage[vr.column_name_storage.length - 1];
+            push_back(vr.columns, VirtualColumn{String8(s.c_str, s.length), t});
+        };
+        for (U64 i = 0; i < projection.ops.length; i++) {
+            const auto& op        = projection.ops[i];
+            bool        has_alias = (i < stmt.select.clauses.length && stmt.select.clauses[i].as.has_value());
+            visit(op.value, [&](const auto& o) {
+                using OT = RemoveCVRef<decltype(o)>;
+                if constexpr (SameAs<OT, planner::SelectOp::ColumnRef>) {
+                    if (has_alias) {
+                        add_owned_column(AutoString8(*stmt.select.clauses[i].as), tbl.cols[o.col_idx].type);
+                    } else {
+                        push_back(vr.columns, VirtualColumn{tbl.cols[o.col_idx].name, tbl.cols[o.col_idx].type});
+                    }
+                } else if constexpr (SameAs<OT, planner::SelectOp::TtlOf>) {
+                    AutoString8 label = has_alias ? AutoString8(*stmt.select.clauses[i].as)
+                                                  : AutoString8("ttl(") + AutoString8(tbl.cols[o.col_idx].name) + AutoString8(")");
+                    add_owned_column(move(label), type::create_basic(type::Basic::int_));
+                } else if constexpr (SameAs<OT, planner::SelectOp::WritetimeOf>) {
+                    AutoString8 label = has_alias ? AutoString8(*stmt.select.clauses[i].as)
+                                                  : AutoString8("writetime(") + AutoString8(tbl.cols[o.col_idx].name) + AutoString8(")");
+                    add_owned_column(move(label), type::create_basic(type::Basic::bigint));
+                } else if constexpr (SameAs<OT, planner::SelectOp::CountStar>) {
+                    AutoString8 label = has_alias ? AutoString8(*stmt.select.clauses[i].as) : AutoString8("count");
+                    add_owned_column(move(label), type::create_basic(type::Basic::bigint));
+                }
+            });
+        }
+        return vr;
+    }
+
+    static bool projection_needs_cell_meta(const planner::ProjectionPlan& p) {
+        for (const auto& op : p.ops) {
+            if (type_matches_tag<planner::SelectOp::TtlOf>(op.value) || type_matches_tag<planner::SelectOp::WritetimeOf>(op.value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Iteration + projection for SELECTs that need per-cell metadata (TTL/WRITETIME).
+    // Produces a fully materialized VirtualRows result; uses the standard locator so it
+    // composes with WHERE filters, ORDER BY reverse_clustering, and LIMIT.
+    static coroutine::Task<ExecutionResult> execute_select_with_meta(
+        Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
+        const Select& stmt, const planner::SelectPlan& sp, EvalContext ctx, U64 limit_count
+    ) {
+        VirtualRows vr  = make_virtual_rows_shell_from_ops(*tbl, ks_name, table_name, stmt, sp.projection);
+        S64         now = S64(os::unix_ms_now());
+
+        auto iterate_range = [&](RowIterator& start, RowIterator& stop) -> coroutine::Task<void> {
+            while (start != stop && vr.rows.length < limit_count) {
+                ColumnRange col_range = co_await start.deref();
+                if (io::row_is_expired(col_range.start.metadata, now)) {
+                    co_await start.advance(stop);
+                    continue;
+                }
+                DynamicArray<ColumnValue>                row_values;
+                DynamicArray<bool>                       row_present;
+                DynamicArray<Optional<io::CellMetadata>> cell_meta;
+                co_await drain_columns(tbl, col_range.start, row_values, row_present, &cell_meta);
+                bool pass = true;
+                if (sp.filter.predicates.length > 0) {
+                    EvalContext rc = ctx;
+                    rc.table       = tbl;
+                    rc.row_values  = row_values.ptr;
+                    pass           = evaluate_where(sp.filter.predicates, rc);
+                }
+                if (pass) {
+                    push_back(vr.rows, project_row_via_ops(sp.projection.ops, row_values, row_present, cell_meta, now));
+                }
+                co_await start.advance(stop);
+            }
+        };
+
+        if (sp.locator.pk.in_values.length > 0) {
+            planner::RowLocator pk_eq_locator = sp.locator;
+            pk_eq_locator.pk.is_equality      = true;
+            pk_eq_locator.pk.has_in           = false;
+            for (const auto& pk_bytes : sp.locator.pk.in_values) {
+                if (vr.rows.length >= limit_count) {
+                    break;
+                }
+                pk_eq_locator.pk.begin = pk_bytes;
+                auto row_range         = co_await create_table_range_it(engine, tbl, pk_eq_locator);
+                co_await iterate_range(row_range.start, row_range.stop);
+            }
+        } else if (!sp.locator.pk.has_in) {
+            auto row_range = co_await create_table_range_it(engine, tbl, sp.locator);
+            co_await iterate_range(row_range.start, row_range.stop);
+        }
+        // else: empty PK IN → no rows
+
+        co_return ExecutionResult{
+            .status       = ExecutionStatus::Success,
+            .kind         = ResultKind::VirtualRows,
+            .keyspace     = AutoString8(ks_name),
+            .table        = AutoString8(table_name),
+            .virtual_rows = move(vr),
+        };
+    }
+
     // @note LIMIT and ORDER BY have no effect on aggregate SELECT (Cassandra
     // semantics): the result is always a single row, and ordering does not
     // change the count.
@@ -1772,11 +2028,14 @@ namespace cql::engine {
         };
     }
 
-    // @note locator.pk.is_equality must be true.
+    // @note locator.pk.is_equality must be true. `new_cell_meta` is the per-cell metadata
+    // template stamped on every cell touched by this mutation (TTL+writetime, or empty for
+    // mutations without using-parameters); cells the spec doesn't touch keep their existing meta.
     static coroutine::Task<void> apply_mutation(
         Engine& engine, schema::Table* tbl,
         const planner::RowLocator&   locator,
         const planner::MutationSpec& spec,
+        const io::CellMetadata&      new_cell_meta,
         const EvalContext&           ctx
     ) {
         const DynamicArray<U8>& pk_bytes     = locator.pk.begin;
@@ -1912,13 +2171,14 @@ namespace cql::engine {
                     entry.static_page = 0;
                 }
 
-                DynamicArray<ColumnValue> col_values;
-                DynamicArray<bool>        col_present;
-                co_await read_row_into(engine, tbl, 0, entry.static_page, col_values, col_present);
+                DynamicArray<ColumnValue>                col_values;
+                DynamicArray<bool>                       col_present;
+                DynamicArray<Optional<io::CellMetadata>> cell_meta;
+                co_await read_row_into(engine, tbl, 0, entry.static_page, col_values, col_present, nullptr, &cell_meta);
                 DynamicArray<ColumnValue> old_cv      = have_indexes ? col_values : DynamicArray<ColumnValue>{};
                 DynamicArray<bool>        old_present = have_indexes ? col_present : DynamicArray<bool>{};
-                co_await apply_updates_to_row(tbl, col_values, col_present, spec, ctx);
-                co_await rewrite_static(engine, entry, tbl, col_values, col_present);
+                co_await apply_updates_to_row(tbl, col_values, col_present, cell_meta, new_cell_meta, spec, ctx);
+                co_await rewrite_static(engine, entry, tbl, col_values, col_present, cell_meta);
                 if (have_indexes) {
                     TArrayView<const U8, U16> empty_ck{nullptr, 0};
                     auto                      pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
@@ -1965,15 +2225,16 @@ namespace cql::engine {
                 auto row_page_opt  = co_await btree::tfind<U64>(ck_btree, ck_bytes);
                 U64  existing_page = row_page_opt ? *row_page_opt : 0;
 
-                auto                      pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
-                auto                      ck_v = TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length));
-                DynamicArray<ColumnValue> col_values;
-                DynamicArray<bool>        col_present;
-                co_await read_row_into(engine, tbl, existing_page, entry.static_page, pk_v, ck_v, col_values, col_present);
+                auto                                     pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                auto                                     ck_v = TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length));
+                DynamicArray<ColumnValue>                col_values;
+                DynamicArray<bool>                       col_present;
+                DynamicArray<Optional<io::CellMetadata>> cell_meta;
+                co_await read_row_into(engine, tbl, existing_page, entry.static_page, pk_v, ck_v, col_values, col_present, nullptr, &cell_meta);
 
                 DynamicArray<ColumnValue> old_cv      = have_indexes ? col_values : DynamicArray<ColumnValue>{};
                 DynamicArray<bool>        old_present = have_indexes ? col_present : DynamicArray<bool>{};
-                co_await apply_updates_to_row(tbl, col_values, col_present, spec, ctx);
+                co_await apply_updates_to_row(tbl, col_values, col_present, cell_meta, new_cell_meta, spec, ctx);
 
                 bool any_static_updated = false;
                 for (const auto& upd : spec.updates) {
@@ -1983,7 +2244,8 @@ namespace cql::engine {
                     }
                 }
 
-                U64 new_row_page = co_await write_row_blob(engine, tbl, col_values, col_present);
+                io::RowMetadata row_meta     = recompute_row_metadata(tbl, col_present, cell_meta);
+                U64             new_row_page = co_await write_row_blob(engine, tbl, col_values, col_present, cell_meta, row_meta);
                 if (row_page_opt) {
                     blob::BlobDynamicPaged old_blob;
                     co_await blob::load(old_blob, engine.pager, existing_page);
@@ -1993,7 +2255,7 @@ namespace cql::engine {
                 co_await btree::tinsert(ck_btree, ck_bytes, new_row_page);
 
                 if (any_static_updated) {
-                    co_await rewrite_static(engine, entry, tbl, col_values, col_present);
+                    co_await rewrite_static(engine, entry, tbl, col_values, col_present, cell_meta);
                 }
                 if (new_partition) {
                     co_await btree::tinsert(tbl->btree, pk_bytes, entry);
@@ -2031,16 +2293,18 @@ namespace cql::engine {
             } else {
                 schema::PartitionEntry entry = entry_opt ? *entry_opt : schema::PartitionEntry{0, 0};
 
-                auto                      pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
-                DynamicArray<ColumnValue> col_values;
-                DynamicArray<bool>        col_present;
-                co_await read_row_into(engine, tbl, entry.data_page, entry.static_page, pk_v, col_values, col_present);
+                auto                                     pk_v = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                DynamicArray<ColumnValue>                col_values;
+                DynamicArray<bool>                       col_present;
+                DynamicArray<Optional<io::CellMetadata>> cell_meta;
+                co_await read_row_into(engine, tbl, entry.data_page, entry.static_page, pk_v, col_values, col_present, nullptr, &cell_meta);
 
                 DynamicArray<ColumnValue> old_cv      = have_indexes ? col_values : DynamicArray<ColumnValue>{};
                 DynamicArray<bool>        old_present = have_indexes ? col_present : DynamicArray<bool>{};
-                co_await apply_updates_to_row(tbl, col_values, col_present, spec, ctx);
+                co_await apply_updates_to_row(tbl, col_values, col_present, cell_meta, new_cell_meta, spec, ctx);
 
-                U64 new_row_page = co_await write_row_blob(engine, tbl, col_values, col_present);
+                io::RowMetadata row_meta     = recompute_row_metadata(tbl, col_present, cell_meta);
+                U64             new_row_page = co_await write_row_blob(engine, tbl, col_values, col_present, cell_meta, row_meta);
                 if (entry_opt) {
                     blob::BlobDynamicPaged old_blob;
                     co_await blob::load(old_blob, engine.pager, entry.data_page);
@@ -2245,6 +2509,12 @@ namespace cql::engine {
                     );
                 }
 
+                if (projection_needs_cell_meta(sp.projection)) {
+                    co_return co_await execute_select_with_meta(
+                        engine, tbl, ks_name, stmt.from.table_name, stmt, sp, ctx, limit_count
+                    );
+                }
+
                 // Extract column indices for native layer from projection ops.
                 DynamicArray<U64> select_col_indices;
                 for (const auto& op : sp.projection.ops) {
@@ -2286,6 +2556,9 @@ namespace cql::engine {
                         assert_true(engine.single_node, "INSERT USING TIMESTAMP not supported in non-single-node mode");
                         log::native_info("ignoring INSERT USING TIMESTAMP (single-node no-op)");
                     }
+                }
+                if (auto bad_ttl = validate_using_ttl(stmt.using_parameters)) {
+                    co_return move(*bad_ttl);
                 }
                 assert_true(static_cast<bool>(stmt.insert_clause), "missing insert clause, this should never happen");
 
@@ -2401,19 +2674,38 @@ namespace cql::engine {
 
                         assert_true_not_implemented(!stmt.if_not_exists, "INSERT IF NOT EXISTS is not implemented");
 
-                        io::RowMetadata row_meta = compute_insert_metadata(stmt.using_parameters, tbl->default_ttl_ms);
+                        io::RowMetadata  row_meta         = compute_insert_metadata(stmt.using_parameters, tbl->default_ttl_ms);
+                        io::CellMetadata insert_cell_meta = resolve_mutation_cell_meta(stmt.using_parameters, tbl->default_ttl_ms);
 
                         // collect regular (non-key, non-static) row bytes into buffer (sync)
                         DynamicArray<U8> row_buffer;
                         auto             write_fn      = create_sync_buffer_writer(row_buffer);
                         auto             write         = io::to_writer(write_fn);
-                        auto             row_is_active = [&](U64 col_idx) {
-                            return !tbl->cols[col_idx].tombstone && static_cast<bool>(try_get_names_idx(tbl->cols[col_idx].name)) && !tbl->cols[col_idx].is_static && tbl->cols[col_idx].key_kind == schema::KeyKind::None;
+                        auto             row_is_active = [&](U64 col_idx) -> bool {
+                            if (tbl->cols[col_idx].tombstone || tbl->cols[col_idx].is_static || tbl->cols[col_idx].key_kind != schema::KeyKind::None) {
+                                return false;
+                            }
+                            auto ni = try_get_names_idx(tbl->cols[col_idx].name);
+                            if (!ni) {
+                                return false;
+                            }
+                            // Treat null/unset as column-absent so the cell mask reflects reality.
+                            const Evaluated eval = evaluate(v.values[*ni], ctx);
+                            if (eval_is_null(eval)) {
+                                return false;
+                            }
+                            if (type_matches_tag<Constant>(eval.value) && type_matches_tag<Unset>(get<Constant>(eval.value).value)) {
+                                return false;
+                            }
+                            return true;
                         };
                         io::write_row_metadata(write, row_meta);
                         io::write_column_mask(write, io::to_checker(row_is_active), tbl->cols.length);
+                        // INSERT stamps the same cell metadata on every written column.
+                        io::write_cell_meta_mask(write, io::to_checker(row_is_active), tbl->cols.length);
                         for (U64 ci = 0; ci < tbl->cols.length; ci++) {
                             if (row_is_active(ci)) {
+                                io::write_cell_metadata(write, insert_cell_meta);
                                 const auto& eval = evaluate(v.values[*try_get_names_idx(tbl->cols[ci].name)], ctx);
                                 io::cast_write_evaluated_as_column_value(write, eval, tbl->cols[ci].type);
                             }
@@ -2488,9 +2780,10 @@ namespace cql::engine {
                             }
 
                             if (any_static_in_insert) {
-                                DynamicArray<ColumnValue> sc_vals;
-                                DynamicArray<bool>        sc_present;
-                                co_await read_row_into(engine, tbl, 0, entry.static_page, sc_vals, sc_present);
+                                DynamicArray<ColumnValue>                sc_vals;
+                                DynamicArray<bool>                       sc_present;
+                                DynamicArray<Optional<io::CellMetadata>> sc_meta;
+                                co_await read_row_into(engine, tbl, 0, entry.static_page, sc_vals, sc_present, nullptr, &sc_meta);
                                 planner::MutationSpec static_spec;
                                 for (U64 ci = 0; ci < tbl->cols.length; ci++) {
                                     if (is_static_col(ci) && !tbl->cols[ci].tombstone) {
@@ -2500,8 +2793,8 @@ namespace cql::engine {
                                         }
                                     }
                                 }
-                                co_await apply_updates_to_row(tbl, sc_vals, sc_present, static_spec, ctx);
-                                co_await rewrite_static(engine, entry, tbl, sc_vals, sc_present);
+                                co_await apply_updates_to_row(tbl, sc_vals, sc_present, sc_meta, insert_cell_meta, static_spec, ctx);
+                                co_await rewrite_static(engine, entry, tbl, sc_vals, sc_present, sc_meta);
                             }
 
                             // persist the partition entry (insert new or update existing static_page)
@@ -2572,10 +2865,10 @@ namespace cql::engine {
                     if (param.kind == UpdateParameter::Kind::TIMESTAMP) {
                         assert_true(engine.single_node, "UPDATE USING TIMESTAMP not supported in non-single-node mode");
                         log::native_info("ignoring UPDATE USING TIMESTAMP (single-node no-op)");
-                    } else if (param.kind == UpdateParameter::Kind::TTL) {
-                        // @todo TTL enforcement requires row blob metadata header
-                        co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "UPDATE USING TTL is not implemented"};
                     }
+                }
+                if (auto bad_ttl = validate_using_ttl(stmt.using_parameters)) {
+                    co_return move(*bad_ttl);
                 }
                 assert_true_not_implemented(!stmt.if_, "UPDATE IF is not implemented");
 
@@ -2598,15 +2891,16 @@ namespace cql::engine {
                 if (auto err = create_error_if_plan_invalid(mp.result)) {
                     co_return move(*err);
                 }
-                auto apply_for_ck = [&](planner::MutationPlan& mp_ref) -> coroutine::Task<void> {
+                io::CellMetadata upd_cell_meta = resolve_mutation_cell_meta(stmt.using_parameters, tbl->default_ttl_ms);
+                auto             apply_for_ck  = [&](planner::MutationPlan& mp_ref) -> coroutine::Task<void> {
                     if (mp_ref.locator.ck.in_values.length > 0) {
                         mp_ref.locator.ck.is_equality = true;
                         for (const auto& ck_bytes : mp_ref.locator.ck.in_values) {
                             mp_ref.locator.ck.begin = ck_bytes;
-                            co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, ctx);
+                            co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, upd_cell_meta, ctx);
                         }
                     } else if (!mp_ref.locator.ck.has_in) {
-                        co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, ctx);
+                        co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, upd_cell_meta, ctx);
                     }
                     // else: empty CK IN → no-op
                 };
@@ -2652,15 +2946,16 @@ namespace cql::engine {
                 if (auto err = create_error_if_plan_invalid(mp.result)) {
                     co_return move(*err);
                 }
-                auto apply_for_ck_del = [&](planner::MutationPlan& mp_ref) -> coroutine::Task<void> {
+                io::CellMetadata del_cell_meta{}; // column-level DELETE clears metadata on the touched cells
+                auto             apply_for_ck_del = [&](planner::MutationPlan& mp_ref) -> coroutine::Task<void> {
                     if (mp_ref.locator.ck.in_values.length > 0) {
                         mp_ref.locator.ck.is_equality = true;
                         for (const auto& ck_bytes : mp_ref.locator.ck.in_values) {
                             mp_ref.locator.ck.begin = ck_bytes;
-                            co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, ctx);
+                            co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, del_cell_meta, ctx);
                         }
                     } else if (!mp_ref.locator.ck.has_in) {
-                        co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, ctx);
+                        co_await apply_mutation(engine, tbl, mp_ref.locator, mp_ref.spec, del_cell_meta, ctx);
                     }
                     // else: empty CK IN → no-op
                 };

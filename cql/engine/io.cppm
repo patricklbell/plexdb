@@ -87,6 +87,31 @@ export namespace cql::io {
     void                         write_row_metadata(Writer w, const RowMetadata& m);
     coroutine::Task<RowMetadata> read_row_metadata(Reader r);
 
+    // @note Variable-width: flags is always present; expiry/writetime are present iff
+    // their bit is set. The cell_meta_mask in the row header decides which columns
+    // have a CellMetadata at all; absence falls back to the row's RowMetadata.
+    constexpr U8 CELL_FLAG_HAS_TTL       = 0x01_u8;
+    constexpr U8 CELL_FLAG_HAS_WRITETIME = 0x02_u8;
+
+    struct CellMetadata {
+        U8  flags          = 0;
+        S64 expiry_unix_ms = 0;
+        S64 writetime_us   = 0;
+    };
+
+    inline bool cell_has_ttl(const CellMetadata& m) {
+        return (m.flags & CELL_FLAG_HAS_TTL) != 0;
+    }
+    inline bool cell_has_writetime(const CellMetadata& m) {
+        return (m.flags & CELL_FLAG_HAS_WRITETIME) != 0;
+    }
+
+    void                          write_cell_metadata(Writer w, const CellMetadata& m);
+    coroutine::Task<CellMetadata> read_cell_metadata(Reader r);
+    coroutine::Task<void>         skip_cell_metadata(Reader r, U8 flags);
+
+    void write_cell_meta_mask(Writer w, ColumnActiveChecker has_meta, U64 column_count);
+
     // Declarations — all bodies live in io.cpp
     coroutine::Task<ColumnValue> read_column_value(Reader r, type::Basic dtype);
     coroutine::Task<ColumnValue> read_column_value(Reader r, const type::Type& cdtype);

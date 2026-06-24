@@ -20,6 +20,12 @@ namespace plexdb::os {
         return U64(ts.tv_sec) * 1000 + U64(ts.tv_nsec) / 1000000;
     }
 
+    S64 unix_us_now() {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        return S64(ts.tv_sec) * 1000000 + S64(ts.tv_nsec) / 1000;
+    }
+
     S64 unix_days_now() {
         return static_cast<S64>(unix_ms_now() / 86400000_u64);
     }
