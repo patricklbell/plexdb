@@ -259,6 +259,8 @@ namespace cql::planner {
                     return false;
                 } else if constexpr (SameAs<T, WhereClause::TokenRelation>) {
                     return term_contains_unset_binding(r.value, ctx);
+                } else if constexpr (SameAs<T, WhereClause::SubscriptedRelation>) {
+                    return term_contains_unset_binding(r.subscript, ctx) || term_contains_unset_binding(r.value, ctx);
                 } else {
                     return false;
                 }
@@ -703,7 +705,7 @@ namespace cql::planner {
                             }
                         }
                         push_back(filter.predicates, rel);
-                    } else if (r.operator_ == Operator::eq && r.columns.length > 0 && r.columns.length == r.values.length) {
+                    } else if (r.operator_ == Operator::eq && tuple_rhs_is_compatible(r)) {
                         // Determine whether all named columns belong to the PK or CK.
                         bool all_pk = (r.columns.length <= n_pk);
                         for (U64 i = 0; i < r.columns.length && all_pk; i++) {
@@ -717,13 +719,13 @@ namespace cql::planner {
                         if (all_pk) {
                             for (U64 i = 0; i < r.columns.length; i++) {
                                 auto pk_pos         = find_pk_position(tbl, r.columns[i].identifier);
-                                pk.eq_vals[*pk_pos] = evaluate(r.values[i], ctx);
+                                pk.eq_vals[*pk_pos] = evaluate(tuple_value_at(r, i), ctx);
                             }
                             push_back(pk.eq_rels, rel);
                         } else if (all_ck) {
                             for (U64 i = 0; i < r.columns.length; i++) {
                                 auto ck_pos         = find_ck_position(tbl, r.columns[i].identifier);
-                                ck.eq_vals[*ck_pos] = evaluate(r.values[i], ctx);
+                                ck.eq_vals[*ck_pos] = evaluate(tuple_value_at(r, i), ctx);
                             }
                             push_back(ck.eq_rels, rel);
                         } else {
@@ -738,11 +740,69 @@ namespace cql::planner {
                                 Sort      dir  = tbl.cols[tbl.clustering_key_col_indices[0]].clustering_order;
                                 apply_range_bound(locator.ck, r.operator_, dir, key::serialize_clustering_single(tbl, eval), n_ck > 1);
                             }
+                        } else if (is_inequality(r.operator_) && r.columns.length > 1 && tuple_rhs_is_compatible(r) && n_ck > 0) {
+                            // Lex compare on a parenthesized clustering-key prefix
+                            // requires the LHS to be a prefix CK[0..k-1] and all referenced
+                            // CK columns to share one clustering order.
+                            bool prefix_ok = (r.columns.length <= n_ck);
+                            for (U64 i = 0; i < r.columns.length && prefix_ok; i++) {
+                                auto pos  = find_ck_position(tbl, r.columns[i].identifier);
+                                prefix_ok = static_cast<bool>(pos) && *pos == i;
+                            }
+                            if (prefix_ok) {
+                                Sort dir      = tbl.cols[tbl.clustering_key_col_indices[0]].clustering_order;
+                                bool same_dir = true;
+                                for (U64 i = 1; i < r.columns.length; i++) {
+                                    if (tbl.cols[tbl.clustering_key_col_indices[i]].clustering_order != dir) {
+                                        same_dir = false;
+                                        break;
+                                    }
+                                }
+                                if (same_dir) {
+                                    DynamicArray<Evaluated> evals;
+                                    for (U64 i = 0; i < r.columns.length; i++) {
+                                        push_back(evals, evaluate(tuple_value_at(r, i), ctx));
+                                    }
+                                    auto             prefix_view = TArrayView<const Evaluated, U64>{evals.ptr, evals.length};
+                                    DynamicArray<U8> bytes       = key::serialize_clustering_prefix(tbl, prefix_view);
+                                    bool             partial     = r.columns.length < n_ck;
+                                    apply_range_bound(locator.ck, r.operator_, dir, move(bytes), partial);
+                                }
+                            }
                         }
                         push_back(filter.predicates, rel);
                     }
                 } else if constexpr (SameAs<T, WhereClause::TokenRelation>) {
                     push_back(filter.predicates, rel);
+                } else if constexpr (SameAs<T, WhereClause::SubscriptedRelation>) {
+                    bool covered_by_index = false;
+                    if (r.operator_ == Operator::eq) {
+                        String8 col_name(r.column.identifier.c_str, r.column.identifier.length);
+                        for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                            if (tbl.cols[ci].name == col_name && !tbl.cols[ci].tombstone) {
+                                if (type_matches_tag<type::Map>(tbl.cols[ci].type.value)) {
+                                    const auto& m        = get<type::Map>(tbl.cols[ci].type.value);
+                                    Evaluated   key_eval = evaluate(r.subscript, ctx);
+                                    Evaluated   val_eval = evaluate(r.value, ctx);
+                                    if (!is_null_eval(key_eval) && !is_null_eval(val_eval) && type_matches_tag<type::Basic>(m.key.value) && type_matches_tag<type::Basic>(m.value.value)) {
+                                        for (const auto& idx : tbl.indexes) {
+                                            if (!idx.tombstone && idx.col_idx == ci && idx.kind == schema::IndexKind::Entries && !locator.index_col_idx) {
+                                                locator.index_col_idx    = ci;
+                                                locator.index_key_prefix = key::make_index_prefix_entries(key_eval, get<type::Basic>(m.key.value), val_eval, get<type::Basic>(m.value.value));
+                                                covered_by_index         = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    push_back(filter.predicates, rel);
+                    if (!covered_by_index) {
+                        filter.needs_allow_filtering = true;
+                    }
                 } else {
                     static_assert(!SameAs<T, T>, "missing WHERE clause type");
                 }
@@ -1196,6 +1256,8 @@ namespace cql::planner {
                     for (U64 i = 0; i < r.columns.length; i++) {
                         add_needed_by_name(r.columns[i].identifier);
                     }
+                } else if constexpr (SameAs<T, WhereClause::SubscriptedRelation>) {
+                    add_needed_by_name(r.column.identifier);
                 }
             });
         }
@@ -1350,6 +1412,11 @@ namespace cql::planner {
                 patch.op    = CollectionPatch::Op::SubscriptSet;
                 patch.key   = evaluate(sub_term.index, ctx);
                 patch.value = evaluate(assign.value, ctx);
+                if (type_matches_tag<Constant>(patch.key.value) && type_matches_tag<Unset>(get<Constant>(patch.key.value).value)) {
+                    plan.result.error   = PlanError::UnsetSubscriptValue;
+                    plan.result.context = AutoString8(col_name);
+                    return plan;
+                }
                 if (type_matches_tag<Constant>(patch.value.value) && type_matches_tag<Unset>(get<Constant>(patch.value.value).value)) {
                     continue;
                 }
@@ -1541,6 +1608,15 @@ namespace cql::planner {
                     CollectionPatch patch;
                     patch.op  = CollectionPatch::Op::SubscriptDelete;
                     patch.key = evaluate(sub_term.index, ctx);
+                    if (type_matches_tag<Constant>(patch.key.value) && type_matches_tag<Unset>(get<Constant>(patch.key.value).value)) {
+                        // @note Cassandra rejects UNSET map key but silently no-ops UNSET list index.
+                        if (type_matches_tag<type::List>(col.type.value)) {
+                            continue;
+                        }
+                        plan.result.error   = PlanError::UnsetSubscriptValue;
+                        plan.result.context = AutoString8(col_name);
+                        return plan;
+                    }
                     push_back(plan.spec.updates, ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});
                     continue;
                 }

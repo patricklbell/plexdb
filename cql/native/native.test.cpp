@@ -1151,6 +1151,50 @@ CQL_NATIVE_TEST_CASE("SELECT: CONTAINS KEY on indexed map returns matching row",
     co_return;
 }
 
+CQL_NATIVE_TEST_CASE("SELECT: m[k] = v on indexed map returns matching row", "[cql.native][collection][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id text PRIMARY KEY, m map<text,int>);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX m_entries ON ks.t (entries(m));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, m) VALUES ('row-uniq-aaaa', {'a': 10, 'b': 20});").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, m) VALUES ('row-uniq-bbbb', {'a': 30, 'c': 40});").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT id FROM ks.t WHERE m['a'] = 10;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "row-uniq-aaaa"));
+        CHECK(!body_contains(sel, "row-uniq-bbbb"));
+
+        Frame miss = send_query(client, "SELECT id FROM ks.t WHERE m['a'] = 99;");
+        CHECK(result_kind(miss) == result::ROWS);
+        CHECK(!body_contains(miss, "row-uniq-aaaa"));
+        CHECK(!body_contains(miss, "row-uniq-bbbb"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("SELECT: m[k] = v without Entries index requires ALLOW FILTERING", "[cql.native][collection]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id text PRIMARY KEY, m map<text,int>);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, m) VALUES ('row-uniq-aaaa', {'a': 10, 'b': 20});").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, m) VALUES ('row-uniq-bbbb', {'a': 30, 'c': 40});").opcode == op::RESULT);
+
+        // Without an Entries index, the planner must require ALLOW FILTERING.
+        Frame need_af = send_query(client, "SELECT id FROM ks.t WHERE m['a'] = 10;");
+        CHECK(need_af.opcode == op::ERROR);
+
+        Frame ok = send_query(client, "SELECT id FROM ks.t WHERE m['a'] = 10 ALLOW FILTERING;");
+        CHECK(result_kind(ok) == result::ROWS);
+        CHECK(body_contains(ok, "row-uniq-aaaa"));
+        CHECK(!body_contains(ok, "row-uniq-bbbb"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
 CQL_NATIVE_TEST_CASE("SELECT/UPDATE/DELETE: UNSET bound in WHERE returns Invalid", "[cql.native][unset]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
         CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
@@ -1321,6 +1365,125 @@ CQL_NATIVE_TEST_CASE("Static columns: INSERT merges with existing static values"
         CHECK(result_kind(sel) == result::ROWS);
         CHECK(body_contains(sel, "ccc")); // s1 updated
         CHECK(body_contains(sel, "bbb")); // s2 preserved
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("INSERT: preserves unspecified columns on existing PK (no clustering)", "[cql.native][insert]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, a text, b text);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, a, b) VALUES (1, 'aaa', 'bbb');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, a) VALUES (1, 'ccc');").opcode == op::RESULT);
+        Frame sel = send_query(client, "SELECT a, b FROM ks.t WHERE id = 1;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "ccc")); // a updated
+        CHECK(body_contains(sel, "bbb")); // b preserved
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("INSERT: UNSET bind preserves map after prepared first insert", "[cql.native][insert][unset]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (k int PRIMARY KEY, m map<text,text>);").opcode == op::RESULT);
+
+        Frame prep = send_prepare(client, "INSERT INTO ks.t (k, m) VALUES (10, ?)", 1);
+        REQUIRE(result_kind(prep) == result::PREPARED);
+        TArrayView<const U8> pid = read_prepared_id(prep);
+
+        // First INSERT: bind a map literal {"foo-uniq": "bar-uniq"} (1 entry).
+        {
+            DynamicArray<U8> ex;
+            append_cql_short_bytes(ex, pid.ptr, U16(pid.length));
+            append_be_u16(ex, 0x0001); // consistency = ONE
+            append_u8(ex, 0x01);       // flags: values present
+            append_be_u16(ex, 1);      // value count
+            // map<text,text> encoding: [int] body_len, then [int] count, then (klen, kbytes, vlen, vbytes)
+            DynamicArray<U8> map_body;
+            U8               n_buf[4] = {0, 0, 0, 1};
+            for (U8 b : n_buf) {
+                push_back(map_body, b);
+            }
+            String8 k = "foo-uniq", v = "bar-uniq";
+            U8      kl[4] = {0, 0, 0, U8(k.length)}, vl[4] = {0, 0, 0, U8(v.length)};
+            for (U8 b : kl) {
+                push_back(map_body, b);
+            }
+            for (U64 i = 0; i < k.length; i++) {
+                push_back(map_body, U8(k.data[i]));
+            }
+            for (U8 b : vl) {
+                push_back(map_body, b);
+            }
+            for (U64 i = 0; i < v.length; i++) {
+                push_back(map_body, U8(v.data[i]));
+            }
+
+            append_cql_bytes(ex, map_body.ptr, S32(map_body.length));
+            prepend_v4_header(ex, op::EXECUTE, 11);
+            send_frame(client, ex);
+            Frame exec = recv_frame(client);
+            CHECK(exec.opcode == op::RESULT);
+        }
+
+        // Sanity: SELECT after the first prepared INSERT shows the map value.
+        Frame sel_after_first = send_query(client, "SELECT m FROM ks.t WHERE k = 10;");
+        CHECK(result_kind(sel_after_first) == result::ROWS);
+        CHECK(body_contains(sel_after_first, "foo-uniq"));
+        CHECK(body_contains(sel_after_first, "bar-uniq"));
+
+        // Second INSERT: bind UNSET — m should remain {"foo-uniq": "bar-uniq"}.
+        {
+            DynamicArray<U8> ex;
+            append_cql_short_bytes(ex, pid.ptr, U16(pid.length));
+            append_be_u16(ex, 0x0001);
+            append_u8(ex, 0x01);
+            append_be_u16(ex, 1);
+            append_cql_bytes(ex, nullptr, -2); // UNSET
+            prepend_v4_header(ex, op::EXECUTE, 12);
+            send_frame(client, ex);
+            Frame exec = recv_frame(client);
+            CHECK(exec.opcode == op::RESULT);
+        }
+
+        Frame sel = send_query(client, "SELECT m FROM ks.t WHERE k = 10;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "foo-uniq"));
+        CHECK(body_contains(sel, "bar-uniq"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("INSERT: UNSET bind preserves existing column value (no clustering)", "[cql.native][insert][unset]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id int PRIMARY KEY, s set<int>);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (id, s) VALUES (1, {1, 2, 3});").opcode == op::RESULT);
+
+        Frame prep = send_prepare(client, "INSERT INTO ks.t (id, s) VALUES (1, ?)", 1);
+        REQUIRE(result_kind(prep) == result::PREPARED);
+        TArrayView<const U8> pid = read_prepared_id(prep);
+
+        DynamicArray<U8> ex;
+        append_cql_short_bytes(ex, pid.ptr, U16(pid.length));
+        append_be_u16(ex, 0x0001);         // consistency = ONE
+        append_u8(ex, 0x01);               // flags: values present
+        append_be_u16(ex, 1);              // value count
+        append_cql_bytes(ex, nullptr, -2); // UNSET
+        prepend_v4_header(ex, op::EXECUTE, 9);
+        send_frame(client, ex);
+        Frame exec = recv_frame(client);
+        CHECK(exec.opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT s FROM ks.t WHERE id = 1;");
+        CHECK(result_kind(sel) == result::ROWS);
+        // set {1,2,3} survives the second INSERT
+        CHECK(body_contains(sel, "\x00\x00\x00\x03")); // 3 elements
         signal_notify_safe(interrupt);
     });
     co_return;
@@ -1613,6 +1776,95 @@ CQL_NATIVE_TEST_CASE("CLUSTERING ORDER BY (col DESC) reverses default scan", "[c
         CHECK(result_kind(asc) == result::ROWS);
         CHECK(body_index_of(asc, "low") < body_index_of(asc, "mid"));
         CHECK(body_index_of(asc, "mid") < body_index_of(asc, "high"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Tuple WHERE: single bind RHS parses without syntax error", "[cql.native][clustering]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (k int, c1 int, c2 int, PRIMARY KEY (k, c1, c2));").opcode == op::RESULT);
+        // Both bare-term and parenthesized forms must parse — this used to throw SyntaxException.
+        Frame bare = send_prepare(client, "SELECT * FROM ks.t WHERE k = ? AND (c1, c2) = ?", 9);
+        CHECK(result_kind(bare) == result::PREPARED);
+        Frame paren = send_prepare(client, "SELECT * FROM ks.t WHERE k = ? AND (c1, c2) = (?, ?)", 9);
+        CHECK(result_kind(paren) == result::PREPARED);
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Tuple WHERE: single-bind tuple RHS matches per-column equality", "[cql.native][clustering]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (k int, c1 int, c2 int, tag text, PRIMARY KEY (k, c1, c2));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c1, c2, tag) VALUES (0, 1, 1, 'aaaaaaaa');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c1, c2, tag) VALUES (0, 2, 3, 'targetrow');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c1, c2, tag) VALUES (0, 5, 9, 'zzzzzzzz');").opcode == op::RESULT);
+
+        Frame prep = send_prepare(client, "SELECT tag FROM ks.t WHERE k = ? AND (c1, c2) = ?", 9);
+        REQUIRE(result_kind(prep) == result::PREPARED);
+        TArrayView<const U8> pid = read_prepared_id(prep);
+        REQUIRE(pid.length == 8);
+
+        // Build the tuple bind body: [bytes int32 c1=2][bytes int32 c2=3]
+        DynamicArray<U8> tuple_body;
+        append_cql_bind_s32(tuple_body, 2);
+        append_cql_bind_s32(tuple_body, 3);
+
+        DynamicArray<U8> ex;
+        append_cql_short_bytes(ex, pid.ptr, U16(pid.length));
+        append_be_u16(ex, 0x0001); // consistency = ONE
+        append_u8(ex, 0x01);       // flags: values present
+        append_be_u16(ex, 2);      // value count: k + tuple
+        append_cql_bind_s32(ex, 0);
+        append_cql_bytes(ex, tuple_body.ptr, S32(tuple_body.length));
+        prepend_v4_header(ex, op::EXECUTE, 11);
+        send_frame(client, ex);
+
+        Frame exec = recv_frame(client);
+        CHECK(exec.opcode == op::RESULT);
+        CHECK(result_kind(exec) == result::ROWS);
+        CHECK(body_contains(exec, "targetrow"));
+        CHECK(!body_contains(exec, "aaaaaaaa"));
+        CHECK(!body_contains(exec, "zzzzzzzz"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Tuple WHERE: lex inequality on clustering prefix narrows result", "[cql.native][clustering]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (k int, c1 int, c2 int, tag text, PRIMARY KEY (k, c1, c2));").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c1, c2, tag) VALUES (0, 1, 1, 'aaaaaaaa');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c1, c2, tag) VALUES (0, 1, 2, 'bbbbbbbb');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c1, c2, tag) VALUES (0, 2, 1, 'cccccccc');").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, c1, c2, tag) VALUES (0, 2, 2, 'dddddddd');").opcode == op::RESULT);
+
+        Frame gt = send_query(client, "SELECT tag FROM ks.t WHERE k = 0 AND (c1, c2) > (1, 2);");
+        CHECK(result_kind(gt) == result::ROWS);
+        CHECK(!body_contains(gt, "aaaaaaaa"));
+        CHECK(!body_contains(gt, "bbbbbbbb"));
+        CHECK(body_contains(gt, "cccccccc"));
+        CHECK(body_contains(gt, "dddddddd"));
+
+        Frame ge = send_query(client, "SELECT tag FROM ks.t WHERE k = 0 AND (c1, c2) >= (1, 2);");
+        CHECK(result_kind(ge) == result::ROWS);
+        CHECK(!body_contains(ge, "aaaaaaaa"));
+        CHECK(body_contains(ge, "bbbbbbbb"));
+        CHECK(body_contains(ge, "cccccccc"));
+        CHECK(body_contains(ge, "dddddddd"));
+
+        Frame lt = send_query(client, "SELECT tag FROM ks.t WHERE k = 0 AND (c1, c2) < (2, 1);");
+        CHECK(result_kind(lt) == result::ROWS);
+        CHECK(body_contains(lt, "aaaaaaaa"));
+        CHECK(body_contains(lt, "bbbbbbbb"));
+        CHECK(!body_contains(lt, "cccccccc"));
+        CHECK(!body_contains(lt, "dddddddd"));
 
         signal_notify_safe(interrupt);
     });

@@ -860,10 +860,13 @@ namespace cql {
                         }
                         return false;
                     }
-                    if (value.operator_ == Operator::eq && value.columns.length > 0 && value.columns.length == value.values.length) {
+                    if (!tuple_rhs_is_compatible(value)) {
+                        return true;
+                    }
+                    if (value.operator_ == Operator::eq) {
                         for (U64 ci = 0; ci < value.columns.length; ci++) {
                             Evaluated lhs  = lookup_column_value(value.columns[ci].identifier, ctx);
-                            Evaluated rhs  = evaluate_term(value.values[ci], ctx);
+                            Evaluated rhs  = evaluate_term(tuple_value_at(value, ci), ctx);
                             bool      comp = false;
                             if (compare_evaluated(lhs, rhs, comp) != 0 || !comp) {
                                 return false;
@@ -871,10 +874,54 @@ namespace cql {
                         }
                         return true;
                     }
-                    // @todo lexicographic compare for inequality tuple RHS
+                    if (is_inequality(value.operator_)) {
+                        for (U64 ci = 0; ci < value.columns.length; ci++) {
+                            Evaluated lhs        = lookup_column_value(value.columns[ci].identifier, ctx);
+                            Evaluated rhs        = evaluate_term(tuple_value_at(value, ci), ctx);
+                            bool      comparable = false;
+                            S64       cmp        = compare_evaluated(lhs, rhs, comparable);
+                            if (!comparable) {
+                                return false;
+                            }
+                            if (cmp == 0) {
+                                continue;
+                            }
+                            return apply_operator(cmp, value.operator_);
+                        }
+                        // all components equal: pass on le/ge, fail on lt/gt
+                        return value.operator_ == Operator::le || value.operator_ == Operator::ge;
+                    }
                     return true;
                 } else if constexpr (SameAs<T, WhereClause::TokenRelation>) {
                     return true; // token relations not evaluated in filter
+                } else if constexpr (SameAs<T, WhereClause::SubscriptedRelation>) {
+                    // Look up the map column, fetch m[k], compare to v.
+                    Evaluated map_eval = lookup_column_value(value.column.identifier, ctx);
+                    if (!type_matches_tag<ColumnValue>(map_eval.value)) {
+                        return false;
+                    }
+                    const ColumnValue& cv = get<ColumnValue>(map_eval.value);
+                    if (!type_matches_tag<DynamicMap<NestedColumnValue, NestedColumnValue>>(cv)) {
+                        return false;
+                    }
+                    const auto& dm       = get<DynamicMap<NestedColumnValue, NestedColumnValue>>(cv);
+                    Evaluated   key_eval = evaluate_term(value.subscript, ctx);
+                    Evaluated   rhs      = evaluate_term(value.value, ctx);
+                    for (auto it = dm.begin(); it != dm.end(); ++it) {
+                        const auto& entry     = *it;
+                        Evaluated   entry_key = Evaluated{ColumnValue{entry.first.value}};
+                        bool        key_comp  = false;
+                        if (compare_evaluated(entry_key, key_eval, key_comp) == 0 && key_comp) {
+                            Evaluated entry_val = Evaluated{ColumnValue{entry.second.value}};
+                            bool      cmp_ok    = false;
+                            S64       cmp       = compare_evaluated(entry_val, rhs, cmp_ok);
+                            if (!cmp_ok) {
+                                return false;
+                            }
+                            return apply_operator(cmp, value.operator_);
+                        }
+                    }
+                    return false;
                 } else {
                     static_assert(!SameAs<T, T>, "missing WHERE relation type");
                     return false;

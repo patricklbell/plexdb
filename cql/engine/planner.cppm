@@ -133,6 +133,7 @@ export namespace cql::planner {
         DistinctRestrictionInvalid,
         InvalidCollectionMutation,
         InvalidSubscriptTarget,
+        UnsetSubscriptValue,
         UnsetValueInWhere,
         InvalidTtlArgument,
         InvalidWritetimeArgument,

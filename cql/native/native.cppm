@@ -128,6 +128,8 @@ namespace cql::native {
         constexpr U16 List      = 0x0020;
         constexpr U16 Map       = 0x0021;
         constexpr U16 Set       = 0x0022;
+        constexpr U16 Udt       = 0x0030;
+        constexpr U16 Tuple     = 0x0031;
     }
 
     constexpr U16 basic_type_to_type_code(type::Basic dtype) {

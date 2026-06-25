@@ -229,6 +229,24 @@ namespace cql::native {
                 }
                 p = coll_end;
                 return Term{.value = move(lit)};
+            } else if constexpr (SameAs<T, type::Tuple>) {
+                assert_true(p + 4 <= end, "truncated tuple bind value length");
+                S32 outer_len = read_be_s32(p);
+                p += 4;
+                if (outer_len == -2) {
+                    return Term{.value = Constant{.value = Unset{}}};
+                }
+                if (outer_len < 0) {
+                    return Term{.value = Constant{.value = Null{}}};
+                }
+                const U8* tup_end = p + U64(outer_len);
+                assert_true(tup_end <= end, "tuple bind value body truncated");
+                TupleLiteral lit{};
+                for (U64 i = 0; i < v.elements.length && p < tup_end; i++) {
+                    push_back(lit.elements, read_cql_value_as_term(p, tup_end, v.elements[i]));
+                }
+                p = tup_end;
+                return Term{.value = move(lit)};
             } else {
                 assert_not_implemented("vector collection type bind parameters are not implemented");
                 return Term{.value = Constant{.value = Null{}}};
@@ -465,6 +483,12 @@ namespace cql::native {
                 append_be_u16(f, type_codes::Map);
                 append_be_u16(f, basic_type_to_type_code(get<type::Basic>(v.key.value)));
                 append_be_u16(f, basic_type_to_type_code(get<type::Basic>(v.value.value)));
+            } else if constexpr (SameAs<T, type::Tuple>) {
+                append_be_u16(f, type_codes::Tuple);
+                append_be_u16(f, U16(v.elements.length));
+                for (U64 i = 0; i < v.elements.length; i++) {
+                    append_type_codes_option(f, v.elements[i]);
+                }
             } else if constexpr (SameAs<T, type::Vector>) {
                 assert_not_implemented("native protocol type code for vector collection type is not implemented");
             }

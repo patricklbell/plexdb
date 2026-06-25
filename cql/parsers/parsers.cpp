@@ -1004,6 +1004,19 @@ namespace cql::parsers {
                 }
             );
         };
+        struct subscripted_relation {
+            static constexpr auto rule = [] {
+                auto subscripted_lhs = dsl::peek(dsl::p<column_name> + dsl::p<ws> + dsl::lit_c<'['>) >> dsl::p<column_name> + dsl::p<ws> + dsl::lit_c<'['> + dsl::p<ws> + dsl::p<term_expr> + dsl::p<ws> + dsl::lit_c<']'>;
+                return subscripted_lhs + dsl::p<ws> + dsl::p<comparison_op> + dsl::p<ws> + dsl::p<term_expr>;
+            }();
+            static constexpr auto value = lexy::callback<WhereClause::Relation>(
+                [](ColumnName&& col, Term&& sub, Operator op, Term&& val) -> WhereClause::Relation {
+                    return {
+                        .value = WhereClause::SubscriptedRelation{move(col), move(sub), op, move(val)}
+                    };
+                }
+            );
+        };
         struct column_name_list {
             static constexpr auto rule  = dsl::list(dsl::p<column_name> + dsl::p<ws>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>));
             static constexpr auto value = as_dyn_arr<ColumnName>;
@@ -1023,8 +1036,10 @@ namespace cql::parsers {
         };
         struct tuple_expression_relation {
             static constexpr auto rule = [] {
-                auto cols = dsl::parenthesized(dsl::p<ws> + dsl::p<column_name_list> + dsl::p<ws>);
-                auto rhs  = dsl::lit_c<'('> >> dsl::p<ws> + dsl::p<term_args_list> + dsl::p<ws> + dsl::lit_c<')'>;
+                auto cols      = dsl::parenthesized(dsl::p<ws> + dsl::p<column_name_list> + dsl::p<ws>);
+                auto rhs_paren = dsl::lit_c<'('> >> dsl::p<ws> + dsl::p<term_args_list> + dsl::p<ws> + dsl::lit_c<')'>;
+                auto rhs_term  = dsl::else_ >> dsl::p<term_expr>;
+                auto rhs       = rhs_paren | rhs_term;
                 return dsl::peek(dsl::lit_c<'('>) >> cols + dsl::p<ws> + dsl::p<comparison_op> + dsl::p<ws> + rhs;
             }();
             static constexpr auto value = lexy::callback<WhereClause::Relation>(
@@ -1032,11 +1047,18 @@ namespace cql::parsers {
                     return {
                         .value = WhereClause::TupleExpressionRelation{move(cols), op, move(vals)}
                     };
+                },
+                [](DynamicArray<ColumnName>&& cols, Operator op, Term&& val) -> WhereClause::Relation {
+                    DynamicArray<Term> vals;
+                    push_back(vals, move(val));
+                    return {
+                        .value = WhereClause::TupleExpressionRelation{move(cols), op, move(vals)}
+                    };
                 }
             );
         };
         struct where_relation {
-            static constexpr auto rule  = dsl::p<token_relation> | dsl::p<tuple_expression_relation> | dsl::else_ >> dsl::p<column_expression_relation>;
+            static constexpr auto rule  = dsl::p<token_relation> | dsl::p<tuple_expression_relation> | dsl::p<subscripted_relation> | dsl::else_ >> dsl::p<column_expression_relation>;
             static constexpr auto value = lexy::forward<WhereClause::Relation>;
         };
         struct where_relations_list {

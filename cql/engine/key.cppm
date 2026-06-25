@@ -639,6 +639,15 @@ export namespace cql::key {
         return out;
     }
 
+    // Entries-index lookup prefix for `WHERE m[k] = v`: composite-encoded key
+    // followed by the raw value form (matches what the writer stamps per entry).
+    DynamicArray<U8> make_index_prefix_entries(const Evaluated& key_val, type::Basic key_dtype, const Evaluated& val_val, type::Basic val_dtype) {
+        DynamicArray<U8> out;
+        append_component(out, key_val, key_dtype, true);
+        append_component(out, val_val, val_dtype, is_variable_length_basic(val_dtype));
+        return out;
+    }
+
     U16 index_prefix_len(type::Basic dtype, const U8* key_ptr) {
         if (!is_variable_length_basic(dtype)) {
             switch (dtype) {

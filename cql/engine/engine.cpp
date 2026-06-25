@@ -1575,6 +1575,13 @@ namespace cql::engine {
                 r.message         = String8(r.message_storage.c_str, r.message_storage.length);
                 return r;
             }
+            case planner::PlanError::UnsetSubscriptValue: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = AutoString8("Invalid unset value for argument in call to subscript on ") + result.context;
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
             case planner::PlanError::UnsetValueInWhere:
                 return ExecutionResult{
                     .status  = ExecutionStatus::Invalid,
@@ -3010,21 +3017,60 @@ namespace cql::engine {
                                 co_await update_indexes(engine, tbl, pk_v, ck_v, old_cv, old_present, built.first, built.second);
                             }
                         } else {
-                            DynamicArray<ColumnValue> old_cv;
-                            DynamicArray<bool>        old_present;
-                            if (have_indexes) {
-                                auto entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
-                                if (entry_opt) {
-                                    co_await read_row_into(engine, tbl, entry_opt->data_page, entry_opt->static_page, old_cv, old_present);
-                                }
-                            }
-                            co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{row_page, 0});
+                            // @note Cassandra INSERT writes per cell: omitted or UNSET-bound
+                            // columns keep their existing values, so existing partitions take
+                            // a read-modify-write path rather than overwriting the row blob.
+                            auto entry_opt = co_await btree::tfind<schema::PartitionEntry>(tbl->btree, pk_bytes);
+                            auto pk_v      = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
+                            if (!entry_opt) {
+                                DynamicArray<ColumnValue> old_cv;
+                                DynamicArray<bool>        old_present;
+                                co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{row_page, 0});
 
-                            if (have_indexes) {
-                                TArrayView<const U8, U16> empty_ck{nullptr, 0};
-                                auto                      pk_v  = TArrayView<const U8, U16>(pk_bytes.ptr, static_cast<U16>(pk_bytes.length));
-                                auto                      built = co_await build_new_cv();
-                                co_await update_indexes(engine, tbl, pk_v, empty_ck, old_cv, old_present, built.first, built.second);
+                                if (have_indexes) {
+                                    TArrayView<const U8, U16> empty_ck{nullptr, 0};
+                                    auto                      built = co_await build_new_cv();
+                                    co_await update_indexes(engine, tbl, pk_v, empty_ck, old_cv, old_present, built.first, built.second);
+                                }
+                            } else {
+                                blob::BlobDynamicPaged scratch;
+                                co_await blob::load(scratch, engine.pager, row_page);
+                                co_await blob::remove(scratch);
+
+                                DynamicArray<ColumnValue>                col_values;
+                                DynamicArray<bool>                       col_present;
+                                DynamicArray<Optional<io::CellMetadata>> cell_meta;
+                                co_await read_row_into(engine, tbl, entry_opt->data_page, entry_opt->static_page, pk_v, col_values, col_present, nullptr, &cell_meta);
+
+                                DynamicArray<ColumnValue> old_cv      = have_indexes ? col_values : DynamicArray<ColumnValue>{};
+                                DynamicArray<bool>        old_present = have_indexes ? col_present : DynamicArray<bool>{};
+
+                                planner::MutationSpec spec;
+                                for (U64 ci = 0; ci < tbl->cols.length; ci++) {
+                                    if (tbl->cols[ci].tombstone || tbl->cols[ci].is_static || tbl->cols[ci].key_kind != schema::KeyKind::None) {
+                                        continue;
+                                    }
+                                    auto ni = try_get_names_idx(tbl->cols[ci].name);
+                                    if (!ni) {
+                                        continue;
+                                    }
+                                    push_back(spec.updates, planner::ColumnUpdate{ci, TaggedUnion<Evaluated, TermWithIdentifiers, planner::CollectionPatch>{evaluate(v.values[*ni], ctx)}});
+                                }
+                                co_await apply_updates_to_row(tbl, col_values, col_present, cell_meta, insert_cell_meta, spec, ctx);
+
+                                io::RowMetadata new_row_meta = recompute_row_metadata(tbl, col_present, cell_meta);
+                                U64             new_row_page = co_await write_row_blob(engine, tbl, col_values, col_present, cell_meta, new_row_meta);
+
+                                blob::BlobDynamicPaged old_blob;
+                                co_await blob::load(old_blob, engine.pager, entry_opt->data_page);
+                                co_await blob::remove(old_blob);
+                                co_await btree::remove(tbl->btree, pk_bytes);
+                                co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{new_row_page, entry_opt->static_page});
+
+                                if (have_indexes) {
+                                    TArrayView<const U8, U16> empty_ck{nullptr, 0};
+                                    co_await update_indexes(engine, tbl, pk_v, empty_ck, old_cv, old_present, col_values, col_present);
+                                }
                             }
                         }
 
@@ -3465,6 +3511,32 @@ namespace cql::engine {
         return type::create_basic(type::Basic::int_);
     }
 
+    static type::Type subscript_hint_type(type::Type col_type) {
+        return visit(col_type.value, [](const auto& v) -> type::Type {
+            using V = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<V, type::Map>) {
+                return v.key;
+            } else if constexpr (SameAs<V, type::List> || SameAs<V, type::Vector>) {
+                return type::create_basic(type::Basic::int_);
+            } else {
+                return type::create_basic(type::Basic::text);
+            }
+        });
+    }
+
+    static type::Type subscript_rhs_hint_type(type::Type col_type) {
+        return visit(col_type.value, [&col_type](const auto& v) -> type::Type {
+            using V = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<V, type::Map>) {
+                return v.value;
+            } else if constexpr (SameAs<V, type::List> || SameAs<V, type::Vector>) {
+                return v.element;
+            } else {
+                return col_type;
+            }
+        });
+    }
+
     static void collect_bind_in_term(const Term& term, type::Type hint_type, DynamicArray<BindVariableSpec>& out) {
         visit(term.value, [&](const auto& v) {
             using V = RemoveCVRef<decltype(v)>;
@@ -3597,6 +3669,13 @@ namespace cql::engine {
                                 }
                             });
                         }
+                    } else if (rel.values.length == 1 && rel.columns.length > 1 && type_matches_tag<BindMarker>(rel.values[0].value)) {
+                        // (a, b) = ? — single bind variable typed as a tuple of the column types.
+                        DynamicArray<type::Type> elems;
+                        for (U64 ci = 0; ci < rel.columns.length; ci++) {
+                            push_back(elems, col_type_in_table(tbl, String8(rel.columns[ci].identifier)));
+                        }
+                        collect_bind_in_term(rel.values[0], type::create_tuple(move(elems), true), out);
                     } else {
                         for (U64 vi = 0; vi < rel.values.length; vi++) {
                             String8    col = vi < rel.columns.length ? String8(rel.columns[vi].identifier) : String8{};
@@ -3606,6 +3685,10 @@ namespace cql::engine {
                     }
                 } else if constexpr (SameAs<R, WhereClause::TokenRelation>) {
                     collect_bind_in_term(rel.value, type::create_basic(type::Basic::bigint), out);
+                } else if constexpr (SameAs<R, WhereClause::SubscriptedRelation>) {
+                    type::Type col_t = col_type_in_table(tbl, String8(rel.column.identifier));
+                    collect_bind_in_term(rel.subscript, subscript_hint_type(col_t), out);
+                    collect_bind_in_term(rel.value, subscript_rhs_hint_type(col_t), out);
                 }
             });
         }
@@ -3647,9 +3730,14 @@ namespace cql::engine {
 
         collect_bind_in_using_params(stmt.using_parameters, out);
         for (U64 i = 0; i < stmt.assignments.length; i++) {
-            const auto& asgn = stmt.assignments[i];
-            type::Type  t    = col_type_in_table(*tbl, String8(asgn.target.column.identifier));
-            collect_bind_in_twi(asgn.value, t, out);
+            const auto& asgn  = stmt.assignments[i];
+            type::Type  col_t = col_type_in_table(*tbl, String8(asgn.target.column.identifier));
+            if (const Term* sub = try_subscript_index_term(asgn.target)) {
+                collect_bind_in_term(*sub, subscript_hint_type(col_t), out);
+                collect_bind_in_twi(asgn.value, subscript_rhs_hint_type(col_t), out);
+            } else {
+                collect_bind_in_twi(asgn.value, col_t, out);
+            }
         }
         collect_bind_in_where(stmt.where, *tbl, out);
     }
@@ -3666,6 +3754,13 @@ namespace cql::engine {
         }
 
         collect_bind_in_using_params(stmt.using_parameters, out);
+        for (U64 i = 0; i < stmt.selections.length; i++) {
+            const auto& sel = stmt.selections[i];
+            if (const Term* sub = try_subscript_index_term(sel)) {
+                type::Type col_t = col_type_in_table(*tbl, String8(sel.column.identifier));
+                collect_bind_in_term(*sub, subscript_hint_type(col_t), out);
+            }
+        }
         collect_bind_in_where(stmt.where, *tbl, out);
     }
 
@@ -3836,6 +3931,9 @@ namespace cql::engine {
                     }
                 } else if constexpr (SameAs<R, WhereClause::TokenRelation>) {
                     bind_in_term(rel.value, bv, idx);
+                } else if constexpr (SameAs<R, WhereClause::SubscriptedRelation>) {
+                    bind_in_term(rel.subscript, bv, idx);
+                    bind_in_term(rel.value, bv, idx);
                 }
             });
         }
@@ -3862,11 +3960,20 @@ namespace cql::engine {
             } else if constexpr (SameAs<T, Update>) {
                 bind_in_using_params(s.using_parameters, bound_values, idx);
                 for (U64 i = 0; i < s.assignments.length; i++) {
-                    bind_in_twi(s.assignments[i].value, bound_values, idx);
+                    auto& asgn = s.assignments[i];
+                    if (Term* sub = try_subscript_index_term(asgn.target)) {
+                        bind_in_term(*sub, bound_values, idx);
+                    }
+                    bind_in_twi(asgn.value, bound_values, idx);
                 }
                 bind_in_where(s.where, bound_values, idx);
             } else if constexpr (SameAs<T, Delete>) {
                 bind_in_using_params(s.using_parameters, bound_values, idx);
+                for (U64 i = 0; i < s.selections.length; i++) {
+                    if (Term* sub = try_subscript_index_term(s.selections[i])) {
+                        bind_in_term(*sub, bound_values, idx);
+                    }
+                }
                 bind_in_where(s.where, bound_values, idx);
             } else if constexpr (SameAs<T, Batch>) {
                 bind_in_using_params(s.using_parameters, bound_values, idx);
@@ -3886,11 +3993,20 @@ namespace cql::engine {
                         } else if constexpr (SameAs<M, Update>) {
                             bind_in_using_params(m.using_parameters, bound_values, idx);
                             for (U64 i = 0; i < m.assignments.length; i++) {
-                                bind_in_twi(m.assignments[i].value, bound_values, idx);
+                                auto& asgn = m.assignments[i];
+                                if (Term* sub = try_subscript_index_term(asgn.target)) {
+                                    bind_in_term(*sub, bound_values, idx);
+                                }
+                                bind_in_twi(asgn.value, bound_values, idx);
                             }
                             bind_in_where(m.where, bound_values, idx);
                         } else if constexpr (SameAs<M, Delete>) {
                             bind_in_using_params(m.using_parameters, bound_values, idx);
+                            for (U64 i = 0; i < m.selections.length; i++) {
+                                if (Term* sub = try_subscript_index_term(m.selections[i])) {
+                                    bind_in_term(*sub, bound_values, idx);
+                                }
+                            }
                             bind_in_where(m.where, bound_values, idx);
                         }
                     });
