@@ -370,6 +370,38 @@ namespace cql::schema {
         }
 
         const auto& map = get<MapLiteral>(option);
+
+        // @todo @perf O(n^2) and duplicate keys should be an error at the top level
+        // @note Cassandra rejects duplicate keys in the replication map at parse-time as a
+        // SyntaxException. We surface the same shape as InvalidOptions; the engine maps both
+        // to the wire-level Invalid response.
+        for (U64 i = 0; i < map.key_values.length; i++) {
+            const auto& ki = map.key_values[i].first;
+            if (!type_matches_tag<Constant>(ki.value)) {
+                continue;
+            }
+            const auto& kic = get<Constant>(ki.value);
+            if (!type_matches_tag<AutoString8>(kic.value)) {
+                continue;
+            }
+            const auto& ki_str = get<AutoString8>(kic.value);
+            for (U64 j = i + 1; j < map.key_values.length; j++) {
+                const auto& kj = map.key_values[j].first;
+                if (!type_matches_tag<Constant>(kj.value)) {
+                    continue;
+                }
+                const auto& kjc = get<Constant>(kj.value);
+                if (!type_matches_tag<AutoString8>(kjc.value)) {
+                    continue;
+                }
+                if (ki_str == get<AutoString8>(kjc.value)) {
+                    return {Error::SyntaxOptions, "Multiple definitions for replication option"};
+                }
+            }
+        }
+
+        bool has_class       = false;
+        U64  non_class_count = 0;
         for (const auto& [key_term, value_term] : map.key_values) {
             if (!type_matches_tag<Constant>(key_term.value)) {
                 return {Error::InvalidOptions, "replication option key should be a string"};
@@ -381,6 +413,7 @@ namespace cql::schema {
             const auto& key = get<AutoString8>(key_constant.value);
 
             if (key == "class") {
+                has_class = true;
                 if (!type_matches_tag<Constant>(value_term.value)) {
                     return {Error::InvalidOptions, "replication class should be a string"};
                 }
@@ -404,6 +437,7 @@ namespace cql::schema {
                     return {Error::InvalidOptions, "unknown replication class"};
                 }
             } else if (key == "replication_factor") {
+                non_class_count++;
                 if (!type_matches_tag<Constant>(value_term.value)) {
                     return {Error::InvalidOptions, "replication factor should be an integer"};
                 }
@@ -426,11 +460,22 @@ namespace cql::schema {
 
                 storage.replication_factor = value;
             } else {
-                // @note per-datacenter replication factors (e.g. 'datacenter1': '3') are accepted but ignored
-                // @todo implement per-datacenter replication factor storage
+                non_class_count++;
+                // For NetworkTopologyStrategy, non-class keys are DC names and must match
+                // a known DC. The current single-node build only knows "datacenter1".
+                // SimpleStrategy ignores them.
+                if (storage.replication_class == ReplicationClass::NetworkTopologyStrategy) {
+                    if (key != "datacenter1") {
+                        thread_local AutoString8 msg;
+                        msg = AutoString8("Unrecognized datacenter name '") + String8(key) + AutoString8("'");
+                        return {Error::InvalidOptions, String8(msg)};
+                    }
+                }
             }
         }
 
+        (void)has_class;
+        (void)non_class_count;
         return {};
     }
 
@@ -471,6 +516,14 @@ namespace cql::schema {
         }
 
         return {Error::None};
+    }
+
+    Result<void> validate_keyspace_options(const Options& opts) {
+        KeyspaceStorage scratch{};
+        scratch.replication_class  = ReplicationClass::SimpleStrategy;
+        scratch.replication_factor = 1;
+        scratch.do_durable_writes  = true;
+        return apply_keyspace_options(scratch, opts);
     }
 
     coroutine::Task<Result<Keyspace*>> create_keyspace(Schema& schema, const CreateKeyspace& create) {
@@ -617,6 +670,19 @@ namespace cql::schema {
 
     coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create, S64 default_ttl_ms, TableExtraOptions extras) {
         assert_true(read_table_impl(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
+
+        U64 inline_pk_count = 0;
+        for (U64 i = 0; i < create.column_definitions.length; i++) {
+            if (create.column_definitions[i].primary_key) {
+                inline_pk_count++;
+            }
+        }
+        if (inline_pk_count > 1) {
+            co_return Result<Table*>{nullptr, Error::InvalidOptions, "Multiple PRIMARY KEYs specified"};
+        }
+        if (inline_pk_count == 1 && create.primary_key) {
+            co_return Result<Table*>{nullptr, Error::InvalidOptions, "Multiple PRIMARY KEYs specified"};
+        }
 
         auto pk_info_opt = get_primary_key_info(create);
         if (!pk_info_opt) {

@@ -1096,6 +1096,11 @@ namespace cql::planner {
                     plan.result.context = AutoString8("Cannot use selection function ") + AutoString8(fn_label) + AutoString8(" on PRIMARY KEY part ") + AutoString8(cn.identifier);
                     return false;
                 }
+                if (col_is_collection(tbl.cols[ci])) {
+                    plan.result.error   = shape_error;
+                    plan.result.context = AutoString8("Cannot use selection function ") + AutoString8(fn_label) + AutoString8(" on collection column ") + AutoString8(cn.identifier);
+                    return false;
+                }
                 push_back(plan.projection.ops, is_ttl ? SelectOp{SelectOp::TtlOf{ci}, {}} : SelectOp{SelectOp::WritetimeOf{ci}, {}});
                 return true;
             }
@@ -1590,6 +1595,11 @@ namespace cql::planner {
                 if (!col_idx) {
                     plan.result.error   = PlanError::ColumnNotFound;
                     plan.result.context = AutoString8(col_name);
+                    return plan;
+                }
+                if (tbl.cols[*col_idx].key_kind != schema::KeyKind::None) {
+                    plan.result.error   = PlanError::InvalidSubscriptTarget;
+                    plan.result.context = AutoString8("Invalid deletion of primary key part ") + AutoString8(col_name);
                     return plan;
                 }
                 const schema::Column& col = tbl.cols[*col_idx];

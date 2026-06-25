@@ -147,6 +147,10 @@ namespace cql::engine {
     }
 
     // @todo multi-node support
+    static bool is_obsolete_table_option(String8 key) {
+        return key == "default_validation" || key == "key_validation" || key == "row_cache_size" || key == "key_cache_size" || key == "index_interval" || key == "replicate_on_write";
+    }
+
     static void handle_table_option_pair(const OptionPair& opt, Engine& engine) {
         String8 key = opt.first;
         if (key == "comment") {
@@ -169,6 +173,7 @@ namespace cql::engine {
     struct TableOptionsParsed {
         S64                       default_ttl_ms = 0;
         schema::TableExtraOptions extras{};
+        AutoString8               err{};
     };
 
     static TableOptionsParsed handle_table_options(const CreateTable::TableOptions& opts, Engine& engine) {
@@ -183,9 +188,13 @@ namespace cql::engine {
                 } else if constexpr (SameAs<O, CreateTable::ClusteringOrder>) {
                     // @note consumed by schema::create_table when assigning per-CK directions.
                 } else if constexpr (SameAs<O, OptionPair>) {
+                    const auto& op = get<OptionPair>(opt);
                     handle_table_option_pair(o, engine);
                     String8 key = String8(o.first);
-                    if (key == "default_time_to_live") {
+                    // @todo consolidate disparate table option handling
+                    if (is_obsolete_table_option(String8(o.first))) {
+                        out.err = AutoString8("Unknown property '") + String8(op.first) + AutoString8("'");
+                    } else if (key == "default_time_to_live") {
                         out.default_ttl_ms = ttl_seconds_from_option_value(o.second) * 1000;
                     } else {
                         try_apply_s32_extra(out.extras, key, o.second);
@@ -194,6 +203,10 @@ namespace cql::engine {
                     static_assert(!SameAs<O, O>, "unhandled table option variant");
                 }
             });
+
+            if (out.err.length > 0) {
+                break;
+            }
         }
         return out;
     }
@@ -267,6 +280,31 @@ namespace cql::engine {
             DynamicArray<U64> col_order = select_col_indices;
             return col_order;
         }
+        // @note Cassandra orders SELECT * columns: PK, CK, static (alphabetical), regular (alphabetical).
+        auto name_lt = [&tbl](U64 a, U64 b) -> bool {
+            const auto& na  = tbl.cols[a].name;
+            const auto& nb  = tbl.cols[b].name;
+            U64         lim = na.length < nb.length ? na.length : nb.length;
+            for (U64 i = 0; i < lim; i++) {
+                if (na.data[i] != nb.data[i]) {
+                    return U8(na.data[i]) < U8(nb.data[i]);
+                }
+            }
+            return na.length < nb.length;
+        };
+        // @todo @perf proper sort
+        auto insert_sorted = [&](DynamicArray<U64>& arr) {
+            for (U64 i = 0; i + 1 < arr.length; i++) {
+                for (U64 j = i + 1; j < arr.length; j++) {
+                    if (name_lt(arr[j], arr[i])) {
+                        auto t = arr[i];
+                        arr[i] = arr[j];
+                        arr[j] = t;
+                    }
+                }
+            }
+        };
+
         DynamicArray<U64> col_order;
         for (U64 ci : tbl.partition_key_col_indices) {
             push_back(col_order, ci);
@@ -274,13 +312,23 @@ namespace cql::engine {
         for (U64 ci : tbl.clustering_key_col_indices) {
             push_back(col_order, ci);
         }
+        DynamicArray<U64> statics;
         for (U64 ci : tbl.static_col_indices) {
+            push_back(statics, ci);
+        }
+        insert_sorted(statics);
+        for (U64 ci : statics) {
             push_back(col_order, ci);
         }
+        DynamicArray<U64> regulars;
         for (U64 ci = 0; ci < tbl.cols.length; ci++) {
             if (!tbl.cols[ci].tombstone && tbl.cols[ci].key_kind == schema::KeyKind::None && !tbl.cols[ci].is_static) {
-                push_back(col_order, ci);
+                push_back(regulars, ci);
             }
+        }
+        insert_sorted(regulars);
+        for (U64 ci : regulars) {
+            push_back(col_order, ci);
         }
         return col_order;
     }
@@ -345,6 +393,23 @@ namespace cql::engine {
                 return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "ttl is too large."};
             }
             break;
+        }
+        return {};
+    }
+
+    static Optional<ExecutionResult> validate_using_timestamp(const DynamicArray<UpdateParameter>& params) {
+        for (const auto& p : params) {
+            if (p.kind != UpdateParameter::Kind::TIMESTAMP) {
+                continue;
+            }
+            if (!type_matches_tag<S64>(p.value)) {
+                continue;
+            }
+            S64 ts = get<S64>(p.value);
+            // Cassandra rejects Long.MIN_VALUE as a TIMESTAMP — it is reserved as a sentinel.
+            if (ts == MIN_S64) {
+                return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Out of range; TIMESTAMP must be greater than Long.MIN_VALUE"};
+            }
         }
         return {};
     }
@@ -2493,12 +2558,34 @@ namespace cql::engine {
                     co_return (stmt.if_not_exists) ? create_void_success() : create_keyspace_already_exists(stmt.name);
                 }
 
+                // @note Cassandra/Scylla allow keyspace names up to 192 chars.
+                if (stmt.name.length > 192) {
+                    co_return ExecutionResult{
+                        .status  = ExecutionStatus::Invalid,
+                        .message = "Keyspace name exceeds 192 characters",
+                    };
+                }
+
                 if (auto existing = schema::read_keyspace(engine.schema, stmt.name).value; existing != nullptr) {
                     co_return (stmt.if_not_exists) ? create_void_success() : create_keyspace_already_exists(stmt.name);
                 }
 
-                auto ks = (co_await schema::create_keyspace(engine.schema, stmt)).value;
-                if (ks == nullptr) {
+                auto ks_res = co_await schema::create_keyspace(engine.schema, stmt);
+                if (ks_res.value == nullptr) {
+                    if (ks_res.error == schema::Error::SyntaxOptions) {
+                        ExecutionResult r;
+                        r.status          = ExecutionStatus::SyntaxError;
+                        r.message_storage = AutoString8(ks_res.message);
+                        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                        co_return r;
+                    }
+                    if (ks_res.error == schema::Error::InvalidOptions) {
+                        ExecutionResult r;
+                        r.status          = ExecutionStatus::ConfigError;
+                        r.message_storage = AutoString8(ks_res.message);
+                        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                        co_return r;
+                    }
                     co_return create_server_error("Failed to create keyspace");
                 }
 
@@ -2521,7 +2608,26 @@ namespace cql::engine {
                     co_return (stmt.if_not_exists) ? create_void_success() : create_table_already_exists(ks_name, stmt.name.table_name);
                 }
 
+                for (U64 i = 0; i < stmt.column_definitions.length; i++) {
+                    for (U64 j = i + 1; j < stmt.column_definitions.length; j++) {
+                        if (stmt.column_definitions[i].name.identifier == stmt.column_definitions[j].name.identifier) {
+                            ExecutionResult r;
+                            r.status          = ExecutionStatus::Invalid;
+                            r.message_storage = AutoString8("Multiple definition of identifier ") + AutoString8(stmt.column_definitions[i].name.identifier);
+                            r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                            co_return r;
+                        }
+                    }
+                }
+
                 auto parsed_options = handle_table_options(stmt.options, engine);
+                if (parsed_options.err.length > 0) {
+                    ExecutionResult r;
+                    r.status          = ExecutionStatus::SyntaxError;
+                    r.message_storage = move(parsed_options.err);
+                    r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                    co_return r;
+                }
 
                 auto tbl_res = co_await schema::create_table(engine.schema, *ks, stmt, parsed_options.default_ttl_ms, parsed_options.extras);
                 if (tbl_res.value == nullptr) {
@@ -2531,6 +2637,12 @@ namespace cql::engine {
                         r.message_storage = AutoString8(tbl_res.message);
                         r.message         = String8(r.message_storage.c_str, r.message_storage.length);
                         co_return r;
+                    }
+                    if (tbl_res.error == schema::Error::MissingPrimaryKey) {
+                        co_return ExecutionResult{
+                            .status  = ExecutionStatus::Invalid,
+                            .message = "No PRIMARY KEY specified (exactly one required)",
+                        };
                     }
                     co_return create_server_error("Failed to create table");
                 }
@@ -2557,6 +2669,46 @@ namespace cql::engine {
                 auto ks = schema::read_keyspace(engine.schema, stmt.keyspace).value;
                 if (ks == nullptr) {
                     co_return (stmt.if_exists) ? create_void_success() : create_keyspace_not_found(stmt.keyspace);
+                }
+
+                if (auto vr = schema::validate_keyspace_options(stmt.options); vr.error != schema::Error::None) {
+                    ExecutionResult r;
+                    r.status          = (vr.error == schema::Error::SyntaxOptions) ? ExecutionStatus::SyntaxError : ExecutionStatus::ConfigError;
+                    r.message_storage = AutoString8(vr.message);
+                    r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                    co_return r;
+                }
+
+                // ALTER KEYSPACE must specify at least one replication option when changing
+                // strategy. CREATE allows defaults, but ALTER requires explicit options for
+                // SimpleStrategy (replication_factor) and NetworkTopologyStrategy (any DC).
+                for (const auto& opt : stmt.options.identifier_values) {
+                    if (opt.first != "replication") {
+                        continue;
+                    }
+                    if (!type_matches_tag<MapLiteral>(opt.second)) {
+                        continue;
+                    }
+                    const auto& m               = get<MapLiteral>(opt.second);
+                    U64         non_class_count = 0;
+                    for (const auto& [kt, vt] : m.key_values) {
+                        if (!type_matches_tag<Constant>(kt.value)) {
+                            continue;
+                        }
+                        const auto& kc = get<Constant>(kt.value);
+                        if (!type_matches_tag<AutoString8>(kc.value)) {
+                            continue;
+                        }
+                        if (get<AutoString8>(kc.value) != "class") {
+                            non_class_count++;
+                        }
+                    }
+                    if (non_class_count == 0) {
+                        co_return ExecutionResult{
+                            .status  = ExecutionStatus::ConfigError,
+                            .message = "ALTER KEYSPACE requires at least one replication option",
+                        };
+                    }
                 }
 
                 for (const auto& opt : stmt.options.identifier_values) {
@@ -2639,6 +2791,47 @@ namespace cql::engine {
                 if (system_vr) {
                     if (stmt.where) {
                         apply_virtual_where(*system_vr, *stmt.where, ctx);
+                    }
+                    // Apply column projection for `SELECT col1, col2 FROM system.X` shapes.
+                    // SELECT * leaves clauses empty and keeps the full row.
+                    if (stmt.select.clauses.length > 0) {
+                        DynamicArray<U64> keep_idx;
+                        bool              all_simple = true;
+                        for (const auto& sc : stmt.select.clauses) {
+                            if (!type_matches_tag<ColumnName>(sc.column.value)) {
+                                all_simple = false;
+                                break;
+                            }
+                            const auto& cn  = get<ColumnName>(sc.column.value);
+                            U64         hit = system_vr->columns.length;
+                            for (U64 ci = 0; ci < system_vr->columns.length; ci++) {
+                                if (system_vr->columns[ci].name == String8(cn.identifier)) {
+                                    hit = ci;
+                                    break;
+                                }
+                            }
+                            if (hit == system_vr->columns.length) {
+                                all_simple = false;
+                                break;
+                            }
+                            push_back(keep_idx, hit);
+                        }
+                        if (all_simple) {
+                            VirtualRows projected;
+                            projected.keyspace = move(system_vr->keyspace);
+                            projected.table    = move(system_vr->table);
+                            for (U64 i = 0; i < keep_idx.length; i++) {
+                                push_back(projected.columns, system_vr->columns[keep_idx[i]]);
+                            }
+                            for (const auto& row : system_vr->rows) {
+                                VirtualRow new_row;
+                                for (U64 i = 0; i < keep_idx.length; i++) {
+                                    push_back(new_row.values, row.values[keep_idx[i]]);
+                                }
+                                push_back(projected.rows, move(new_row));
+                            }
+                            system_vr = move(projected);
+                        }
                     }
                     co_return ExecutionResult{
                         .status       = ExecutionStatus::Success,
@@ -2734,6 +2927,9 @@ namespace cql::engine {
                 }
                 if (auto bad_ttl = validate_using_ttl(stmt.using_parameters)) {
                     co_return move(*bad_ttl);
+                }
+                if (auto bad_ts = validate_using_timestamp(stmt.using_parameters)) {
+                    co_return move(*bad_ts);
                 }
                 assert_true(static_cast<bool>(stmt.insert_clause), "missing insert clause, this should never happen");
 
@@ -3093,6 +3289,9 @@ namespace cql::engine {
                 if (auto bad_ttl = validate_using_ttl(stmt.using_parameters)) {
                     co_return move(*bad_ttl);
                 }
+                if (auto bad_ts = validate_using_timestamp(stmt.using_parameters)) {
+                    co_return move(*bad_ts);
+                }
                 assert_true_not_implemented(!stmt.if_, "UPDATE IF is not implemented");
 
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
@@ -3278,6 +3477,15 @@ namespace cql::engine {
                             .max_index_interval          = tbl->max_index_interval,
                             .memtable_flush_period_in_ms = tbl->memtable_flush_period_in_ms,
                         };
+                        for (const auto& opt : instr.identifier_values) {
+                            if (is_obsolete_table_option(String8(opt.first))) {
+                                ExecutionResult r;
+                                r.status          = ExecutionStatus::SyntaxError;
+                                r.message_storage = AutoString8("Unknown property '") + String8(opt.first) + AutoString8("'");
+                                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                                co_return r;
+                            }
+                        }
                         bool extras_changed = false;
                         for (const auto& opt : instr.identifier_values) {
                             handle_table_option_pair(opt, engine);

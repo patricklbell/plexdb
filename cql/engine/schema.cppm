@@ -215,6 +215,7 @@ export namespace cql::schema {
     enum class Error {
         None,
         InvalidOptions,
+        SyntaxOptions,
         MissingKeyspace,
         MissingPrimaryKey,
         ColumnNameCollision,
@@ -239,6 +240,7 @@ export namespace cql::schema {
     Result<Column*>   read_column(Schema& schema, Table& tbl, String8 name);
 
     coroutine::Task<Result<Keyspace*>> create_keyspace(Schema& schema, const CreateKeyspace& create);
+    Result<void>                       validate_keyspace_options(const Options& opts);
     coroutine::Task<Result<void>>      delete_keyspace(Schema& schema, String8 name);
 
     struct TableExtraOptions {

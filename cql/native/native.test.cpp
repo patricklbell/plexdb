@@ -895,7 +895,8 @@ CQL_NATIVE_TEST_CASE("ALTER TABLE WITH: unknown options are ignored", "[cql.nati
 CQL_NATIVE_TEST_CASE("ALTER KEYSPACE WITH: unknown options are ignored", "[cql.native]") {
     run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
         CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
-        CHECK(send_query(client, "ALTER KEYSPACE ks WITH replication = {'class': 'SimpleStrategy'} "
+        // @note Cassandra requires explicit replication_factor on ALTER (CREATE may default).
+        CHECK(send_query(client, "ALTER KEYSPACE ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1} "
                                  "AND durable_writes = true;")
                   .opcode
               == op::RESULT);

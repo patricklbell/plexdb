@@ -19,7 +19,7 @@ during setup or teardown.
 | Fires | Symptom (assert string) | Site |
 |------:|-------------------------|------|
 |  15 | SELECT clause type (function/cast/term) is not implemented | `planner.cpp` |
-|  12 | BATCH is not implemented | `engine.cpp` |
+|  12 | BATCH opcode not implemented (wire-protocol handler) | `native.cpp` |
 |  10 | User-defined types are not implemented (CREATE/DROP TYPE) | `engine.cpp` |
 |   4 | tuple column type is not implemented | `schema.cpp` |
 |   4 | PER PARTITION LIMIT is not implemented | `engine.cpp` |
@@ -72,10 +72,11 @@ not visible in server logs and need conformance-driven planner/executor work to 
   Phase 6; the scalar function registry remains unscheduled. Distinct from the
   non-crash "Unknown function" hits (8) which arrive via the term-evaluation path.
 
-- **BATCH (~12 fires, ~11 unique tests).** Single engine entry point wrapping child
-  statements in one transaction. Phase 9. Conditional BATCH (LWT) deferred indefinitely;
-  the engine already rejects BATCH IF cleanly, which is what the 3 `Conditional
-  statements ... inside BATCH` hits show.
+- **BATCH (~12 fires, ~11 unique tests).** Engine path already exists (`engine.cpp:3428`);
+  the wire-protocol BATCH opcode handler at `native.cpp:1110` is the actual block — it
+  asserts `not_implemented` before dispatch. Conditional BATCH (LWT) deferred as
+  multi-node; the engine already rejects BATCH IF cleanly, which is what the 3
+  `Conditional statements ... inside BATCH` hits show.
 
 - **User-defined types (~10 fires, up from 5).** `CREATE TYPE` / `ALTER TYPE` /
   `DROP TYPE` are parser+schema work not currently scheduled in a phase. The fire
@@ -91,7 +92,7 @@ not visible in server logs and need conformance-driven planner/executor work to 
 - **Variable-width DESC clustering (~2 fires + 4 key-serialization fires).** `key.cppm`'s
   `append_escaped_terminated` and `append_component` need the inverted-escape scheme
   for `text`/`blob`/`hex` under DESC, plus a missing dtype branch in the default arm.
-  See the roadmap "Variable-width DESC clustering columns" entry.
+  Scheduled as Phase 5 in `cql-conformance-plan.md`.
 
 - **Counter columns — fixed.** The "non-counter column" error count dropped from 7 to 1
   after the counter-gating commit. The remaining hit is a regex-message mismatch.
@@ -120,6 +121,20 @@ not visible in server logs and need conformance-driven planner/executor work to 
   coercion and reversed types, with three additional hits from UNSET-in-collection-literal
   paths — `cast_write_evaluated_as_column_value` needs to accept more shapes.
 
-- **Partitioner ordering.** `testIndexQueryWithCompositePartitionKey` and similar tests
-  expect Murmur3 token order on partitions; plexdb sorts by raw partition-key bytes. See
-  the "Token-based partition ordering" entry in `cql-conformance-roadmap.md`.
+- **Partitioner ordering.** `testIndexQueryWithCompositePartitionKey`, `testTokenRange`,
+  and most multi-partition paging tests expect Murmur3 token order on partitions;
+  plexdb sorts by raw partition-key bytes. Tracked in `TODO.md` and scheduled as
+  Phase 1 in `cql-conformance-plan.md` (highest single-phase impact).
+
+---
+
+## Next steps
+
+Single-node fixes — see [`cql-conformance-plan.md`](cql-conformance-plan.md) for the phased plan.
+
+Multi-node items (out of scope; engine returns `Invalid` cleanly):
+
+- Standalone LWT (`UPDATE … IF`, `DELETE … IF`) — Paxos consensus, multi-replica.
+- Conditional BATCH (any child `IF` / `IF NOT EXISTS`) — same.
+
+Both are documented in `TODO.md` under "Conditional BATCH and standalone LWT".
