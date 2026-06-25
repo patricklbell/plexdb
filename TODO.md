@@ -39,6 +39,27 @@
     - default_time_to_live table property: currently parsed and silently ignored at CREATE/ALTER TABLE
 - Table options silently ignored (logged as warnings): compaction strategy, compression codec, bloom_filter_fp_chance, caching, crc_check_chance, min/max_index_interval, memtable_flush_period_in_ms, extensions
 - COMPACT STORAGE: deprecated Cassandra 2.x wire format; currently accepted and ignored
+- @perf Patch-supplied diff for collection-index maintenance. `update_indexes` diffs
+  old/new column values element-by-element (O(n+m) on the nested loop in
+  `engine.cpp`).
+- Cassandra hashes partition keys with Murmur3 and orders partitions by token, not by raw
+  PK bytes. plexdb currently orders by raw PK bytes inside the partition BTree, which is
+  correct for point lookups and PK ranges but produces a different cross-partition order
+  than Cassandra. Tests affected include `testIndexQueryWithCompositePartitionKey` and most
+  multi-partition paging tests that observe ordering.
+- `CUSTOM INDEX ... USING '...'` (SASI/SAI) and per-index `WITH OPTIONS`.** SASI and SAI
+  are Cassandra-internal index implementations whose on-disk format and query semantics
+  are tied to specific JVM-side data structures. Replicating them duplicates the role of
+  the built-in B-tree index plus the collection indexes already in place, while adding
+  large surface area for a single test category. Return `Invalid` with a clear error
+  message and refuse the statement.
+- Conditional BATCH and standalone LWT (`IF` on UPDATE / DELETE). Compare-and-swap
+  semantics modeled on Paxos consensus. The unconditional Phase 9 path covers every
+  unblocked BATCH test; LWT only unblocks a small number of conformance tests that all
+  depend on multi-replica semantics plexdb is not designed for. Returning
+  `assert_not_implemented` is the agreed behavior; standalone LWT applies the same
+  rationale to single-statement `UPDATE … IF` / `DELETE … IF`.
+
 
 # Dev notes
 - aio proper separation between ownership, caller passes ring/ctx and arena

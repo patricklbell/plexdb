@@ -1,8 +1,12 @@
 ## CQL conformance gaps
 
-Baseline: 149 / 313 passing, 39 xfailed, 4 xpassed, 13 skipped, 108 failed
-(scylladb ref: master, 2026-06-24, after counter gating, UNSET, basic TTL, and the
-collection-patch DML / collection-index rework).
+Baseline: 162 / 313 passing, 37 xfailed, 6 xpassed, 13 skipped, 95 failed
+(scylladb ref: master, 2026-06-25, after counter gating, UNSET, basic TTL, the
+collection-patch DML / collection-index rework, and the minor-gaps cleanup:
+non-clustering INSERT cell-merge, single-bind tuple WHERE RHS parsing,
+multi-column tuple inequality lex compare, `m[k] = v` Entries-index lookup,
+UPDATE subscript bind metadata + UNSET subscript validation, and tuple-typed
+bind variables end-to-end).
 
 The 108 failures partition by primary symptom into 13 server crashes (NoHostAvailable
 from server-side aborts), 27 server-returned errors (non-crash), and 68 test-side
@@ -105,10 +109,12 @@ not visible in server logs and need conformance-driven planner/executor work to 
   hits are gone. Remaining TTL work is exposed through the scalar-function path
   (`testTimestampTTL` chains `blobAsBigint(bigintAsBlob(writetime(c)))`).
 
-- **UNSET — landed.** `testTimestampsOnUnsetColumns(Wide)` PASS. The remaining
-  `testSetWithUnsetValues` / `testMapWithUnsetValues` / `testListWithUnsetValues`
-  failures are now `Incompatible literal` (collection-literal coercion), not the prior
-  Unset-handling crashes.
+- **UNSET — landed (full coverage).** `testTimestampsOnUnsetColumns(Wide)`,
+  `testSetWithUnsetValues`, `testMapWithUnsetValues`, and `testListWithUnsetValues`
+  all PASS. Non-clustering INSERT merges per cell; `UPDATE col[?] = ...` propagates
+  the subscript through PREPARE metadata; and UNSET subscript values produce an
+  Invalid error for maps (and `SET l[?] = ...`) but no-op for `DELETE l[?] FROM ...`
+  per Cassandra semantics.
 
 - **`Incompatible literal for column type` (~6 hits, up from 4).** Mostly smallint/tinyint
   coercion and reversed types, with three additional hits from UNSET-in-collection-literal
