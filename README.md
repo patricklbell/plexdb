@@ -1,7 +1,12 @@
 # PlexDB
-**PlexDB** is an experimental high-performance persistent and in-memory database. It provides:
- - A NoSQL database, supports Cassandra's native protocol.
- - A key-value database, supports the Redis serialization protocol.
+
+**PlexDB** is an experimental high-performance persistent and in-memory database.
+
+A common storage layer is provided which supports:
+ - A NoSQL database. Applications connect through the [Cassandra](https://cassandra.apache.org/) drivers. 
+ - A key-value database. Applications connect through the [Redis](https://redis.io/) drivers.
+
+Application developers may reference the examples in `docs`.
 
 ## Download
 
