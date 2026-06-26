@@ -20,6 +20,7 @@ jobs:
           find . \
             -not -path '*/build/*' \
             -not -path '*/third_party/stb/*' \
+            -not -path '*/third_party/murmur3/*' \
             -not -path '*/tools/*' \
             -not -path '*/docs/*' \
             \( -name '*.cpp' -o -name '*.cppm' -o -name '*.h' \) \
