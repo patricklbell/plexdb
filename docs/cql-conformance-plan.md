@@ -6,8 +6,8 @@ Covers remaining failing test categories that do **not** require multi-replica
 coordination. Multi-node items (standalone LWT, conditional BATCH) are listed
 at the bottom as out of scope.
 
-**Current state:** 194 / 313 passing, 63 failing, 13 skipped, 35 xfailed, 8 xpassed.
-**Mustpass coverage:** 186 / 186.
+**Current state:** 195 / 313 passing, 62 failing, 13 skipped, 35 xfailed, 8 xpassed.
+**Mustpass coverage:** 195 / 195.
 
 Phases are independently shippable. Done phases are kept here for context.
 
@@ -37,7 +37,7 @@ Cassandra semantics, supports DISTINCT and LIMIT, and uses the same
 
 ---
 
-### Phase 2 — Scalar function dispatch (term-evaluation path)  *(partially done)*
+### Phase 2 — Scalar function dispatch (term-evaluation path)  *(done)*
 
 **Done.**
 - `blobAsInt` / `blobAsBigint` decode 4-byte / 8-byte BE blobs (previously
@@ -46,17 +46,22 @@ Cassandra semantics, supports DISTINCT and LIMIT, and uses the same
   partition token over the active table's partition key column types.
 - Planner `token()` error wording aligned with upstream — unblocks the
   three `testTokenFct*` rejection tests.
+- New `SelectOp::FuncCall` op routes generic function calls in SELECT
+  projection through the term registry. A static name→return-type table
+  supplies the protocol column spec. Args are column references (resolved
+  per row) or pre-evaluated constants; nested function/cast args reject
+  cleanly. Unblocks `testFunctionsWithClusteringDesc` and similar
+  projection paths.
+- `Select::Cast` lowers to a `SelectOp::ColumnRef` plus a single
+  `Conversion` step on `apply_typed_conversion`; the previous
+  `assert_not_implemented` is removed.
+- `plan_update` rejects incompatible TypeHints on the RHS of assignments
+  via the new `outer_type_hint_basic` and `type_compatible_for_assignment`
+  helpers exposed from `cql.engine.evaluator`. Mismatches surface a
+  Cassandra-style error message. Unblocks `testTypeCasts`.
 
-**Remaining.**
-- Planner fallback so SELECT projections can dispatch to the term registry
-  for general functions (e.g. `SELECT uuid()`, `SELECT now()` — these
-  currently error with `Unknown function`).
-- `Select::Cast` planner branch (still `assert_not_implemented` —
-  `SELECT CAST(c AS bigint)` style).
-- Term-position `TypeHint` validation (`UPDATE SET t = (text)X` type
-  mismatch). Needed for `testTypeCasts`.
-
-**Files.** `cql/engine/planner.cpp`, `cql/engine/evaluator.cpp`.
+**Files.** `cql/engine/planner.{cpp,cppm}`, `cql/engine/evaluator.{cpp,cppm}`,
+`cql/engine/engine.cpp`.
 
 ---
 
@@ -264,10 +269,9 @@ clear message; do not invest in partial implementations.
 
 ## Suggested sequencing
 
-Phases 1, 3, 5, 7, 8 are done. Phase 2 is partially done; complete the
-SELECT-projection fallback and `Select::Cast` wiring before Phase 6.
-Phase 4 (UDTs) is the largest remaining unit; Phase 9 picks up the long
-tail opportunistically.
+Phases 1, 2, 3, 5, 7, 8 are done. Phase 4 (UDTs) is the largest remaining
+unit; Phase 6 (parser/validator wording) and Phase 9 (small features)
+pick up the long tail opportunistically.
 
 Regenerate `mustpass.txt` after each phase so subsequent regressions are
 caught against the larger baseline.
