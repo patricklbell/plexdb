@@ -2064,7 +2064,50 @@ namespace cql::engine {
         return v;
     }
 
-    static VirtualRow project_row_via_ops(const schema::Table& tbl, const DynamicArray<planner::SelectOp>& ops, const DynamicArray<ColumnValue>& cv, const DynamicArray<bool>& present, const DynamicArray<Optional<io::CellMetadata>>& cell_meta, S64 now_unix_ms) {
+    // Convert a registry-result Evaluated into a ColumnValue narrowed to the
+    // declared SELECT-projection return type. The registry returns Evaluated
+    // values whose inner Constant uses S64/F64/etc.; the projection frame
+    // expects S32/S16/F32 for the corresponding narrower CQL types.
+    static ColumnValue narrow_evaluated(const Evaluated& e, type::Basic target) {
+        if (type_matches_tag<ColumnValue>(e.value)) {
+            return get<ColumnValue>(e.value);
+        }
+        if (!type_matches_tag<Constant>(e.value)) {
+            return ColumnValue{Null{}};
+        }
+        return visit(get<Constant>(e.value).value, [&](const auto& v) -> ColumnValue {
+            using T = Decay<decltype(v)>;
+            if constexpr (SameAs<T, Null> || SameAs<T, Unset>) {
+                return ColumnValue{Null{}};
+            } else if constexpr (SameAs<T, S64>) {
+                if (target == type::Basic::int_ || target == type::Basic::date) {
+                    return ColumnValue{S32(v)};
+                }
+                if (target == type::Basic::smallint) {
+                    return ColumnValue{S16(v)};
+                }
+                if (target == type::Basic::tinyint) {
+                    return ColumnValue{U8(S8(v))};
+                }
+                return ColumnValue{v};
+            } else if constexpr (SameAs<T, F64>) {
+                if (target == type::Basic::float_) {
+                    return ColumnValue{F32(v)};
+                }
+                return ColumnValue{v};
+            } else if constexpr (SameAs<T, bool>) {
+                return ColumnValue{U8(v ? 1 : 0)};
+            } else if constexpr (SameAs<T, Hex>) {
+                Blob b{};
+                b.value = v.value;
+                return ColumnValue{move(b)};
+            } else {
+                return ColumnValue{v};
+            }
+        });
+    }
+
+    static VirtualRow project_row_via_ops(const schema::Table& tbl, const DynamicArray<planner::SelectOp>& ops, const DynamicArray<ColumnValue>& cv, const DynamicArray<bool>& present, const DynamicArray<Optional<io::CellMetadata>>& cell_meta, S64 now_unix_ms, const EvalContext& base_ctx) {
         VirtualRow vrow;
         for (const auto& op : ops) {
             ColumnValue base;
@@ -2092,6 +2135,25 @@ namespace cql::engine {
                     }
                 } else if constexpr (SameAs<OT, planner::SelectOp::Token>) {
                     base = ColumnValue{key::compute_partition_token(tbl, {cv.ptr, cv.length})};
+                } else if constexpr (SameAs<OT, planner::SelectOp::FuncCall>) {
+                    DynamicArray<Evaluated> args;
+                    for (const auto& a : o.args) {
+                        if (type_matches_tag<U64>(a.value)) {
+                            U64 ci = get<U64>(a.value);
+                            if (ci < present.length && present[ci]) {
+                                push_back(args, Evaluated{cv[ci]});
+                            } else {
+                                push_back(args, Evaluated{Constant{Null{}}});
+                            }
+                        } else {
+                            push_back(args, Evaluated{get<Constant>(a.value)});
+                        }
+                    }
+                    EvalContext rc = base_ctx;
+                    rc.table       = &tbl;
+                    rc.row_values  = cv.ptr;
+                    Evaluated res  = call_registered_function(String8(o.name.c_str, o.name.length), {args.ptr, args.length}, rc);
+                    base           = narrow_evaluated(res, o.return_type);
                 } else if constexpr (SameAs<OT, planner::SelectOp::CountStar>) {
                     assert_not_implemented("CountStar reached project_row_via_ops; aggregate path should handle it");
                 }
@@ -2145,6 +2207,20 @@ namespace cql::engine {
                         default_label = default_label + AutoString8(tbl.cols[o.pk_col_indices[ti]].name);
                     }
                     default_label = default_label + AutoString8(")");
+                } else if constexpr (SameAs<OT, planner::SelectOp::FuncCall>) {
+                    out_type      = type::create_basic(o.return_type);
+                    default_label = AutoString8(o.name) + AutoString8("(");
+                    for (U64 ai = 0; ai < o.args.length; ai++) {
+                        if (ai > 0) {
+                            default_label = default_label + AutoString8(", ");
+                        }
+                        if (type_matches_tag<U64>(o.args[ai].value)) {
+                            default_label = default_label + AutoString8(tbl.cols[get<U64>(o.args[ai].value)].name);
+                        } else {
+                            default_label = default_label + AutoString8("?");
+                        }
+                    }
+                    default_label = default_label + AutoString8(")");
                 } else if constexpr (SameAs<OT, planner::SelectOp::CountStar>) {
                     out_type      = type::create_basic(type::Basic::bigint);
                     default_label = AutoString8("count");
@@ -2164,9 +2240,13 @@ namespace cql::engine {
             if (type_matches_tag<planner::SelectOp::TtlOf>(op.value) || type_matches_tag<planner::SelectOp::WritetimeOf>(op.value)) {
                 return true;
             }
-            // @note Token also needs full row materialization (PK column values),
-            // so route through the same projection pipeline.
+            // @note Token and FuncCall both need full row materialization
+            // (Token reads PK columns; FuncCall may take column refs as args).
+            // Route through the same projection pipeline.
             if (type_matches_tag<planner::SelectOp::Token>(op.value)) {
+                return true;
+            }
+            if (type_matches_tag<planner::SelectOp::FuncCall>(op.value)) {
                 return true;
             }
         }
@@ -2202,7 +2282,7 @@ namespace cql::engine {
                     pass           = evaluate_where(sp.filter.predicates, rc);
                 }
                 if (pass) {
-                    push_back(vr.rows, project_row_via_ops(*tbl, sp.projection.ops, row_values, row_present, cell_meta, now));
+                    push_back(vr.rows, project_row_via_ops(*tbl, sp.projection.ops, row_values, row_present, cell_meta, now, ctx));
                 }
                 co_await start.advance(stop);
             }

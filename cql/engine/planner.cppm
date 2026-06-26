@@ -107,14 +107,25 @@ export namespace cql::planner {
         struct Token {
             DynamicArray<U64> pk_col_indices;
         };
+        // Generic registry-backed function call. Args are either a column
+        // reference (resolved per-row) or a pre-evaluated literal Constant.
+        // The evaluator's term registry supplies the implementation.
+        struct FuncCallArg {
+            TaggedUnion<U64, Constant> value;
+        };
+        struct FuncCall {
+            AutoString8               name; // lowercased
+            DynamicArray<FuncCallArg> args;
+            type::Basic               return_type;
+        };
         struct Conversion {
             // applied to the value produced by `value`, in order. `from` is the input type
             // (matches the previous conversion's `to` or the base type for the first step).
             type::Basic from;
             type::Basic to;
         };
-        TaggedUnion<ColumnRef, CountStar, TtlOf, WritetimeOf, Token> value;
-        DynamicArray<Conversion>                                     conversions;
+        TaggedUnion<ColumnRef, CountStar, TtlOf, WritetimeOf, Token, FuncCall> value;
+        DynamicArray<Conversion>                                               conversions;
     };
 
     struct ProjectionPlan {

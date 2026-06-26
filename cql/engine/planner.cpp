@@ -50,6 +50,44 @@ namespace cql::planner {
         return {};
     }
 
+    // Return types for the built-in scalar functions the term registry can
+    // dispatch. Used when a SELECT projection wraps such a function so the
+    // result frame can declare a static column type.
+    struct ScalarFunctionMeta {
+        const char* lower_name;
+        type::Basic return_type;
+    };
+    static constexpr ScalarFunctionMeta kScalarFunctionMeta[] = {
+        {            "uuid",      type::Basic::uuid},
+        {             "now",  type::Basic::timeuuid},
+        { "currenttimeuuid",  type::Basic::timeuuid},
+        {     "mintimeuuid",  type::Basic::timeuuid},
+        {     "maxtimeuuid",  type::Basic::timeuuid},
+        {"currenttimestamp", type::Basic::timestamp},
+        {     "totimestamp", type::Basic::timestamp},
+        {          "dateof", type::Basic::timestamp},
+        { "unixtimestampof",    type::Basic::bigint},
+        { "tounixtimestamp",    type::Basic::bigint},
+        {     "currentdate",      type::Basic::date},
+        {          "todate",      type::Basic::date},
+        {     "currenttime",      type::Basic::time},
+        {      "textasblob",      type::Basic::blob},
+        {       "intasblob",      type::Basic::blob},
+        {    "bigintasblob",      type::Basic::blob},
+        {      "blobastext",      type::Basic::text},
+        {       "blobasint",      type::Basic::int_},
+        {    "blobasbigint",    type::Basic::bigint},
+    };
+    static Optional<type::Basic> scalar_function_return_type(String8 lowercased_name) {
+        for (const auto& e : kScalarFunctionMeta) {
+            String8 candidate{e.lower_name};
+            if (candidate == lowercased_name) {
+                return e.return_type;
+            }
+        }
+        return {};
+    }
+
     // Parse a function name like `bigintasblob` into (from, to) types — the `<T1>As<T2>` pattern.
     static Optional<Pair<type::Basic, type::Basic>> parse_typed_conversion_name(String8 name) {
         for (U64 i = 1; i + 2 < name.length; i++) {
@@ -1318,12 +1356,91 @@ namespace cql::planner {
                             return false;
                         }
                     }
+                    AutoString8 lowered = sel.function_name;
+                    to_lowercase_inplace(lowered);
+                    Optional<type::Basic> ret_opt = scalar_function_return_type(String8(lowered.c_str, lowered.length));
+                    if (!ret_opt) {
+                        plan.result.error   = PlanError::ColumnNotFound;
+                        plan.result.context = AutoString8("Unknown function ") + AutoString8(sel.function_name);
+                        return false;
+                    }
+                    SelectOp::FuncCall fc;
+                    fc.name        = move(lowered);
+                    fc.return_type = *ret_opt;
+                    for (const auto& arg : sel.arguments) {
+                        SelectOp::FuncCallArg fca;
+                        bool                  resolved = visit(arg.value, [&](const auto& av) -> bool {
+                            using AT = RemoveCVRef<decltype(av)>;
+                            if constexpr (SameAs<AT, ColumnName>) {
+                                String8 aname(av.identifier.c_str, av.identifier.length);
+                                for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                                    if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == aname) {
+                                        fca.value = ci;
+                                        return true;
+                                    }
+                                }
+                                plan.result.error   = PlanError::ColumnNotFound;
+                                plan.result.context = AutoString8(av.identifier);
+                                return false;
+                            } else if constexpr (SameAs<AT, Term>) {
+                                Evaluated e = evaluate(av, ctx);
+                                if (!type_matches_tag<Constant>(e.value)) {
+                                    plan.result.error   = PlanError::ColumnNotFound;
+                                    plan.result.context = AutoString8("Function argument must be a column reference or a constant");
+                                    return false;
+                                }
+                                fca.value = get<Constant>(e.value);
+                                return true;
+                            } else {
+                                plan.result.error   = PlanError::ColumnNotFound;
+                                plan.result.context = AutoString8("Nested function/cast arguments are not yet supported");
+                                return false;
+                            }
+                        });
+                        if (!resolved) {
+                            return false;
+                        }
+                        push_back(fc.args, move(fca));
+                    }
+                    push_back(plan.projection.ops, SelectOp{move(fc), {}});
+                    return true;
+                } else if constexpr (SameAs<ST, Term>) {
                     plan.result.error   = PlanError::ColumnNotFound;
-                    plan.result.context = AutoString8("Unknown function ") + AutoString8(sel.function_name);
+                    plan.result.context = AutoString8("Bare term expressions in SELECT clause are not supported");
+                    return false;
+                } else if constexpr (SameAs<ST, Select::Cast>) {
+                    if (!type_matches_tag<ColumnName>(sel.column.value)) {
+                        plan.result.error   = PlanError::ColumnNotFound;
+                        plan.result.context = AutoString8("CAST currently only supports a column reference as its argument");
+                        return false;
+                    }
+                    if (!type_matches_tag<type::Basic>(sel.to.value)) {
+                        plan.result.error   = PlanError::ColumnNotFound;
+                        plan.result.context = AutoString8("CAST target must be a basic type");
+                        return false;
+                    }
+                    const auto& cn = get<ColumnName>(sel.column.value);
+                    String8     name(cn.identifier.c_str, cn.identifier.length);
+                    for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                        if (tbl.cols[ci].tombstone || tbl.cols[ci].name != name) {
+                            continue;
+                        }
+                        if (!type_matches_tag<type::Basic>(tbl.cols[ci].type.value)) {
+                            plan.result.error   = PlanError::ColumnNotFound;
+                            plan.result.context = AutoString8("CAST argument must be a basic-typed column");
+                            return false;
+                        }
+                        SelectOp op{SelectOp::ColumnRef{ci}, {}};
+                        push_back(op.conversions, SelectOp::Conversion{get<type::Basic>(tbl.cols[ci].type.value), get<type::Basic>(sel.to.value)});
+                        push_back(plan.projection.ops, move(op));
+                        return true;
+                    }
+                    plan.result.error   = PlanError::ColumnNotFound;
+                    plan.result.context = AutoString8(cn.identifier);
                     return false;
                 } else {
-                    assert_not_implemented("SELECT clause type (cast) is not implemented");
-                    return true;
+                    static_assert(!SameAs<ST, ST>, "missing Select::Selector variant");
+                    return false;
                 }
             });
             if (!ok) {

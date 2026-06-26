@@ -361,6 +361,18 @@ namespace cql {
         return nullptr;
     }
 
+    Evaluated call_registered_function(String8 name, TArrayView<const Evaluated> args, const EvalContext& ctx) {
+        FunctionEntry* fn = find_function(AutoString8(name));
+        if (fn == nullptr) {
+            return Evaluated{Constant{Null{}}};
+        }
+        return fn->fn(args, ctx);
+    }
+
+    bool registered_function_exists(String8 name) {
+        return find_function(AutoString8(name)) != nullptr;
+    }
+
     // ========================================================================
     // bind marker resolution
     // ========================================================================

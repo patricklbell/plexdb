@@ -35,6 +35,14 @@ export namespace cql {
 
     bool evaluate_where(TArrayView<const WhereClause::Relation> predicates, const EvalContext& ctx);
 
+    // Invoke a built-in function by name (case-insensitive) with pre-evaluated
+    // arguments. Returns Evaluated{Constant{Null{}}} when no registered function
+    // matches `name`. The lookup is the same registry the term evaluator uses
+    // for FunctionCall terms, so SELECT-projection sites can route generic
+    // function calls through it.
+    Evaluated call_registered_function(String8 name, TArrayView<const Evaluated> args, const EvalContext& ctx);
+    bool      registered_function_exists(String8 name);
+
     void number_bind_markers(Statement& stmt);
 }
 
