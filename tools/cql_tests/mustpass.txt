@@ -183,3 +183,4 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_te
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testTokenFctRejectsInvalidColumnName
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testTokenFctRejectsInvalidColumnType
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testTokenFctRejectsInvalidColumnCount
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testFilteringOnClusteringColumns
