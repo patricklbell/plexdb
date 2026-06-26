@@ -133,6 +133,9 @@ export namespace cql::engine {
     coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Term>&& bound_values);
     coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values);
 
+    // Substitute positional bind markers in `statement` with values from `bound_values`.
+    void bind_values_to_statement(Statement& statement, DynamicArray<Term>& bound_values);
+
     // Per-connection-keyspace overloads: use when multiple connections share an engine
     coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement, AutoString8& current_keyspace);
     coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Term>&& bound_values, AutoString8& current_keyspace);

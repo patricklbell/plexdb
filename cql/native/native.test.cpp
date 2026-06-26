@@ -1970,3 +1970,79 @@ CQL_NATIVE_TEST_CASE("ORDER BY merges across PK IN partitions", "[cql.native][or
     });
     co_return;
 }
+
+CQL_NATIVE_TEST_CASE("BATCH opcode with inline and prepared children", "[cql.native][batch]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE bks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE bks.t (k int PRIMARY KEY, v text);").opcode == op::RESULT);
+
+        // BATCH with two inline (kind=0) children, no bind values.
+        {
+            DynamicArray<U8> b;
+            append_u8(b, 0);     // LOGGED
+            append_be_u16(b, 2); // 2 queries
+            append_u8(b, 0);     // kind=0 inline
+            append_cql_long_string(b, "INSERT INTO bks.t (k, v) VALUES (1, 'one');");
+            append_be_u16(b, 0); // 0 values
+            append_u8(b, 0);     // kind=0 inline
+            append_cql_long_string(b, "INSERT INTO bks.t (k, v) VALUES (2, 'two');");
+            append_be_u16(b, 0);      // 0 values
+            append_be_u16(b, 0x0001); // consistency = ONE
+            append_u8(b, 0);          // flags
+            prepend_v4_header(b, op::BATCH, 10);
+            send_frame(client, b);
+            Frame fr = recv_frame(client);
+            CHECK(fr.opcode == op::RESULT);
+            CHECK(result_kind(fr) == result::VOID);
+        }
+
+        // BATCH with a prepared (kind=1) child carrying positional binds.
+        {
+            Frame prep = send_prepare(client, "UPDATE bks.t SET v = ? WHERE k = ?", 11);
+            CHECK(result_kind(prep) == result::PREPARED);
+            TArrayView<const U8> pid = read_prepared_id(prep);
+            REQUIRE(pid.length == 8);
+
+            DynamicArray<U8> b;
+            append_u8(b, 1); // UNLOGGED (BATCH child kinds are not constrained by this)
+            append_be_u16(b, 1);
+            append_u8(b, 1); // kind=1 prepared id
+            append_cql_short_bytes(b, pid.ptr, U16(pid.length));
+            append_be_u16(b, 2); // 2 bind values
+            append_cql_bind_str(b, "updated-one");
+            append_cql_bind_s32(b, 1);
+            append_be_u16(b, 0x0001);
+            append_u8(b, 0);
+            prepend_v4_header(b, op::BATCH, 12);
+            send_frame(client, b);
+            Frame fr = recv_frame(client);
+            CHECK(fr.opcode == op::RESULT);
+            CHECK(result_kind(fr) == result::VOID);
+        }
+
+        Frame sel = send_query(client, "SELECT * FROM bks.t;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "updated-one"));
+        CHECK(body_contains(sel, "two"));
+        CHECK(!body_contains(sel, "'one'")); // overwritten by the prepared UPDATE
+
+        // A SELECT child inside BATCH is rejected.
+        {
+            DynamicArray<U8> b;
+            append_u8(b, 0);
+            append_be_u16(b, 1);
+            append_u8(b, 0);
+            append_cql_long_string(b, "SELECT * FROM bks.t;");
+            append_be_u16(b, 0);
+            append_be_u16(b, 0x0001);
+            append_u8(b, 0);
+            prepend_v4_header(b, op::BATCH, 13);
+            send_frame(client, b);
+            Frame fr = recv_frame(client);
+            CHECK(fr.opcode == op::ERROR);
+        }
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}

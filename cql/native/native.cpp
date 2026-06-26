@@ -1141,7 +1141,159 @@ namespace cql::native {
             } break;
 
             case op_codes::BATCH: {
-                assert_true_not_implemented(false, "BATCH not implemented");
+                S64  t0           = os::monotonic_us();
+                auto send_invalid = [&](String8 msg) -> coroutine::Task<void> {
+                    Frame frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
+                    append_error_body(frame, engine::ExecutionStatus::Invalid, msg);
+                    co_await send_native_frame<Version, Compressed>(frame);
+                };
+
+                const U8* p = body;
+                if (p + 3 > body_end) {
+                    co_await send_invalid("Truncated BATCH frame");
+                    cql::log::db_operation_duration(os::monotonic_us() - t0);
+                    break;
+                }
+                U8 batch_type_byte = *p++;
+                if (batch_type_byte > 2) {
+                    co_await send_invalid("Invalid BATCH type");
+                    cql::log::db_operation_duration(os::monotonic_us() - t0);
+                    break;
+                }
+                Batch batch{};
+                batch.kind = batch_type_byte == 0 ? Batch::Kind::LOGGED
+                           : batch_type_byte == 1 ? Batch::Kind::UNLOGGED
+                                                  : Batch::Kind::COUNTER;
+
+                U16 n_queries = read_be_u16(p);
+                p += 2;
+
+                bool fatal = false;
+                for (U16 i = 0; i < n_queries && !fatal; i++) {
+                    if (p + 1 > body_end) {
+                        co_await send_invalid("Truncated BATCH child kind");
+                        fatal = true;
+                        break;
+                    }
+                    U8 kind_byte = *p++;
+
+                    Optional<Statement>                    child_opt;
+                    DynamicArray<engine::BindVariableSpec> bind_specs;
+                    if (kind_byte == 0) {
+                        String8 query = read_cql_long_string(p, body_end);
+                        if (auto specific_err = parsers::check_specific_errors(query)) {
+                            co_await send_invalid(*specific_err);
+                            fatal = true;
+                            break;
+                        }
+                        auto parsed = parsers::parse(query);
+                        if (!parsed) {
+                            co_await send_invalid("Failed to parse CQL in BATCH child");
+                            fatal = true;
+                            break;
+                        }
+                        bind_specs = engine::collect_bind_variables(engine, *parsed, String8(conn_keyspace));
+                        child_opt  = move(*parsed);
+                    } else if (kind_byte == 1) {
+                        const U8* id_data     = nullptr;
+                        U16       id_len      = read_cql_short_bytes(p, body_end, id_data);
+                        U64       prepared_id = 0;
+                        for (U16 j = 0; j < id_len && j < 8; j++) {
+                            prepared_id = (prepared_id << 8) | U64(id_data[j]);
+                        }
+                        auto* entry = engine::try_get_prepared(engine, prepared_id);
+                        if (entry == nullptr) {
+                            co_await send_invalid("Prepared statement not found (unprepared)");
+                            fatal = true;
+                            break;
+                        }
+                        auto parsed = parsers::parse(String8(entry->query_string));
+                        if (!parsed) {
+                            co_await send_invalid("Failed to re-parse prepared BATCH child");
+                            fatal = true;
+                            break;
+                        }
+                        bind_specs = entry->bind_variables;
+                        child_opt  = move(*parsed);
+                    } else {
+                        co_await send_invalid("Invalid BATCH child kind");
+                        fatal = true;
+                        break;
+                    }
+
+                    if (p + 2 > body_end) {
+                        co_await send_invalid("Truncated BATCH child value count");
+                        fatal = true;
+                        break;
+                    }
+                    U16 n_values = read_be_u16(p);
+                    p += 2;
+                    DynamicArray<Term> bound;
+                    for (U16 vi = 0; vi < n_values; vi++) {
+                        type::Type dtype = vi < bind_specs.length ? bind_specs[vi].type : type::create_basic(type::Basic::blob);
+                        push_back(bound, read_cql_value_as_term(p, body_end, dtype));
+                    }
+
+                    engine::bind_values_to_statement(*child_opt, bound);
+
+                    Batch::ModificationStatement mod;
+                    bool                         is_mutation = visit(child_opt->value, [&](auto& s) -> bool {
+                        using ST = RemoveCVRef<decltype(s)>;
+                        if constexpr (SameAs<ST, Insert> || SameAs<ST, Update> || SameAs<ST, Delete>) {
+                            mod.value = move(s);
+                            return true;
+                        } else {
+                            return false;
+                        }
+                    });
+                    if (!is_mutation) {
+                        co_await send_invalid("BATCH children must be INSERT, UPDATE, or DELETE");
+                        fatal = true;
+                        break;
+                    }
+                    push_back(batch.statements, move(mod));
+                }
+                if (fatal) {
+                    cql::log::db_operation_duration(os::monotonic_us() - t0);
+                    break;
+                }
+
+                if (p + 2 <= body_end) {
+                    p += 2; // consistency [short]
+                }
+                U32 batch_flags = 0;
+                if constexpr (Version >= 5) {
+                    if (p + 4 <= body_end) {
+                        batch_flags = U32(read_be_s32(p));
+                        p += 4;
+                    }
+                } else {
+                    if (p + 1 <= body_end) {
+                        batch_flags = U32(*p++);
+                    }
+                }
+                if ((batch_flags & 0x10u) && p + 2 <= body_end) {
+                    p += 2; // serial_consistency [short]
+                }
+                if ((batch_flags & 0x20u) && p + 8 <= body_end) {
+                    p += 8; // default_timestamp [long]
+                }
+                if constexpr (Version >= 5) {
+                    if ((batch_flags & 0x0080u) && p < body_end) {
+                        (void)read_cql_string(p, body_end); // keyspace
+                    }
+                    if ((batch_flags & 0x0100u) && p + 4 <= body_end) {
+                        p += 4; // now_in_seconds
+                    }
+                }
+
+                Statement stmt;
+                stmt.value                     = move(batch);
+                engine::ExecutionResult result = co_await engine::execute(engine, stmt, conn_keyspace);
+                if (!co_await send_error_if_failed<Version, Compressed>(result, &req, stream)) {
+                    co_await send_execution_result<Version, Compressed>(result, engine, &req, stream);
+                }
+                cql::log::db_operation_duration(os::monotonic_us() - t0);
             } break;
 
             default: {

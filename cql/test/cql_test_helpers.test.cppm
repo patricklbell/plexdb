@@ -35,6 +35,7 @@ export namespace cql::test {
         constexpr U8 RESULT    = 0x08;
         constexpr U8 PREPARE   = 0x09;
         constexpr U8 EXECUTE   = 0x0A;
+        constexpr U8 BATCH     = 0x0D;
     }
 
     namespace result {
