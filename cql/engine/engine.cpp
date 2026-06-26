@@ -1599,8 +1599,13 @@ namespace cql::engine {
                 r.message         = String8(r.message_storage.c_str, r.message_storage.length);
                 return r;
             }
-            case planner::PlanError::TypeMismatch:
-                return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Type mismatch for key column"};
+            case planner::PlanError::TypeMismatch: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = result.context.length > 0 ? AutoString8(result.context) : AutoString8("Type mismatch for key column");
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
             case planner::PlanError::TokenFunctionInMutation:
                 return ExecutionResult{
                     .status  = ExecutionStatus::Invalid,

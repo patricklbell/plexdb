@@ -373,6 +373,41 @@ namespace cql {
         return find_function(AutoString8(name)) != nullptr;
     }
 
+    template<typename T>
+    static Optional<type::Basic> outer_type_hint_basic_impl(const T& term) {
+        return visit(term.value, [](const auto& v) -> Optional<type::Basic> {
+            using TT = Decay<decltype(v)>;
+            if constexpr (SameAs<TT, TypeHint>) {
+                if (type_matches_tag<type::Basic>(v.type.value)) {
+                    return Optional<type::Basic>{get<type::Basic>(v.type.value)};
+                }
+            }
+            return Optional<type::Basic>{};
+        });
+    }
+
+    Optional<type::Basic> outer_type_hint_basic(const Term& term) {
+        return outer_type_hint_basic_impl(term);
+    }
+    Optional<type::Basic> outer_type_hint_basic(const TermWithIdentifiers& twi) {
+        return outer_type_hint_basic_impl(twi);
+    }
+
+    bool type_compatible_for_assignment(type::Basic from, type::Basic to) {
+        if (from == to) {
+            return true;
+        }
+        // ascii widens to text / varchar (every ASCII byte is valid UTF-8).
+        if ((to == type::Basic::text || to == type::Basic::varchar) && from == type::Basic::ascii) {
+            return true;
+        }
+        // text and varchar are CQL synonyms.
+        if ((to == type::Basic::text && from == type::Basic::varchar) || (to == type::Basic::varchar && from == type::Basic::text)) {
+            return true;
+        }
+        return false;
+    }
+
     // ========================================================================
     // bind marker resolution
     // ========================================================================

@@ -1613,6 +1613,21 @@ namespace cql::planner {
             bool                  is_counter    = col_is_counter(col);
             bool                  is_collection = col_is_collection(col);
 
+            // Reject incompatible TypeHints on the RHS so e.g. `SET d = (int)3`
+            // when d is double surfaces a type error instead of silently writing.
+            if (type_matches_tag<type::Basic>(col.type.value)) {
+                if (auto hint = outer_type_hint_basic(assign.value)) {
+                    type::Basic dest = get<type::Basic>(col.type.value);
+                    if (!type_compatible_for_assignment(*hint, dest)) {
+                        plan.result.error   = PlanError::TypeMismatch;
+                        plan.result.context = AutoString8("Cannot assign value of type ") + AutoString8(to_str(*hint))
+                                            + AutoString8(" to column ") + AutoString8(col.name)
+                                            + AutoString8(" of type ") + AutoString8(to_str(dest));
+                        return plan;
+                    }
+                }
+            }
+
             if (assign.target.access) {
                 if (!is_collection) {
                     plan.result.error   = PlanError::InvalidSubscriptTarget;
