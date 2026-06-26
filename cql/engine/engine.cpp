@@ -340,13 +340,25 @@ namespace cql::engine {
         return col_order;
     }
 
-    // Build the column-metadata header for a VirtualRows result.
-    static VirtualRows make_virtual_rows_shell(const schema::Table& tbl, String8 ks_name, String8 table_name, const DynamicArray<U64>& col_order) {
+    // Build the column-metadata header for a VirtualRows result. When `aliases`
+    // is populated and aliases[i] holds a value, that label overrides the
+    // underlying schema column name. The owned alias bytes live in
+    // vr.column_name_storage so the String8 view stays valid for the result.
+    static VirtualRows make_virtual_rows_shell(const schema::Table& tbl, String8 ks_name, String8 table_name, const DynamicArray<U64>& col_order, const DynamicArray<Optional<AutoString8>>& aliases = {}) {
         VirtualRows vr;
         vr.keyspace = AutoString8(ks_name);
         vr.table    = AutoString8(table_name);
-        for (U64 ci : col_order) {
-            push_back(vr.columns, VirtualColumn{tbl.cols[ci].name, tbl.cols[ci].type});
+        reserve(vr.column_name_storage, col_order.length);
+        for (U64 i = 0; i < col_order.length; i++) {
+            U64        ci   = col_order[i];
+            type::Type type = tbl.cols[ci].type;
+            if (i < aliases.length && aliases[i].has_value()) {
+                push_back(vr.column_name_storage, AutoString8(*aliases[i]));
+                const auto& s = vr.column_name_storage[vr.column_name_storage.length - 1];
+                push_back(vr.columns, VirtualColumn{String8(s.c_str, s.length), type});
+            } else {
+                push_back(vr.columns, VirtualColumn{tbl.cols[ci].name, type});
+            }
         }
         return vr;
     }
@@ -1677,6 +1689,7 @@ namespace cql::engine {
     static coroutine::Task<ExecutionResult> execute_select_index(
         Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
         const planner::SelectPlan& sp, DynamicArray<U64> select_col_indices,
+        DynamicArray<Optional<AutoString8>> select_col_aliases,
         U64 limit_count, EvalContext ctx
     ) {
         schema::Index* active_idx = nullptr;
@@ -1692,7 +1705,7 @@ namespace cql::engine {
 
         const type::Type& idx_col_type = tbl->cols[active_idx->col_idx].type;
         DynamicArray<U64> col_order    = build_select_col_order(*tbl, select_col_indices);
-        VirtualRows       vr           = make_virtual_rows_shell(*tbl, ks_name, table_name, col_order);
+        VirtualRows       vr           = make_virtual_rows_shell(*tbl, ks_name, table_name, col_order, select_col_aliases);
 
         const DynamicArray<U8>& prefix      = sp.locator.index_key_prefix;
         auto                    prefix_view = TArrayView<const U8, U16>(prefix.ptr, static_cast<U16>(prefix.length));
@@ -1776,10 +1789,11 @@ namespace cql::engine {
     static coroutine::Task<ExecutionResult> execute_select_pk_in_ordered(
         Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
         const planner::SelectPlan& sp, DynamicArray<U64> select_col_indices,
+        DynamicArray<Optional<AutoString8>> select_col_aliases,
         U64 limit_count, EvalContext ctx
     ) {
         DynamicArray<U64> col_order = build_select_col_order(*tbl, select_col_indices);
-        VirtualRows       vr        = make_virtual_rows_shell(*tbl, ks_name, table_name, col_order);
+        VirtualRows       vr        = make_virtual_rows_shell(*tbl, ks_name, table_name, col_order, select_col_aliases);
 
         struct CollectedRow {
             DynamicArray<U8>          ck_bytes;
@@ -1888,10 +1902,12 @@ namespace cql::engine {
     static coroutine::Task<ExecutionResult> execute_select_pk_in(
         Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
         const Select& stmt, const planner::SelectPlan& sp,
-        DynamicArray<U64> select_col_indices, U64 limit_count, EvalContext ctx
+        DynamicArray<U64>                   select_col_indices,
+        DynamicArray<Optional<AutoString8>> select_col_aliases,
+        U64 limit_count, EvalContext ctx
     ) {
         DynamicArray<U64> col_order   = build_select_col_order(*tbl, select_col_indices);
-        VirtualRows       vr          = make_virtual_rows_shell(*tbl, ks_name, table_name, col_order);
+        VirtualRows       vr          = make_virtual_rows_shell(*tbl, ks_name, table_name, col_order, select_col_aliases);
         bool              is_distinct = static_cast<bool>(stmt.transform);
         S64               now_unix_ms = S64(os::unix_ms_now());
 
@@ -2978,22 +2994,35 @@ namespace cql::engine {
                 }
 
                 // Extract column indices for native layer from projection ops.
-                DynamicArray<U64> select_col_indices;
-                for (const auto& op : sp.projection.ops) {
-                    if (type_matches_tag<planner::SelectOp::ColumnRef>(op.value)) {
-                        push_back(select_col_indices, get<planner::SelectOp::ColumnRef>(op.value).col_idx);
+                DynamicArray<U64>                   select_col_indices;
+                DynamicArray<Optional<AutoString8>> select_col_aliases;
+                {
+                    // @note projection-op index → SELECT-clause index. In this raw-Rows path
+                    // every clause is a plain ColumnName (Function / Cast clauses route to the
+                    // VirtualRows path), so each ColumnRef op corresponds 1:1 to a clause.
+                    U64 clause_idx = 0;
+                    for (const auto& op : sp.projection.ops) {
+                        if (type_matches_tag<planner::SelectOp::ColumnRef>(op.value)) {
+                            push_back(select_col_indices, get<planner::SelectOp::ColumnRef>(op.value).col_idx);
+                            if (clause_idx < stmt.select.clauses.length && stmt.select.clauses[clause_idx].as.has_value()) {
+                                push_back(select_col_aliases, Optional<AutoString8>{*stmt.select.clauses[clause_idx].as});
+                            } else {
+                                push_back(select_col_aliases, Optional<AutoString8>{});
+                            }
+                        }
+                        clause_idx++;
                     }
                 }
 
                 if (sp.locator.index_col_idx) {
                     co_return co_await execute_select_index(
-                        engine, tbl, ks_name, stmt.from.table_name, sp, move(select_col_indices), limit_count, ctx
+                        engine, tbl, ks_name, stmt.from.table_name, sp, move(select_col_indices), move(select_col_aliases), limit_count, ctx
                     );
                 }
 
                 if (stmt.order_by && sp.locator.pk.in_values.length > 0) {
                     co_return co_await execute_select_pk_in_ordered(
-                        engine, tbl, ks_name, stmt.from.table_name, sp, move(select_col_indices), limit_count, ctx
+                        engine, tbl, ks_name, stmt.from.table_name, sp, move(select_col_indices), move(select_col_aliases), limit_count, ctx
                     );
                 }
 
@@ -3002,7 +3031,7 @@ namespace cql::engine {
                 // has_in with empty in_values means an empty IN list (zero rows).
                 if (sp.locator.pk.in_values.length > 0 || sp.locator.pk.has_in) {
                     co_return co_await execute_select_pk_in(
-                        engine, tbl, ks_name, stmt.from.table_name, stmt, sp, move(select_col_indices), limit_count, ctx
+                        engine, tbl, ks_name, stmt.from.table_name, stmt, sp, move(select_col_indices), move(select_col_aliases), limit_count, ctx
                     );
                 }
 
@@ -3017,6 +3046,7 @@ namespace cql::engine {
                     .rows               = move(row_range),
                     .resolved_table     = tbl,
                     .select_col_indices = move(select_col_indices),
+                    .select_col_aliases = move(select_col_aliases),
                     .filter_predicates  = move(sp.filter.predicates),
                     .filter_ctx         = ctx,
                 };

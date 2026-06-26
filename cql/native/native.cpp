@@ -661,8 +661,13 @@ namespace cql::native {
         append_cql_string(f, result.table);
 
         for (U64 i = 0; i < col_count; i++) {
-            U64 ci = effective_cols[i];
-            append_cql_string(f, tbl->cols[ci].name);
+            U64     ci    = effective_cols[i];
+            String8 label = tbl->cols[ci].name;
+            if (has_select && i < result.select_col_aliases.length && result.select_col_aliases[i].has_value()) {
+                const auto& alias = *result.select_col_aliases[i];
+                label             = String8(alias.c_str, alias.length);
+            }
+            append_cql_string(f, label);
             append_type_codes_option(f, tbl->cols[ci].type);
         }
 

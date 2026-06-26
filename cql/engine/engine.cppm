@@ -117,6 +117,10 @@ export namespace cql::engine {
 
         const schema::Table* resolved_table     = nullptr;
         DynamicArray<U64>    select_col_indices = {};
+        // Parallel to select_col_indices when populated; an alias overrides the
+        // schema column name in the result frame's column spec. Empty Optional
+        // means "no alias — use the underlying column name".
+        DynamicArray<Optional<AutoString8>> select_col_aliases = {};
 
         DynamicArray<cql::WhereClause::Relation> filter_predicates = {};
         cql::EvalContext                         filter_ctx        = {};
