@@ -17,13 +17,13 @@ esac
 
 if $all_files; then
     files=$(git ls-files \
-        | grep -E '\.(cpp|cppm|h)$' \
-        | grep -Ev '(third_party/stb|third_party/murmur3|/tools/)' \
+        | grep -E '\.(cpp|cppm|h|hpp)$' \
+        | grep -Ev '(third_party/|/tools/)' \
         || true)
 else
     files=$(git diff --cached --name-only --diff-filter=ACM \
-        | grep -E '\.(cpp|cppm|h)$' \
-        | grep -Ev '(third_party/stb|third_party/murmur3|/tools/)' \
+        | grep -E '\.(cpp|cppm|h|hpp)$' \
+        | grep -Ev '(third_party/|/tools/)' \
         || true)
 fi
 

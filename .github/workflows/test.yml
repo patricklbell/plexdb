@@ -19,11 +19,9 @@ jobs:
         run: |
           find . \
             -not -path '*/build/*' \
-            -not -path '*/third_party/stb/*' \
-            -not -path '*/third_party/murmur3/*' \
+            -not -path '*/third_party/*' \
             -not -path '*/tools/*' \
-            -not -path '*/docs/*' \
-            \( -name '*.cpp' -o -name '*.cppm' -o -name '*.h' \) \
+            \( -name '*.cpp' -o -name '*.cppm' -o -name '*.h' -o -name '*.hpp' \) \
             -print0 \
             | xargs -0 clang-format-19 --dry-run --Werror
 
