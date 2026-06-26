@@ -156,16 +156,19 @@ namespace cql::key {
     // Append one key component.
     // Fixed-width types in composite keys: prepend a 2-byte big-endian length (constant, so ordering is unaffected).
     // Variable-length types in composite keys: use escaped-terminated encoding to preserve ordering.
-    // @note `direction == Sort::DESC` inverts the value bytes (not the length prefix) so that
-    // forward lex iteration produces the value in descending logical order. Variable-width
-    // types assert on DESC — their escape/terminator scheme cannot be byte-inverted in place.
+    // @note `direction == Sort::DESC` inverts every value byte (and, for variable-width
+    // types, the escape and terminator bytes as well) so forward lex iteration produces
+    // the value in descending logical order. The 2-byte length prefix is not inverted —
+    // for fixed-width components the length is constant and inverting it would not change
+    // any pair's relative order.
     static void append_component(DynamicArray<U8>& out, const Evaluated& eval, type::Basic dtype, bool is_composite, Sort direction = Sort::ASC) {
         const Constant& c           = get<Constant>(eval.value);
         U64             value_start = out.length;
         switch (dtype) {
             case type::Basic::bigint:
             case type::Basic::timestamp:
-            case type::Basic::counter: {
+            case type::Basic::counter:
+            case type::Basic::time: {
                 if (is_composite) {
                     append_u16_be(out, 8);
                 }
@@ -173,7 +176,8 @@ namespace cql::key {
                 append_s64_be(out, eval_as_s64(eval));
                 break;
             }
-            case type::Basic::int_: {
+            case type::Basic::int_:
+            case type::Basic::date: {
                 if (is_composite) {
                     append_u16_be(out, 4);
                 }
@@ -288,7 +292,8 @@ namespace cql::key {
                 // Fixed-width composite components: 2-byte length prefix + data
                 case type::Basic::bigint:
                 case type::Basic::timestamp:
-                case type::Basic::counter: {
+                case type::Basic::counter:
+                case type::Basic::time: {
                     *pos += 2;
                     U64 bits = 0;
                     for (int b = 0; b < 8; b++) {
@@ -297,7 +302,8 @@ namespace cql::key {
                     *pos += 8;
                     return ColumnValue{static_cast<S64>(bits ^ 0x8000000000000000ULL)};
                 }
-                case type::Basic::int_: {
+                case type::Basic::int_:
+                case type::Basic::date: {
                     *pos += 2;
                     U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) | (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
                     *pos += 4;
@@ -408,7 +414,8 @@ namespace cql::key {
             switch (dtype) {
                 case type::Basic::bigint:
                 case type::Basic::timestamp:
-                case type::Basic::counter: {
+                case type::Basic::counter:
+                case type::Basic::time: {
                     U64 bits = 0;
                     for (int b = 0; b < 8; b++) {
                         bits = (bits << 8) | (src[*pos + b] ^ m);
@@ -416,7 +423,8 @@ namespace cql::key {
                     *pos += 8;
                     return ColumnValue{static_cast<S64>(bits ^ 0x8000000000000000ULL)};
                 }
-                case type::Basic::int_: {
+                case type::Basic::int_:
+                case type::Basic::date: {
                     U32 bits = (U32(src[*pos] ^ m) << 24) | (U32(src[*pos + 1] ^ m) << 16) | (U32(src[*pos + 2] ^ m) << 8) | U32(src[*pos + 3] ^ m);
                     *pos += 4;
                     return ColumnValue{static_cast<S32>(bits ^ 0x80000000U)};
@@ -506,9 +514,11 @@ namespace cql::key {
             case type::Basic::bigint:
             case type::Basic::timestamp:
             case type::Basic::counter:
+            case type::Basic::time:
                 c.value = get<S64>(cv);
                 break;
             case type::Basic::int_:
+            case type::Basic::date:
                 c.value = S64(get<S32>(cv));
                 break;
             case type::Basic::smallint:
@@ -570,9 +580,11 @@ namespace cql::key {
             case type::Basic::bigint:
             case type::Basic::timestamp:
             case type::Basic::counter:
+            case type::Basic::time:
                 append_be(val, static_cast<U64>(eval_as_s64(eval)), 8);
                 break;
             case type::Basic::int_:
+            case type::Basic::date:
                 append_be(val, U64(U32(static_cast<S32>(eval_as_s64(eval)))), 4);
                 break;
             case type::Basic::smallint:
@@ -760,9 +772,11 @@ export namespace cql::key {
                 case type::Basic::bigint:
                 case type::Basic::timestamp:
                 case type::Basic::counter:
+                case type::Basic::time:
                 case type::Basic::double_:
                     return 8;
                 case type::Basic::int_:
+                case type::Basic::date:
                 case type::Basic::float_:
                     return 4;
                 case type::Basic::smallint:
