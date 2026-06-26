@@ -178,3 +178,8 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/update_te
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/update_test.py::testUpdate[False]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/update_test.py::testUpdate[True]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/use_test.py::testUseStatementWithBindVariable
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testTokenRange
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testTokenFctAcceptsValidArguments
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testTokenFctRejectsInvalidColumnName
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testTokenFctRejectsInvalidColumnType
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testTokenFctRejectsInvalidColumnCount

@@ -45,7 +45,7 @@ and lex-order equivalence. Re-run `testIndexQueryWithCompositePartitionKey`,
 `testTokenRange`, `testCompositeRowKey`, `testTruncate`, and a sample of
 `select_test.py` multi-partition cases.
 
-**Estimated impact.** ~15–20 unique tests cleared from the wrong-rows bucket,
+**Estimated impact.** ~30 unique tests cleared from the wrong-rows bucket,
 plus removes the `Unknown function token()` term-side hits and unblocks the
 4 `testTokenFct*` tests.
 
@@ -53,60 +53,50 @@ plus removes the `Unknown function token()` term-side hits and unblocks the
 
 ### Phase 2 — Scalar function dispatch (term-evaluation path)
 
-**Why now.** A large cluster of failures all reduce to one missing piece:
-a function registry that resolves a name + argument types to an evaluator.
-The existing SELECT-only path (`parse_typed_conversion_name`) only covers
-`<T>As<U>` casts; everything else dies in one of two ways: an
-`assert_not_implemented` for `Select::Function`/`Select::Cast`, or an
-`Undefined column name Unknown function <fn>` from the term path.
+**Status.** Partially landed. The term-evaluation registry already existed in
+`evaluator.cpp` (`builtin_function_registry()`), so the Phase 2 work narrows
+to: real implementations of the previously-stub conversions and `token(...)`
+as a registry entry. Remaining: planner fallback for SELECT projections that
+name a registry function (e.g. `SELECT uuid()`), and `Select::Cast` wiring
+(still asserts). Term-position `TypeHint` validation (`UPDATE SET t = (text)X`
+type-mismatch checks needed for `testTypeCasts`) is also outstanding.
 
-Tests blocked: `testDateCompatibility`, `testTimestampTTL`,
-`testInsertWithUnset` (uses `blobAsInt(?)`), `testTypeCasts`, and several
-others that wrap `writetime()` / `ttl()` in `blobAsBigint(bigintAsBlob(...))`.
+**Done.**
+- `blobAsInt` / `blobAsBigint` decode bytes (previously stubbed to `Null`).
+- `token(...)` registered in the evaluator registry, computes the Murmur3
+  partition token from arg values using the partition key's wire encoding;
+  unblocks `testTokenRange` and the `token(<literal>) <op> token(col)` term shape.
+- Token planner errors aligned with upstream wording — unblocks the three
+  `testTokenFct*` rejection tests.
 
-**Scope.**
-- Registry keyed by `(lowercase_name, arg_dtypes)` returning a typed evaluator
-  callback.
-- Term-evaluation entry point in `evaluator.cpp` so functions work in
-  `VALUES`, `WHERE`, and bound subexpressions — not just SELECT.
-- Wire the `Select::Cast` planner branch through the same dispatch so it stops
-  asserting.
-- Initial built-ins: `blobAsInt`, `blobAsBigint`, `intAsBlob`, `bigintAsBlob`,
-  `dateof`, `unixtimestampof`, `toUnixTimestamp`, `now`, `currentTimestamp`,
-  `currentTimeUUID`, `uuid`, plus the symmetric `<T>As<U>` set already covered
-  in the SELECT path. `token()` lands in Phase 1.
-
-**Files.** `cql/engine/planner.cpp`, `cql/engine/evaluator.{cpp,cppm}`, new
-`cql/engine/functions.{cpp,cppm}`.
-
-**Estimated impact.** ~12 unique tests directly; unblocks `testTimestampTTL`
-and the remaining TTL paths called out in the status doc.
+**Files.** `cql/engine/evaluator.cpp`, `cql/engine/key.cppm`,
+`cql/engine/planner.cpp`.
 
 ---
 
 ### Phase 3 — Wire-protocol BATCH opcode
 
-**Why.** Status doc reports 12 BATCH "not implemented" fires. The engine-side
-BATCH executor already exists at `engine.cpp:3428`; the real block is the
-native-protocol opcode handler at `cql/native/native.cpp:1110`. This is pure
-frame parsing plus a `Batch` construct + dispatch.
+**Status.** Landed. The native-protocol BATCH frame (CQL v4 and v5) is parsed
+inline: type byte, query count, then per child `<kind><string-or-id><n_values><values>`,
+then consistency + flags + optional serial CL / default timestamp / keyspace
+(v5) / now_in_seconds (v5). Per-child positional binds are applied via
+`engine::bind_values_to_statement` (newly exported), and the parsed
+mutations are packaged into a `Batch{}` Statement and dispatched through the
+existing `engine::execute`. Conditional children continue to be rejected by
+the engine's batch executor.
 
-**Scope.**
-- Parse the BATCH frame body per CQL v4: `<type> <n> <queries> <consistency>
-  <flags> [<serial CL>] [<default-timestamp>]`. Each `<query>` is
-  `<kind=0|1> <id-or-string> <n> <values>`.
-- Build `Batch{kind, using_parameters, statements: [Insert|Update|Delete]}`
-  from the parsed body — reuse the prepared-statement lookup path.
-- Dispatch through `engine::execute(Batch)`.
-- BATCH with any conditional child continues returning `Invalid` with the
-  existing message (`engine.cpp:3452` — already correct).
+A non-mutation child (e.g. `SELECT`) is rejected with `Invalid`. Unit-test
+coverage in `cql/native/native.test.cpp` ([cql.native][batch]) exercises
+inline + prepared children and the SELECT-in-BATCH rejection.
 
-**Files.** `cql/native/native.cpp`, `cql/native/native.cppm` (helpers for
-batched-value decoding).
+**Conformance impact.** None of the upstream cassandra-tests in
+`tools/cql_tests/` use the cassandra-driver `BatchStatement` API (they send
+inline `BEGIN BATCH ... APPLY BATCH` strings via the QUERY opcode and the
+parser handles those). Phase 3 unblocks driver-level batch usage, but does
+not move the conformance pass count on its own.
 
-**Estimated impact.** ~11 unique BATCH tests (`testBatch`,
-`testBatchWithInRestriction`, `testCounterBatch`, etc.); removes the BATCH
-abort row entirely.
+**Files.** `cql/native/native.cpp`, `cql/engine/engine.cppm`,
+`cql/engine/engine.cpp` (exported `bind_values_to_statement`).
 
 ---
 
