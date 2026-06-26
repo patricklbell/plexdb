@@ -9,6 +9,7 @@ import plexdb.dynamic.containers;
 import cql.engine.column_value;
 import cql.engine.evaluator;
 import cql.engine.schema;
+import cql.engine.token;
 import cql.engine.types;
 import cql.engine.statements;
 
@@ -547,6 +548,100 @@ namespace cql::key {
         e.value = c;
         return e;
     }
+
+    // Partition keys are stored in the BTree prefixed by an 8-byte big-endian
+    // token (sign-bit XOR'd for lex order). Byte-wise compare over the encoding
+    // matches signed compare on the token, with the raw partition bytes acting
+    // as a deterministic tiebreaker when two keys hash to the same token.
+    static constexpr U64 PARTITION_TOKEN_PREFIX_BYTES = 8;
+
+    static void append_be(DynamicArray<U8>& out, U64 bits, U64 nbytes) {
+        for (U64 i = nbytes; i-- > 0;) {
+            push_back(out, U8((bits >> (i * 8)) & 0xFFu));
+        }
+    }
+
+    // Cassandra wire-format encoding of one partition-key value, used only for
+    // token computation (never written to disk). Composite components carry a
+    // U16 BE length prefix and a 0x00 separator; single components are raw bytes.
+    static void append_wire_partition_component(DynamicArray<U8>& out, const Evaluated& eval, type::Basic dtype, bool is_composite) {
+        DynamicArray<U8> val;
+        switch (dtype) {
+            case type::Basic::bigint:
+            case type::Basic::timestamp:
+            case type::Basic::counter:
+                append_be(val, static_cast<U64>(eval_as_s64(eval)), 8);
+                break;
+            case type::Basic::int_:
+                append_be(val, U64(U32(static_cast<S32>(eval_as_s64(eval)))), 4);
+                break;
+            case type::Basic::smallint:
+                append_be(val, U64(U16(static_cast<S16>(eval_as_s64(eval)))), 2);
+                break;
+            case type::Basic::tinyint:
+                push_back(val, static_cast<U8>(static_cast<S8>(get<S64>(get<Constant>(eval.value).value))));
+                break;
+            case type::Basic::boolean:
+                push_back(val, eval_as_bool(eval) ? U8(1) : U8(0));
+                break;
+            case type::Basic::double_: {
+                F64 v = eval_as_f64(eval);
+                U64 bits;
+                os::memory_copy(&bits, &v, sizeof(bits));
+                append_be(val, bits, 8);
+                break;
+            }
+            case type::Basic::float_: {
+                F32 v = static_cast<F32>(get<F64>(get<Constant>(eval.value).value));
+                U32 bits;
+                os::memory_copy(&bits, &v, sizeof(bits));
+                append_be(val, U64(bits), 4);
+                break;
+            }
+            case type::Basic::text:
+            case type::Basic::varchar:
+            case type::Basic::ascii: {
+                const AutoString8& s = get<AutoString8>(get<Constant>(eval.value).value);
+                append_bytes(val, reinterpret_cast<const U8*>(s.c_str), static_cast<U16>(s.length));
+                break;
+            }
+            case type::Basic::uuid:
+            case type::Basic::timeuuid: {
+                const UUID& u = get<UUID>(get<Constant>(eval.value).value);
+                append_bytes(val, &u.value[0], static_cast<U16>(UUID::length));
+                break;
+            }
+            case type::Basic::blob: {
+                const Blob& b = get<Blob>(get<Constant>(eval.value).value);
+                append_bytes(val, b.value.ptr, static_cast<U16>(b.value.length));
+                break;
+            }
+            case type::Basic::hex: {
+                const Hex& h = get<Hex>(get<Constant>(eval.value).value);
+                append_bytes(val, h.value.ptr, static_cast<U16>(h.value.length));
+                break;
+            }
+            default:
+                assert_not_implemented("wire encoding for partition key type is not implemented");
+                return;
+        }
+        if (is_composite) {
+            append_u16_be(out, static_cast<U16>(val.length));
+            append_bytes(out, val.ptr, static_cast<U16>(val.length));
+            push_back(out, U8(0));
+        } else {
+            append_bytes(out, val.ptr, static_cast<U16>(val.length));
+        }
+    }
+
+    // @note token bytes are written into a separate buffer first, then the lex
+    // partition bytes are appended. Writing in this order avoids an in-place shift
+    // of the entire lex tail.
+    static void append_token_prefix(DynamicArray<U8>& out, const DynamicArray<U8>& wire) {
+        U8 buf[PARTITION_TOKEN_PREFIX_BYTES];
+        token::encode_token_be(buf, token::murmur3_token(wire.ptr, wire.length));
+        append_bytes(out, buf, static_cast<U16>(PARTITION_TOKEN_PREFIX_BYTES));
+    }
 }
 
 export namespace cql::key {
@@ -556,8 +651,12 @@ export namespace cql::key {
         U64                   col_idx = tbl.partition_key_col_indices[0];
         const schema::Column& col     = tbl.cols[col_idx];
         assert_true(type_matches_tag<type::Basic>(col.type.value), "partition key must be a basic type");
+        type::Basic      dtype = get<type::Basic>(col.type.value);
+        DynamicArray<U8> wire;
+        append_wire_partition_component(wire, val, dtype, false);
         DynamicArray<U8> out;
-        append_component(out, val, get<type::Basic>(col.type.value), false);
+        append_token_prefix(out, wire);
+        append_component(out, val, dtype, false);
         return out;
     }
 
@@ -565,13 +664,20 @@ export namespace cql::key {
     // partition_vals[i] corresponds to tbl.partition_key_col_indices[i].
     DynamicArray<U8> serialize_partition(const schema::Table& tbl, TArrayView<const Evaluated, U64> partition_vals) {
         assert_true(partition_vals.length == tbl.partition_key_col_indices.length, "partition val count must match partition key column count");
-        DynamicArray<U8> out;
         bool             composite = tbl.partition_key_col_indices.length > 1;
+        DynamicArray<U8> wire;
         for (U64 i = 0; i < tbl.partition_key_col_indices.length; i++) {
             U64                   col_idx = tbl.partition_key_col_indices[i];
             const schema::Column& col     = tbl.cols[col_idx];
             assert_true(type_matches_tag<type::Basic>(col.type.value), "partition key must be a basic type");
-            append_component(out, partition_vals[i], get<type::Basic>(col.type.value), composite);
+            append_wire_partition_component(wire, partition_vals[i], get<type::Basic>(col.type.value), composite);
+        }
+        DynamicArray<U8> out;
+        append_token_prefix(out, wire);
+        for (U64 i = 0; i < tbl.partition_key_col_indices.length; i++) {
+            U64         col_idx = tbl.partition_key_col_indices[i];
+            type::Basic dtype   = get<type::Basic>(tbl.cols[col_idx].type.value);
+            append_component(out, partition_vals[i], dtype, composite);
         }
         return out;
     }
@@ -710,10 +816,11 @@ export namespace cql::key {
 
     // Deserialize partition key bytes back into ColumnValues.
     // Returns one ColumnValue per tbl.partition_key_col_indices entry.
+    // @note skips the leading PARTITION_TOKEN_PREFIX_BYTES that precede the lex components.
     DynamicArray<ColumnValue> deserialize_partition(const schema::Table& tbl, TArrayView<const U8, U16> key_bytes) {
         DynamicArray<ColumnValue> out;
         bool                      composite = tbl.partition_key_col_indices.length > 1;
-        U16                       pos       = 0;
+        U16                       pos       = static_cast<U16>(PARTITION_TOKEN_PREFIX_BYTES);
         for (U64 i = 0; i < tbl.partition_key_col_indices.length; i++) {
             U64                   col_idx = tbl.partition_key_col_indices[i];
             const schema::Column& col     = tbl.cols[col_idx];
@@ -721,6 +828,41 @@ export namespace cql::key {
             push_back(out, decode_component(key_bytes.ptr, key_bytes.length, &pos, dtype, composite));
         }
         return out;
+    }
+
+    // Extract the token from the leading PARTITION_TOKEN_PREFIX_BYTES of an
+    // encoded partition key.
+    S64 partition_token_from_key_bytes(TArrayView<const U8, U16> key_bytes) {
+        assert_true(key_bytes.length >= PARTITION_TOKEN_PREFIX_BYTES, "partition key is missing its token prefix");
+        return token::decode_token_be(key_bytes.ptr);
+    }
+
+    // Compute the Murmur3 partition token from a row's column values, hashing
+    // the Cassandra wire-format bytes directly without building the full
+    // lex-encoded key.
+    S64 compute_partition_token(const schema::Table& tbl, TArrayView<const ColumnValue, U64> row_values) {
+        bool             composite = tbl.partition_key_col_indices.length > 1;
+        DynamicArray<U8> wire;
+        for (U64 pk_ci : tbl.partition_key_col_indices) {
+            assert_true(pk_ci < row_values.length, "partition column index out of range");
+            type::Basic dtype = get<type::Basic>(tbl.cols[pk_ci].type.value);
+            append_wire_partition_component(wire, cv_to_const_eval(row_values[pk_ci], dtype), dtype, composite);
+        }
+        return token::murmur3_token(wire.ptr, wire.length);
+    }
+
+    // Same token computation, but taking already-evaluated argument values (the
+    // shape produced by the term registry when token(...) appears in a term
+    // context). evals[i] is encoded as the type of partition_key_col_indices[i].
+    S64 compute_partition_token_from_evals(const schema::Table& tbl, TArrayView<const Evaluated, U64> evals) {
+        assert_true(evals.length == tbl.partition_key_col_indices.length, "token(...) arity must match partition key column count");
+        bool             composite = tbl.partition_key_col_indices.length > 1;
+        DynamicArray<U8> wire;
+        for (U64 i = 0; i < evals.length; i++) {
+            type::Basic dtype = get<type::Basic>(tbl.cols[tbl.partition_key_col_indices[i]].type.value);
+            append_wire_partition_component(wire, evals[i], dtype, composite);
+        }
+        return token::murmur3_token(wire.ptr, wire.length);
     }
 
     // @note partial CK prefixes are legal; trailing positions with no bytes left are simply absent.

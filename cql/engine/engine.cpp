@@ -16,6 +16,7 @@ import cql.engine.evaluator;
 import cql.engine.it;
 import cql.engine.key;
 import cql.engine.planner;
+import cql.engine.token;
 
 namespace cql::engine {
     coroutine::Task<> init(Engine& engine, Pager* in_pager) {
@@ -231,6 +232,12 @@ namespace cql::engine {
             co_await col_it.advance();
             ++ci;
         }
+        // @note resize default-constructs ColumnValue as an empty TaggedUnion. Anything the
+        // iterator didn't reach must become Null{} so downstream visit() does not crash.
+        for (U64 j = ci; j < tbl->cols.length; j++) {
+            col_values[j]  = ColumnValue{Null{}};
+            col_present[j] = false;
+        }
     }
 
     static coroutine::Task<void> read_row_into(Engine& engine, const schema::Table* tbl, U64 page_idx, U64 static_page_idx, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present, io::RowMetadata* out_metadata = nullptr, DynamicArray<Optional<io::CellMetadata>>* out_cell_meta = nullptr) {
@@ -353,6 +360,8 @@ namespace cql::engine {
             U64 ci = col_order[i];
             if (ci < cv.length && present[ci]) {
                 vrow.values[i] = cv[ci];
+            } else {
+                vrow.values[i] = ColumnValue{Null{}};
             }
         }
         return vrow;
@@ -1873,6 +1882,74 @@ namespace cql::engine {
         };
     }
 
+    // @note partitions are iterated in IN-list input order to match the order
+    // Cassandra returns for SELECT...WHERE pk IN (...). The BTree's natural
+    // order is Murmur3 token order, which differs from input order.
+    static coroutine::Task<ExecutionResult> execute_select_pk_in(
+        Engine& engine, schema::Table* tbl, String8 ks_name, String8 table_name,
+        const Select& stmt, const planner::SelectPlan& sp,
+        DynamicArray<U64> select_col_indices, U64 limit_count, EvalContext ctx
+    ) {
+        DynamicArray<U64> col_order   = build_select_col_order(*tbl, select_col_indices);
+        VirtualRows       vr          = make_virtual_rows_shell(*tbl, ks_name, table_name, col_order);
+        bool              is_distinct = static_cast<bool>(stmt.transform);
+        S64               now_unix_ms = S64(os::unix_ms_now());
+
+        for (const auto& pk_bytes : sp.locator.pk.in_values) {
+            if (vr.rows.length >= limit_count) {
+                break;
+            }
+            planner::RowLocator one_locator = sp.locator;
+            one_locator.pk.is_equality      = true;
+            one_locator.pk.has_in           = false;
+            one_locator.pk.begin            = pk_bytes;
+            one_locator.pk.has_begin        = true;
+            one_locator.pk.begin_inclusive  = true;
+            auto range                      = co_await create_table_range_it(engine, tbl, one_locator);
+
+            auto advance = [&]() -> coroutine::Task<void> {
+                if (is_distinct) {
+                    co_await range.start.advance_partition();
+                } else {
+                    co_await range.start.advance(range.stop);
+                }
+            };
+
+            while (range.start != range.stop && vr.rows.length < limit_count) {
+                ColumnRange col_range = co_await range.start.deref();
+                if (io::row_is_expired(col_range.start.metadata, now_unix_ms)) {
+                    co_await advance();
+                    continue;
+                }
+
+                DynamicArray<ColumnValue> row_values;
+                DynamicArray<bool>        row_present;
+                co_await drain_columns(tbl, col_range.start, row_values, row_present);
+
+                bool pass = true;
+                if (sp.filter.predicates.length > 0) {
+                    EvalContext row_ctx = ctx;
+                    row_ctx.table       = tbl;
+                    row_ctx.row_values  = row_values.ptr;
+                    pass                = evaluate_where(sp.filter.predicates, row_ctx);
+                }
+                if (pass) {
+                    push_back(vr.rows, project_virtual_row(col_order, row_values, row_present));
+                }
+
+                co_await advance();
+            }
+        }
+
+        co_return ExecutionResult{
+            .status       = ExecutionStatus::Success,
+            .kind         = ResultKind::VirtualRows,
+            .keyspace     = AutoString8(ks_name),
+            .table        = AutoString8(table_name),
+            .virtual_rows = move(vr),
+        };
+    }
+
     // @note `decode_to_s32` distinguishes ColumnValue's storage tag for the integer-shaped
     // CQL types: int/date are tagged S32, the rest (incl. smallint/tinyint) tag as S64.
     struct IntConvType {
@@ -1963,7 +2040,7 @@ namespace cql::engine {
         return v;
     }
 
-    static VirtualRow project_row_via_ops(const DynamicArray<planner::SelectOp>& ops, const DynamicArray<ColumnValue>& cv, const DynamicArray<bool>& present, const DynamicArray<Optional<io::CellMetadata>>& cell_meta, S64 now_unix_ms) {
+    static VirtualRow project_row_via_ops(const schema::Table& tbl, const DynamicArray<planner::SelectOp>& ops, const DynamicArray<ColumnValue>& cv, const DynamicArray<bool>& present, const DynamicArray<Optional<io::CellMetadata>>& cell_meta, S64 now_unix_ms) {
         VirtualRow vrow;
         for (const auto& op : ops) {
             ColumnValue base;
@@ -1989,6 +2066,8 @@ namespace cql::engine {
                     } else {
                         is_null = true;
                     }
+                } else if constexpr (SameAs<OT, planner::SelectOp::Token>) {
+                    base = ColumnValue{key::compute_partition_token(tbl, {cv.ptr, cv.length})};
                 } else if constexpr (SameAs<OT, planner::SelectOp::CountStar>) {
                     assert_not_implemented("CountStar reached project_row_via_ops; aggregate path should handle it");
                 }
@@ -2032,6 +2111,16 @@ namespace cql::engine {
                 } else if constexpr (SameAs<OT, planner::SelectOp::WritetimeOf>) {
                     out_type      = type::create_basic(type::Basic::bigint);
                     default_label = AutoString8("writetime(") + AutoString8(tbl.cols[o.col_idx].name) + AutoString8(")");
+                } else if constexpr (SameAs<OT, planner::SelectOp::Token>) {
+                    out_type      = type::create_basic(type::Basic::bigint);
+                    default_label = AutoString8("system.token(");
+                    for (U64 ti = 0; ti < o.pk_col_indices.length; ti++) {
+                        if (ti > 0) {
+                            default_label = default_label + AutoString8(", ");
+                        }
+                        default_label = default_label + AutoString8(tbl.cols[o.pk_col_indices[ti]].name);
+                    }
+                    default_label = default_label + AutoString8(")");
                 } else if constexpr (SameAs<OT, planner::SelectOp::CountStar>) {
                     out_type      = type::create_basic(type::Basic::bigint);
                     default_label = AutoString8("count");
@@ -2049,6 +2138,11 @@ namespace cql::engine {
     static bool projection_needs_cell_meta(const planner::ProjectionPlan& p) {
         for (const auto& op : p.ops) {
             if (type_matches_tag<planner::SelectOp::TtlOf>(op.value) || type_matches_tag<planner::SelectOp::WritetimeOf>(op.value)) {
+                return true;
+            }
+            // @note Token also needs full row materialization (PK column values),
+            // so route through the same projection pipeline.
+            if (type_matches_tag<planner::SelectOp::Token>(op.value)) {
                 return true;
             }
         }
@@ -2084,7 +2178,7 @@ namespace cql::engine {
                     pass           = evaluate_where(sp.filter.predicates, rc);
                 }
                 if (pass) {
-                    push_back(vr.rows, project_row_via_ops(sp.projection.ops, row_values, row_present, cell_meta, now));
+                    push_back(vr.rows, project_row_via_ops(*tbl, sp.projection.ops, row_values, row_present, cell_meta, now));
                 }
                 co_await start.advance(stop);
             }
@@ -2900,6 +2994,15 @@ namespace cql::engine {
                 if (stmt.order_by && sp.locator.pk.in_values.length > 0) {
                     co_return co_await execute_select_pk_in_ordered(
                         engine, tbl, ks_name, stmt.from.table_name, sp, move(select_col_indices), limit_count, ctx
+                    );
+                }
+
+                // @note PK IN must iterate listed partitions individually in input order
+                // (Cassandra semantics). A BTree range walk would return them in token order.
+                // has_in with empty in_values means an empty IN list (zero rows).
+                if (sp.locator.pk.in_values.length > 0 || sp.locator.pk.has_in) {
+                    co_return co_await execute_select_pk_in(
+                        engine, tbl, ks_name, stmt.from.table_name, stmt, sp, move(select_col_indices), limit_count, ctx
                     );
                 }
 
@@ -4147,7 +4250,7 @@ namespace cql::engine {
         }
     }
 
-    static void bind_values_to_statement(Statement& stmt, DynamicArray<Term>& bound_values) {
+    void bind_values_to_statement(Statement& stmt, DynamicArray<Term>& bound_values) {
         if (bound_values.length == 0) {
             return;
         }

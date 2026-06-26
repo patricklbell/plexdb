@@ -9,6 +9,7 @@ import plexdb.tagged_union;
 import plexdb.dynamic.containers;
 import plexdb.dynamic.tagged_union;
 
+import cql.engine.key;
 import cql.engine.schema;
 import cql.engine.statements;
 import cql.engine.types;
@@ -299,8 +300,17 @@ namespace cql {
             memcpy(b.value.ptr, &be, 4);
             return Evaluated{Constant{move(b)}};
         });
-        add("blobasint"_as, [](TArrayView<const Evaluated>, const EvalContext&) -> Evaluated {
-            return Evaluated{Constant{Null{}}};
+        add("blobasint"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
+            if (args.length != 1) {
+                return Evaluated{Constant{Null{}}};
+            }
+            const Blob* b = as_value<Blob>(args[0]);
+            if (!b || b->value.length != 4) {
+                return Evaluated{Constant{Null{}}};
+            }
+            U32 be;
+            memcpy(&be, b->value.ptr, 4);
+            return Evaluated{Constant{S64(static_cast<S32>(__builtin_bswap32(be)))}};
         });
         add("bigintasblob"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
@@ -316,8 +326,24 @@ namespace cql {
             memcpy(b.value.ptr, &be, 8);
             return Evaluated{Constant{move(b)}};
         });
-        add("blobasbigint"_as, [](TArrayView<const Evaluated>, const EvalContext&) -> Evaluated {
-            return Evaluated{Constant{Null{}}};
+        add("blobasbigint"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
+            if (args.length != 1) {
+                return Evaluated{Constant{Null{}}};
+            }
+            const Blob* b = as_value<Blob>(args[0]);
+            if (!b || b->value.length != 8) {
+                return Evaluated{Constant{Null{}}};
+            }
+            U64 be;
+            memcpy(&be, b->value.ptr, 8);
+            return Evaluated{Constant{S64(__builtin_bswap64(be))}};
+        });
+
+        add("token"_as, [](TArrayView<const Evaluated> args, const EvalContext& ctx) -> Evaluated {
+            if (!ctx.table || args.length != ctx.table->partition_key_col_indices.length) {
+                return Evaluated{Constant{Null{}}};
+            }
+            return Evaluated{Constant{key::compute_partition_token_from_evals(*ctx.table, args)}};
         });
 
         return registry;
@@ -893,7 +919,19 @@ namespace cql {
                     }
                     return true;
                 } else if constexpr (SameAs<T, WhereClause::TokenRelation>) {
-                    return true; // token relations not evaluated in filter
+                    if (!ctx.table || !ctx.row_values) {
+                        return true;
+                    }
+                    TArrayView<const ColumnValue, U64> row_view{ctx.row_values, ctx.table->cols.length};
+                    S64                                lhs_tok = key::compute_partition_token(*ctx.table, row_view);
+                    Evaluated                          lhs{Constant{lhs_tok}};
+                    Evaluated                          rhs        = evaluate_term(value.value, ctx);
+                    bool                               comparable = false;
+                    S64                                cmp        = compare_evaluated(lhs, rhs, comparable);
+                    if (!comparable) {
+                        return false;
+                    }
+                    return apply_operator(cmp, value.operator_);
                 } else if constexpr (SameAs<T, WhereClause::SubscriptedRelation>) {
                     // Look up the map column, fetch m[k], compare to v.
                     Evaluated map_eval = lookup_column_value(value.column.identifier, ctx);

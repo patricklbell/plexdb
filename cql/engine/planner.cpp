@@ -1133,6 +1133,53 @@ namespace cql::planner {
                     if (fname == "writetime" || fname == "WRITETIME") {
                         return resolve_meta_selector(sel, false);
                     }
+                    if (fname == "token") {
+                        const U64 n_pk = tbl.partition_key_col_indices.length;
+                        if (sel.arguments.length != n_pk) {
+                            plan.result.error   = PlanError::ColumnNotFound;
+                            plan.result.context = AutoString8("Invalid number of arguments in call to function system.token: ")
+                                                + to_str(n_pk) + AutoString8(" required but ")
+                                                + to_str(sel.arguments.length) + AutoString8(" provided");
+                            return false;
+                        }
+                        SelectOp::Token tok;
+                        for (U64 ai = 0; ai < sel.arguments.length; ai++) {
+                            if (!type_matches_tag<ColumnName>(sel.arguments[ai].value)) {
+                                plan.result.error   = PlanError::ColumnNotFound;
+                                plan.result.context = AutoString8("Invalid arguments to function 'token': arguments must be partition key column references");
+                                return false;
+                            }
+                            const auto& cn = get<ColumnName>(sel.arguments[ai].value);
+                            String8     name(cn.identifier.c_str, cn.identifier.length);
+                            U64         pk_ci       = tbl.partition_key_col_indices[ai];
+                            U64         resolved_ci = MAX_U64;
+                            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
+                                if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == name) {
+                                    resolved_ci = ci;
+                                    break;
+                                }
+                            }
+                            if (resolved_ci == MAX_U64) {
+                                plan.result.error   = PlanError::ColumnNotFound;
+                                plan.result.context = AutoString8("Invalid arguments to function 'token': name ")
+                                                    + AutoString8(cn.identifier) + AutoString8(" doesn't exist");
+                                return false;
+                            }
+                            if (resolved_ci != pk_ci) {
+                                AutoString8 expected = type_matches_tag<type::Basic>(tbl.cols[pk_ci].type.value)
+                                                         ? AutoString8(to_str(get<type::Basic>(tbl.cols[pk_ci].type.value)))
+                                                         : AutoString8("unknown");
+                                plan.result.error    = PlanError::ColumnNotFound;
+                                plan.result.context  = AutoString8("Type error: ") + AutoString8(cn.identifier)
+                                                    + AutoString8(" cannot be passed as argument ") + to_str(ai)
+                                                    + AutoString8(" of function system.token of type ") + expected;
+                                return false;
+                            }
+                            push_back(tok.pk_col_indices, pk_ci);
+                        }
+                        push_back(plan.projection.ops, SelectOp{move(tok), {}});
+                        return true;
+                    }
                     // @note Recursively unwraps nested `<T>As<U>` calls into a conversion stack; the
                     // innermost argument is a ColumnName, ttl(c), or writetime(c).
                     if (auto from_to = parse_typed_conversion_name(fname)) {

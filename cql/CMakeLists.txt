@@ -60,6 +60,7 @@ target_sources(plexbd_cql
             engine/schema.cppm
             engine/system_schema.cppm
             engine/statements.cppm
+            engine/token.cppm
             engine/types.cppm
             engine/virtual_table.cppm
             log/log.cppm
@@ -67,6 +68,7 @@ target_sources(plexbd_cql
             native/native.cppm
             repl/repl.cppm
             third_party/lz4/lz4.cppm
+            third_party/murmur3/murmur3.cppm
 
     PRIVATE
         engine/engine.cpp
@@ -76,11 +78,20 @@ target_sources(plexbd_cql
         engine/planner.cpp
         engine/schema.cpp
         engine/system_schema.cpp
+        engine/token.cpp
         log/log.cpp
         parsers/parsers.cpp
         native/native.cpp
         repl/repl.cpp
         third_party/lz4/lz4.cpp
+        third_party/murmur3/murmur3.c
+)
+
+# Vendored Murmur3 (PeterScott/murmur3) is plain C; isolate it from the C++
+# warning set the rest of the library uses.
+set_source_files_properties(third_party/murmur3/murmur3.c PROPERTIES
+    LANGUAGE C
+    COMPILE_OPTIONS "-Wno-implicit-fallthrough;-Wno-unused-variable;-Wno-unused-but-set-variable"
 )
 
 target_link_libraries(plexbd_cql

@@ -66,14 +66,19 @@ export namespace cql::planner {
         struct WritetimeOf {
             U64 col_idx;
         };
+        // @note pk_col_indices must match the table's partition_key_col_indices
+        // in order; the wire encoding fed to Murmur3 depends on that order.
+        struct Token {
+            DynamicArray<U64> pk_col_indices;
+        };
         struct Conversion {
             // applied to the value produced by `value`, in order. `from` is the input type
             // (matches the previous conversion's `to` or the base type for the first step).
             type::Basic from;
             type::Basic to;
         };
-        TaggedUnion<ColumnRef, CountStar, TtlOf, WritetimeOf> value;
-        DynamicArray<Conversion>                              conversions;
+        TaggedUnion<ColumnRef, CountStar, TtlOf, WritetimeOf, Token> value;
+        DynamicArray<Conversion>                                     conversions;
     };
 
     struct ProjectionPlan {
