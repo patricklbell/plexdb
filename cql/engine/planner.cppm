@@ -49,9 +49,45 @@ export namespace cql::planner {
         DynamicArray<U8> index_key_prefix; // encoded column value for index prefix scan
     };
 
+    enum class PlanError : U8 {
+        None,
+        RequiresAllowFiltering,
+        MissingPartitionKey,
+        MissingClusteringKey,
+        OrderByOnNonClusteringColumn,
+        ColumnNotFound,
+        TypeMismatch,
+        StaticOnlyUpdateWithCK,
+        StaticOnlyDeleteWithCK,
+        RangeDeletionOnSpecificColumns,
+        TokenFunctionInMutation,
+        DuplicateColumnInMutation,
+        NonKeyColumnInMutationWhere,
+        NonEqInOnPartitionKeyMutation,
+        CounterOperationOnNonCounter,
+        CounterAssignmentNotIncrement,
+        NullValueForCounter,
+        DistinctRestrictionInvalid,
+        InvalidCollectionMutation,
+        InvalidSubscriptTarget,
+        UnsetSubscriptValue,
+        UnsetValueInWhere,
+        InvalidTtlArgument,
+        InvalidWritetimeArgument,
+        // @note for both ClusteringRestricted* the PlanResult.context already
+        // holds the fully-rendered Cassandra error message.
+        ClusteringRestrictedAfterNonEq,
+        ClusteringRestrictedWithoutPrefix,
+    };
+
     struct FilterPlan {
         DynamicArray<WhereClause::Relation> predicates;
         bool                                needs_allow_filtering = false;
+        // @note populated when the CK restriction chain is broken in a way Cassandra
+        // rejects with a specific error. The PlanError variant indicates which rule
+        // was violated; the `chain_violation_message` carries the formatted text.
+        PlanError   chain_violation         = PlanError::None;
+        AutoString8 chain_violation_message = {};
     };
 
     struct SelectOp {
@@ -115,33 +151,6 @@ export namespace cql::planner {
     struct MutationSpec {
         DynamicArray<ColumnUpdate> updates;
         bool                       is_full_delete = false;
-    };
-
-    enum class PlanError : U8 {
-        None,
-        RequiresAllowFiltering,
-        MissingPartitionKey,
-        MissingClusteringKey,
-        OrderByOnNonClusteringColumn,
-        ColumnNotFound,
-        TypeMismatch,
-        StaticOnlyUpdateWithCK,
-        StaticOnlyDeleteWithCK,
-        RangeDeletionOnSpecificColumns,
-        TokenFunctionInMutation,
-        DuplicateColumnInMutation,
-        NonKeyColumnInMutationWhere,
-        NonEqInOnPartitionKeyMutation,
-        CounterOperationOnNonCounter,
-        CounterAssignmentNotIncrement,
-        NullValueForCounter,
-        DistinctRestrictionInvalid,
-        InvalidCollectionMutation,
-        InvalidSubscriptTarget,
-        UnsetSubscriptValue,
-        UnsetValueInWhere,
-        InvalidTtlArgument,
-        InvalidWritetimeArgument,
     };
 
     struct PlanResult {

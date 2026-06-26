@@ -1548,6 +1548,14 @@ namespace cql::engine {
                     .status  = ExecutionStatus::Invalid,
                     .message = "Cannot execute this query as it might involve data filtering and thus may have unpredictable performance. If you want to execute this query despite the performance unpredictability, use ALLOW FILTERING",
                 };
+            case planner::PlanError::ClusteringRestrictedAfterNonEq:
+            case planner::PlanError::ClusteringRestrictedWithoutPrefix: {
+                ExecutionResult r;
+                r.status          = ExecutionStatus::Invalid;
+                r.message_storage = AutoString8(result.context);
+                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                return r;
+            }
             case planner::PlanError::MissingPartitionKey: {
                 ExecutionResult r;
                 r.status          = ExecutionStatus::Invalid;

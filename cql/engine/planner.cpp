@@ -359,14 +359,19 @@ namespace cql::planner {
         DynamicArray<WhereClause::Relation>   eq_rels;
         DynamicArray<DynamicArray<Evaluated>> in_vals;
         DynamicArray<bool>                    in_seen;
+        // @note set when this position carries a non-EQ inequality restriction
+        // (>, <, >=, <=). Unused for partition keys.
+        DynamicArray<bool> range_seen;
     };
 
     static void init_constraints(KeyConstraints& kc, U64 n) {
         resize(kc.eq_vals, n);
         resize(kc.in_vals, n);
         resize(kc.in_seen, n);
+        resize(kc.range_seen, n);
         for (U64 i = 0; i < n; i++) {
-            kc.in_seen[i] = false;
+            kc.in_seen[i]    = false;
+            kc.range_seen[i] = false;
         }
     }
 
@@ -610,10 +615,15 @@ namespace cql::planner {
                         } else if (*ck_pos == 0) {
                             Sort dir = tbl.cols[tbl.clustering_key_col_indices[0]].clustering_order;
                             apply_range_bound(locator.ck, r.operator_, dir, key::serialize_clustering_single(tbl, eval), n_ck > 1);
+                            ck.range_seen[0] = true;
                             // @note CK range also goes to filter for post-scan evaluation;
                             // does not set needs_allow_filtering — CK filtering is efficient.
                             push_back(filter.predicates, rel);
                         } else {
+                            // Range on a non-leading CK position; the locator can't honor it,
+                            // so it falls to filter. Tracked in range_seen so the chain
+                            // validator can detect "preceding column restricted by non-EQ".
+                            ck.range_seen[*ck_pos] = true;
                             push_back(filter.predicates, rel);
                         }
                     } else {
@@ -739,6 +749,7 @@ namespace cql::planner {
                                 Evaluated eval = evaluate(r.values[0], ctx);
                                 Sort      dir  = tbl.cols[tbl.clustering_key_col_indices[0]].clustering_order;
                                 apply_range_bound(locator.ck, r.operator_, dir, key::serialize_clustering_single(tbl, eval), n_ck > 1);
+                                ck.range_seen[0] = true;
                             }
                         } else if (is_inequality(r.operator_) && r.columns.length > 1 && tuple_rhs_is_compatible(r) && n_ck > 0) {
                             // Lex compare on a parenthesized clustering-key prefix
@@ -767,6 +778,10 @@ namespace cql::planner {
                                     DynamicArray<U8> bytes       = key::serialize_clustering_prefix(tbl, prefix_view);
                                     bool             partial     = r.columns.length < n_ck;
                                     apply_range_bound(locator.ck, r.operator_, dir, move(bytes), partial);
+                                    // @note tuple range is a single lex compare on the
+                                    // CK[0..k-1] prefix; only the leading column is
+                                    // "non-EQ restricted" for chain-validation purposes.
+                                    ck.range_seen[0] = true;
                                 }
                             }
                         }
@@ -929,17 +944,54 @@ namespace cql::planner {
             }
         }
 
-        // @note CK eq on position N with a smaller-N position missing is filtering inside
-        // the partition; a global secondary index on N does not avoid the partition scan.
-        bool partition_scoped = locator.pk.is_equality || locator.pk.has_in || locator.ck.has_begin || locator.ck.has_end;
-        if (n_ck > 0 && !locator.ck.is_equality && partition_scoped) {
-            bool prefix_broken = false;
+        // CK chain validation. The Cassandra rule is that any CK restriction at
+        // position N requires a contiguous EQ/IN prefix at positions 0..N-1.
+        // A non-EQ (range) at a preceding position, or no restriction at all on
+        // a preceding position, are both rejected with specific wording.
+        if (n_ck > 0 && !locator.ck.is_equality) {
+            auto col_name = [&](U64 i) -> String8 {
+                return tbl.cols[tbl.clustering_key_col_indices[i]].name;
+            };
             for (U64 i = 0; i < n_ck; i++) {
-                bool covered = static_cast<bool>(ck.eq_vals[i]) || ck.in_seen[i];
-                if (!covered) {
-                    prefix_broken = true;
-                } else if (prefix_broken && static_cast<bool>(ck.eq_vals[i])) {
-                    filter.needs_allow_filtering = true;
+                bool restricted = static_cast<bool>(ck.eq_vals[i]) || ck.in_seen[i] || ck.range_seen[i];
+                if (!restricted) {
+                    continue;
+                }
+                for (U64 j = 0; j < i; j++) {
+                    bool prev_eq_or_in = static_cast<bool>(ck.eq_vals[j]) || ck.in_seen[j];
+                    if (prev_eq_or_in) {
+                        continue;
+                    }
+                    if (ck.range_seen[j]) {
+                        filter.chain_violation         = PlanError::ClusteringRestrictedAfterNonEq;
+                        filter.chain_violation_message = AutoString8("Clustering column \"") + AutoString8(col_name(i)) + AutoString8("\" cannot be restricted (preceding column \"") + AutoString8(col_name(j)) + AutoString8("\" is restricted by a non-EQ relation)");
+                    } else {
+                        filter.chain_violation         = PlanError::ClusteringRestrictedWithoutPrefix;
+                        filter.chain_violation_message = AutoString8("PRIMARY KEY column \"") + AutoString8(col_name(i)) + AutoString8("\" cannot be restricted as preceding column \"") + AutoString8(col_name(j)) + AutoString8("\" is not restricted");
+                    }
+                    break;
+                }
+                if (filter.chain_violation != PlanError::None) {
+                    break;
+                }
+            }
+        }
+
+        // @note CK EQ on position N with a smaller-N position missing is filtering inside
+        // the partition; a global secondary index on N does not avoid the partition scan.
+        // Only set needs_allow_filtering when there's no specific chain violation; the
+        // chain validator above takes precedence.
+        if (filter.chain_violation == PlanError::None) {
+            bool partition_scoped = locator.pk.is_equality || locator.pk.has_in || locator.ck.has_begin || locator.ck.has_end;
+            if (n_ck > 0 && !locator.ck.is_equality && partition_scoped) {
+                bool prefix_broken = false;
+                for (U64 i = 0; i < n_ck; i++) {
+                    bool covered = static_cast<bool>(ck.eq_vals[i]) || ck.in_seen[i];
+                    if (!covered) {
+                        prefix_broken = true;
+                    } else if (prefix_broken && static_cast<bool>(ck.eq_vals[i])) {
+                        filter.needs_allow_filtering = true;
+                    }
                 }
             }
         }
@@ -1019,6 +1071,12 @@ namespace cql::planner {
                     return plan;
                 }
             }
+        }
+
+        if (!stmt.allow_filtering && plan.filter.chain_violation != PlanError::None) {
+            plan.result.error   = plan.filter.chain_violation;
+            plan.result.context = move(plan.filter.chain_violation_message);
+            return plan;
         }
 
         if (!stmt.allow_filtering && plan.filter.needs_allow_filtering) {
