@@ -1043,27 +1043,20 @@ namespace cql::native {
                 const U8* p     = body;
                 String8   query = read_cql_long_string(p, body_end);
 
-                if (auto specific_err = parsers::check_specific_errors(query)) {
+                auto pr = parsers::parse(query);
+                if (!pr.statement) {
                     Frame frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
-                    append_error_body(frame, engine::ExecutionStatus::SyntaxError, *specific_err);
+                    String8 msg = pr.err.length ? String8(pr.err) : String8("Failed to parse CQL");
+                    append_error_body(frame, engine::ExecutionStatus::SyntaxError, msg);
                     co_await send_native_frame<Version, Compressed>(frame);
                     cql::log::db_operation_duration(os::monotonic_us() - t0);
                     break;
                 }
 
-                auto cql_opt = parsers::parse(query);
-                if (!cql_opt) {
-                    Frame frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
-                    append_error_body(frame, engine::ExecutionStatus::SyntaxError, "Failed to parse CQL");
-                    co_await send_native_frame<Version, Compressed>(frame);
-                    cql::log::db_operation_duration(os::monotonic_us() - t0);
-                    break;
-                }
-
-                auto bind_specs   = engine::collect_bind_variables(engine, *cql_opt, String8(conn_keyspace));
+                auto bind_specs   = engine::collect_bind_variables(engine, *pr.statement, String8(conn_keyspace));
                 auto bound_values = read_query_parameter_values<Version>(p, body_end, bind_specs);
 
-                engine::ExecutionResult result = co_await engine::execute(engine, *cql_opt, move(bound_values), conn_keyspace);
+                engine::ExecutionResult result = co_await engine::execute(engine, *pr.statement, move(bound_values), conn_keyspace);
                 if (!co_await send_error_if_failed<Version, Compressed>(result, &req, stream)) {
                     co_await send_execution_result<Version, Compressed>(result, engine, &req, stream);
                 }
@@ -1185,20 +1178,15 @@ namespace cql::native {
                     Optional<Statement>                    child_opt;
                     DynamicArray<engine::BindVariableSpec> bind_specs;
                     if (kind_byte == 0) {
-                        String8 query = read_cql_long_string(p, body_end);
-                        if (auto specific_err = parsers::check_specific_errors(query)) {
-                            co_await send_invalid(*specific_err);
+                        String8 query  = read_cql_long_string(p, body_end);
+                        auto    parsed = parsers::parse(query);
+                        if (!parsed.statement) {
+                            co_await send_invalid(parsed.err.length ? String8(parsed.err) : String8("Failed to parse CQL in BATCH child"));
                             fatal = true;
                             break;
                         }
-                        auto parsed = parsers::parse(query);
-                        if (!parsed) {
-                            co_await send_invalid("Failed to parse CQL in BATCH child");
-                            fatal = true;
-                            break;
-                        }
-                        bind_specs = engine::collect_bind_variables(engine, *parsed, String8(conn_keyspace));
-                        child_opt  = move(*parsed);
+                        bind_specs = engine::collect_bind_variables(engine, *parsed.statement, String8(conn_keyspace));
+                        child_opt  = move(*parsed.statement);
                     } else if (kind_byte == 1) {
                         const U8* id_data     = nullptr;
                         U16       id_len      = read_cql_short_bytes(p, body_end, id_data);
@@ -1213,13 +1201,13 @@ namespace cql::native {
                             break;
                         }
                         auto parsed = parsers::parse(String8(entry->query_string));
-                        if (!parsed) {
-                            co_await send_invalid("Failed to re-parse prepared BATCH child");
+                        if (!parsed.statement) {
+                            co_await send_invalid(parsed.err.length ? String8(parsed.err) : String8("Failed to re-parse prepared BATCH child"));
                             fatal = true;
                             break;
                         }
                         bind_specs = entry->bind_variables;
-                        child_opt  = move(*parsed);
+                        child_opt  = move(*parsed.statement);
                     } else {
                         co_await send_invalid("Invalid BATCH child kind");
                         fatal = true;

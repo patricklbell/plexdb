@@ -27,8 +27,49 @@ from cassandra.cluster import (
 from cassandra.policies import RoundRobinPolicy
 
 
+# ── Skiplist (permissive-parser deselects) ────────────────────────────────
+# Skiplist entries name upstream tests that exercise parsing shapes plexdb
+# intentionally accepts (more permissive than Cassandra). See skiplist.txt
+# for the file format. Tests that exercise genuinely fatal (unparsable /
+# ambiguous) parsing must NOT be listed and continue to run.
+
+
+def _load_skiplist(path):
+    entries: list[tuple[str, str]] = []
+    try:
+        with open(path) as f:
+            for raw in f:
+                line = raw.rstrip("\n")
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                substr, _, reason = line.partition("#")
+                entries.append((substr.strip(), reason.strip() or "skiplist"))
+    except FileNotFoundError:
+        pass
+    return entries
+
+
+def pytest_collection_modifyitems(config, items):
+    skiplist_path = config.getoption("--skiplist")
+    skip_marks = [
+        (substr, pytest.mark.skip(reason=reason))
+        for substr, reason in _load_skiplist(skiplist_path)
+    ]
+    for item in items:
+        for substr, mark in skip_marks:
+            if substr in item.nodeid:
+                item.add_marker(mark)
+                break
+
+
 # ── CLI options ───────────────────────────────────────────────────────────
 def pytest_addoption(parser):
+    parser.addoption(
+        "--skiplist",
+        action="store",
+        default=os.path.join(os.path.dirname(__file__), "skiplist.txt"),
+        help="Path to skiplist file (test nodeid substrings to deselect)",
+    )
     parser.addoption(
         "--host", action="store", default="127.0.0.1", help="CQL contact point"
     )

@@ -9,8 +9,11 @@ import cql.log;
 
 using namespace plexdb;
 
-namespace cql::parsers {
-    export Optional<Statement> parse(String8 bytes, void (*error_fn)(const String8& error) = &log::cql_parse_error);
+export namespace cql::parsers {
+    struct ParseResult {
+        Optional<Statement> statement;
+        AutoString8         err;
+    };
 
-    export Optional<String8> check_specific_errors(String8 query);
+    ParseResult parse(String8 bytes);
 }

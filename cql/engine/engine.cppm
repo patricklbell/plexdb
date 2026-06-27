@@ -155,10 +155,11 @@ export namespace cql::engine {
     // prepared statements
     // ========================================================================
     struct PrepareResult {
-        ExecutionStatus status  = ExecutionStatus::Success;
-        String8         message = "";
-        U64             id      = 0;
-        PreparedEntry*  entry   = nullptr;
+        ExecutionStatus status          = ExecutionStatus::Success;
+        String8         message         = "";
+        AutoString8     message_storage = {}; // @note owns message string when dynamic (message.data points here)
+        U64             id              = 0;
+        PreparedEntry*  entry           = nullptr;
     };
 
     PrepareResult  prepare(Engine& engine, String8 query, String8 current_keyspace);

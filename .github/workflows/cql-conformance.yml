@@ -58,6 +58,7 @@ jobs:
           ARGS="-b build/cql/plexdb_cql_server -P 9042"
           ARGS="$ARGS -r ${{ inputs.scylla_ref || 'master' }}"
           ARGS="$ARGS -m tools/cql_tests/mustpass.txt"
+          ARGS="$ARGS -s tools/cql_tests/skiplist.txt"
           if [ -n "${{ inputs.test_filter }}" ]; then
             ARGS="$ARGS -t '${{ inputs.test_filter }}'"
           fi

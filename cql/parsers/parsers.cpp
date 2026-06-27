@@ -1245,9 +1245,16 @@ namespace cql::parsers {
         // ====================================================================
         // Data definition (DDL)
         // ====================================================================
+        struct err_use_bind {
+            static constexpr auto name = "Bind variables cannot be used for keyspace names";
+        };
+
         struct use_stmt {
             static constexpr auto rule = [] {
-                return dsl::peek(kw_use) >> kw_use + dsl::p<ws> + dsl::p<identifier>;
+                constexpr auto bind_marker = dsl::lit_c<'?'> / dsl::lit_c<':'>;
+                return dsl::peek(kw_use) >> kw_use + dsl::p<ws> +
+                       (dsl::peek(bind_marker) >> dsl::error<err_use_bind>
+                        | dsl::p<identifier>);
             }();
             static constexpr auto value = lexy::construct<UseKeyspace>;
         };
@@ -2027,46 +2034,21 @@ namespace cql::parsers {
         };
     }
 
-    Optional<String8> check_specific_errors(String8 query) {
-        const char* p   = query.data;
-        const char* end = query.data + query.length;
-        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
-            ++p;
-        }
-
-        auto ci_eq3 = [](const char* s, char a, char b, char c) {
-            auto lc = [](char x) {
-                return (x >= 'A' && x <= 'Z') ? char(x | 0x20) : x;
-            };
-            return lc(s[0]) == a && lc(s[1]) == b && lc(s[2]) == c;
-        };
-
-        if (p + 3 <= end && ci_eq3(p, 'u', 's', 'e') && (p + 3 == end || p[3] == ' ' || p[3] == '\t' || p[3] == '\n' || p[3] == '\r')) {
-            p += 3;
-            while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
-                ++p;
-            }
-            if (p < end && (*p == '?' || *p == ':')) {
-                return String8{"Bind variables cannot be used for keyspace names"};
-            }
-        }
-        return {};
-    }
-
-    Optional<Statement> parse(String8 bytes, void (*error_fn)(const String8& error)) {
+    ParseResult parse(String8 bytes) {
         ZoneScopedN("parsers::parse");
         log::db_query_text(bytes);
 
         auto input = lexy::string_input<lexy::ascii_encoding>(bytes.data, bytes.length);
 
-        auto try_parse = [&](auto callback) -> Optional<Statement> {
-            auto result = lexy::parse<grammar::statement>(input, callback);
-            if (result.has_value()) {
-                return result.value();
-            }
-            return {};
-        };
-
-        return try_parse(support::lexy::ErrorCallback<void (*)(const String8& error)>{error_fn});
+        ParseResult pr;
+        auto        result = lexy::parse<grammar::statement>(input, support::lexy::FirstErrorSink{&pr.err});
+        if (result.is_success()) {
+            pr.statement = result.value();
+            return pr;
+        }
+        if (pr.err.length > 0) {
+            log::cql_parse_error(pr.err);
+        }
+        return pr;
     }
 }

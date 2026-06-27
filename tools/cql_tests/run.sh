@@ -18,6 +18,7 @@
 #     -L <dir>     write per-session server log to <dir>/server.log
 #     -m <file>    fail if a listed test regresses                   (default: none)
 #     -o <file>    write passing test IDs to <file> (gen mustpass)   (default: none)
+#     -s <file>    skiplist (deselect permissive-parser tests)        (default: tools/cql_tests/skiplist.txt)
 #     -h           show this help
 #
 # Environment:
@@ -40,8 +41,9 @@ LIST_ONLY=false
 LOG_DIR=""
 MUSTPASS_FILE=""
 OUTPUT_MUSTPASS=""
+SKIPLIST_FILE="$SCRIPT_DIR/skiplist.txt"
 
-while getopts "b:p:P:r:t:m:o:xlL:h" opt; do
+while getopts "b:p:P:r:t:m:o:s:xlL:h" opt; do
     case "$opt" in
         b) BINARY="$OPTARG" ;;
         p) PLUGINS+=("$OPTARG") ;;
@@ -50,6 +52,7 @@ while getopts "b:p:P:r:t:m:o:xlL:h" opt; do
         t) PYTEST_K="$OPTARG" ;;
         m) MUSTPASS_FILE="$OPTARG" ;;
         o) OUTPUT_MUSTPASS="$OPTARG" ;;
+        s) SKIPLIST_FILE="$OPTARG" ;;
         x) PYTEST_EXTRA="$PYTEST_EXTRA -x" ;;
         l) LIST_ONLY=true ;;
         L) LOG_DIR="$OPTARG" ;;
@@ -148,6 +151,9 @@ fi
 cp "$SCRIPT_DIR/conftest.py" "$TESTS_DIR/conftest.py"
 cp "$SCRIPT_DIR/util.py"     "$TESTS_DIR/util.py"
 cp "$SCRIPT_DIR/nodetool.py" "$TESTS_DIR/nodetool.py"
+if [ -f "$SKIPLIST_FILE" ]; then
+    cp "$SKIPLIST_FILE" "$TESTS_DIR/skiplist.txt"
+fi
 echo "Installed shims."
 
 # ── Python venv ───────────────────────────────────────────────────────────

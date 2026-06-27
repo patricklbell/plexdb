@@ -1,7 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
-#include <string>
+#include <cql/test_macros/test_macros.h>
 
 import plexdb.base;
 import plexdb.tagged_union;
@@ -16,25 +16,16 @@ using namespace plexdb;
 using namespace cql;
 using namespace cql::parsers;
 
-namespace {
-    std::string g_parse_errors;
-
-    void collect_parse_error(const String8& error) {
-        g_parse_errors.append(error.data, error.length);
-        g_parse_errors.push_back('\n');
-    }
-}
-
 TEST_CASE("CQL CREATE KEYSPACE", "[cql.cql]") {
     SECTION("basic") {
-        auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'};");
+        auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'};").statement;
         REQUIRE(result.has_value());
         auto& stmt = get<CreateKeyspace>(result->value);
         REQUIRE(stmt.name == "ks");
         REQUIRE(stmt.if_not_exists == false);
     }
     SECTION("if not exists") {
-        auto result = parse("CREATE KEYSPACE IF NOT EXISTS ks WITH replication = {'class': 'SimpleStrategy'};");
+        auto result = parse("CREATE KEYSPACE IF NOT EXISTS ks WITH replication = {'class': 'SimpleStrategy'};").statement;
         REQUIRE(result.has_value());
         auto& stmt = get<CreateKeyspace>(result->value);
         REQUIRE(stmt.if_not_exists == true);
@@ -42,14 +33,14 @@ TEST_CASE("CQL CREATE KEYSPACE", "[cql.cql]") {
 }
 
 TEST_CASE("CQL USE KEYSPACE", "[cql.cql]") {
-    auto result = parse("USE my_keyspace;");
+    auto result = parse("USE my_keyspace;").statement;
     REQUIRE(result.has_value());
     auto& stmt = get<UseKeyspace>(result->value);
     REQUIRE(stmt.keyspace == "my_keyspace");
 }
 
 TEST_CASE("CQL DROP KEYSPACE", "[cql.cql]") {
-    auto result = parse("DROP KEYSPACE IF EXISTS ks;");
+    auto result = parse("DROP KEYSPACE IF EXISTS ks;").statement;
     REQUIRE(result.has_value());
     auto& stmt = get<DropKeyspace>(result->value);
     REQUIRE(stmt.if_exists == true);
@@ -59,13 +50,13 @@ TEST_CASE("CQL DROP KEYSPACE", "[cql.cql]") {
 TEST_CASE("CQL CREATE KEYSPACE statements", "[cql.parser]") {
     SECTION("Basic CREATE KEYSPACE") {
         auto query  = "CREATE KEYSPACE my_keyspace WITH replication = 'SimpleStrategy';";
-        auto result = parse(query);
+        auto result = parse(query).statement;
     }
 }
 
 TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
     SECTION("simple table with inline primary key") {
-        auto result = parse("CREATE TABLE ks.tbl (id int PRIMARY KEY, name text, age int);");
+        auto result = parse("CREATE TABLE ks.tbl (id int PRIMARY KEY, name text, age int);").statement;
 
         REQUIRE(result.has_value());
         auto& stmt = get<CreateTable>(result->value);
@@ -75,7 +66,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
 
     SECTION("CREATE KEYSPACE IF NOT EXISTS") {
         auto query  = "CREATE KEYSPACE IF NOT EXISTS test_ks WITH replication = 'NetworkTopologyStrategy';";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<CreateKeyspace>(result->value));
@@ -92,7 +83,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
 
     SECTION("CREATE KEYSPACE with multiple options") {
         auto query  = "CREATE KEYSPACE prod WITH replication = 'SimpleStrategy' AND durable_writes = 'true';";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<CreateKeyspace>(result->value));
@@ -112,7 +103,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
 
     SECTION("CREATE KEYSPACE with three options") {
         auto query  = "CREATE KEYSPACE multi_opt WITH replication = 'NetworkTopologyStrategy' AND durable_writes = 'true' AND strategy_class = 'SimpleStrategy';";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<CreateKeyspace>(result->value));
@@ -126,7 +117,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
 
     SECTION("CREATE KEYSPACE case insensitive") {
         auto query  = "create keyspace TestKS with replication = 'test';";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<CreateKeyspace>(result->value));
@@ -137,7 +128,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
 
     SECTION("CREATE KEYSPACE with underscore in name") {
         auto query  = "CREATE KEYSPACE my_test_keyspace WITH replication = 'SimpleStrategy';";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& ks = get<CreateKeyspace>(result->value);
@@ -146,7 +137,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
 
     SECTION("CREATE KEYSPACE with mixed case IF NOT EXISTS") {
         auto query  = "CREATE KEYSPACE If Not Exists mixed_case WITH replication = 'test';";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& ks = get<CreateKeyspace>(result->value);
@@ -157,7 +148,7 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
     SECTION("CREATE KEYSPACE with quoted option value") {
         // @note CQL uses '' to escape single quotes inside strings, not backslash
         auto query  = "CREATE KEYSPACE ks WITH replication = '{''class'': ''SimpleStrategy''}';";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& ks = get<CreateKeyspace>(result->value);
@@ -168,11 +159,11 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
 TEST_CASE("CQL CREATE TABLE statements", "[cql.parser]") {
     SECTION("Basic CREATE TABLE with single column") {
         auto query  = "CREATE TABLE ks.users (id int PRIMARY KEY);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
     }
 
     SECTION("if not exists") {
-        auto result = parse("CREATE TABLE IF NOT EXISTS tbl (id int PRIMARY KEY);");
+        auto result = parse("CREATE TABLE IF NOT EXISTS tbl (id int PRIMARY KEY);").statement;
         REQUIRE(result.has_value());
         auto& stmt = get<CreateTable>(result->value);
         REQUIRE(stmt.if_not_exists == true);
@@ -180,7 +171,7 @@ TEST_CASE("CQL CREATE TABLE statements", "[cql.parser]") {
 }
 
 TEST_CASE("CQL DROP TABLE", "[cql.cql]") {
-    auto result = parse("DROP TABLE IF EXISTS ks.tbl;");
+    auto result = parse("DROP TABLE IF EXISTS ks.tbl;").statement;
     REQUIRE(result.has_value());
     auto& stmt = get<DropTable>(result->value);
     REQUIRE(stmt.if_exists == true);
@@ -188,7 +179,7 @@ TEST_CASE("CQL DROP TABLE", "[cql.cql]") {
 }
 
 TEST_CASE("CQL TRUNCATE", "[cql.cql]") {
-    auto result = parse("TRUNCATE TABLE ks.tbl;");
+    auto result = parse("TRUNCATE TABLE ks.tbl;").statement;
     REQUIRE(result.has_value());
     auto& stmt = get<TruncateTable>(result->value);
     REQUIRE(stmt.table.table_name == "tbl");
@@ -196,7 +187,7 @@ TEST_CASE("CQL TRUNCATE", "[cql.cql]") {
 
 TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     SECTION("with column names and values") {
-        auto result = parse("INSERT INTO tbl (id, name) VALUES (1, 'hello');");
+        auto result = parse("INSERT INTO tbl (id, name) VALUES (1, 'hello');").statement;
         REQUIRE(result.has_value());
         auto& stmt = get<Insert>(result->value);
         REQUIRE(stmt.table.table_name == "tbl");
@@ -206,14 +197,14 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
     }
 
     SECTION("whitespace before comma in column name list") {
-        auto result = parse("INSERT INTO tbl (id , name) VALUES (1, 'hello');");
+        auto result = parse("INSERT INTO tbl (id , name) VALUES (1, 'hello');").statement;
         REQUIRE(result.has_value());
         auto& nv = get<Insert::NamesValues>(get<Insert>(result->value).insert_clause);
         REQUIRE(nv.names.length == 2);
     }
 
     SECTION("whitespace before comma in values list") {
-        auto result = parse("INSERT INTO tbl (id, name) VALUES (1 , 'hello');");
+        auto result = parse("INSERT INTO tbl (id, name) VALUES (1 , 'hello');").statement;
         REQUIRE(result.has_value());
         auto& nv = get<Insert::NamesValues>(get<Insert>(result->value).insert_clause);
         REQUIRE(nv.values.length == 2);
@@ -221,7 +212,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 
     SECTION("CREATE TABLE with multiple columns") {
         auto query  = "CREATE TABLE ks.users (id int PRIMARY KEY, name text, age int);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<CreateTable>(result->value));
@@ -245,7 +236,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 
     SECTION("CREATE TABLE IF NOT EXISTS") {
         auto query  = "CREATE TABLE IF NOT EXISTS ks.products (sku int PRIMARY KEY, name text, price int);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<CreateTable>(result->value));
@@ -258,7 +249,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 
     SECTION("CREATE TABLE with various data types") {
         auto query  = "CREATE TABLE ks.data (id int PRIMARY KEY, name text, count bigint, created timestamp, active boolean);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
@@ -272,7 +263,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 
     SECTION("CREATE TABLE with FLOAT and DOUBLE types") {
         auto query  = "CREATE TABLE prod.metrics (id int PRIMARY KEY, temperature float, precision_value double);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
@@ -283,7 +274,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 
     SECTION("CREATE TABLE with UUID type") {
         auto query  = "CREATE TABLE ks.sessions (session_id uuid PRIMARY KEY, user_id int);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
@@ -294,7 +285,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 
     SECTION("CREATE TABLE case insensitive") {
         auto query  = "create table ks.TestTable (Id INT primary key, Name TEXT);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<CreateTable>(result->value));
@@ -305,7 +296,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 
     SECTION("CREATE TABLE with non-primary key as last column") {
         auto query  = "CREATE TABLE ks.test (id int PRIMARY KEY, data text);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
@@ -315,7 +306,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 
     SECTION("CREATE TABLE with primary key in middle") {
         auto query  = "CREATE TABLE ks.test (name text, id int PRIMARY KEY, email text);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
@@ -327,7 +318,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 
     SECTION("CREATE TABLE with many columns") {
         auto query  = "CREATE TABLE ks.large (c1 int PRIMARY KEY, c2 text, c3 bigint, c4 timestamp, c5 boolean, c6 float, c7 double);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
@@ -336,7 +327,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 
     SECTION("CREATE TABLE with underscore column names") {
         auto query  = "CREATE TABLE ks.test (user_id int PRIMARY KEY, first_name text, last_name text);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
@@ -349,11 +340,11 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
 TEST_CASE("CQL INSERT INTO statements", "[cql.parser]") {
     SECTION("INSERT INTO with integer values") {
         auto query  = "INSERT INTO ks.users VALUES (1, 2, 3);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
     }
 
     SECTION("if not exists") {
-        auto result = parse("INSERT INTO tbl (id) VALUES (1) IF NOT EXISTS;");
+        auto result = parse("INSERT INTO tbl (id) VALUES (1) IF NOT EXISTS;").statement;
         REQUIRE(result.has_value());
         auto& stmt = get<Insert>(result->value);
         REQUIRE(stmt.if_not_exists == true);
@@ -362,7 +353,7 @@ TEST_CASE("CQL INSERT INTO statements", "[cql.parser]") {
 
 TEST_CASE("CQL SELECT", "[cql.cql]") {
     SECTION("select star") {
-        auto result = parse("SELECT * FROM tbl;");
+        auto result = parse("SELECT * FROM tbl;").statement;
         REQUIRE(result.has_value());
         auto& stmt = get<Select>(result->value);
         REQUIRE(stmt.from.table_name == "tbl");
@@ -370,11 +361,11 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
     SECTION("INSERT INTO with string values") {
         auto query  = "INSERT INTO my_ks.table VALUES ('text1', 'text2');";
-        auto result = parse(query);
+        auto result = parse(query).statement;
     }
 
     SECTION("select columns") {
-        auto result = parse("SELECT id, name FROM ks.tbl;");
+        auto result = parse("SELECT id, name FROM ks.tbl;").statement;
         REQUIRE(result.has_value());
         auto& stmt = get<Select>(result->value);
         REQUIRE(stmt.from.table_name == "tbl");
@@ -382,11 +373,11 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
     SECTION("INSERT INTO with mixed values") {
         auto query  = "INSERT INTO app.users VALUES (123, 'John Doe', 'john@example.com');";
-        auto result = parse(query);
+        auto result = parse(query).statement;
     }
 
     SECTION("select with where") {
-        auto result = parse("SELECT * FROM tbl WHERE id = 1;");
+        auto result = parse("SELECT * FROM tbl WHERE id = 1;").statement;
         REQUIRE(result.has_value());
         auto& stmt = get<Select>(result->value);
         REQUIRE(stmt.where.has_value());
@@ -394,11 +385,11 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
     SECTION("INSERT INTO with single value") {
         auto query  = "INSERT INTO test.data VALUES (42);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
     }
 
     SECTION("select with limit") {
-        auto result = parse("SELECT * FROM tbl LIMIT 10;");
+        auto result = parse("SELECT * FROM tbl LIMIT 10;").statement;
         REQUIRE(result.has_value());
         [[maybe_unused]] auto& stmt = get<Select>(result->value);
     }
@@ -406,7 +397,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     SECTION("INSERT INTO with negative integers") {
         // @note negation is represented as UnaryMinusArithmeticOperation, not a folded Constant
         auto query  = "INSERT INTO ks.data VALUES (-100, -50, -1);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
@@ -423,11 +414,10 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO arithmetic precedence") {
-        auto query = "INSERT INTO ks.data VALUES (1 + 2 * 3 - 5);";
-        g_parse_errors.clear();
-        auto result = parse(query, &collect_parse_error);
-
-        UNSCOPED_INFO(g_parse_errors);
+        auto  query  = "INSERT INTO ks.data VALUES (1 + 2 * 3 - 5);";
+        auto  pr     = parse(query);
+        auto& result = pr.statement;
+        UNSCOPED_INFO(String8(pr.err));
         REQUIRE(result.has_value());
         const auto& ins  = get<Insert>(result->value);
         const auto& expr = get<ArithmeticOperation>(get<Insert::NamesValues>(ins.insert_clause).values[0].value);
@@ -448,11 +438,10 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO modulo operator") {
-        auto query = "INSERT INTO ks.data VALUES (20 % 6);";
-        g_parse_errors.clear();
-        auto result = parse(query, &collect_parse_error);
-
-        UNSCOPED_INFO(g_parse_errors);
+        auto  query  = "INSERT INTO ks.data VALUES (20 % 6);";
+        auto  pr     = parse(query);
+        auto& result = pr.statement;
+        UNSCOPED_INFO(String8(pr.err));
         REQUIRE(result.has_value());
         const auto& ins     = get<Insert>(result->value);
         const auto& expr    = get<ArithmeticOperation>(get<Insert::NamesValues>(ins.insert_clause).values[0].value);
@@ -463,32 +452,32 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO named values with arithmetic expression") {
-        auto query = "INSERT INTO ks.data (id, tag) VALUES (1 + 2 * 3, 'mul_precedence');";
-        g_parse_errors.clear();
-        auto result = parse(query, &collect_parse_error);
-        UNSCOPED_INFO(g_parse_errors);
+        auto  query  = "INSERT INTO ks.data (id, tag) VALUES (1 + 2 * 3, 'mul_precedence');";
+        auto  pr     = parse(query);
+        auto& result = pr.statement;
+        UNSCOPED_INFO(String8(pr.err));
         REQUIRE(result.has_value());
     }
 
     SECTION("INSERT INTO named values with string concatenation") {
-        auto query = "INSERT INTO ks.data (id, tag) VALUES (1, 'he' + 'llo');";
-        g_parse_errors.clear();
-        auto result = parse(query, &collect_parse_error);
-        UNSCOPED_INFO(g_parse_errors);
+        auto  query  = "INSERT INTO ks.data (id, tag) VALUES (1, 'he' + 'llo');";
+        auto  pr     = parse(query);
+        auto& result = pr.statement;
+        UNSCOPED_INFO(String8(pr.err));
         REQUIRE(result.has_value());
     }
 
     SECTION("INSERT INTO named values with function call") {
-        auto query = "INSERT INTO ks.data (id, tag) VALUES (toDate(86400000), 'date');";
-        g_parse_errors.clear();
-        auto result = parse(query, &collect_parse_error);
-        UNSCOPED_INFO(g_parse_errors);
+        auto  query  = "INSERT INTO ks.data (id, tag) VALUES (toDate(86400000), 'date');";
+        auto  pr     = parse(query);
+        auto& result = pr.statement;
+        UNSCOPED_INFO(String8(pr.err));
         REQUIRE(result.has_value());
     }
 
     SECTION("INSERT INTO with large integer") {
         auto query  = "INSERT INTO ks.data VALUES (9223372036854775807);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
@@ -498,7 +487,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
     SECTION("INSERT INTO case insensitive") {
         auto query  = "insert into ks.tbl values (1, 'test');";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Insert>(result->value));
@@ -506,7 +495,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
     SECTION("INSERT INTO with empty string") {
         auto query  = "INSERT INTO ks.tbl VALUES ('');";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
@@ -516,7 +505,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
     SECTION("INSERT INTO with string containing spaces") {
         auto query  = "INSERT INTO ks.tbl VALUES ('hello world', 'foo bar baz');";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
@@ -528,7 +517,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     SECTION("INSERT INTO with escaped quotes") {
         // @note CQL uses '' to escape single quotes inside strings, not backslash
         auto query  = "INSERT INTO ks.tbl VALUES ('''quoted''');";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
@@ -538,7 +527,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
     SECTION("INSERT INTO with zero value") {
         auto query  = "INSERT INTO ks.tbl VALUES (0);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
@@ -547,7 +536,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
     SECTION("INSERT INTO with multiple string values") {
         auto query  = "INSERT INTO app.messages VALUES ('msg1', 'msg2', 'msg3', 'msg4', 'msg5');";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
@@ -561,7 +550,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
     SECTION("Basic SELECT FROM") {
         auto query  = "SELECT * FROM ks.users;";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
@@ -573,7 +562,7 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
 
     SECTION("SELECT FROM case insensitive") {
         auto query  = "select * from TestTable;";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
@@ -585,7 +574,7 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
 
     SECTION("SELECT FROM with underscores") {
         auto query  = "SELECT * FROM my_table;";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& sel = get<Select>(result->value);
@@ -595,7 +584,7 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
 
     SECTION("SELECT FROM with mixed case keywords") {
         auto query  = "SeLeCt * FrOm ks.tbl;";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
@@ -603,7 +592,7 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
 
     SECTION("SELECT FROM with extra whitespace") {
         auto query  = "SELECT   *   FROM   ks.users  ;";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& sel = get<Select>(result->value);
@@ -613,7 +602,7 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
 
     SECTION("SELECT FROM with leading/trailing whitespace") {
         auto query  = "  SELECT * FROM ks.users;  ";
-        auto result = parse(query);
+        auto result = parse(query).statement;
 
         REQUIRE(result.has_value());
         const auto& sel = get<Select>(result->value);
@@ -625,13 +614,13 @@ TEST_CASE("CQL SELECT FROM statements", "[cql.parser]") {
 TEST_CASE("CQL Invalid syntax handling", "[cql.parser]") {
     SECTION("Invalid keyword") {
         auto query  = "INVALID STATEMENT;";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing table name in CREATE TABLE") {
         auto query  = "CREATE TABLE;";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
@@ -641,66 +630,66 @@ TEST_CASE("CQL Invalid syntax handling", "[cql.parser]") {
 
     SECTION("Missing parentheses in CREATE TABLE") {
         auto query  = "CREATE TABLE ks.users id int PRIMARY KEY;";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing WITH in CREATE KEYSPACE") {
         auto query  = "CREATE KEYSPACE ks replication = 'test';";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Empty query") {
         auto query  = "";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Only whitespace") {
         auto query  = "   \n\t  ";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Unclosed string in INSERT") {
         auto query  = "INSERT INTO ks.tbl VALUES ('unclosed);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing comma between columns") {
         auto query  = "CREATE TABLE ks.test (id int PRIMARY KEY name text);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing comma between values") {
         auto query  = "INSERT INTO ks.tbl VALUES (1 2 3);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Invalid data type") {
         auto query  = "CREATE TABLE ks.test (id invalidtype PRIMARY KEY);";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing closing parenthesis in INSERT") {
         auto query  = "INSERT INTO ks.tbl VALUES (1, 2, 3;";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Missing closing parenthesis in CREATE TABLE") {
         auto query  = "CREATE TABLE ks.test (id int PRIMARY KEY;";
-        auto result = parse(query);
+        auto result = parse(query).statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("select json") {
-        auto result = parse("SELECT JSON * FROM tbl;");
+        auto result = parse("SELECT JSON * FROM tbl;").statement;
         REQUIRE(result.has_value());
         auto& stmt = get<Select>(result->value);
         REQUIRE(stmt.transform.has_value());
@@ -709,14 +698,14 @@ TEST_CASE("CQL Invalid syntax handling", "[cql.parser]") {
 
 TEST_CASE("CQL UPDATE", "[cql.cql]") {
     SECTION("basic") {
-        auto result = parse("UPDATE tbl SET name = 'new' WHERE id = 1;");
+        auto result = parse("UPDATE tbl SET name = 'new' WHERE id = 1;").statement;
         REQUIRE(result.has_value());
         auto& stmt = get<Update>(result->value);
         REQUIRE(stmt.table.table_name == "tbl");
         REQUIRE(stmt.assignments.length == 1);
     }
     SECTION("whitespace before comma in SET list") {
-        auto result = parse("UPDATE tbl SET a = 1 , b = 2 WHERE id = 1;");
+        auto result = parse("UPDATE tbl SET a = 1 , b = 2 WHERE id = 1;").statement;
         REQUIRE(result.has_value());
         REQUIRE(get<Update>(result->value).assignments.length == 2);
     }
@@ -724,13 +713,13 @@ TEST_CASE("CQL UPDATE", "[cql.cql]") {
 
 TEST_CASE("CQL DELETE", "[cql.cql]") {
     SECTION("basic") {
-        auto result = parse("DELETE FROM tbl WHERE id = 1;");
+        auto result = parse("DELETE FROM tbl WHERE id = 1;").statement;
         REQUIRE(result.has_value());
         auto& stmt = get<Delete>(result->value);
         REQUIRE(stmt.table.table_name == "tbl");
     }
     SECTION("whitespace before comma in selection list") {
-        auto result = parse("DELETE a , b FROM tbl WHERE id = 1;");
+        auto result = parse("DELETE a , b FROM tbl WHERE id = 1;").statement;
         REQUIRE(result.has_value());
         REQUIRE(get<Delete>(result->value).selections.length == 2);
     }
@@ -738,34 +727,34 @@ TEST_CASE("CQL DELETE", "[cql.cql]") {
 
 TEST_CASE("CQL whitespace before comma is tolerated", "[cql.cql][cql.parser]") {
     SECTION("collection literal: list") {
-        REQUIRE(parse("INSERT INTO tbl (k, l) VALUES (1, [1 , 2 , 3]);").has_value());
+        REQUIRE(parse("INSERT INTO tbl (k, l) VALUES (1, [1 , 2 , 3]);").statement.has_value());
     }
     SECTION("collection literal: set") {
-        REQUIRE(parse("INSERT INTO tbl (k, s) VALUES (1, {1 , 2 , 3});").has_value());
+        REQUIRE(parse("INSERT INTO tbl (k, s) VALUES (1, {1 , 2 , 3});").statement.has_value());
     }
     SECTION("collection literal: map") {
-        REQUIRE(parse("INSERT INTO tbl (k, m) VALUES (1, {'a': 1 , 'b': 2});").has_value());
+        REQUIRE(parse("INSERT INTO tbl (k, m) VALUES (1, {'a': 1 , 'b': 2});").statement.has_value());
     }
     SECTION("CREATE TABLE column definitions") {
-        REQUIRE(parse("CREATE TABLE t (id int PRIMARY KEY , name text , age int);").has_value());
+        REQUIRE(parse("CREATE TABLE t (id int PRIMARY KEY , name text , age int);").statement.has_value());
     }
     SECTION("SELECT projection list") {
-        REQUIRE(parse("SELECT a , b , c FROM tbl WHERE k = 1;").has_value());
+        REQUIRE(parse("SELECT a , b , c FROM tbl WHERE k = 1;").statement.has_value());
     }
     SECTION("composite PRIMARY KEY column list") {
-        REQUIRE(parse("CREATE TABLE t (a int, b int, c int, PRIMARY KEY ((a , b) , c));").has_value());
+        REQUIRE(parse("CREATE TABLE t (a int, b int, c int, PRIMARY KEY ((a , b) , c));").statement.has_value());
     }
 }
 
 TEST_CASE("CQL case insensitive keywords", "[cql.cql]") {
-    REQUIRE(parse("select * from tbl;").has_value());
-    REQUIRE(parse("Select * From tbl;").has_value());
-    REQUIRE(parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy'};").has_value());
+    REQUIRE(parse("select * from tbl;").statement.has_value());
+    REQUIRE(parse("Select * From tbl;").statement.has_value());
+    REQUIRE(parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy'};").statement.has_value());
 }
 
 TEST_CASE("Parse USE statement", "[cql.parser]") {
     SECTION("Basic USE") {
-        auto result = parse("USE my_keyspace;");
+        auto result = parse("USE my_keyspace;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<UseKeyspace>(result->value));
         const auto& stmt = get<UseKeyspace>(result->value);
@@ -775,7 +764,7 @@ TEST_CASE("Parse USE statement", "[cql.parser]") {
 
 TEST_CASE("Parse DROP statements", "[cql.parser]") {
     SECTION("DROP KEYSPACE") {
-        auto result = parse("DROP KEYSPACE my_keyspace;");
+        auto result = parse("DROP KEYSPACE my_keyspace;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<DropKeyspace>(result->value));
         const auto& stmt = get<DropKeyspace>(result->value);
@@ -784,7 +773,7 @@ TEST_CASE("Parse DROP statements", "[cql.parser]") {
     }
 
     SECTION("DROP KEYSPACE IF EXISTS") {
-        auto result = parse("DROP KEYSPACE IF EXISTS my_keyspace;");
+        auto result = parse("DROP KEYSPACE IF EXISTS my_keyspace;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<DropKeyspace>(result->value));
         const auto& stmt = get<DropKeyspace>(result->value);
@@ -793,7 +782,7 @@ TEST_CASE("Parse DROP statements", "[cql.parser]") {
     }
 
     SECTION("DROP TABLE") {
-        auto result = parse("DROP TABLE ks.my_table;");
+        auto result = parse("DROP TABLE ks.my_table;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<DropTable>(result->value));
         const auto& stmt = get<DropTable>(result->value);
@@ -803,7 +792,7 @@ TEST_CASE("Parse DROP statements", "[cql.parser]") {
     }
 
     SECTION("DROP TABLE IF EXISTS") {
-        auto result = parse("DROP TABLE IF EXISTS my_table;");
+        auto result = parse("DROP TABLE IF EXISTS my_table;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<DropTable>(result->value));
         const auto& stmt = get<DropTable>(result->value);
@@ -815,7 +804,7 @@ TEST_CASE("Parse DROP statements", "[cql.parser]") {
 
 TEST_CASE("Parse TRUNCATE statement", "[cql.parser]") {
     SECTION("TRUNCATE with keyspace") {
-        auto result = parse("TRUNCATE ks.my_table;");
+        auto result = parse("TRUNCATE ks.my_table;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<TruncateTable>(result->value));
         const auto& stmt = get<TruncateTable>(result->value);
@@ -824,7 +813,7 @@ TEST_CASE("Parse TRUNCATE statement", "[cql.parser]") {
     }
 
     SECTION("TRUNCATE TABLE with keyspace") {
-        auto result = parse("TRUNCATE TABLE my_table;");
+        auto result = parse("TRUNCATE TABLE my_table;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<TruncateTable>(result->value));
         const auto& stmt = get<TruncateTable>(result->value);
@@ -835,7 +824,7 @@ TEST_CASE("Parse TRUNCATE statement", "[cql.parser]") {
 
 TEST_CASE("Parse UPDATE statement", "[cql.parser]") {
     SECTION("Basic UPDATE") {
-        auto result = parse("UPDATE ks.users SET name = 'Alice' WHERE id = 1;");
+        auto result = parse("UPDATE ks.users SET name = 'Alice' WHERE id = 1;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Update>(result->value));
         const auto& stmt = get<Update>(result->value);
@@ -845,7 +834,7 @@ TEST_CASE("Parse UPDATE statement", "[cql.parser]") {
     }
 
     SECTION("UPDATE multiple assignments") {
-        auto result = parse("UPDATE ks.users SET name = 'Alice', age = 30 WHERE id = 1;");
+        auto result = parse("UPDATE ks.users SET name = 'Alice', age = 30 WHERE id = 1;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Update>(result->value));
         [[maybe_unused]] const auto& stmt = get<Update>(result->value);
@@ -855,7 +844,7 @@ TEST_CASE("Parse UPDATE statement", "[cql.parser]") {
 
 TEST_CASE("Parse DELETE statement", "[cql.parser]") {
     SECTION("DELETE all columns") {
-        auto result = parse("DELETE FROM ks.users WHERE id = 1;");
+        auto result = parse("DELETE FROM ks.users WHERE id = 1;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Delete>(result->value));
         const auto& stmt = get<Delete>(result->value);
@@ -865,7 +854,7 @@ TEST_CASE("Parse DELETE statement", "[cql.parser]") {
     }
 
     SECTION("DELETE specific columns") {
-        auto result = parse("DELETE name, age FROM users WHERE id = 1;");
+        auto result = parse("DELETE name, age FROM users WHERE id = 1;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Delete>(result->value));
         [[maybe_unused]] const auto& stmt = get<Delete>(result->value);
@@ -875,7 +864,7 @@ TEST_CASE("Parse DELETE statement", "[cql.parser]") {
 
 TEST_CASE("Parse SELECT with WHERE and LIMIT", "[cql.parser]") {
     SECTION("SELECT with WHERE") {
-        auto result = parse("SELECT * FROM ks.users WHERE id = 1;");
+        auto result = parse("SELECT * FROM ks.users WHERE id = 1;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
         const auto& stmt = get<Select>(result->value);
@@ -885,7 +874,7 @@ TEST_CASE("Parse SELECT with WHERE and LIMIT", "[cql.parser]") {
     }
 
     SECTION("SELECT with LIMIT") {
-        auto result = parse("SELECT * FROM ks.users LIMIT 10;");
+        auto result = parse("SELECT * FROM ks.users LIMIT 10;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
         const auto& stmt = get<Select>(result->value);
@@ -893,7 +882,7 @@ TEST_CASE("Parse SELECT with WHERE and LIMIT", "[cql.parser]") {
     }
 
     SECTION("SELECT with WHERE and LIMIT") {
-        auto result = parse("SELECT * FROM users WHERE active = true LIMIT 5;");
+        auto result = parse("SELECT * FROM users WHERE active = true LIMIT 5;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
         const auto& stmt = get<Select>(result->value);
@@ -904,7 +893,7 @@ TEST_CASE("Parse SELECT with WHERE and LIMIT", "[cql.parser]") {
     }
 
     SECTION("SELECT specific columns") {
-        auto result = parse("SELECT id, name, age FROM ks.users;");
+        auto result = parse("SELECT id, name, age FROM ks.users;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
         [[maybe_unused]] const auto& stmt = get<Select>(result->value);
@@ -912,7 +901,7 @@ TEST_CASE("Parse SELECT with WHERE and LIMIT", "[cql.parser]") {
     }
 
     SECTION("SELECT multiple WHERE conditions") {
-        auto result = parse("SELECT * FROM ks.users WHERE id = 1 AND name = 'Alice';");
+        auto result = parse("SELECT * FROM ks.users WHERE id = 1 AND name = 'Alice';").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
         [[maybe_unused]] const auto& stmt = get<Select>(result->value);
@@ -922,7 +911,7 @@ TEST_CASE("Parse SELECT with WHERE and LIMIT", "[cql.parser]") {
 
 TEST_CASE("Parse INSERT with column names", "[cql.parser]") {
     SECTION("INSERT with column list") {
-        auto result = parse("INSERT INTO ks.users (id, name) VALUES (1, 'Alice');");
+        auto result = parse("INSERT INTO ks.users (id, name) VALUES (1, 'Alice');").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Insert>(result->value));
         const auto& stmt = get<Insert>(result->value);
@@ -932,7 +921,7 @@ TEST_CASE("Parse INSERT with column names", "[cql.parser]") {
     }
 
     SECTION("INSERT without column list") {
-        auto result = parse("INSERT INTO users VALUES (1, 'Alice', 30);");
+        auto result = parse("INSERT INTO users VALUES (1, 'Alice', 30);").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Insert>(result->value));
         const auto& stmt = get<Insert>(result->value);
@@ -942,7 +931,7 @@ TEST_CASE("Parse INSERT with column names", "[cql.parser]") {
     }
 
     SECTION("INSERT IF NOT EXISTS") {
-        auto result = parse("INSERT INTO ks.users (id) VALUES (1) IF NOT EXISTS;");
+        auto result = parse("INSERT INTO ks.users (id) VALUES (1) IF NOT EXISTS;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Insert>(result->value));
         const auto& stmt = get<Insert>(result->value);
@@ -952,7 +941,7 @@ TEST_CASE("Parse INSERT with column names", "[cql.parser]") {
 
 TEST_CASE("Parse SELECT with ORDER BY", "[cql.parser]") {
     SECTION("ORDER BY single column ascending") {
-        auto result = parse("SELECT * FROM ks.users ORDER BY created_at ASC;");
+        auto result = parse("SELECT * FROM ks.users ORDER BY created_at ASC;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
         [[maybe_unused]] const auto& stmt = get<Select>(result->value);
@@ -960,7 +949,7 @@ TEST_CASE("Parse SELECT with ORDER BY", "[cql.parser]") {
     }
 
     SECTION("ORDER BY single column descending") {
-        auto result = parse("SELECT * FROM ks.users ORDER BY created_at DESC;");
+        auto result = parse("SELECT * FROM ks.users ORDER BY created_at DESC;").statement;
         REQUIRE(result.has_value());
         const auto& stmt = get<Select>(result->value);
         REQUIRE(stmt.order_by->columns.length == 1);
@@ -968,7 +957,7 @@ TEST_CASE("Parse SELECT with ORDER BY", "[cql.parser]") {
     }
 
     SECTION("ORDER BY default ascending") {
-        auto result = parse("SELECT * FROM ks.users ORDER BY name;");
+        auto result = parse("SELECT * FROM ks.users ORDER BY name;").statement;
         REQUIRE(result.has_value());
         const auto& stmt = get<Select>(result->value);
         REQUIRE(stmt.order_by->columns.length == 1);
@@ -977,7 +966,7 @@ TEST_CASE("Parse SELECT with ORDER BY", "[cql.parser]") {
     }
 
     SECTION("ORDER BY with WHERE and LIMIT") {
-        auto result = parse("SELECT * FROM ks.users WHERE id = 1 ORDER BY created_at DESC LIMIT 10;");
+        auto result = parse("SELECT * FROM ks.users WHERE id = 1 ORDER BY created_at DESC LIMIT 10;").statement;
         REQUIRE(result.has_value());
         [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
@@ -986,7 +975,7 @@ TEST_CASE("Parse SELECT with ORDER BY", "[cql.parser]") {
 
 TEST_CASE("Parse SELECT with ALLOW FILTERING", "[cql.parser]") {
     SECTION("Basic ALLOW FILTERING") {
-        auto result = parse("SELECT * FROM ks.users WHERE age = 25 ALLOW FILTERING;");
+        auto result = parse("SELECT * FROM ks.users WHERE age = 25 ALLOW FILTERING;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
         const auto& stmt = get<Select>(result->value);
@@ -994,7 +983,7 @@ TEST_CASE("Parse SELECT with ALLOW FILTERING", "[cql.parser]") {
     }
 
     SECTION("ALLOW FILTERING with ORDER BY and LIMIT") {
-        auto result = parse("SELECT * FROM ks.users WHERE age = 25 ORDER BY name LIMIT 100 ALLOW FILTERING;");
+        auto result = parse("SELECT * FROM ks.users WHERE age = 25 ORDER BY name LIMIT 100 ALLOW FILTERING;").statement;
         REQUIRE(result.has_value());
         const auto& stmt = get<Select>(result->value);
         REQUIRE(get<S64>(stmt.limit.value) == 100);
@@ -1005,7 +994,7 @@ TEST_CASE("Parse SELECT with ALLOW FILTERING", "[cql.parser]") {
 
 TEST_CASE("Parse SELECT with GROUP BY", "[cql.parser]") {
     SECTION("GROUP BY single column") {
-        auto result = parse("SELECT user_id FROM ks.events GROUP BY user_id;");
+        auto result = parse("SELECT user_id FROM ks.events GROUP BY user_id;").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<Select>(result->value));
         [[maybe_unused]] const auto& stmt = get<Select>(result->value);
@@ -1013,21 +1002,21 @@ TEST_CASE("Parse SELECT with GROUP BY", "[cql.parser]") {
     }
 
     SECTION("GROUP BY multiple columns") {
-        auto result = parse("SELECT * FROM ks.events GROUP BY year, month, day;");
+        auto result = parse("SELECT * FROM ks.events GROUP BY year, month, day;").statement;
         REQUIRE(result.has_value());
         [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
     }
 
     SECTION("GROUP BY with WHERE and ORDER BY") {
-        auto result = parse("SELECT * FROM ks.events WHERE user_id = 1 GROUP BY event_type ORDER BY created_at DESC;");
+        auto result = parse("SELECT * FROM ks.events WHERE user_id = 1 GROUP BY event_type ORDER BY created_at DESC;").statement;
         REQUIRE(result.has_value());
         [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
     }
 
     SECTION("GROUP BY with LIMIT and ALLOW FILTERING") {
-        auto result = parse("SELECT * FROM ks.events GROUP BY user_id LIMIT 50 ALLOW FILTERING;");
+        auto result = parse("SELECT * FROM ks.events GROUP BY user_id LIMIT 50 ALLOW FILTERING;").statement;
         REQUIRE(result.has_value());
         [[maybe_unused]] const auto& stmt = get<Select>(result->value);
         // @todo
@@ -1036,7 +1025,7 @@ TEST_CASE("Parse SELECT with GROUP BY", "[cql.parser]") {
 
 TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[cql.parser]") {
     SECTION("Simple map replication") {
-        auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy'};");
+        auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy'};").statement;
         REQUIRE(result.has_value());
         REQUIRE(type_matches_tag<CreateKeyspace>(result->value));
         const auto& ks = get<CreateKeyspace>(result->value);
@@ -1048,7 +1037,7 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[cql.parser]") 
     }
 
     SECTION("Map with multiple entries") {
-        auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 3};");
+        auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 3};").statement;
         REQUIRE(result.has_value());
         const auto&                  ks  = get<CreateKeyspace>(result->value);
         [[maybe_unused]] const auto& map = get<MapLiteral>(ks.options.identifier_values[0].second);
@@ -1056,7 +1045,7 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[cql.parser]") 
     }
 
     SECTION("NetworkTopologyStrategy with datacenter configs") {
-        auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3, 'dc2': 2};");
+        auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3, 'dc2': 2};").statement;
         REQUIRE(result.has_value());
         const auto&                  ks  = get<CreateKeyspace>(result->value);
         [[maybe_unused]] const auto& map = get<MapLiteral>(ks.options.identifier_values[0].second);
@@ -1064,7 +1053,7 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[cql.parser]") 
     }
 
     SECTION("Mix of map and scalar options") {
-        auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy'} AND durable_writes = 'true';");
+        auto result = parse("CREATE KEYSPACE ks WITH replication = {'class': 'SimpleStrategy'} AND durable_writes = 'true';").statement;
         REQUIRE(result.has_value());
         const auto& ks = get<CreateKeyspace>(result->value);
         REQUIRE(ks.options.identifier_values.length == 2);
@@ -1077,40 +1066,40 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[cql.parser]") 
 
 TEST_CASE("CQL parse error reporting", "[cql.parser]") {
     SECTION("Invalid syntax returns empty with Catch2 reporter") {
-        auto result = parse("INVALID STATEMENT;");
+        auto result = parse("INVALID STATEMENT;").statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Valid query succeeds with Catch2 reporter") {
-        auto result = parse("SELECT * FROM ks.tbl;");
+        auto result = parse("SELECT * FROM ks.tbl;").statement;
         REQUIRE(result.has_value());
     }
 
     SECTION("Empty query returns empty with Catch2 reporter") {
-        auto result = parse("");
+        auto result = parse("").statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Unclosed string returns empty with Catch2 reporter") {
-        auto result = parse("INSERT INTO ks.tbl VALUES ('unclosed);");
+        auto result = parse("INSERT INTO ks.tbl VALUES ('unclosed);").statement;
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Invalid syntax returns empty with bool reporter") {
-        auto result = parse("CREATE TABLE;");
+        auto result = parse("CREATE TABLE;").statement;
         REQUIRE_FALSE(result.has_value());
     }
 }
 
 TEST_CASE("CQL quoted identifiers", "[cql.cql]") {
-    auto result = parse("SELECT * FROM \"MyTable\";");
+    auto result = parse("SELECT * FROM \"MyTable\";").statement;
     REQUIRE(result.has_value());
     auto& stmt = get<Select>(result->value);
     REQUIRE(stmt.from.table_name == "MyTable");
 }
 
 TEST_CASE("CQL string escape", "[cql.cql]") {
-    auto result = parse("INSERT INTO tbl (id, name) VALUES (1, 'it''s');");
+    auto result = parse("INSERT INTO tbl (id, name) VALUES (1, 'it''s');").statement;
     REQUIRE(result.has_value());
     auto& stmt    = get<Insert>(result->value);
     auto& nv      = get<Insert::NamesValues>(stmt.insert_clause);
@@ -1120,7 +1109,7 @@ TEST_CASE("CQL string escape", "[cql.cql]") {
 
 TEST_CASE("Conformance: CREATE INDEX", "[cql.conformance.parser]") {
     SECTION("anonymous index on column") {
-        auto r = parse("CREATE INDEX ON ks.tbl(categories);");
+        auto r = parse("CREATE INDEX ON ks.tbl(categories);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateIndex>(r->value);
         REQUIRE(!s.custom);
@@ -1129,7 +1118,7 @@ TEST_CASE("Conformance: CREATE INDEX", "[cql.conformance.parser]") {
         REQUIRE(s.table.table_name == "tbl");
     }
     SECTION("named index on column") {
-        auto r = parse("CREATE INDEX v_idx_1 ON ks.tbl(v);");
+        auto r = parse("CREATE INDEX v_idx_1 ON ks.tbl(v);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateIndex>(r->value);
         REQUIRE(!s.custom);
@@ -1138,20 +1127,20 @@ TEST_CASE("Conformance: CREATE INDEX", "[cql.conformance.parser]") {
         REQUIRE(s.table.table_name == "tbl");
     }
     SECTION("custom index") {
-        auto r = parse("CREATE CUSTOM INDEX ON ks.tbl(col);");
+        auto r = parse("CREATE CUSTOM INDEX ON ks.tbl(col);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateIndex>(r->value);
         REQUIRE(s.custom);
     }
     SECTION("if not exists") {
-        auto r = parse("CREATE INDEX IF NOT EXISTS ON ks.tbl(col);");
+        auto r = parse("CREATE INDEX IF NOT EXISTS ON ks.tbl(col);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateIndex>(r->value);
         REQUIRE(s.if_not_exists);
         REQUIRE(!s.index_name);
     }
     SECTION("named index if not exists") {
-        auto r = parse("CREATE INDEX IF NOT EXISTS idx_name ON ks.tbl(col);");
+        auto r = parse("CREATE INDEX IF NOT EXISTS idx_name ON ks.tbl(col);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateIndex>(r->value);
         REQUIRE(s.if_not_exists);
@@ -1159,12 +1148,12 @@ TEST_CASE("Conformance: CREATE INDEX", "[cql.conformance.parser]") {
         REQUIRE(*s.index_name == "idx_name");
     }
     SECTION("function column specifier keys()") {
-        auto r = parse("CREATE INDEX ON ks.tbl(keys(categories));");
+        auto r = parse("CREATE INDEX ON ks.tbl(keys(categories));").statement;
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<CreateIndex>(r->value));
     }
     SECTION("unqualified table name") {
-        auto r = parse("CREATE INDEX ON tbl(col);");
+        auto r = parse("CREATE INDEX ON tbl(col);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateIndex>(r->value);
         REQUIRE(!s.table.keyspace_name);
@@ -1174,7 +1163,7 @@ TEST_CASE("Conformance: CREATE INDEX", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: CREATE TYPE", "[cql.conformance.parser]") {
     SECTION("single field") {
-        auto r = parse("CREATE TYPE ks.my_type(v1 int);");
+        auto r = parse("CREATE TYPE ks.my_type(v1 int);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateType>(r->value);
         REQUIRE(s.name.table_name == "my_type");
@@ -1185,7 +1174,7 @@ TEST_CASE("Conformance: CREATE TYPE", "[cql.conformance.parser]") {
         REQUIRE(s.fields[0].type == type::create_basic(type::Basic::int_));
     }
     SECTION("multiple fields") {
-        auto r = parse("CREATE TYPE ks.address(street text, city text, zip int);");
+        auto r = parse("CREATE TYPE ks.address(street text, city text, zip int);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateType>(r->value);
         REQUIRE(s.fields.length == 3);
@@ -1194,19 +1183,19 @@ TEST_CASE("Conformance: CREATE TYPE", "[cql.conformance.parser]") {
         REQUIRE(s.fields[2].name.identifier == "zip");
     }
     SECTION("if not exists") {
-        auto r = parse("CREATE TYPE IF NOT EXISTS ks.my_type(a int, b text);");
+        auto r = parse("CREATE TYPE IF NOT EXISTS ks.my_type(a int, b text);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateType>(r->value);
         REQUIRE(s.if_not_exists);
         REQUIRE(s.fields.length == 2);
     }
     SECTION("alter_test shape single int field") {
-        auto r = parse("CREATE TYPE ks.t1(v1 int);");
+        auto r = parse("CREATE TYPE ks.t1(v1 int);").statement;
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<CreateType>(r->value));
     }
     SECTION("DROP TYPE IF EXISTS") {
-        auto r = parse("DROP TYPE IF EXISTS ks.type_does_not_exist;");
+        auto r = parse("DROP TYPE IF EXISTS ks.type_does_not_exist;").statement;
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<DropType>(r->value));
     }
@@ -1214,7 +1203,7 @@ TEST_CASE("Conformance: CREATE TYPE", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: ALTER TABLE DROP with USING TIMESTAMP", "[cql.conformance.parser]") {
     SECTION("single column DROP with USING TIMESTAMP") {
-        auto r = parse("ALTER TABLE ks.tbl DROP todrop USING TIMESTAMP 20000;");
+        auto r = parse("ALTER TABLE ks.tbl DROP todrop USING TIMESTAMP 20000;").statement;
         REQUIRE(r.has_value());
         auto& s     = get<AlterTable>(r->value);
         auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
@@ -1222,7 +1211,7 @@ TEST_CASE("Conformance: ALTER TABLE DROP with USING TIMESTAMP", "[cql.conformanc
         REQUIRE(instr.columns[0].identifier == "todrop");
     }
     SECTION("parenthesized multi-column DROP with USING TIMESTAMP") {
-        auto r = parse("ALTER TABLE ks.tbl DROP (todrop1, todrop2) USING TIMESTAMP 20000;");
+        auto r = parse("ALTER TABLE ks.tbl DROP (todrop1, todrop2) USING TIMESTAMP 20000;").statement;
         REQUIRE(r.has_value());
         auto& s     = get<AlterTable>(r->value);
         auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
@@ -1231,21 +1220,21 @@ TEST_CASE("Conformance: ALTER TABLE DROP with USING TIMESTAMP", "[cql.conformanc
         REQUIRE(instr.columns[1].identifier == "todrop2");
     }
     SECTION("DROP without USING TIMESTAMP") {
-        auto r = parse("ALTER TABLE ks.tbl DROP myCollection;");
+        auto r = parse("ALTER TABLE ks.tbl DROP myCollection;").statement;
         REQUIRE(r.has_value());
         auto& s     = get<AlterTable>(r->value);
         auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
         REQUIRE(instr.columns.length == 1);
     }
     SECTION("multiple columns DROP without parens") {
-        auto r = parse("ALTER TABLE ks.tbl DROP col1, col2;");
+        auto r = parse("ALTER TABLE ks.tbl DROP col1, col2;").statement;
         REQUIRE(r.has_value());
         auto& s     = get<AlterTable>(r->value);
         auto& instr = get<AlterTable::DropColumnInstruction>(s.alter_table_instruction);
         REQUIRE(instr.columns.length == 2);
     }
     SECTION("ALTER TABLE ADD with list<text>") {
-        auto r = parse("ALTER TABLE ks.tbl ADD myCollection list<text>;");
+        auto r = parse("ALTER TABLE ks.tbl ADD myCollection list<text>;").statement;
         REQUIRE(r.has_value());
         auto& s = get<AlterTable>(r->value);
         REQUIRE(type_matches_tag<AlterTable::AddColumnInstruction>(s.alter_table_instruction));
@@ -1253,7 +1242,7 @@ TEST_CASE("Conformance: ALTER TABLE DROP with USING TIMESTAMP", "[cql.conformanc
         REQUIRE(instr.column_definitions.length == 1);
     }
     SECTION("ALTER TABLE ADD with map<text, text>") {
-        auto r = parse("ALTER TABLE ks.tbl ADD myCollection map<text, text>;");
+        auto r = parse("ALTER TABLE ks.tbl ADD myCollection map<text, text>;").statement;
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<AlterTable::AddColumnInstruction>(
             get<AlterTable>(r->value).alter_table_instruction
@@ -1263,7 +1252,7 @@ TEST_CASE("Conformance: ALTER TABLE DROP with USING TIMESTAMP", "[cql.conformanc
 
 TEST_CASE("Conformance: collection literals in INSERT VALUES", "[cql.conformance.parser]") {
     SECTION("list literal in VALUES") {
-        auto r = parse("INSERT INTO tbl (k, l, c) VALUES (3, [0, 1, 2], 4);");
+        auto r = parse("INSERT INTO tbl (k, l, c) VALUES (3, [0, 1, 2], 4);").statement;
         REQUIRE(r.has_value());
         auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
@@ -1271,7 +1260,7 @@ TEST_CASE("Conformance: collection literals in INSERT VALUES", "[cql.conformance
         REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[1].value));
     }
     SECTION("list, map and set literals in VALUES") {
-        auto r = parse("INSERT INTO tbl (a, b, c, d, e, f) VALUES (1, 1, 1, [1, 2], {1: 2}, {1, 2});");
+        auto r = parse("INSERT INTO tbl (a, b, c, d, e, f) VALUES (1, 1, 1, [1, 2], {1: 2}, {1, 2});").statement;
         REQUIRE(r.has_value());
         auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
@@ -1281,7 +1270,7 @@ TEST_CASE("Conformance: collection literals in INSERT VALUES", "[cql.conformance
         REQUIRE(type_matches_tag<SetLiteral>(nv.values[5].value));
     }
     SECTION("set literal with single element") {
-        auto r = parse("INSERT INTO tbl (k, s) VALUES (1, {1});");
+        auto r = parse("INSERT INTO tbl (k, s) VALUES (1, {1});").statement;
         REQUIRE(r.has_value());
         auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
@@ -1289,14 +1278,14 @@ TEST_CASE("Conformance: collection literals in INSERT VALUES", "[cql.conformance
         REQUIRE(type_matches_tag<SetLiteral>(nv.values[1].value));
     }
     SECTION("list with function call element") {
-        auto r = parse("INSERT INTO tbl (k, v) VALUES (0, [now()]);");
+        auto r = parse("INSERT INTO tbl (k, v) VALUES (0, [now()]);").statement;
         REQUIRE(r.has_value());
         auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
         REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[1].value));
     }
     SECTION("list literal in positional VALUES") {
-        auto r = parse("INSERT INTO tbl VALUES (1, [1, 2, 3]);");
+        auto r = parse("INSERT INTO tbl VALUES (1, [1, 2, 3]);").statement;
         REQUIRE(r.has_value());
         auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
@@ -1307,7 +1296,7 @@ TEST_CASE("Conformance: collection literals in INSERT VALUES", "[cql.conformance
 
 TEST_CASE("Conformance: USING TTL AND TIMESTAMP combined", "[cql.conformance.parser]") {
     SECTION("INSERT USING TTL then TIMESTAMP literal") {
-        auto r = parse("INSERT INTO ks.tbl (id, name) VALUES (1, 'a') USING TTL 1000 AND TIMESTAMP 0;");
+        auto r = parse("INSERT INTO ks.tbl (id, name) VALUES (1, 'a') USING TTL 1000 AND TIMESTAMP 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Insert>(r->value);
         REQUIRE(s.using_parameters.length == 2);
@@ -1324,26 +1313,26 @@ TEST_CASE("Conformance: USING TTL AND TIMESTAMP combined", "[cql.conformance.par
         REQUIRE(has_ts);
     }
     SECTION("INSERT USING TIMESTAMP then TTL bind markers") {
-        auto r = parse("INSERT INTO ks.tbl (k, c, i) VALUES (?, ?, ?) USING TIMESTAMP ? AND TTL ?;");
+        auto r = parse("INSERT INTO ks.tbl (k, c, i) VALUES (?, ?, ?) USING TIMESTAMP ? AND TTL ?;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Insert>(r->value);
         REQUIRE(s.using_parameters.length == 2);
     }
     SECTION("UPDATE USING TIMESTAMP then TTL bind markers") {
-        auto r = parse("UPDATE ks.tbl USING TIMESTAMP ? AND TTL ? SET i = 1 WHERE k = 1;");
+        auto r = parse("UPDATE ks.tbl USING TIMESTAMP ? AND TTL ? SET i = 1 WHERE k = 1;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(s.using_parameters.length == 2);
     }
     SECTION("INSERT USING TTL only") {
-        auto r = parse("INSERT INTO ks.tbl (k, v) VALUES (1, 1) USING TTL 300;");
+        auto r = parse("INSERT INTO ks.tbl (k, v) VALUES (1, 1) USING TTL 300;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Insert>(r->value);
         REQUIRE(s.using_parameters.length == 1);
         REQUIRE(s.using_parameters[0].kind == UpdateParameter::Kind::TTL);
     }
     SECTION("INSERT USING TIMESTAMP only") {
-        auto r = parse("INSERT INTO ks.tbl (k, v) VALUES (1, 1) USING TIMESTAMP 12345;");
+        auto r = parse("INSERT INTO ks.tbl (k, v) VALUES (1, 1) USING TIMESTAMP 12345;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Insert>(r->value);
         REQUIRE(s.using_parameters.length == 1);
@@ -1353,7 +1342,7 @@ TEST_CASE("Conformance: USING TTL AND TIMESTAMP combined", "[cql.conformance.par
 
 TEST_CASE("Conformance: SELECT with distinct/json as column names", "[cql.conformance.parser]") {
     SECTION("both distinct and json as column names") {
-        auto r = parse("SELECT distinct, json FROM tbl;");
+        auto r = parse("SELECT distinct, json FROM tbl;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(!s.transform.has_value());
@@ -1361,7 +1350,7 @@ TEST_CASE("Conformance: SELECT with distinct/json as column names", "[cql.confor
     }
     // "SELECT distinct distinct" = SELECT DISTINCT <col named distinct>; first keyword is the transform.
     SECTION("SELECT DISTINCT with column named distinct") {
-        auto r = parse("SELECT distinct distinct FROM tbl;");
+        auto r = parse("SELECT distinct distinct FROM tbl;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.transform.has_value());
@@ -1369,14 +1358,14 @@ TEST_CASE("Conformance: SELECT with distinct/json as column names", "[cql.confor
         REQUIRE(s.select.clauses.length == 1);
     }
     SECTION("SELECT JSON transform still works") {
-        auto r = parse("SELECT JSON * FROM tbl;");
+        auto r = parse("SELECT JSON * FROM tbl;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.transform.has_value());
         REQUIRE(*s.transform == Select::Transform::JSON);
     }
     SECTION("SELECT DISTINCT transform still works") {
-        auto r = parse("SELECT DISTINCT * FROM tbl;");
+        auto r = parse("SELECT DISTINCT * FROM tbl;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.transform.has_value());
@@ -1386,7 +1375,7 @@ TEST_CASE("Conformance: SELECT with distinct/json as column names", "[cql.confor
 
 TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]") {
     SECTION("two-element tuple column") {
-        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, duration>);");
+        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, duration>);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.column_definitions.length == 2);
@@ -1402,7 +1391,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
         REQUIRE(get<type::Basic>(tup.elements[1].value) == type::Basic::duration);
     }
     SECTION("frozen tuple as PRIMARY KEY column") {
-        auto r = parse("CREATE TABLE ks.tbl (t frozen<tuple<int, duration>> PRIMARY KEY, v int);");
+        auto r = parse("CREATE TABLE ks.tbl (t frozen<tuple<int, duration>> PRIMARY KEY, v int);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.column_definitions.length == 2);
@@ -1414,7 +1403,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
         REQUIRE(tup.frozen == true);
     }
     SECTION("single-element tuple") {
-        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<text>);");
+        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<text>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
@@ -1422,7 +1411,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
         REQUIRE(get<type::Tuple>(col.type.value).elements.length == 1);
     }
     SECTION("three-element tuple") {
-        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, text, boolean>);");
+        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, text, boolean>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
@@ -1430,7 +1419,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
         REQUIRE(get<type::Tuple>(col.type.value).elements.length == 3);
     }
     SECTION("tuple with collection element") {
-        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, list<text>>);");
+        auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, list<text>>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
@@ -1440,7 +1429,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
         REQUIRE(type_matches_tag<type::List>(tup.elements[1].value));
     }
     SECTION("CREATE TYPE with tuple field") {
-        auto r = parse("CREATE TYPE ks.my_type (a tuple<int, text>);");
+        auto r = parse("CREATE TYPE ks.my_type (a tuple<int, text>);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateType>(r->value);
         REQUIRE(s.fields.length == 1);
@@ -1448,7 +1437,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
         REQUIRE(get<type::Tuple>(s.fields[0].type.value).elements.length == 2);
     }
     SECTION("frozen<map<text, list<tuple<int, duration>>>> nested type") {
-        auto r = parse("CREATE TABLE ks.tbl (pk int, m frozen<map<text, list<tuple<int, duration>>>>, v int, PRIMARY KEY (pk, m));");
+        auto r = parse("CREATE TABLE ks.tbl (pk int, m frozen<map<text, list<tuple<int, duration>>>>, v int, PRIMARY KEY (pk, m));").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
@@ -1463,7 +1452,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
         REQUIRE(get<type::Tuple>(l.element.value).elements.length == 2);
     }
     SECTION("frozen<set<tuple<int, text, double>>> nested type") {
-        auto r = parse("CREATE TABLE ks.tbl (k int PRIMARY KEY, s frozen<set<tuple<int, text, double>>>);");
+        auto r = parse("CREATE TABLE ks.tbl (k int PRIMARY KEY, s frozen<set<tuple<int, text, double>>>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
@@ -1474,7 +1463,7 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
         REQUIRE(get<type::Tuple>(st.key.value).elements.length == 3);
     }
     SECTION("map<text, frozen<map<text, set<int>>>> nested type") {
-        auto r = parse("CREATE TABLE ks.tbl (k int PRIMARY KEY, m map<text, frozen<map<text, set<int>>>>);");
+        auto r = parse("CREATE TABLE ks.tbl (k int PRIMARY KEY, m map<text, frozen<map<text, set<int>>>>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
@@ -1486,43 +1475,42 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
     }
 }
 
-TEST_CASE("check_specific_errors", "[cql.cql]") {
+TEST_CASE("USE with bind marker rejected", "[cql.cql]") {
+    const String8 expected = "Bind variables cannot be used for keyspace names";
     SECTION("USE with positional bind marker") {
-        auto err = check_specific_errors("USE ?");
-        REQUIRE(err.has_value());
-        REQUIRE(String8(*err) == String8{"Bind variables cannot be used for keyspace names"});
+        auto pr = parse("USE ?");
+        REQUIRE_FALSE(pr.statement.has_value());
+        REQUIRE(contains(String8(pr.err), expected));
     }
     SECTION("USE with named bind marker") {
-        auto err = check_specific_errors("USE :name");
-        REQUIRE(err.has_value());
-    }
-    SECTION("USE with leading whitespace") {
-        auto err = check_specific_errors("  USE ?");
-        REQUIRE(err.has_value());
+        auto pr = parse("USE :name");
+        REQUIRE_FALSE(pr.statement.has_value());
+        REQUIRE(contains(String8(pr.err), expected));
     }
     SECTION("USE case-insensitive") {
-        auto err = check_specific_errors("use ?");
-        REQUIRE(err.has_value());
+        auto pr = parse("use ?");
+        REQUIRE_FALSE(pr.statement.has_value());
+        REQUIRE(contains(String8(pr.err), expected));
     }
-    SECTION("valid USE returns empty") {
-        auto err = check_specific_errors("USE my_keyspace");
-        REQUIRE(!err.has_value());
+    SECTION("valid USE parses") {
+        auto pr = parse("USE my_keyspace");
+        REQUIRE(pr.statement.has_value());
     }
-    SECTION("non-USE query returns empty") {
-        auto err = check_specific_errors("SELECT * FROM t WHERE k = ?");
-        REQUIRE(!err.has_value());
+    SECTION("non-USE bind marker parses") {
+        auto pr = parse("SELECT * FROM t WHERE k = ?");
+        REQUIRE(pr.statement.has_value());
     }
 }
 
 TEST_CASE("CREATE TABLE trailing comma", "[cql.cql]") {
     SECTION("trailing comma after last column") {
-        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v int,);");
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v int,);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.column_definitions.length == 2);
     }
     SECTION("trailing comma after standalone PRIMARY KEY clause") {
-        auto r = parse("CREATE TABLE ks.t (k int, c int, PRIMARY KEY (k),);");
+        auto r = parse("CREATE TABLE ks.t (k int, c int, PRIMARY KEY (k),);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.column_definitions.length == 2);
@@ -1532,7 +1520,7 @@ TEST_CASE("CREATE TABLE trailing comma", "[cql.cql]") {
 
 TEST_CASE("ALTER TYPE", "[cql.cql]") {
     SECTION("ADD field") {
-        auto r = parse("ALTER TYPE ks.mytype ADD v2 int;");
+        auto r = parse("ALTER TYPE ks.mytype ADD v2 int;").statement;
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<AlterType>(r->value));
         auto& s = get<AlterType>(r->value);
@@ -1540,7 +1528,7 @@ TEST_CASE("ALTER TYPE", "[cql.cql]") {
         REQUIRE(get<AlterType::AddFieldInstruction>(s.instruction).fields.length == 1);
     }
     SECTION("RENAME field") {
-        auto r = parse("ALTER TYPE ks.mytype RENAME v1 TO v1_renamed;");
+        auto r = parse("ALTER TYPE ks.mytype RENAME v1 TO v1_renamed;").statement;
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<AlterType>(r->value));
         auto& s = get<AlterType>(r->value);
@@ -1550,7 +1538,7 @@ TEST_CASE("ALTER TYPE", "[cql.cql]") {
 
 TEST_CASE("composite partition key parsing", "[cql.parser]") {
     SECTION("compound partition key with single clustering column") {
-        auto r = parse("CREATE TABLE ks.t (a int, b text, c int, PRIMARY KEY ((a, b), c));");
+        auto r = parse("CREATE TABLE ks.t (a int, b text, c int, PRIMARY KEY ((a, b), c));").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.primary_key.has_value());
@@ -1563,7 +1551,7 @@ TEST_CASE("composite partition key parsing", "[cql.parser]") {
         REQUIRE(s.primary_key->clustering_columns[0].identifier == "c");
     }
     SECTION("compound partition key only (no clustering)") {
-        auto r = parse("CREATE TABLE ks.t (a int, b int, PRIMARY KEY ((a, b)));");
+        auto r = parse("CREATE TABLE ks.t (a int, b int, PRIMARY KEY ((a, b)));").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.primary_key.has_value());
@@ -1573,7 +1561,7 @@ TEST_CASE("composite partition key parsing", "[cql.parser]") {
         REQUIRE(s.primary_key->clustering_columns.length == 0);
     }
     SECTION("three-column compound partition key") {
-        auto r = parse("CREATE TABLE ks.t (a int, b int, c int, PRIMARY KEY ((a, b, c)));");
+        auto r = parse("CREATE TABLE ks.t (a int, b int, c int, PRIMARY KEY ((a, b, c)));").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.primary_key.has_value());
@@ -1581,7 +1569,7 @@ TEST_CASE("composite partition key parsing", "[cql.parser]") {
         REQUIRE(pk_cols.length == 3);
     }
     SECTION("single partition key (non-compound) is still a ColumnName not array") {
-        auto r = parse("CREATE TABLE ks.t (k int, PRIMARY KEY (k));");
+        auto r = parse("CREATE TABLE ks.t (k int, PRIMARY KEY (k));").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.primary_key.has_value());
@@ -1591,7 +1579,7 @@ TEST_CASE("composite partition key parsing", "[cql.parser]") {
 
 TEST_CASE("frozen collection type parsing", "[cql.parser]") {
     SECTION("FROZEN<LIST<INT>>") {
-        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v frozen<list<int>>);");
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v frozen<list<int>>);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.column_definitions.length == 2);
@@ -1602,7 +1590,7 @@ TEST_CASE("frozen collection type parsing", "[cql.parser]") {
         REQUIRE(get<type::Basic>(get<type::List>(col.type.value).element.value) == type::Basic::int_);
     }
     SECTION("FROZEN<SET<TEXT>>") {
-        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v frozen<set<text>>);");
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v frozen<set<text>>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
@@ -1610,7 +1598,7 @@ TEST_CASE("frozen collection type parsing", "[cql.parser]") {
         REQUIRE(get<type::Set>(col.type.value).frozen == true);
     }
     SECTION("FROZEN<MAP<TEXT, INT>>") {
-        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v frozen<map<text, int>>);");
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v frozen<map<text, int>>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
@@ -1618,7 +1606,7 @@ TEST_CASE("frozen collection type parsing", "[cql.parser]") {
         REQUIRE(get<type::Map>(col.type.value).frozen == true);
     }
     SECTION("non-frozen list parses with frozen=false") {
-        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v list<int>);");
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v list<int>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
@@ -1629,24 +1617,25 @@ TEST_CASE("frozen collection type parsing", "[cql.parser]") {
 
 TEST_CASE("CREATE TABLE WITH options parsing", "[cql.parser]") {
     SECTION("unknown option key is parsed without error") {
-        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY) WITH some_future_option = 'value';");
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY) WITH some_future_option = 'value';").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.options.value.length == 1);
     }
     SECTION("default_time_to_live option is parsed") {
-        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY) WITH default_time_to_live = 3600;");
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY) WITH default_time_to_live = 3600;").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.options.value.length == 1);
     }
     SECTION("multiple mixed options are all parsed") {
         auto r = parse(
-            "CREATE TABLE ks.t (k int PRIMARY KEY) "
-            "WITH compaction = {'class': 'SizeTieredCompactionStrategy'} "
-            "AND compression = {'sstable_compression': 'LZ4Compressor'} "
-            "AND gc_grace_seconds = 864000;"
-        );
+                     "CREATE TABLE ks.t (k int PRIMARY KEY) "
+                     "WITH compaction = {'class': 'SizeTieredCompactionStrategy'} "
+                     "AND compression = {'sstable_compression': 'LZ4Compressor'} "
+                     "AND gc_grace_seconds = 864000;"
+        )
+                     .statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.options.value.length == 3);
@@ -1655,7 +1644,7 @@ TEST_CASE("CREATE TABLE WITH options parsing", "[cql.parser]") {
 
 TEST_CASE("Conformance: CREATE TABLE static columns", "[cql.conformance.parser]") {
     SECTION("single static column") {
-        auto r = parse("CREATE TABLE ks.t (pk int, ck int, v int, s text static, PRIMARY KEY (pk, ck));");
+        auto r = parse("CREATE TABLE ks.t (pk int, ck int, v int, s text static, PRIMARY KEY (pk, ck));").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.column_definitions.length == 4);
@@ -1664,7 +1653,7 @@ TEST_CASE("Conformance: CREATE TABLE static columns", "[cql.conformance.parser]"
         REQUIRE(s.column_definitions[2]._static == false);
     }
     SECTION("multiple static columns") {
-        auto r = parse("CREATE TABLE ks.t (pk int, ck int, v int, s1 text static, s2 int static, PRIMARY KEY (pk, ck));");
+        auto r = parse("CREATE TABLE ks.t (pk int, ck int, v int, s1 text static, s2 int static, PRIMARY KEY (pk, ck));").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.column_definitions.length == 5);
@@ -1672,7 +1661,7 @@ TEST_CASE("Conformance: CREATE TABLE static columns", "[cql.conformance.parser]"
         REQUIRE(s.column_definitions[4]._static == true);
     }
     SECTION("partition key only table has no static columns") {
-        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v int);");
+        auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v int);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         for (U64 i = 0; i < s.column_definitions.length; ++i) {
@@ -1683,7 +1672,7 @@ TEST_CASE("Conformance: CREATE TABLE static columns", "[cql.conformance.parser]"
 
 TEST_CASE("Conformance: CREATE TABLE CLUSTERING ORDER BY", "[cql.conformance.parser]") {
     SECTION("single clustering column DESC") {
-        auto r = parse("CREATE TABLE ks.t (p text, c text, v text, PRIMARY KEY (p, c)) WITH CLUSTERING ORDER BY (c DESC);");
+        auto r = parse("CREATE TABLE ks.t (p text, c text, v text, PRIMARY KEY (p, c)) WITH CLUSTERING ORDER BY (c DESC);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.options.value.length == 1);
@@ -1694,7 +1683,7 @@ TEST_CASE("Conformance: CREATE TABLE CLUSTERING ORDER BY", "[cql.conformance.par
         REQUIRE(co.column_orders[0].sort == Sort::DESC);
     }
     SECTION("multiple clustering columns ASC and DESC") {
-        auto r = parse("CREATE TABLE ks.t (k int, c1 int, c2 int, PRIMARY KEY (k, c1, c2)) WITH CLUSTERING ORDER BY (c1 ASC, c2 DESC);");
+        auto r = parse("CREATE TABLE ks.t (k int, c1 int, c2 int, PRIMARY KEY (k, c1, c2)) WITH CLUSTERING ORDER BY (c1 ASC, c2 DESC);").statement;
         REQUIRE(r.has_value());
         auto& s     = get<CreateTable>(r->value);
         bool  found = false;
@@ -1711,13 +1700,13 @@ TEST_CASE("Conformance: CREATE TABLE CLUSTERING ORDER BY", "[cql.conformance.par
         REQUIRE(found);
     }
     SECTION("CLUSTERING ORDER BY combined with AND options") {
-        auto r = parse("CREATE TABLE ks.t (k int, c text, PRIMARY KEY (k, c)) WITH CLUSTERING ORDER BY (c DESC) AND default_time_to_live = 0;");
+        auto r = parse("CREATE TABLE ks.t (k int, c text, PRIMARY KEY (k, c)) WITH CLUSTERING ORDER BY (c DESC) AND default_time_to_live = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.options.value.length == 2);
     }
     SECTION("CLUSTERING ORDER BY with static column and composite PK") {
-        auto r = parse("CREATE TABLE ks.t (partitionKey int, clustering_1 int, clustering_2 int, value int, staticValue text static, PRIMARY KEY (partitionKey, clustering_1, clustering_2)) WITH CLUSTERING ORDER BY (clustering_1 DESC, clustering_2 ASC);");
+        auto r = parse("CREATE TABLE ks.t (partitionKey int, clustering_1 int, clustering_2 int, value int, staticValue text static, PRIMARY KEY (partitionKey, clustering_1, clustering_2)) WITH CLUSTERING ORDER BY (clustering_1 DESC, clustering_2 ASC);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.column_definitions.length == 5);
@@ -1729,21 +1718,21 @@ TEST_CASE("Conformance: CREATE TABLE CLUSTERING ORDER BY", "[cql.conformance.par
 
 TEST_CASE("Conformance: SELECT COUNT and aggregate functions", "[cql.conformance.parser]") {
     SECTION("COUNT(*)") {
-        auto r = parse("SELECT COUNT(*) FROM ks.t;");
+        auto r = parse("SELECT COUNT(*) FROM ks.t;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.select.clauses.length == 1);
         REQUIRE(type_matches_tag<Select::Count>(s.select.clauses[0].column.value));
     }
     SECTION("COUNT(*) with WHERE") {
-        auto r = parse("SELECT COUNT(*) FROM ks.t WHERE k = 'ev1';");
+        auto r = parse("SELECT COUNT(*) FROM ks.t WHERE k = 'ev1';").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(type_matches_tag<Select::Count>(s.select.clauses[0].column.value));
         REQUIRE(s.where.has_value());
     }
     SECTION("COUNT(1)") {
-        auto r = parse("SELECT COUNT(1) FROM ks.t WHERE k IN ('ev1', 'ev2') AND time = 0;");
+        auto r = parse("SELECT COUNT(1) FROM ks.t WHERE k IN ('ev1', 'ev2') AND time = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(type_matches_tag<Select::Count>(s.select.clauses[0].column.value));
@@ -1753,7 +1742,7 @@ TEST_CASE("Conformance: SELECT COUNT and aggregate functions", "[cql.conformance
 
 TEST_CASE("Conformance: SELECT function calls in clause", "[cql.conformance.parser]") {
     SECTION("writetime() in SELECT") {
-        auto r = parse("SELECT writetime(v) FROM ks.t WHERE k = 1;");
+        auto r = parse("SELECT writetime(v) FROM ks.t WHERE k = 1;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.select.clauses.length == 1);
@@ -1763,7 +1752,7 @@ TEST_CASE("Conformance: SELECT function calls in clause", "[cql.conformance.pars
         REQUIRE(fn.arguments.length == 1);
     }
     SECTION("ttl() in SELECT") {
-        auto r = parse("SELECT ttl(c) FROM ks.t;");
+        auto r = parse("SELECT ttl(c) FROM ks.t;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(type_matches_tag<Select::Function>(s.select.clauses[0].column.value));
@@ -1771,13 +1760,13 @@ TEST_CASE("Conformance: SELECT function calls in clause", "[cql.conformance.pars
         REQUIRE(fn.function_name == "ttl");
     }
     SECTION("multiple function calls alongside column names") {
-        auto r = parse("SELECT k, c, writetime(c), ttl(c) FROM ks.t;");
+        auto r = parse("SELECT k, c, writetime(c), ttl(c) FROM ks.t;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.select.clauses.length == 4);
     }
     SECTION("column alias with AS") {
-        auto r = parse("SELECT v AS value FROM ks.t;");
+        auto r = parse("SELECT v AS value FROM ks.t;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.select.clauses.length == 1);
@@ -1785,14 +1774,14 @@ TEST_CASE("Conformance: SELECT function calls in clause", "[cql.conformance.pars
         REQUIRE(*s.select.clauses[0].as == "value");
     }
     SECTION("function call with alias") {
-        auto r = parse("SELECT COUNT(*) AS cnt FROM ks.t;");
+        auto r = parse("SELECT COUNT(*) AS cnt FROM ks.t;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.select.clauses[0].as.has_value());
         REQUIRE(*s.select.clauses[0].as == "cnt");
     }
     SECTION("type conversion function toTimestamp()") {
-        auto r = parse("SELECT k, toTimestamp(now()) FROM ks.t;");
+        auto r = parse("SELECT k, toTimestamp(now()) FROM ks.t;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.select.clauses.length == 2);
@@ -1801,7 +1790,7 @@ TEST_CASE("Conformance: SELECT function calls in clause", "[cql.conformance.pars
 
 TEST_CASE("Conformance: SELECT WHERE operators", "[cql.conformance.parser]") {
     SECTION("IN clause on partition key") {
-        auto r = parse("SELECT * FROM ks.t WHERE k IN (1, 2, 3);");
+        auto r = parse("SELECT * FROM ks.t WHERE k IN (1, 2, 3);").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.where.has_value());
@@ -1811,7 +1800,7 @@ TEST_CASE("Conformance: SELECT WHERE operators", "[cql.conformance.parser]") {
         REQUIRE(rel.column.identifier == "k");
     }
     SECTION("IN clause on clustering key") {
-        auto r = parse("SELECT * FROM ks.t WHERE pk = 0 AND ck IN (1, 2, 3);");
+        auto r = parse("SELECT * FROM ks.t WHERE pk = 0 AND ck IN (1, 2, 3);").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.where->relations.length == 2);
@@ -1819,7 +1808,7 @@ TEST_CASE("Conformance: SELECT WHERE operators", "[cql.conformance.parser]") {
         REQUIRE(rel.operator_ == Operator::in);
     }
     SECTION("range >= on clustering key") {
-        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c >= 5;");
+        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c >= 5;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.where->relations.length == 2);
@@ -1827,28 +1816,28 @@ TEST_CASE("Conformance: SELECT WHERE operators", "[cql.conformance.parser]") {
         REQUIRE(rel.operator_ == Operator::ge);
     }
     SECTION("range < on clustering key") {
-        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c < 10;");
+        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c < 10;").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Select>(r->value);
         auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[1].value);
         REQUIRE(rel.operator_ == Operator::lt);
     }
     SECTION("range > on clustering key") {
-        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c > 0;");
+        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c > 0;").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Select>(r->value);
         auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[1].value);
         REQUIRE(rel.operator_ == Operator::gt);
     }
     SECTION("range <= on clustering key") {
-        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c <= 10;");
+        auto r = parse("SELECT * FROM ks.t WHERE k = 1 AND c <= 10;").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Select>(r->value);
         auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[1].value);
         REQUIRE(rel.operator_ == Operator::le);
     }
     SECTION("CONTAINS on collection column") {
-        auto r = parse("SELECT * FROM ks.t WHERE categories CONTAINS 'foo' ALLOW FILTERING;");
+        auto r = parse("SELECT * FROM ks.t WHERE categories CONTAINS 'foo' ALLOW FILTERING;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.where.has_value());
@@ -1857,14 +1846,14 @@ TEST_CASE("Conformance: SELECT WHERE operators", "[cql.conformance.parser]") {
         REQUIRE(rel.column.identifier == "categories");
     }
     SECTION("CONTAINS KEY on map column") {
-        auto r = parse("SELECT * FROM ks.t WHERE m CONTAINS KEY 'k1' ALLOW FILTERING;");
+        auto r = parse("SELECT * FROM ks.t WHERE m CONTAINS KEY 'k1' ALLOW FILTERING;").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Select>(r->value);
         auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where->relations[0].value);
         REQUIRE(rel.operator_ == Operator::contains_key);
     }
     SECTION("token() relation") {
-        auto r = parse("SELECT k FROM ks.t WHERE token(k) >= ?;");
+        auto r = parse("SELECT k FROM ks.t WHERE token(k) >= ?;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.where.has_value());
@@ -1876,7 +1865,7 @@ TEST_CASE("Conformance: SELECT WHERE operators", "[cql.conformance.parser]") {
         REQUIRE(tok.operator_ == Operator::ge);
     }
     SECTION("multi-column tuple IN") {
-        auto r = parse("SELECT * FROM ks.t WHERE (c1, c2) IN ((1, 1), (2, 2));");
+        auto r = parse("SELECT * FROM ks.t WHERE (c1, c2) IN ((1, 1), (2, 2));").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(s.where.has_value());
@@ -1891,19 +1880,19 @@ TEST_CASE("Conformance: SELECT WHERE operators", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: SELECT PER PARTITION LIMIT", "[cql.conformance.parser]") {
     SECTION("PER PARTITION LIMIT literal") {
-        auto r = parse("SELECT * FROM ks.t PER PARTITION LIMIT 1;");
+        auto r = parse("SELECT * FROM ks.t PER PARTITION LIMIT 1;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(get<S64>(s.per_partition_limit.value) == 1);
     }
     SECTION("PER PARTITION LIMIT bind marker") {
-        auto r = parse("SELECT * FROM ks.t PER PARTITION LIMIT ?;");
+        auto r = parse("SELECT * FROM ks.t PER PARTITION LIMIT ?;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(type_matches_tag<BindMarker>(s.per_partition_limit.value));
     }
     SECTION("PER PARTITION LIMIT combined with WHERE and LIMIT") {
-        auto r = parse("SELECT * FROM ks.t WHERE k = 1 PER PARTITION LIMIT 5 LIMIT 50;");
+        auto r = parse("SELECT * FROM ks.t WHERE k = 1 PER PARTITION LIMIT 5 LIMIT 50;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Select>(r->value);
         REQUIRE(get<S64>(s.per_partition_limit.value) == 5);
@@ -1913,7 +1902,7 @@ TEST_CASE("Conformance: SELECT PER PARTITION LIMIT", "[cql.conformance.parser]")
 
 TEST_CASE("Conformance: UPDATE counter columns", "[cql.conformance.parser]") {
     SECTION("increment counter") {
-        auto r = parse("UPDATE ks.t SET c = c + 1 WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET c = c + 1 WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(s.assignments.length == 1);
@@ -1928,14 +1917,14 @@ TEST_CASE("Conformance: UPDATE counter columns", "[cql.conformance.parser]") {
         REQUIRE(get<S64>(get<Constant>(bin.rhs.value).value) == 1);
     }
     SECTION("decrement counter") {
-        auto r = parse("UPDATE ks.t SET c = c - 1 WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET c = c - 1 WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Update>(r->value);
         auto& bin = get<TOIBinaryArithmetic>(get<TOIArithmeticOperation>(s.assignments[0].value.value).value);
         REQUIRE(bin.op == ArithmeticOperator::minus);
     }
     SECTION("counter with bind marker operand") {
-        auto r = parse("UPDATE ks.t SET a = a - ? WHERE k = 1;");
+        auto r = parse("UPDATE ks.t SET a = a - ? WHERE k = 1;").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Update>(r->value);
         auto& bin = get<TOIBinaryArithmetic>(get<TOIArithmeticOperation>(s.assignments[0].value.value).value);
@@ -1946,7 +1935,7 @@ TEST_CASE("Conformance: UPDATE counter columns", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: UPDATE collection operations", "[cql.conformance.parser]") {
     SECTION("list append (col = col + [v])") {
-        auto r = parse("UPDATE ks.t SET l = l + ['v'] WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET l = l + ['v'] WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(type_matches_tag<TOIArithmeticOperation>(s.assignments[0].value.value));
@@ -1954,38 +1943,38 @@ TEST_CASE("Conformance: UPDATE collection operations", "[cql.conformance.parser]
         REQUIRE(bin.op == ArithmeticOperator::plus);
     }
     SECTION("list prepend ([v] + col)") {
-        auto r = parse("UPDATE ks.t SET l = ['v'] + l WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET l = ['v'] + l WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(type_matches_tag<TOIArithmeticOperation>(s.assignments[0].value.value));
     }
     SECTION("list remove (col = col - [v])") {
-        auto r = parse("UPDATE ks.t SET l = l - ['v'] WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET l = l - ['v'] WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Update>(r->value);
         auto& bin = get<TOIBinaryArithmetic>(get<TOIArithmeticOperation>(s.assignments[0].value.value).value);
         REQUIRE(bin.op == ArithmeticOperator::minus);
     }
     SECTION("set add (col = col + {v})") {
-        auto r = parse("UPDATE ks.t SET s = s + {'v'} WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET s = s + {'v'} WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(type_matches_tag<TOIArithmeticOperation>(s.assignments[0].value.value));
     }
     SECTION("set remove (col = col - {v})") {
-        auto r = parse("UPDATE ks.t SET tags = tags - {'bar'} WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET tags = tags - {'bar'} WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(type_matches_tag<TOIArithmeticOperation>(s.assignments[0].value.value));
     }
     SECTION("map add (col = col + {k: v})") {
-        auto r = parse("UPDATE ks.t SET m = m + {'foobar': 4} WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET m = m + {'foobar': 4} WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(type_matches_tag<TOIArithmeticOperation>(s.assignments[0].value.value));
     }
     SECTION("map subscript assignment") {
-        auto r = parse("UPDATE ks.t SET m['key'] = 3 WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET m['key'] = 3 WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(s.assignments.length == 1);
@@ -1993,20 +1982,20 @@ TEST_CASE("Conformance: UPDATE collection operations", "[cql.conformance.parser]
         REQUIRE(type_matches_tag<SimpleSelection::Subscript>(*s.assignments[0].target.access));
     }
     SECTION("list subscript assignment by index") {
-        auto r = parse("UPDATE ks.t SET l[0] = 'v' WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET l[0] = 'v' WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(s.assignments[0].target.access.has_value());
         REQUIRE(type_matches_tag<SimpleSelection::Subscript>(*s.assignments[0].target.access));
     }
     SECTION("full collection replacement") {
-        auto r = parse("UPDATE ks.t SET m = {'k1': 1, 'k2': 2} WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET m = {'k1': 1, 'k2': 2} WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(type_matches_tag<MapLiteral>(s.assignments[0].value.value));
     }
     SECTION("multiple assignments in single UPDATE") {
-        auto r = parse("UPDATE ks.t SET m['v3'] = 3, m['v4'] = 4 WHERE k = 0;");
+        auto r = parse("UPDATE ks.t SET m['v3'] = 3, m['v4'] = 4 WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(s.assignments.length == 2);
@@ -2015,21 +2004,21 @@ TEST_CASE("Conformance: UPDATE collection operations", "[cql.conformance.parser]
 
 TEST_CASE("Conformance: UPDATE with IN and USING", "[cql.conformance.parser]") {
     SECTION("IN on partition key") {
-        auto r = parse("UPDATE ks.t SET v = 9 WHERE k IN (0, 1);");
+        auto r = parse("UPDATE ks.t SET v = 9 WHERE k IN (0, 1);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Update>(r->value);
         auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where.relations[0].value);
         REQUIRE(rel.operator_ == Operator::in);
     }
     SECTION("IN on clustering key") {
-        auto r = parse("UPDATE ks.t SET v = 10 WHERE pk = 0 AND ck IN (1, 0);");
+        auto r = parse("UPDATE ks.t SET v = 10 WHERE pk = 0 AND ck IN (1, 0);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Update>(r->value);
         auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where.relations[1].value);
         REQUIRE(rel.operator_ == Operator::in);
     }
     SECTION("tuple IN on composite clustering key") {
-        auto r = parse("UPDATE ks.t SET v = 20 WHERE pk = 0 AND (c1, c2) IN ((0, 2), (1, 2));");
+        auto r = parse("UPDATE ks.t SET v = 20 WHERE pk = 0 AND (c1, c2) IN ((0, 2), (1, 2));").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(s.where.relations.length == 2);
@@ -2039,14 +2028,14 @@ TEST_CASE("Conformance: UPDATE with IN and USING", "[cql.conformance.parser]") {
         REQUIRE(tup.columns.length == 2);
     }
     SECTION("USING TIMESTAMP on UPDATE") {
-        auto r = parse("UPDATE ks.t USING TIMESTAMP 10 SET v = 1 WHERE k = 0;");
+        auto r = parse("UPDATE ks.t USING TIMESTAMP 10 SET v = 1 WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(s.using_parameters.length == 1);
         REQUIRE(s.using_parameters[0].kind == UpdateParameter::Kind::TIMESTAMP);
     }
     SECTION("USING TTL on UPDATE") {
-        auto r = parse("UPDATE ks.t USING TTL 5 SET v = 1 WHERE k = 1 AND c = 1;");
+        auto r = parse("UPDATE ks.t USING TTL 5 SET v = 1 WHERE k = 1 AND c = 1;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Update>(r->value);
         REQUIRE(s.using_parameters.length == 1);
@@ -2056,28 +2045,28 @@ TEST_CASE("Conformance: UPDATE with IN and USING", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: DELETE range and subscript", "[cql.conformance.parser]") {
     SECTION("DELETE with clustering key range >=") {
-        auto r = parse("DELETE FROM ks.t WHERE k = 0 AND c >= 1;");
+        auto r = parse("DELETE FROM ks.t WHERE k = 0 AND c >= 1;").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Delete>(r->value);
         auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where.relations[1].value);
         REQUIRE(rel.operator_ == Operator::ge);
     }
     SECTION("DELETE with IN on partition key") {
-        auto r = parse("DELETE FROM ks.t WHERE k IN (0, 1);");
+        auto r = parse("DELETE FROM ks.t WHERE k IN (0, 1);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Delete>(r->value);
         auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where.relations[0].value);
         REQUIRE(rel.operator_ == Operator::in);
     }
     SECTION("DELETE with IN on clustering key") {
-        auto r = parse("DELETE FROM ks.t WHERE pk = 0 AND ck IN (4, 5);");
+        auto r = parse("DELETE FROM ks.t WHERE pk = 0 AND ck IN (4, 5);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Delete>(r->value);
         auto& rel = get<WhereClause::ColumnExpressionRelation>(s.where.relations[1].value);
         REQUIRE(rel.operator_ == Operator::in);
     }
     SECTION("DELETE map element by key subscript") {
-        auto r = parse("DELETE m['foo'] FROM ks.t WHERE k = 0;");
+        auto r = parse("DELETE m['foo'] FROM ks.t WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Delete>(r->value);
         REQUIRE(s.selections.length == 1);
@@ -2086,7 +2075,7 @@ TEST_CASE("Conformance: DELETE range and subscript", "[cql.conformance.parser]")
         REQUIRE(type_matches_tag<SimpleSelection::Subscript>(*s.selections[0].access));
     }
     SECTION("DELETE list element by index subscript") {
-        auto r = parse("DELETE l[0] FROM ks.t WHERE k = 0;");
+        auto r = parse("DELETE l[0] FROM ks.t WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Delete>(r->value);
         REQUIRE(s.selections.length == 1);
@@ -2094,7 +2083,7 @@ TEST_CASE("Conformance: DELETE range and subscript", "[cql.conformance.parser]")
         REQUIRE(type_matches_tag<SimpleSelection::Subscript>(*s.selections[0].access));
     }
     SECTION("DELETE entire collection column") {
-        auto r = parse("DELETE m FROM ks.t WHERE k = 0;");
+        auto r = parse("DELETE m FROM ks.t WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Delete>(r->value);
         REQUIRE(s.selections.length == 1);
@@ -2102,7 +2091,7 @@ TEST_CASE("Conformance: DELETE range and subscript", "[cql.conformance.parser]")
         REQUIRE(!s.selections[0].access.has_value());
     }
     SECTION("DELETE USING TIMESTAMP") {
-        auto r = parse("DELETE FROM ks.t USING TIMESTAMP 1000 WHERE k = 0;");
+        auto r = parse("DELETE FROM ks.t USING TIMESTAMP 1000 WHERE k = 0;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Delete>(r->value);
         REQUIRE(s.using_parameters.length == 1);
@@ -2112,7 +2101,7 @@ TEST_CASE("Conformance: DELETE range and subscript", "[cql.conformance.parser]")
 
 TEST_CASE("Conformance: BATCH statements", "[cql.conformance.parser]") {
     SECTION("LOGGED BATCH (default kind)") {
-        auto r = parse("BEGIN BATCH INSERT INTO ks.t (k, v) VALUES (1, 1); UPDATE ks.t SET v = 2 WHERE k = 2; APPLY BATCH;");
+        auto r = parse("BEGIN BATCH INSERT INTO ks.t (k, v) VALUES (1, 1); UPDATE ks.t SET v = 2 WHERE k = 2; APPLY BATCH;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Batch>(r->value);
         REQUIRE(s.kind == Batch::Kind::LOGGED);
@@ -2121,14 +2110,14 @@ TEST_CASE("Conformance: BATCH statements", "[cql.conformance.parser]") {
         REQUIRE(type_matches_tag<Update>(s.statements[1].value));
     }
     SECTION("UNLOGGED BATCH") {
-        auto r = parse("BEGIN UNLOGGED BATCH INSERT INTO ks.t (k, v) VALUES (1, 1); INSERT INTO ks.t (k, v) VALUES (2, 2); APPLY BATCH;");
+        auto r = parse("BEGIN UNLOGGED BATCH INSERT INTO ks.t (k, v) VALUES (1, 1); INSERT INTO ks.t (k, v) VALUES (2, 2); APPLY BATCH;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Batch>(r->value);
         REQUIRE(s.kind == Batch::Kind::UNLOGGED);
         REQUIRE(s.statements.length == 2);
     }
     SECTION("COUNTER BATCH") {
-        auto r = parse("BEGIN COUNTER BATCH UPDATE ks.t SET c = c + 1 WHERE k = 0; APPLY BATCH;");
+        auto r = parse("BEGIN COUNTER BATCH UPDATE ks.t SET c = c + 1 WHERE k = 0; APPLY BATCH;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Batch>(r->value);
         REQUIRE(s.kind == Batch::Kind::COUNTER);
@@ -2136,7 +2125,7 @@ TEST_CASE("Conformance: BATCH statements", "[cql.conformance.parser]") {
         REQUIRE(type_matches_tag<Update>(s.statements[0].value));
     }
     SECTION("BATCH USING TIMESTAMP") {
-        auto r = parse("BEGIN BATCH USING TIMESTAMP 1000 INSERT INTO ks.t (k, v) VALUES (1, 1); APPLY BATCH;");
+        auto r = parse("BEGIN BATCH USING TIMESTAMP 1000 INSERT INTO ks.t (k, v) VALUES (1, 1); APPLY BATCH;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Batch>(r->value);
         REQUIRE(s.using_parameters.length == 1);
@@ -2147,20 +2136,20 @@ TEST_CASE("Conformance: BATCH statements", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: INSERT JSON clause", "[cql.conformance.parser]") {
     SECTION("INSERT JSON basic") {
-        auto r = parse("INSERT INTO ks.t JSON '{\"k\": 1, \"v\": \"text\"}';");
+        auto r = parse("INSERT INTO ks.t JSON '{\"k\": 1, \"v\": \"text\"}';").statement;
         REQUIRE(r.has_value());
         auto& s = get<Insert>(r->value);
         REQUIRE(type_matches_tag<Insert::JsonClause>(s.insert_clause));
     }
     SECTION("INSERT JSON DEFAULT NULL") {
-        auto r = parse("INSERT INTO ks.t JSON '{\"k\": 1}' DEFAULT NULL;");
+        auto r = parse("INSERT INTO ks.t JSON '{\"k\": 1}' DEFAULT NULL;").statement;
         REQUIRE(r.has_value());
         auto& s  = get<Insert>(r->value);
         auto& jc = get<Insert::JsonClause>(s.insert_clause);
         REQUIRE(jc.default_ == Insert::JsonClause::Default::NUL);
     }
     SECTION("INSERT JSON DEFAULT UNSET") {
-        auto r = parse("INSERT INTO ks.t JSON '{\"k\": 1}' DEFAULT UNSET;");
+        auto r = parse("INSERT INTO ks.t JSON '{\"k\": 1}' DEFAULT UNSET;").statement;
         REQUIRE(r.has_value());
         auto& s  = get<Insert>(r->value);
         auto& jc = get<Insert::JsonClause>(s.insert_clause);
@@ -2170,7 +2159,7 @@ TEST_CASE("Conformance: INSERT JSON clause", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: INSERT USING TIMESTAMP negative value", "[cql.conformance.parser]") {
     SECTION("negative TIMESTAMP literal") {
-        auto r = parse("INSERT INTO ks.t (k, v) VALUES (1, 1) USING TIMESTAMP -42;");
+        auto r = parse("INSERT INTO ks.t (k, v) VALUES (1, 1) USING TIMESTAMP -42;").statement;
         REQUIRE(r.has_value());
         auto& s = get<Insert>(r->value);
         REQUIRE(s.using_parameters.length == 1);
@@ -2180,17 +2169,17 @@ TEST_CASE("Conformance: INSERT USING TIMESTAMP negative value", "[cql.conformanc
 
 TEST_CASE("Conformance: CREATE INDEX column specifiers", "[cql.conformance.parser]") {
     SECTION("values() specifier on map column") {
-        auto r = parse("CREATE INDEX ON ks.tbl(values(categories));");
+        auto r = parse("CREATE INDEX ON ks.tbl(values(categories));").statement;
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<CreateIndex>(r->value));
     }
     SECTION("entries() specifier on map column") {
-        auto r = parse("CREATE INDEX ON ks.tbl(entries(categories));");
+        auto r = parse("CREATE INDEX ON ks.tbl(entries(categories));").statement;
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<CreateIndex>(r->value));
     }
     SECTION("full() specifier on frozen collection") {
-        auto r = parse("CREATE INDEX ON ks.tbl(full(categories));");
+        auto r = parse("CREATE INDEX ON ks.tbl(full(categories));").statement;
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<CreateIndex>(r->value));
     }
@@ -2198,7 +2187,7 @@ TEST_CASE("Conformance: CREATE INDEX column specifiers", "[cql.conformance.parse
 
 TEST_CASE("Conformance: INSERT UDT literal", "[cql.conformance.parser]") {
     SECTION("UDT literal in named INSERT VALUES") {
-        auto r = parse("INSERT INTO ks.t (k, v) VALUES (1, {f1: 42, f2: 'text'});");
+        auto r = parse("INSERT INTO ks.t (k, v) VALUES (1, {f1: 42, f2: 'text'});").statement;
         REQUIRE(r.has_value());
         auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
@@ -2212,7 +2201,7 @@ TEST_CASE("Conformance: INSERT UDT literal", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: INSERT tuple literal", "[cql.conformance.parser]") {
     SECTION("tuple literal in named INSERT VALUES") {
-        auto r = parse("INSERT INTO ks.t (k, t) VALUES (1, (42, 'text'));");
+        auto r = parse("INSERT INTO ks.t (k, t) VALUES (1, (42, 'text'));").statement;
         REQUIRE(r.has_value());
         auto& s  = get<Insert>(r->value);
         auto& nv = get<Insert::NamesValues>(s.insert_clause);
@@ -2221,7 +2210,7 @@ TEST_CASE("Conformance: INSERT tuple literal", "[cql.conformance.parser]") {
         REQUIRE(tup.elements.length == 2);
     }
     SECTION("nested tuple literal") {
-        auto r = parse("INSERT INTO ks.t (k, t) VALUES (1, (1, 'a', true));");
+        auto r = parse("INSERT INTO ks.t (k, t) VALUES (1, (1, 'a', true));").statement;
         REQUIRE(r.has_value());
         auto& s   = get<Insert>(r->value);
         auto& nv  = get<Insert::NamesValues>(s.insert_clause);
@@ -2232,7 +2221,7 @@ TEST_CASE("Conformance: INSERT tuple literal", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: UUID literals", "[cql.conformance.parser]") {
     SECTION("UUID in INSERT VALUES (digit-leading)") {
-        auto r = parse("INSERT INTO ks.t (k, u) VALUES (1, 4d481800-4c5f-11e1-82e0-3f484de45426);");
+        auto r = parse("INSERT INTO ks.t (k, u) VALUES (1, 4d481800-4c5f-11e1-82e0-3f484de45426);").statement;
         REQUIRE(r.has_value());
         auto& nv   = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
         auto& uuid = get<UUID>(get<Constant>(nv.values[1].value).value);
@@ -2241,13 +2230,13 @@ TEST_CASE("Conformance: UUID literals", "[cql.conformance.parser]") {
         REQUIRE(uuid.value[15] == 0x26);
     }
     SECTION("UUID in INSERT VALUES (letter-leading)") {
-        auto r = parse("INSERT INTO ks.t (k, u) VALUES (1, faceb00c-cafe-babe-dead-beefdeadbeef);");
+        auto r = parse("INSERT INTO ks.t (k, u) VALUES (1, faceb00c-cafe-babe-dead-beefdeadbeef);").statement;
         REQUIRE(r.has_value());
         auto& nv = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
         REQUIRE(type_matches_tag<UUID>(get<Constant>(nv.values[1].value).value));
     }
     SECTION("UUID in WHERE clause") {
-        auto r = parse("SELECT * FROM ks.t WHERE u = 4d481800-4c5f-11e1-82e0-3f484de45426;");
+        auto r = parse("SELECT * FROM ks.t WHERE u = 4d481800-4c5f-11e1-82e0-3f484de45426;").statement;
         REQUIRE(r.has_value());
         auto& sel = get<Select>(r->value);
         REQUIRE(sel.where.has_value());
@@ -2258,7 +2247,7 @@ TEST_CASE("Conformance: UUID literals", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: Duration literals", "[cql.conformance.parser]") {
     SECTION("simple duration (seconds)") {
-        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1s);");
+        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1s);").statement;
         REQUIRE(r.has_value());
         auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
         auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
@@ -2267,14 +2256,14 @@ TEST_CASE("Conformance: Duration literals", "[cql.conformance.parser]") {
         REQUIRE(dur.nanoseconds == 1'000'000'000LL);
     }
     SECTION("compound duration (hours and minutes)") {
-        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 2h30m);");
+        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 2h30m);").statement;
         REQUIRE(r.has_value());
         auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
         auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
         REQUIRE(dur.nanoseconds == 2 * 3'600'000'000'000LL + 30 * 60'000'000'000LL);
     }
     SECTION("compound duration (years, months, days)") {
-        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1y2mo3d);");
+        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1y2mo3d);").statement;
         REQUIRE(r.has_value());
         auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
         auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
@@ -2283,7 +2272,7 @@ TEST_CASE("Conformance: Duration literals", "[cql.conformance.parser]") {
         REQUIRE(dur.nanoseconds == 0);
     }
     SECTION("duration in collection literal") {
-        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, [1s, 2h30m]);");
+        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, [1s, 2h30m]);").statement;
         REQUIRE(r.has_value());
         auto& nv = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
         REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[1].value));
@@ -2293,7 +2282,7 @@ TEST_CASE("Conformance: Duration literals", "[cql.conformance.parser]") {
         REQUIRE(type_matches_tag<Duration>(get<Constant>(list.elements[1].value).value));
     }
     SECTION("milliseconds and microseconds and nanoseconds") {
-        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1ms);");
+        auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1ms);").statement;
         REQUIRE(r.has_value());
         auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
         auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
@@ -2303,7 +2292,7 @@ TEST_CASE("Conformance: Duration literals", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: Empty IN clause", "[cql.conformance.parser]") {
     SECTION("SELECT with empty IN") {
-        auto r = parse("SELECT * FROM ks.t WHERE k IN ();");
+        auto r = parse("SELECT * FROM ks.t WHERE k IN ();").statement;
         REQUIRE(r.has_value());
         auto& sel = get<Select>(r->value);
         REQUIRE(sel.where.has_value());
@@ -2313,12 +2302,12 @@ TEST_CASE("Conformance: Empty IN clause", "[cql.conformance.parser]") {
         REQUIRE(tup.elements.length == 0);
     }
     SECTION("DELETE with empty IN") {
-        auto r = parse("DELETE FROM ks.t WHERE k IN ();");
+        auto r = parse("DELETE FROM ks.t WHERE k IN ();").statement;
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<Delete>(r->value));
     }
     SECTION("UPDATE with empty IN") {
-        auto r = parse("UPDATE ks.t SET v = 1 WHERE k IN ();");
+        auto r = parse("UPDATE ks.t SET v = 1 WHERE k IN ();").statement;
         REQUIRE(r.has_value());
         REQUIRE(type_matches_tag<Update>(r->value));
     }
@@ -2326,13 +2315,13 @@ TEST_CASE("Conformance: Empty IN clause", "[cql.conformance.parser]") {
 
 TEST_CASE("Conformance: Empty BATCH body", "[cql.conformance.parser]") {
     SECTION("empty BATCH (no statements)") {
-        auto r = parse("BEGIN BATCH APPLY BATCH;");
+        auto r = parse("BEGIN BATCH APPLY BATCH;").statement;
         REQUIRE(r.has_value());
         auto& batch = get<Batch>(r->value);
         REQUIRE(batch.statements.length == 0);
     }
     SECTION("empty UNLOGGED BATCH") {
-        auto r = parse("BEGIN UNLOGGED BATCH APPLY BATCH;");
+        auto r = parse("BEGIN UNLOGGED BATCH APPLY BATCH;").statement;
         REQUIRE(r.has_value());
         auto& batch = get<Batch>(r->value);
         REQUIRE(batch.kind == Batch::Kind::UNLOGGED);

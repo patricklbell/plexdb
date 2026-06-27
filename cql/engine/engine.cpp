@@ -4491,20 +4491,19 @@ namespace cql::engine {
             return {.status = ExecutionStatus::Success, .id = query_hash, .entry = existing};
         }
 
-        if (auto specific_err = parsers::check_specific_errors(query)) {
-            return {.status = ExecutionStatus::SyntaxError, .message = *specific_err};
-        }
-
-        auto cql_opt = parsers::parse(query);
-        if (!cql_opt) {
-            return {.status = ExecutionStatus::SyntaxError, .message = "Failed to parse CQL"};
+        auto pr = parsers::parse(query);
+        if (!pr.statement) {
+            PrepareResult r{.status = ExecutionStatus::SyntaxError};
+            r.message_storage = move(pr.err);
+            r.message         = (pr.err.length > 0) ? String8(r.message_storage.c_str, r.message_storage.length) : String8("Failed to parse CQL");
+            return r;
         }
 
         auto& entry          = insert(engine.prepared_cache, query_hash);
         entry.query_string   = AutoString8(query);
-        entry.bind_variables = collect_bind_variables_with_keyspace(engine, *cql_opt, current_keyspace);
+        entry.bind_variables = collect_bind_variables_with_keyspace(engine, *pr.statement, current_keyspace);
 
-        visit(cql_opt->value, [&, current_keyspace](const auto& stmt) {
+        visit(pr.statement->value, [&, current_keyspace](const auto& stmt) {
             using T = RemoveCVRef<decltype(stmt)>;
             if constexpr (SameAs<T, Insert>) {
                 String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
@@ -4541,12 +4540,12 @@ namespace cql::engine {
             co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Prepared statement not found"};
         }
 
-        auto cql_opt = parsers::parse(String8(entry->query_string));
-        if (!cql_opt) {
+        auto pr = parsers::parse(String8(entry->query_string));
+        if (!pr.statement) {
             co_return ExecutionResult{.status = ExecutionStatus::ServerError, .message = "Failed to re-parse prepared query"};
         }
 
-        co_return co_await execute(engine, *cql_opt, move(bound_values));
+        co_return co_await execute(engine, *pr.statement, move(bound_values));
     }
 
     coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values, AutoString8& current_keyspace) {
@@ -4555,11 +4554,11 @@ namespace cql::engine {
             co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Prepared statement not found"};
         }
 
-        auto cql_opt = parsers::parse(String8(entry->query_string));
-        if (!cql_opt) {
+        auto pr = parsers::parse(String8(entry->query_string));
+        if (!pr.statement) {
             co_return ExecutionResult{.status = ExecutionStatus::ServerError, .message = "Failed to re-parse prepared query"};
         }
 
-        co_return co_await execute(engine, *cql_opt, move(bound_values), current_keyspace);
+        co_return co_await execute(engine, *pr.statement, move(bound_values), current_keyspace);
     }
 }
