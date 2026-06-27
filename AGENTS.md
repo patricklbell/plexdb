@@ -26,7 +26,6 @@ Non-obvious invariants:
 - Tables with clustering keys use a two-level BTree: the partition BTree value points to a per-partition clustering BTree root (plus an optional static row page). Tables without clustering keys store the row blob page directly in the partition BTree value.
 - Partition and clustering key bytes must be lexicographically comparable — any change to key serialization must preserve this.
 - Frozen collection types (LIST, SET, MAP) are parsed and stored but treated identically to non-frozen counterparts; this is intentional.
-- `RowIterator` stores a `ClusteringBTree` by value with internal iterators pointing into it. After any move or copy the internal pointers must be fixed up — see `fix_clustering_btree_ptr`.
 - Row count from `btree::size` is incorrect for filtered or range queries; always count from actual iteration.
 
 ## Testing

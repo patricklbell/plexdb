@@ -3,9 +3,7 @@
     - On slot collision with a pinned entry, spill to arena overflow instead of evicting
     - Pro: rpage valid without transaction; pointers released early reclaim cache slots; memory bounded in common case
     - Con: two-tier cache lookup (slot array + arena overflow), handle lifetime management at all call sites
-- Parse cache with string hash as key
-- Query planning
-- Do file io with io_uring
+- Proper prepared (and non-prepared) query caching
 - Avoid storing pager pointer per btree/blob
 - Shard across cores
     - OS layer
@@ -33,11 +31,6 @@
         - Schema recovery from leader's committed log
 - avoid allocation in iterator
 - immutability check for cql frozen type
-- CLUSTERING ORDER BY: store per-column sort direction in schema; use it in RowIterator to select forward/reverse scan (currently accepted and ignored, always uses ASC)
-- TTL: implement per-row expiry — requires row blob metadata header (row_flags + expiry_unix_ms prefix); affects io.cpp write_row/read_row and all blob writers
-    - USING TTL in INSERT/UPDATE/DELETE: currently returns an error response to the client
-    - default_time_to_live table property: currently parsed and silently ignored at CREATE/ALTER TABLE
-- Table options silently ignored (logged as warnings): compaction strategy, compression codec, bloom_filter_fp_chance, caching, crc_check_chance, min/max_index_interval, memtable_flush_period_in_ms, extensions
 - COMPACT STORAGE: deprecated Cassandra 2.x wire format; currently accepted and ignored
 - @perf Patch-supplied diff for collection-index maintenance. `update_indexes` diffs
   old/new column values element-by-element (O(n+m) on the nested loop in
