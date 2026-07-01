@@ -399,13 +399,13 @@ namespace cql::native {
         }
     }
 
-    void              append_type_codes_option(Frame& f, type::Type cdtype);
-    void              append_error_body(Frame& f, engine::ExecutionStatus status, String8 message);
-    void              append_result_void(Frame& f);
-    void              append_result_set_keyspace(Frame& f, String8 keyspace);
-    void              append_result_schema_change(Frame& f, String8 change_type, String8 target, String8 keyspace, String8 table);
-    coroutine::Task<> append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl);
-    void              append_result_virtual_rows(Frame& f, engine::VirtualRows& vr);
+    void                 append_type_codes_option(Frame& f, type::Type cdtype);
+    void                 append_error_body(Frame& f, engine::ExecutionStatus status, String8 message);
+    void                 append_result_void(Frame& f);
+    void                 append_result_set_keyspace(Frame& f, String8 keyspace);
+    void                 append_result_schema_change(Frame& f, String8 change_type, String8 target, String8 keyspace, String8 table);
+    coroutine::Task<S32> append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl);
+    void                 append_result_virtual_rows(Frame& f, engine::VirtualRows& vr);
 
     // ========================================================================
     // send helpers

@@ -579,7 +579,7 @@ namespace cql::native {
         }
     }
 
-    coroutine::Task<> append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl) {
+    coroutine::Task<S32> append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl) {
         append_be_s32(f, result_codes::ROWS);
 
         bool              has_select = result.select_col_indices.length > 0;
@@ -673,6 +673,7 @@ namespace cql::native {
         f.body.ptr[count_pos + 1] = U8(U32(row_count) >> 16);
         f.body.ptr[count_pos + 2] = U8(U32(row_count) >> 8);
         f.body.ptr[count_pos + 3] = U8(U32(row_count));
+        co_return row_count;
     }
 
     void append_result_virtual_rows(Frame& f, engine::VirtualRows& vr) {
@@ -787,18 +788,12 @@ namespace cql::native {
                 auto tbl = schema::read_table(engine.schema, *ks, result.table).value;
                 assert_true(tbl != nullptr, "table not found for rows result");
                 Frame frame{.body = {}, .req = req, .op = op_codes::RESULT, .stream = stream};
-                co_await append_result_rows(frame, result, tbl);
+                S32   row_count = co_await append_result_rows(frame, result, tbl);
                 if (result.deferred_tx.started_transaction) {
                     co_await result.deferred_tx.commit();
                 }
                 co_await send_native_frame<Version, Compressed>(frame);
-                {
-                    pager::Transaction tx{engine.pager};
-                    co_await tx.begin();
-                    U64 tbl_size = co_await btree::size(tbl->btree);
-                    co_await tx.commit();
-                    cql::log::db_response_returned_rows(tbl_size);
-                }
+                cql::log::db_response_returned_rows(row_count);
             } break;
             case engine::ResultKind::VirtualRows: {
                 assert_true(result.virtual_rows.has_value(), "virtual rows missing");
