@@ -52,6 +52,7 @@ jobs:
 
       - name: Run keyvalue conformance tests
         run: |
+          set -o pipefail
           ARGS="-b build/keyvalue/plexdb_keyvalue_server -r ${{ inputs.redis_py_ref || 'v4.6.0' }}"
           ARGS="$ARGS -m tools/resp_tests/mustpass.txt"
           if [ -n "${{ inputs.test_filter }}" ]; then
@@ -66,21 +67,41 @@ jobs:
           import os, re, sys
 
           text = open(sys.argv[1]).read() if len(sys.argv) > 1 else ""
+
+          # pytest's final summary line looks like:
+          #   ===== 3 failed, 100 passed, 5 skipped in 30.00s =====
+          # Match on the trailing "in <seconds>s" so we skip mustpass output.
+          summary_re = re.compile(r"^=+ (.*?) in \d+(?:\.\d+)?s.*=+$")
           counts = {}
           for line in reversed(text.splitlines()):
-              stripped = line.strip("= \t")
-              if any(w in stripped for w in ("passed", "failed", "error", "no tests ran")):
-                  for pat, key in [
-                      (r"(\d+) passed",   "Passed"),
-                      (r"(\d+) failed",   "Failed"),
-                      (r"(\d+) error",    "Errors"),
-                      (r"(\d+) skipped",  "Skipped"),
-                      (r"(\d+) warning",  "Warnings"),
-                  ]:
-                      m = re.search(pat, stripped)
-                      if m:
-                          counts[key] = int(m.group(1))
-                  break
+              m = summary_re.match(line.strip())
+              if not m:
+                  continue
+              inner = m.group(1)
+              for pat, key in [
+                  (r"(\d+) passed",  "Passed"),
+                  (r"(\d+) failed",  "Failed"),
+                  (r"(\d+) error",   "Errors"),
+                  (r"(\d+) skipped", "Skipped"),
+                  (r"(\d+) warning", "Warnings"),
+              ]:
+                  mm = re.search(pat, inner)
+                  if mm:
+                      counts[key] = int(mm.group(1))
+              break
+
+          regressions = []
+          in_reg = False
+          for line in text.splitlines():
+              if "MUSTPASS REGRESSIONS" in line:
+                  in_reg = True
+                  continue
+              if in_reg:
+                  s = line.strip()
+                  if s.startswith(("FAILED:", "ERROR:")):
+                      regressions.append(s)
+                  elif s and not s.startswith(" "):
+                      break
 
           total = sum(counts.values())
           passed = counts.get("Passed", 0)
@@ -98,6 +119,11 @@ jobs:
               else:
                   f.write("_No test results found — check the run log._\n")
               f.write("\n")
+              if regressions:
+                  f.write(f"### Mustpass regressions ({len(regressions)})\n\n")
+                  for r in regressions:
+                      f.write(f"- `{r}`\n")
+                  f.write("\n")
               f.write("Use `workflow_dispatch` to run with custom filters:\n")
               f.write("- `test_filter`: pytest `-k` expression (e.g. `test_get`, `test_set`)\n")
               f.write("- `redis_py_ref`: git ref/tag for redis-py test content\n")
