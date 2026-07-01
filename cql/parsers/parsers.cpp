@@ -157,7 +157,7 @@ namespace cql::parsers {
         // identifiers
         // ====================================================================
         struct unquoted_identifier {
-            static constexpr auto rule  = dsl::identifier(dsl::ascii::alpha_digit_underscore);
+            static constexpr auto rule  = dsl::identifier(dsl::ascii::alpha_underscore, dsl::ascii::alpha_digit_underscore);
             static constexpr auto value = lexy::callback<AutoString8>(
                 [](auto lex) -> AutoString8 {
                     AutoString8 result{static_cast<U64>(lex.size())};
@@ -219,9 +219,31 @@ namespace cql::parsers {
         struct integer_literal {
             static constexpr auto rule = [] {
                 auto plus_minus = dsl::lit_c<'-'> / dsl::lit_c<'+'>;
-                return dsl::peek(plus_minus / dsl::digit<>) >> dsl::sign + dsl::integer<S64>;
+                return dsl::peek(plus_minus / dsl::digit<>) >> dsl::capture(dsl::token(dsl::opt(plus_minus) + dsl::digits<>));
             }();
-            static constexpr auto value = lexy::as_integer<S64>;
+            // @note parse via U64 to represent INT64_MIN's magnitude (2^63) without overflow.
+            static constexpr auto value = lexy::callback<S64>(
+                [](auto lex) -> S64 {
+                    auto it  = lex.begin();
+                    auto end = lex.end();
+                    bool neg = false;
+                    if (it != end && (*it == '-' || *it == '+')) {
+                        neg = (*it == '-');
+                        ++it;
+                    }
+                    U64 val = 0;
+                    for (; it != end; ++it) {
+                        val = val * 10 + static_cast<U64>(*it - '0');
+                    }
+                    if (neg) {
+                        if (val == 0x8000000000000000ULL) {
+                            return static_cast<S64>(0x8000000000000000ULL);
+                        }
+                        return -static_cast<S64>(val);
+                    }
+                    return static_cast<S64>(val);
+                }
+            );
         };
 
         struct float_literal {
