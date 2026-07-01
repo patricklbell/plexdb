@@ -68,7 +68,6 @@ target_sources(plexbd_cql
             log/log.cppm
             parsers/parsers.cppm
             native/native.cppm
-            repl/repl.cppm
             third_party/lz4/lz4.cppm
             third_party/murmur3/murmur3.cppm
 
@@ -85,7 +84,6 @@ target_sources(plexbd_cql
         log/log.cpp
         parsers/parsers.cpp
         native/native.cpp
-        repl/repl.cpp
         third_party/lz4/lz4.cpp
         third_party/murmur3/murmur3.c
 )

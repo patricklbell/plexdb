@@ -15,7 +15,6 @@ import plexdb.arena;
 import plexdb.aio;
 
 import cql.engine;
-import cql.repl;
 import cql.native;
 
 using namespace cql;
@@ -26,7 +25,7 @@ static volatile sig_atomic_t g_signal_count = 0;
 
 static void                                         assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
 static void                                         signal_handler(int);
-static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(bool force_sync, TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll);
+static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll);
 
 int main(int argc, char* argv[]) {
     plexdb::threads::Context main_thread_ctx{.arenas = {}, .is_main = true};
@@ -43,7 +42,6 @@ int main(int argc, char* argv[]) {
     U64 db_path_arg             = argparse::add_positional(arg_parser, "db_path", "Path to the database file");
     U64 port_arg                = argparse::add_option(arg_parser, "--port", "-p", "TCP port to listen on", "9042");
     U64 checkpoint_interval_arg = argparse::add_option(arg_parser, "--checkpoint-interval", "-c", "Maximum number of transactions held in-memory before writing to database", "1000");
-    U64 repl_arg                = argparse::add_flag(arg_parser, "--repl", "-r", "Run interactive REPL instead of server");
     U64 no_uring_arg            = argparse::add_flag(arg_parser, "--no-uring", "-U", "Disable io_uring and use synchronous socket I/O");
     U64 no_wal_arg              = argparse::add_flag(arg_parser, "--no-wal", "-W", "Disable write-ahead-log (WAL)");
 
@@ -61,7 +59,6 @@ int main(int argc, char* argv[]) {
     String8 db_path             = argparse::get_positional(args, db_path_arg);
     U16     port                = u16_from_str(argparse::get_option(args, port_arg));
     U64     checkpoint_interval = u64_from_str(argparse::get_option(args, checkpoint_interval_arg));
-    bool    run_repl            = argparse::has_flag(args, repl_arg);
     bool    no_uring            = argparse::has_flag(args, no_uring_arg);
     bool    no_wal              = argparse::has_flag(args, no_wal_arg);
     if (port == 0) {
@@ -80,7 +77,7 @@ int main(int argc, char* argv[]) {
     {
         threads::Scope                           scratch = threads::scratch();
         TaggedUnion<uring::Ring, os::AIOContext> file_io_resource;
-        auto [file_io_ctx, file_io_consumer] = create_file_io_context(run_repl, file_io_resource, *scratch.arena, io_poll);
+        auto [file_io_ctx, file_io_consumer] = create_file_io_context(file_io_resource, *scratch.arena, io_poll);
 
         Optional<os::File> opt_wal_file;
         os::File           db_file{os::file_open(db_path)};
@@ -125,20 +122,16 @@ int main(int argc, char* argv[]) {
 
         aio::drive(initialize_database(), file_io_consumer, io_poll);
 
-        if (run_repl) {
-            repl::run(engine);
-        } else {
-            auto on_ready = [&port, no_uring]() {
-                println("listening on port ", to_str(port), no_uring ? " (native protocol, async sockets)" : " (native protocol)");
-            };
-            auto              signal_consumer = aio::create_notifier_consumer(g_signal_notifier, io_poll);
-            Optional<String8> err             = native::run(
-                port, engine, on_ready, !no_uring,
-                file_io_consumer, signal_consumer, io_poll
-            );
-            if (err) {
-                println(*err);
-            }
+        auto on_ready = [&port]() {
+            println("listening on port ", to_str(port));
+        };
+        auto              signal_consumer = aio::create_notifier_consumer(g_signal_notifier, io_poll);
+        Optional<String8> err             = native::run(
+            port, engine, on_ready, !no_uring,
+            file_io_consumer, signal_consumer, io_poll
+        );
+        if (err) {
+            println(*err);
         }
 
         aio::drive(pager::destroy(pager), file_io_consumer, io_poll);
@@ -180,28 +173,26 @@ static void signal_handler(int) {
     os::signal_notify_safe(g_signal_notifier);
 }
 
-static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(bool force_sync, TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll) {
-    if (!force_sync) {
-        auto* rs = uring::get_ring_settings();
-        if (rs->recommended) {
-            U64                   page_size = os::get_system_info()->page_size;
-            uring::GlobalIOBudget budget    = uring::compute_io_budget(page_size);
-            if (budget.file_buffer_count > 0 && budget.file_buffer_size > 0) {
-                uring::Ring ring{os::zero_handle(), budget.file_queue_depth, budget.file_buffer_size, budget.file_buffer_count};
-                if (ring && !os::is_zero_handle(ring.event_fd)) {
-                    resource = plexdb::move(ring);
-                    return aio::create_uring_async_file_io_context(&get<uring::Ring>(resource), arena, poll);
-                }
+static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll) {
+    auto* rs = uring::get_ring_settings();
+    if (rs->recommended) {
+        U64                   page_size = os::get_system_info()->page_size;
+        uring::GlobalIOBudget budget    = uring::compute_io_budget(page_size);
+        if (budget.file_buffer_count > 0 && budget.file_buffer_size > 0) {
+            uring::Ring ring{os::zero_handle(), budget.file_queue_depth, budget.file_buffer_size, budget.file_buffer_count};
+            if (ring && !os::is_zero_handle(ring.event_fd)) {
+                resource = plexdb::move(ring);
+                return aio::create_uring_async_file_io_context(&get<uring::Ring>(resource), arena, poll);
             }
         }
+    }
 
-        os::Handle notifier = os::aio_notifier_create();
-        if (!os::is_zero_handle(notifier)) {
-            os::AIOContext aio_ctx{128, notifier};
-            if (aio_ctx) {
-                resource = plexdb::move(aio_ctx);
-                return aio::create_aio_async_file_io_context(&get<os::AIOContext>(resource), arena, poll);
-            }
+    os::Handle notifier = os::aio_notifier_create();
+    if (!os::is_zero_handle(notifier)) {
+        os::AIOContext aio_ctx{128, notifier};
+        if (aio_ctx) {
+            resource = plexdb::move(aio_ctx);
+            return aio::create_aio_async_file_io_context(&get<os::AIOContext>(resource), arena, poll);
         }
     }
 
