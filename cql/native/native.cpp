@@ -579,77 +579,17 @@ namespace cql::native {
         }
     }
 
-    static bool col_in_list(const DynamicArray<U64>& list, U64 ci) {
-        for (U64 k : list) {
-            if (k == ci) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     coroutine::Task<> append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl) {
         append_be_s32(f, result_codes::ROWS);
 
         bool              has_select = result.select_col_indices.length > 0;
         DynamicArray<U64> effective_cols;
         if (has_select) {
-            for (U64 i = 0; i < result.select_col_indices.length; i++) {
-                push_back(effective_cols, result.select_col_indices[i]);
-            }
-        } else {
-            // SELECT * order: PK in key position, CK in key position, static alphabetic,
-            // regular alphabetic (Cassandra's convention).
-            auto name_lt = [&tbl](U64 a, U64 b) -> bool {
-                const auto& na  = tbl->cols[a].name;
-                const auto& nb  = tbl->cols[b].name;
-                U64         lim = na.length < nb.length ? na.length : nb.length;
-                for (U64 i = 0; i < lim; i++) {
-                    if (na.data[i] != nb.data[i]) {
-                        return U8(na.data[i]) < U8(nb.data[i]);
-                    }
-                }
-                return na.length < nb.length;
-            };
-            auto sort_alpha = [&](DynamicArray<U64>& arr) {
-                for (U64 i = 0; i + 1 < arr.length; i++) {
-                    for (U64 j = i + 1; j < arr.length; j++) {
-                        if (name_lt(arr[j], arr[i])) {
-                            auto t = arr[i];
-                            arr[i] = arr[j];
-                            arr[j] = t;
-                        }
-                    }
-                }
-            };
-            for (U64 ci : tbl->partition_key_col_indices) {
-                if (!tbl->cols[ci].tombstone) {
-                    push_back(effective_cols, ci);
-                }
-            }
-            for (U64 ci : tbl->clustering_key_col_indices) {
-                if (!tbl->cols[ci].tombstone) {
-                    push_back(effective_cols, ci);
-                }
-            }
-            DynamicArray<U64> statics;
-            for (U64 ci : tbl->static_col_indices) {
-                if (!tbl->cols[ci].tombstone) {
-                    push_back(statics, ci);
-                }
-            }
-            sort_alpha(statics);
-            for (U64 ci : statics) {
+            for (U64 ci : result.select_col_indices) {
                 push_back(effective_cols, ci);
             }
-            DynamicArray<U64> regulars;
-            for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                if (!tbl->cols[ci].tombstone && !col_in_list(tbl->partition_key_col_indices, ci) && !col_in_list(tbl->clustering_key_col_indices, ci) && !col_in_list(tbl->static_col_indices, ci)) {
-                    push_back(regulars, ci);
-                }
-            }
-            sort_alpha(regulars);
-            for (U64 ci : regulars) {
+        } else {
+            for (U64 ci : tbl->select_star_col_indices) {
                 push_back(effective_cols, ci);
             }
         }
@@ -1045,7 +985,7 @@ namespace cql::native {
 
                 auto pr = parsers::parse(query);
                 if (!pr.statement) {
-                    Frame frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
+                    Frame   frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
                     String8 msg = pr.err.length ? String8(pr.err) : String8("Failed to parse CQL");
                     append_error_body(frame, engine::ExecutionStatus::SyntaxError, msg);
                     co_await send_native_frame<Version, Compressed>(frame);

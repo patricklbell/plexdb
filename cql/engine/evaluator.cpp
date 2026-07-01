@@ -1166,6 +1166,9 @@ namespace plexdb {
                 }
                 return "0x"_as + result;
             }
+            case cql::type::Basic::COUNT: {
+
+            } break;
         }
         return "unknown"_as;
     }

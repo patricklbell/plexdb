@@ -484,100 +484,118 @@ namespace cql::parsers {
         struct basic_type {
             struct t_ascii : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("ascii");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::ascii); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::ascii); });
             };
             struct t_bigint : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("bigint");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::bigint); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::bigint); });
             };
             struct t_blob : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("blob");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::blob); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::blob); });
             };
             struct t_boolean : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("boolean");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::boolean); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::boolean); });
             };
             struct t_counter : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("counter");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::counter); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::counter); });
             };
             struct t_date : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("date");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::date); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::date); });
             };
             struct t_decimal : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("decimal");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::decimal); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::decimal); });
             };
             struct t_double : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("double");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::double_); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::double_); });
             };
             struct t_duration : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("duration");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::duration); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::duration); });
             };
             struct t_float : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("float");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::float_); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::float_); });
             };
             struct t_inet : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("inet");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::inet); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::inet); });
             };
             struct t_int : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("int");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::int_); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::int_); });
             };
             struct t_smallint : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("smallint");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::smallint); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::smallint); });
             };
             struct t_text : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("text");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::text); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::text); });
             };
             struct t_time : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("time");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::time); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::time); });
             };
             struct t_timestamp : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("timestamp");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::timestamp); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::timestamp); });
             };
             struct t_timeuuid : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("timeuuid");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::timeuuid); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::timeuuid); });
             };
             struct t_tinyint : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("tinyint");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::tinyint); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::tinyint); });
             };
             struct t_uuid : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("uuid");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::uuid); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::uuid); });
             };
             struct t_varchar : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("varchar");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::varchar); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::varchar); });
             };
             struct t_varint : lexy::transparent_production {
                 static constexpr auto rule  = LEXY_LIT_CI("varint");
-                static constexpr auto value = lexy::callback<type::Type>([] { return type::create_basic(type::Basic::varint); });
+                static constexpr auto value = lexy::callback<type::ast::Type>([] { return type::ast::create_basic(type::Basic::varint); });
             };
 
             // @note order matters: longer prefixes first (timestamp before time, smallint before set, etc.)
             static constexpr auto rule  = dsl::p<t_timestamp> | dsl::p<t_timeuuid> | dsl::p<t_tinyint> | dsl::p<t_text> | dsl::p<t_time> | dsl::p<t_ascii> | dsl::p<t_bigint> | dsl::p<t_blob> | dsl::p<t_boolean> | dsl::p<t_counter> | dsl::p<t_date> | dsl::p<t_decimal> | dsl::p<t_double> | dsl::p<t_duration> | dsl::p<t_float> | dsl::p<t_inet> | dsl::p<t_int> | dsl::p<t_smallint> | dsl::p<t_uuid> | dsl::p<t_varchar> | dsl::p<t_varint>;
-            static constexpr auto value = lexy::forward<type::Type>;
+            static constexpr auto value = lexy::forward<type::ast::Type>;
         };
 
         struct collection_type;
 
+        // @note CQL allows `[keyspace '.'] identifier` as a column type when the identifier
+        // names a user-defined type. The parser cannot tell at parse time whether the
+        // identifier resolves to a UDT, so we emit an `ast::UdtRef` carrying just the
+        // [keyspace.]name text; the engine resolves against schema storage before binding.
+        struct udt_ref_type {
+            static constexpr auto rule = [] {
+                return dsl::p<identifier> + dsl::opt(dsl::lit_c<'.'> >> dsl::p<identifier>);
+            }();
+            static constexpr auto value = lexy::callback<type::ast::Type>(
+                [](AutoString8&& a, AutoString8&& b) -> type::ast::Type {
+                    return type::ast::create_udt_ref(move(a), move(b));
+                },
+                [](AutoString8&& a, lexy::nullopt) -> type::ast::Type {
+                    return type::ast::create_udt_ref(AutoString8{}, move(a));
+                }
+            );
+        };
+
         struct frozen_type {
-            static constexpr auto rule  = kw_frozen >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<basic_type> | dsl::else_ >> dsl::recurse<collection_type>)+dsl::p<ws> + dsl::lit_c<'>'>;
-            static constexpr auto value = lexy::callback<type::Type>(
-                [](type::Type fwd) {
+            static constexpr auto rule  = kw_frozen >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + (dsl::p<basic_type> | dsl::peek(kw_list) >> dsl::recurse<collection_type> | dsl::peek(kw_set) >> dsl::recurse<collection_type> | dsl::peek(kw_map) >> dsl::recurse<collection_type> | dsl::peek(kw_tuple) >> dsl::recurse<collection_type> | dsl::else_ >> dsl::p<udt_ref_type>)+dsl::p<ws> + dsl::lit_c<'>'>;
+            static constexpr auto value = lexy::callback<type::ast::Type>(
+                [](type::ast::Type fwd) {
                     visit(fwd.value, [](auto& v) {
                         using T = RemoveRef<decltype(v)>;
                         if constexpr (!SameAs<T, type::Basic>) {
@@ -591,44 +609,44 @@ namespace cql::parsers {
 
         struct collection_type {
             struct element_type {
-                static constexpr auto rule  = dsl::p<frozen_type> | dsl::p<basic_type> | dsl::else_ >> dsl::recurse<collection_type>;
-                static constexpr auto value = lexy::forward<type::Type>;
+                static constexpr auto rule  = dsl::p<frozen_type> | dsl::p<basic_type> | dsl::peek(kw_list) >> dsl::recurse<collection_type> | dsl::peek(kw_set) >> dsl::recurse<collection_type> | dsl::peek(kw_map) >> dsl::recurse<collection_type> | dsl::peek(kw_tuple) >> dsl::recurse<collection_type> | dsl::else_ >> dsl::p<udt_ref_type>;
+                static constexpr auto value = lexy::forward<type::ast::Type>;
             };
             struct list_type {
                 static constexpr auto rule  = kw_list >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> + dsl::lit_c<'>'>;
-                static constexpr auto value = lexy::callback<type::Type>(
-                    [](type::Type el) { return type::create_list(move(el)); }
+                static constexpr auto value = lexy::callback<type::ast::Type>(
+                    [](type::ast::Type el) { return type::ast::create_list(move(el)); }
                 );
             };
             struct set_type {
                 static constexpr auto rule  = kw_set >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> + dsl::lit_c<'>'>;
-                static constexpr auto value = lexy::callback<type::Type>(
-                    [](type::Type key) { return type::create_set(move(key)); }
+                static constexpr auto value = lexy::callback<type::ast::Type>(
+                    [](type::ast::Type key) { return type::ast::create_set(move(key)); }
                 );
             };
             struct map_type {
                 static constexpr auto rule  = kw_map >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> + dsl::lit_c<','> + dsl::p<ws> + dsl::p<element_type> + dsl::p<ws> + dsl::lit_c<'>'>;
-                static constexpr auto value = lexy::callback<type::Type>(
-                    [](type::Type key, type::Type val) { return type::create_map(move(key), move(val)); }
+                static constexpr auto value = lexy::callback<type::ast::Type>(
+                    [](type::ast::Type key, type::ast::Type val) { return type::ast::create_map(move(key), move(val)); }
                 );
             };
             struct tuple_type {
                 struct element_list {
                     static constexpr auto rule  = dsl::list(dsl::p<element_type> + dsl::p<ws>, dsl::sep(dsl::lit_c<','> >> dsl::p<ws>));
-                    static constexpr auto value = as_dyn_arr<type::Type>;
+                    static constexpr auto value = as_dyn_arr<type::ast::Type>;
                 };
                 static constexpr auto rule  = kw_tuple >> dsl::p<ws> + dsl::lit_c<'<'> + dsl::p<ws> + dsl::p<element_list> + dsl::lit_c<'>'>;
-                static constexpr auto value = lexy::callback<type::Type>(
-                    [](DynamicArray<type::Type>&& elements) { return type::create_tuple(move(elements)); }
+                static constexpr auto value = lexy::callback<type::ast::Type>(
+                    [](DynamicArray<type::ast::Type>&& elements) { return type::ast::create_tuple(move(elements)); }
                 );
             };
             static constexpr auto rule  = dsl::p<list_type> | dsl::p<set_type> | dsl::p<map_type> | dsl::p<tuple_type>;
-            static constexpr auto value = lexy::forward<type::Type>;
+            static constexpr auto value = lexy::forward<type::ast::Type>;
         };
 
         struct data_type {
-            static constexpr auto rule  = dsl::p<frozen_type> | dsl::p<collection_type> | dsl::p<basic_type>;
-            static constexpr auto value = lexy::forward<type::Type>;
+            static constexpr auto rule  = dsl::p<frozen_type> | dsl::p<collection_type> | dsl::p<basic_type> | dsl::else_ >> dsl::p<udt_ref_type>;
+            static constexpr auto value = lexy::forward<type::ast::Type>;
         };
 
         // ====================================================================
@@ -769,9 +787,9 @@ namespace cql::parsers {
                 return cast_head >> dsl::lit_c<'('> + dsl::p<ws> + dsl::p<data_type> + dsl::p<ws> + dsl::lit_c<')'> + dsl::p<ws> + dsl::recurse<term_expr>;
             }();
             static constexpr auto value = lexy::callback<Term>(
-                [](type::Type type, Term&& operand) -> Term {
+                [](type::ast::Type type, Term&& operand) -> Term {
                     return Term{
-                        .value = TypeHint{type, move(operand)}
+                        .value = TypeHint{move(type), move(operand)}
                     };
                 }
             );
@@ -1252,9 +1270,7 @@ namespace cql::parsers {
         struct use_stmt {
             static constexpr auto rule = [] {
                 constexpr auto bind_marker = dsl::lit_c<'?'> / dsl::lit_c<':'>;
-                return dsl::peek(kw_use) >> kw_use + dsl::p<ws> +
-                       (dsl::peek(bind_marker) >> dsl::error<err_use_bind>
-                        | dsl::p<identifier>);
+                return dsl::peek(kw_use) >> kw_use + dsl::p<ws> + (dsl::peek(bind_marker) >> dsl::error<err_use_bind> | dsl::p<identifier>);
             }();
             static constexpr auto value = lexy::construct<UseKeyspace>;
         };
@@ -1833,9 +1849,9 @@ namespace cql::parsers {
         struct cast_selector {
             static constexpr auto rule  = kw_cast >> dsl::p<ws> + dsl::lit_c<'('> + dsl::p<ws> + dsl::recurse<selector_rule> + dsl::p<ws> + kw_as + dsl::p<ws> + dsl::p<data_type> + dsl::p<ws> + dsl::lit_c<')'>;
             static constexpr auto value = lexy::callback<Select::Selector>(
-                [](Select::Selector&& sel, type::Type type) -> Select::Selector {
+                [](Select::Selector&& sel, type::ast::Type type) -> Select::Selector {
                     return {
-                        .value = Select::Cast{.column = move(sel), .to = type}
+                        .value = Select::Cast{.column = move(sel), .to = move(type)}
                     };
                 }
             );

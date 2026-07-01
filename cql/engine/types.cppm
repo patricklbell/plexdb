@@ -205,7 +205,7 @@ export namespace cql {
         // @warn be careful about changing these values as they encoded directly in the schema's type registry
         // see schema.cppm
         enum class Basic : U8 {
-            ascii,
+            ascii = 0,
             bigint,
             blob,
             boolean,
@@ -227,6 +227,7 @@ export namespace cql {
             varchar,
             varint,
             hex,
+            COUNT,
         };
 
         struct List;
@@ -234,9 +235,13 @@ export namespace cql {
         struct Map;
         struct Vector;
         struct Tuple;
+        struct UDT;
 
+        // @note UDT is held by pointer so all columns referencing the same user-defined type share the
+        // canonical definition (Cassandra: ALTER TYPE ADD propagates to every column). Schema.udts owns
+        // the pointees with stable addresses across mutations.
         struct Type {
-            HybridTaggedUnion<TypeList<Basic>, TypeList<List, Set, Map, Vector, Tuple>> value;
+            HybridTaggedUnion<TypeList<Basic>, TypeList<List, Set, Map, Vector, Tuple, UDT*>> value;
         };
 
         struct List {
@@ -266,6 +271,16 @@ export namespace cql {
             bool               frozen;
         };
 
+        // @warn the String8 / DynamicArray<String8> fields are non-owning views into the parent
+        // UdtStorage's AutoString8 buffers. AutoString8 stores a pointer to a separately-allocated
+        // char buffer, so the views remain valid as the owning array grows.
+        struct UDT {
+            String8               keyspace;
+            String8               name;
+            DynamicArray<String8> field_names;
+            DynamicArray<Type>    field_types;
+        };
+
         bool operator==(const Type& a, const Type& b);
 
         inline bool operator==(const List& a, const List& b) {
@@ -290,6 +305,9 @@ export namespace cql {
                 }
             }
             return true;
+        }
+        inline bool operator==(const UDT& a, const UDT& b) {
+            return a.keyspace == b.keyspace && a.name == b.name;
         }
 
         inline bool operator==(const Type& a, const Type& b) {
@@ -344,6 +362,125 @@ export namespace cql {
                 Tuple{move(elements), frozen}
             };
         }
+        inline Type create_udt(UDT* udt) {
+            assert_true(udt != nullptr, "create_udt requires non-null pointer");
+            return Type{udt};
+        }
+
+        // ====================================================================
+        // type ast (parser-only)
+        //
+        // The parser cannot resolve `[ks.]name` references against the schema, so it emits a
+        // separate `ast::Type` tree that mirrors `type::Type` but uses `ast::UdtRef` (a textual
+        // [keyspace.]name) wherever `type::Type` would carry a `UDT*`. The engine converts
+        // `ast::Type` → `type::Type` via `schema::resolve_type_ast(...)` before any storage or
+        // type-checking takes place; resolution looks up the keyspace's UDT pool and binds a
+        // stable pointer.
+        // ====================================================================
+        namespace ast {
+            struct ListAst;
+            struct SetAst;
+            struct MapAst;
+            struct VectorAst;
+            struct TupleAst;
+            struct UdtRef;
+
+            struct Type {
+                HybridTaggedUnion<TypeList<Basic>, TypeList<ListAst, SetAst, MapAst, VectorAst, TupleAst, UdtRef>> value;
+            };
+
+            struct ListAst {
+                Type element;
+                bool frozen;
+            };
+            struct SetAst {
+                Type key;
+                bool frozen;
+            };
+            struct MapAst {
+                Type key;
+                Type value;
+                bool frozen;
+            };
+            struct VectorAst {
+                Type element;
+                U64  count;
+                bool frozen;
+            };
+            struct TupleAst {
+                DynamicArray<Type> elements;
+                bool               frozen;
+            };
+            struct UdtRef {
+                AutoString8 keyspace; // may be empty (defaulted to current keyspace at resolve time)
+                AutoString8 name;
+                bool        frozen;
+            };
+
+            inline Type create_basic(Basic d) {
+                return Type{Basic{d}};
+            }
+            inline Type create_list(Type el, bool frozen = false) {
+                return Type{
+                    ListAst{move(el), frozen}
+                };
+            }
+            inline Type create_set(Type key, bool frozen = false) {
+                return Type{
+                    SetAst{move(key), frozen}
+                };
+            }
+            inline Type create_map(Type key, Type val, bool frozen = false) {
+                return Type{
+                    MapAst{move(key), move(val), frozen}
+                };
+            }
+            inline Type create_vector(Type el, U64 count, bool frozen = false) {
+                return Type{
+                    VectorAst{move(el), count, frozen}
+                };
+            }
+            inline Type create_tuple(DynamicArray<Type> elements, bool frozen = false) {
+                return Type{
+                    TupleAst{move(elements), frozen}
+                };
+            }
+            inline Type create_udt_ref(AutoString8 keyspace, AutoString8 name, bool frozen = false) {
+                return Type{
+                    UdtRef{move(keyspace), move(name), frozen}
+                };
+            }
+
+            inline bool operator==(const Type& a, const Type& b) {
+                return a.value == b.value;
+            }
+            inline bool operator==(const ListAst& a, const ListAst& b) {
+                return a.element == b.element && a.frozen == b.frozen;
+            }
+            inline bool operator==(const SetAst& a, const SetAst& b) {
+                return a.key == b.key && a.frozen == b.frozen;
+            }
+            inline bool operator==(const MapAst& a, const MapAst& b) {
+                return a.key == b.key && a.value == b.value && a.frozen == b.frozen;
+            }
+            inline bool operator==(const VectorAst& a, const VectorAst& b) {
+                return a.element == b.element && a.count == b.count && a.frozen == b.frozen;
+            }
+            inline bool operator==(const TupleAst& a, const TupleAst& b) {
+                if (a.frozen != b.frozen || a.elements.length != b.elements.length) {
+                    return false;
+                }
+                for (U64 i = 0; i < a.elements.length; i++) {
+                    if (!(a.elements[i] == b.elements[i])) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            inline bool operator==(const UdtRef& a, const UdtRef& b) {
+                return a.keyspace == b.keyspace && a.name == b.name && a.frozen == b.frozen;
+            }
+        }
     }
 }
 
@@ -385,6 +522,14 @@ export namespace plexdb {
             h = mix(h, hash(t.elements[i]));
         }
         return h;
+    }
+
+    U64 hash(const cql::type::UDT& t) {
+        return mix(plexdb::hash(t.keyspace), plexdb::hash(t.name));
+    }
+
+    inline U64 hash(cql::type::UDT* t) {
+        return t == nullptr ? 0_u64 : hash(*t);
     }
 
     U64 hash(const cql::type::Type& t) {
@@ -439,6 +584,8 @@ export namespace plexdb {
                 return "varint";
             case cql::type::Basic::hex:
                 return "hex";
+            case cql::type::Basic::COUNT:
+                break;
         }
         return "unknown";
     }
@@ -457,8 +604,7 @@ export namespace plexdb {
                 return "map<"_as + to_str(v.key) + ", " + to_str(v.value) + ">";
             } else if constexpr (SameAs<T, cql::type::Vector>) {
                 return "vector["_as + to_str(v.element) + "]";
-            } else {
-                static_assert(SameAs<T, cql::type::Tuple>, "unhandled Type variant in to_str");
+            } else if constexpr (SameAs<T, cql::type::Tuple>) {
                 AutoString8 result = "tuple<"_as;
                 for (U64 i = 0; i < v.elements.length; i++) {
                     if (i > 0) {
@@ -467,6 +613,15 @@ export namespace plexdb {
                     result += String8(to_str(v.elements[i]));
                 }
                 result += ">";
+                return result;
+            } else {
+                static_assert(SameAs<T, cql::type::UDT*>, "unhandled Type variant in to_str");
+                assert_true(v != nullptr, "resolved UDT pointer is null");
+                AutoString8 result;
+                if (v->keyspace.length > 0) {
+                    result = AutoString8(v->keyspace) + ".";
+                }
+                result += v->name;
                 return result;
             }
         });

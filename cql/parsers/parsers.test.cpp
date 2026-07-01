@@ -222,15 +222,15 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
         REQUIRE(tbl.column_definitions.length == 3);
 
         REQUIRE(tbl.column_definitions[0].name.identifier == "id");
-        REQUIRE(tbl.column_definitions[0].type == type::create_basic(type::Basic::int_));
+        REQUIRE(tbl.column_definitions[0].type == type::ast::create_basic(type::Basic::int_));
         REQUIRE(tbl.column_definitions[0].primary_key == true);
 
         REQUIRE(tbl.column_definitions[1].name.identifier == "name");
-        REQUIRE(tbl.column_definitions[1].type == type::create_basic(type::Basic::text));
+        REQUIRE(tbl.column_definitions[1].type == type::ast::create_basic(type::Basic::text));
         REQUIRE(tbl.column_definitions[1].primary_key == false);
 
         REQUIRE(tbl.column_definitions[2].name.identifier == "age");
-        REQUIRE(tbl.column_definitions[2].type == type::create_basic(type::Basic::int_));
+        REQUIRE(tbl.column_definitions[2].type == type::ast::create_basic(type::Basic::int_));
         REQUIRE(tbl.column_definitions[2].primary_key == false);
     }
 
@@ -254,11 +254,11 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.column_definitions.length == 5);
-        REQUIRE(tbl.column_definitions[0].type == type::create_basic(type::Basic::int_));
-        REQUIRE(tbl.column_definitions[1].type == type::create_basic(type::Basic::text));
-        REQUIRE(tbl.column_definitions[2].type == type::create_basic(type::Basic::bigint));
-        REQUIRE(tbl.column_definitions[3].type == type::create_basic(type::Basic::timestamp));
-        REQUIRE(tbl.column_definitions[4].type == type::create_basic(type::Basic::boolean));
+        REQUIRE(tbl.column_definitions[0].type == type::ast::create_basic(type::Basic::int_));
+        REQUIRE(tbl.column_definitions[1].type == type::ast::create_basic(type::Basic::text));
+        REQUIRE(tbl.column_definitions[2].type == type::ast::create_basic(type::Basic::bigint));
+        REQUIRE(tbl.column_definitions[3].type == type::ast::create_basic(type::Basic::timestamp));
+        REQUIRE(tbl.column_definitions[4].type == type::ast::create_basic(type::Basic::boolean));
     }
 
     SECTION("CREATE TABLE with FLOAT and DOUBLE types") {
@@ -268,8 +268,8 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.column_definitions.length == 3);
-        REQUIRE(tbl.column_definitions[1].type == type::create_basic(type::Basic::float_));
-        REQUIRE(tbl.column_definitions[2].type == type::create_basic(type::Basic::double_));
+        REQUIRE(tbl.column_definitions[1].type == type::ast::create_basic(type::Basic::float_));
+        REQUIRE(tbl.column_definitions[2].type == type::ast::create_basic(type::Basic::double_));
     }
 
     SECTION("CREATE TABLE with UUID type") {
@@ -279,7 +279,7 @@ TEST_CASE("CQL INSERT INTO", "[cql.cql]") {
         REQUIRE(result.has_value());
         const auto& tbl = get<CreateTable>(result->value);
         REQUIRE(tbl.column_definitions.length == 2);
-        REQUIRE(tbl.column_definitions[0].type == type::create_basic(type::Basic::uuid));
+        REQUIRE(tbl.column_definitions[0].type == type::ast::create_basic(type::Basic::uuid));
         REQUIRE(tbl.column_definitions[0].primary_key == true);
     }
 
@@ -670,10 +670,13 @@ TEST_CASE("CQL Invalid syntax handling", "[cql.parser]") {
         REQUIRE_FALSE(result.has_value());
     }
 
-    SECTION("Invalid data type") {
+    SECTION("Unknown identifier in data-type position parses as a UDT reference") {
+        // @note The parser cannot tell at parse time whether `invalidtype` is a UDT name
+        // or a misspelled built-in, so it emits an ast::UdtRef. Resolution against the
+        // keyspace happens at engine time and is where unknown UDTs are rejected.
         auto query  = "CREATE TABLE ks.test (id invalidtype PRIMARY KEY);";
         auto result = parse(query).statement;
-        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.has_value());
     }
 
     SECTION("Missing closing parenthesis in INSERT") {
@@ -1171,7 +1174,7 @@ TEST_CASE("Conformance: CREATE TYPE", "[cql.conformance.parser]") {
         REQUIRE(!s.if_not_exists);
         REQUIRE(s.fields.length == 1);
         REQUIRE(s.fields[0].name.identifier == "v1");
-        REQUIRE(s.fields[0].type == type::create_basic(type::Basic::int_));
+        REQUIRE(s.fields[0].type == type::ast::create_basic(type::Basic::int_));
     }
     SECTION("multiple fields") {
         auto r = parse("CREATE TYPE ks.address(street text, city text, zip int);").statement;
@@ -1381,8 +1384,8 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
         REQUIRE(s.column_definitions.length == 2);
         auto& col = s.column_definitions[1];
         REQUIRE(col.name.identifier == "t");
-        REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
-        auto& tup = get<type::Tuple>(col.type.value);
+        REQUIRE(type_matches_tag<type::ast::TupleAst>(col.type.value));
+        auto& tup = get<type::ast::TupleAst>(col.type.value);
         REQUIRE(tup.elements.length == 2);
         REQUIRE(tup.frozen == false);
         REQUIRE(type_matches_tag<type::Basic>(tup.elements[0].value));
@@ -1397,8 +1400,8 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
         REQUIRE(s.column_definitions.length == 2);
         auto& col = s.column_definitions[0];
         REQUIRE(col.name.identifier == "t");
-        REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
-        auto& tup = get<type::Tuple>(col.type.value);
+        REQUIRE(type_matches_tag<type::ast::TupleAst>(col.type.value));
+        auto& tup = get<type::ast::TupleAst>(col.type.value);
         REQUIRE(tup.elements.length == 2);
         REQUIRE(tup.frozen == true);
     }
@@ -1407,71 +1410,71 @@ TEST_CASE("Conformance: tuple<> type in CREATE TABLE", "[cql.conformance.parser]
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
-        REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
-        REQUIRE(get<type::Tuple>(col.type.value).elements.length == 1);
+        REQUIRE(type_matches_tag<type::ast::TupleAst>(col.type.value));
+        REQUIRE(get<type::ast::TupleAst>(col.type.value).elements.length == 1);
     }
     SECTION("three-element tuple") {
         auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, text, boolean>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
-        REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
-        REQUIRE(get<type::Tuple>(col.type.value).elements.length == 3);
+        REQUIRE(type_matches_tag<type::ast::TupleAst>(col.type.value));
+        REQUIRE(get<type::ast::TupleAst>(col.type.value).elements.length == 3);
     }
     SECTION("tuple with collection element") {
         auto r = parse("CREATE TABLE ks.tbl (pk int PRIMARY KEY, t tuple<int, list<text>>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
-        REQUIRE(type_matches_tag<type::Tuple>(col.type.value));
-        auto& tup = get<type::Tuple>(col.type.value);
+        REQUIRE(type_matches_tag<type::ast::TupleAst>(col.type.value));
+        auto& tup = get<type::ast::TupleAst>(col.type.value);
         REQUIRE(tup.elements.length == 2);
-        REQUIRE(type_matches_tag<type::List>(tup.elements[1].value));
+        REQUIRE(type_matches_tag<type::ast::ListAst>(tup.elements[1].value));
     }
     SECTION("CREATE TYPE with tuple field") {
         auto r = parse("CREATE TYPE ks.my_type (a tuple<int, text>);").statement;
         REQUIRE(r.has_value());
         auto& s = get<CreateType>(r->value);
         REQUIRE(s.fields.length == 1);
-        REQUIRE(type_matches_tag<type::Tuple>(s.fields[0].type.value));
-        REQUIRE(get<type::Tuple>(s.fields[0].type.value).elements.length == 2);
+        REQUIRE(type_matches_tag<type::ast::TupleAst>(s.fields[0].type.value));
+        REQUIRE(get<type::ast::TupleAst>(s.fields[0].type.value).elements.length == 2);
     }
     SECTION("frozen<map<text, list<tuple<int, duration>>>> nested type") {
         auto r = parse("CREATE TABLE ks.tbl (pk int, m frozen<map<text, list<tuple<int, duration>>>>, v int, PRIMARY KEY (pk, m));").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
-        REQUIRE(type_matches_tag<type::Map>(col.type.value));
-        auto& m = get<type::Map>(col.type.value);
+        REQUIRE(type_matches_tag<type::ast::MapAst>(col.type.value));
+        auto& m = get<type::ast::MapAst>(col.type.value);
         REQUIRE(m.frozen == true);
         REQUIRE(type_matches_tag<type::Basic>(m.key.value));
         REQUIRE(get<type::Basic>(m.key.value) == type::Basic::text);
-        REQUIRE(type_matches_tag<type::List>(m.value.value));
-        auto& l = get<type::List>(m.value.value);
-        REQUIRE(type_matches_tag<type::Tuple>(l.element.value));
-        REQUIRE(get<type::Tuple>(l.element.value).elements.length == 2);
+        REQUIRE(type_matches_tag<type::ast::ListAst>(m.value.value));
+        auto& l = get<type::ast::ListAst>(m.value.value);
+        REQUIRE(type_matches_tag<type::ast::TupleAst>(l.element.value));
+        REQUIRE(get<type::ast::TupleAst>(l.element.value).elements.length == 2);
     }
     SECTION("frozen<set<tuple<int, text, double>>> nested type") {
         auto r = parse("CREATE TABLE ks.tbl (k int PRIMARY KEY, s frozen<set<tuple<int, text, double>>>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
-        REQUIRE(type_matches_tag<type::Set>(col.type.value));
-        auto& st = get<type::Set>(col.type.value);
+        REQUIRE(type_matches_tag<type::ast::SetAst>(col.type.value));
+        auto& st = get<type::ast::SetAst>(col.type.value);
         REQUIRE(st.frozen == true);
-        REQUIRE(type_matches_tag<type::Tuple>(st.key.value));
-        REQUIRE(get<type::Tuple>(st.key.value).elements.length == 3);
+        REQUIRE(type_matches_tag<type::ast::TupleAst>(st.key.value));
+        REQUIRE(get<type::ast::TupleAst>(st.key.value).elements.length == 3);
     }
     SECTION("map<text, frozen<map<text, set<int>>>> nested type") {
         auto r = parse("CREATE TABLE ks.tbl (k int PRIMARY KEY, m map<text, frozen<map<text, set<int>>>>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
-        REQUIRE(type_matches_tag<type::Map>(col.type.value));
-        auto& outer = get<type::Map>(col.type.value);
+        REQUIRE(type_matches_tag<type::ast::MapAst>(col.type.value));
+        auto& outer = get<type::ast::MapAst>(col.type.value);
         REQUIRE(type_matches_tag<type::Basic>(outer.key.value));
-        REQUIRE(type_matches_tag<type::Map>(outer.value.value));
-        REQUIRE(get<type::Map>(outer.value.value).frozen == true);
+        REQUIRE(type_matches_tag<type::ast::MapAst>(outer.value.value));
+        REQUIRE(get<type::ast::MapAst>(outer.value.value).frozen == true);
     }
 }
 
@@ -1584,34 +1587,34 @@ TEST_CASE("frozen collection type parsing", "[cql.parser]") {
         auto& s = get<CreateTable>(r->value);
         REQUIRE(s.column_definitions.length == 2);
         auto& col = s.column_definitions[1];
-        REQUIRE(type_matches_tag<type::List>(col.type.value));
-        REQUIRE(get<type::List>(col.type.value).frozen == true);
-        REQUIRE(type_matches_tag<type::Basic>(get<type::List>(col.type.value).element.value));
-        REQUIRE(get<type::Basic>(get<type::List>(col.type.value).element.value) == type::Basic::int_);
+        REQUIRE(type_matches_tag<type::ast::ListAst>(col.type.value));
+        REQUIRE(get<type::ast::ListAst>(col.type.value).frozen == true);
+        REQUIRE(type_matches_tag<type::Basic>(get<type::ast::ListAst>(col.type.value).element.value));
+        REQUIRE(get<type::Basic>(get<type::ast::ListAst>(col.type.value).element.value) == type::Basic::int_);
     }
     SECTION("FROZEN<SET<TEXT>>") {
         auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v frozen<set<text>>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
-        REQUIRE(type_matches_tag<type::Set>(col.type.value));
-        REQUIRE(get<type::Set>(col.type.value).frozen == true);
+        REQUIRE(type_matches_tag<type::ast::SetAst>(col.type.value));
+        REQUIRE(get<type::ast::SetAst>(col.type.value).frozen == true);
     }
     SECTION("FROZEN<MAP<TEXT, INT>>") {
         auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v frozen<map<text, int>>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
-        REQUIRE(type_matches_tag<type::Map>(col.type.value));
-        REQUIRE(get<type::Map>(col.type.value).frozen == true);
+        REQUIRE(type_matches_tag<type::ast::MapAst>(col.type.value));
+        REQUIRE(get<type::ast::MapAst>(col.type.value).frozen == true);
     }
     SECTION("non-frozen list parses with frozen=false") {
         auto r = parse("CREATE TABLE ks.t (k int PRIMARY KEY, v list<int>);").statement;
         REQUIRE(r.has_value());
         auto& s   = get<CreateTable>(r->value);
         auto& col = s.column_definitions[1];
-        REQUIRE(type_matches_tag<type::List>(col.type.value));
-        REQUIRE(get<type::List>(col.type.value).frozen == false);
+        REQUIRE(type_matches_tag<type::ast::ListAst>(col.type.value));
+        REQUIRE(get<type::ast::ListAst>(col.type.value).frozen == false);
     }
 }
 

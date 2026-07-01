@@ -157,7 +157,7 @@ TEST_CASE("evaluator - bind markers and type hints", "[cql.engine.evaluator]") {
 
     SECTION("type hint preserves the evaluated value") {
         Term term{
-            TypeHint{type::create_basic(type::Basic::int_), constant_s64(123)}
+            TypeHint{type::ast::create_basic(type::Basic::int_), constant_s64(123)}
         };
         Evaluated out = evaluate(term, ctx);
         REQUIRE(type_matches_tag<Constant>(out.value));

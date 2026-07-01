@@ -180,6 +180,8 @@ namespace cql::native {
                 assert_not_implemented("native protocol type code for hex type is not implemented");
                 return 0x0000;
             } break;
+            case type::Basic::COUNT:
+                break;
         }
 
         assert_true(false, "invalid basic type");

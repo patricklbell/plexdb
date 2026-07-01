@@ -19,6 +19,12 @@ namespace cql::log {
         plexdb::plugin::message(cql_native, plexdb::plugin::Level::Error, error);
     }
 
+    plexdb::plugin::Producer cql_schema{"cql::schema"};
+
+    void schema_info(const plexdb::String8& info) {
+        plexdb::plugin::message(cql_schema, plexdb::plugin::Level::Info, info);
+    }
+
     plexdb::plugin::Producer otlp_db_producer{"otlp.db"};
 
     plexdb::plugin::Stat stat_connection_count{&otlp_db_producer, "client.connection.count", plexdb::plugin::StatType::Gauge};

@@ -12,34 +12,57 @@ import cql.engine.types;
 
 using namespace plexdb;
 
+// ============================================================================
+// schema
+// ============================================================================
+//
+// On-disk layout (see Schema below):
+//
+//   schema_blob (static, sizeof(SchemaHeader)):
+//     SchemaHeader { U64 keyspaces_page, tables_page, columns_page, udts_page, indexes_page }
+//
+//   keyspaces_blob (dynamic, append-only):
+//     [KeyspaceHeader][name bytes]  repeated, one record per keyspace
+//
+//   tables_blob (dynamic, append-only):
+//     [TableHeader][name bytes]  repeated, one record per table
+//
+//   columns_blob (dynamic, append-only):
+//     [ColumnHeader][name bytes][serialized type::Type]  repeated, one record per column
+//
+//   udts_blob (dynamic, append-only):
+//     Two record kinds, discriminated by UdtRecordHeader.is_field:
+//       UDT-decl (is_field=0):
+//         [UdtRecordHeader][keyspace bytes][name bytes]
+//       UDT-field (is_field=1):
+//         [UdtRecordHeader][field name bytes][serialized type::Type]
+//     Field records always follow their parent UDT-decl record (not directly) and reference
+//     it via UdtRecordHeader.parent_udt_record_idx (the count of preceding UDT-decl records).
+//
+//   indexes_blob (dynamic, append-only):
+//     [IndexHeader][name bytes]  repeated, one record per index
+//
+// Type serialization (inline within columns_blob and UDT-field records):
+//     TypeKind kind (U8), then per-kind:
+//       basic kinds (kind < Basic::COUNT):   nothing
+//       List / Set:                          U8 frozen, then 1 sub-type
+//       Map:                                 U8 frozen, then 2 sub-types
+//       Vector:                              U8 frozen, U64 count, then 1 sub-type
+//       Tuple:                               U8 frozen, U64 count, then `count` sub-types
+//       Udt:                                 U8 frozen, U64 name_length, name bytes
+//     UDT references serialize the name only; resolution happens against the column's
+//     parent keyspace (or the udt-field's parent UDT keyspace) at load time.
+// ============================================================================
 export namespace cql::schema {
-    enum class KeyKind : U8 {
-        None          = 0,
-        PartitionKey  = 1,
-        ClusteringKey = 2
-    };
-
-    struct Column {
-        bool             tombstone;
-        bool             is_static = false;
-        String8          name;
-        const type::Type type;
-        KeyKind          key_kind     = KeyKind::None;
-        U16              key_position = 0;
-        // @note clustering_order only meaningful when key_kind == ClusteringKey; default ASC.
-        Sort clustering_order = Sort::ASC;
-    };
-
-// Stored as the fixed-size value in the outer (partition) BTree for all tables.
-// data_page: row blob page (no clustering keys) or clustering BTree page (with clustering keys).
-// static_page: 0 if no static row exists for that partition; otherwise the static row blob page.
 #pragma pack(push, 1)
     struct PartitionEntry {
+        // if (table has clustering keys) then (clustering btree page) else (row blob page)
         U64 data_page;
+        // if (this partition contains static columns) then (static row blob page) else (0)
         U64 static_page;
     };
-#pragma pack(pop)
     static_assert(sizeof(PartitionEntry) == 16);
+#pragma pack(pop)
 
     // Outer partition BTree: pk_bytes → PartitionEntry
     using PartitionBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<sizeof(PartitionEntry)>>;
@@ -47,12 +70,48 @@ export namespace cql::schema {
     using ClusteringBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<sizeof(U64)>>;
     // Secondary index BTree: index_key → dummy (1 byte); all data is in the key
     using IndexBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<1>>;
+}
+
+export namespace cql::schema {
+    enum class KeyKind : U8 {
+        None = 0,
+        PartitionKey,
+        ClusteringKey,
+    };
+
+    // @note first part of enum maps directly to basic types (TypeKind value < Basic::COUNT
+    // serializes as a basic type)
+    enum TypeKind : U8 {
+        List = static_cast<U8>(type::Basic::COUNT),
+        Set,
+        Map,
+        Vector,
+        Tuple,
+        Udt,
+    };
 
     enum class IndexKind : U8 {
-        Values  = 0,
-        Keys    = 1,
-        Entries = 2,
-        Full    = 3,
+        Values = 0,
+        Keys,
+        Entries,
+        Full,
+    };
+
+    enum class ReplicationClass : U8 {
+        Unknown = 0,
+        SimpleStrategy,
+        NetworkTopologyStrategy,
+    };
+
+    struct Column {
+        bool       tombstone;
+        bool       is_static = false;
+        String8    name;
+        type::Type type;
+        KeyKind    key_kind     = KeyKind::None;
+        U16        key_position = 0;
+        // @note clustering_order only meaningful when key_kind == ClusteringKey; default ASC.
+        Sort clustering_order = Sort::ASC;
     };
 
     struct Index {
@@ -64,6 +123,18 @@ export namespace cql::schema {
         IndexBTree btree;
     };
 
+    // @note packed POD; persisted byte-identical inside TableHeader.
+#pragma pack(push, 1)
+    struct TableOptions {
+        S64 default_ttl_ms              = 0;
+        S32 gc_grace_seconds            = 864000;
+        S32 min_index_interval          = 128;
+        S32 max_index_interval          = 2048;
+        S32 memtable_flush_period_in_ms = 0;
+    };
+    static_assert(sizeof(TableOptions) == 24);
+#pragma pack(pop)
+
     struct Table {
         U64                  idx;
         bool                 tombstone;
@@ -71,14 +142,15 @@ export namespace cql::schema {
         DynamicArray<Column> cols;
         DynamicArray<U64>    partition_key_col_indices;  // sorted by key_position
         DynamicArray<U64>    clustering_key_col_indices; // sorted by key_position
-        DynamicArray<U64>    static_col_indices;         // col indices where is_static == true
-        DynamicArray<Index>  indexes;
-        PartitionBTree       btree;
-        S64                  default_ttl_ms              = 0;
-        S32                  gc_grace_seconds            = 864000;
-        S32                  min_index_interval          = 128;
-        S32                  max_index_interval          = 2048;
-        S32                  memtable_flush_period_in_ms = 0;
+        DynamicArray<U64>    static_col_indices;         // sorted alphabetically by name
+        DynamicArray<U64>    regular_col_indices;        // sorted alphabetically by name
+        // Cassandra SELECT * ordering: partition, clustering, static (alphabetical), regular (alphabetical).
+        DynamicArray<U64>        select_star_col_indices;
+        DynamicArray<Index>      indexes;
+        DynamicMap<String8, U64> cols_by_name;
+        DynamicMap<String8, U64> indexes_by_name;
+        PartitionBTree           btree;
+        TableOptions             options;
     };
 
     bool has_clustering_keys(const Table& tbl) {
@@ -86,124 +158,147 @@ export namespace cql::schema {
     }
 
     struct Keyspace {
-        U64                 idx;
-        bool                tombstone;
-        String8             name;
-        DynamicArray<Table> tbls;
+        U64                             idx;
+        bool                            tombstone;
+        String8                         name;
+        DynamicArray<Table>             tbls;
+        DynamicMap<String8, U64>        tbls_by_name;
+        DynamicMap<String8, type::UDT*> udts_by_name;
+        ReplicationClass                replication_class  = ReplicationClass::Unknown;
+        U64                             replication_factor = 0;
+        bool                            do_durable_writes  = false;
     };
 
+    // ========================================================================
+    // on-disk headers
+    // ========================================================================
 #pragma pack(push, 1)
     struct SchemaHeader {
         U64 keyspaces_page;
         U64 tables_page;
         U64 columns_page;
-        U64 types_page;
+        U64 udts_page;
         U64 indexes_page;
     };
+    static_assert(sizeof(SchemaHeader) == 40);
+
     struct KeyspaceHeader {
-        bool tombstone;
-        U64  name_length;
+        U8               tombstone;
+        ReplicationClass replication_class;
+        U8               do_durable_writes;
+        U64              replication_factor;
+        U64              name_length; // payload: name bytes
     };
+    static_assert(sizeof(KeyspaceHeader) == 19);
+
     struct TableHeader {
-        bool tombstone;
-        U64  name_length;
-        U64  keyspace_idx;
-        U64  btree_page;
-        // @note WITH default_time_to_live in milliseconds; 0 = no default TTL.
-        S64 default_ttl_ms;
-        S32 gc_grace_seconds;
-        S32 min_index_interval;
-        S32 max_index_interval;
-        S32 memtable_flush_period_in_ms;
+        U8           tombstone;
+        U64          keyspace_idx;
+        U64          btree_page;
+        TableOptions options;
+        U64          name_length; // payload: name bytes
     };
+    static_assert(sizeof(TableHeader) == 49);
 
-    enum TypeRegistryKind : U8 {
-        List,
-        Set,
-        Map,
-        Vector,
-    };
-
-    // IDs 0-21 map directly to type::Basic enum values (no registry entry).
-    // IDs >= 22 index into the types_blob registry (entry index = id - 22).
-    inline constexpr U32 type_registry_base = 22;
-    struct TypeRegistryEntry {
-        TypeRegistryKind kind;
-        U32              elem_id;   // element/key type ID
-        U32              val_id;    // value type ID (Map only)
-        U64              vec_count; // Vector only
-        bool             frozen;
-    };
     struct ColumnHeader {
-        bool    tombstone;
-        bool    is_static;
-        U64     name_length;
-        U32     type_id;
-        U64     table_idx;
+        U8      tombstone;
+        U8      is_static;
         KeyKind key_kind;
-        U16     key_position;
         Sort    clustering_order;
+        U16     key_position;
+        U64     table_idx;
+        U64     name_length; // payload: name bytes, then serialized type
     };
+    static_assert(sizeof(ColumnHeader) == 22);
+
     struct IndexHeader {
-        bool      tombstone;
-        U64       name_length;
+        U8        tombstone;
+        IndexKind kind;
         U64       table_idx;
         U64       col_idx;
         U64       btree_page;
-        IndexKind kind;
+        U64       name_length; // payload: name bytes
     };
+    static_assert(sizeof(IndexHeader) == 34);
+
+    // Single record header for the UDTs blob; covers both UDT-decl records (is_field=0)
+    // and UDT-field records (is_field=1). See file-top layout comment.
+    struct UdtRecordHeader {
+        U8  tombstone;
+        U8  is_field;
+        U64 parent_udt_record_idx; // is_field=1 only: index of parent UDT-decl record in blob order
+        U64 keyspace_length;       // is_field=0 only: length of keyspace bytes
+        U64 name_length;           // payload: name bytes (UDT name or field name)
+    };
+    static_assert(sizeof(UdtRecordHeader) == 26);
 #pragma pack(pop)
 
-    enum class ReplicationClass {
-        Unknown,
-        SimpleStrategy,
-        NetworkTopologyStrategy,
+    // ========================================================================
+    // storage (parallel to runtime view; carries blob offsets for in-place mutation)
+    // ========================================================================
+    struct KeyspaceStorage {
+        U64               offset_in_blob_bytes;
+        KeyspaceHeader    header;
+        AutoString8       name;
+        DynamicArray<U64> tables; // table indices into Storage.tables
+    };
+    struct TableStorage {
+        U64               offset_in_blob_bytes;
+        TableHeader       header;
+        AutoString8       name;
+        DynamicArray<U64> columns; // column indices into Storage.columns
+    };
+    struct ColumnStorage {
+        U64          offset_in_blob_bytes;
+        ColumnHeader header;
+        AutoString8  name;
+        type::Type   type;
     };
     struct IndexStorage {
         U64         offset_in_blob_bytes;
         IndexHeader header;
         AutoString8 name;
     };
-
-    // @todo use long held transaction with pager cache as storage?
-    struct KeyspaceStorage {
-        U64               offset_in_blob_bytes;
-        KeyspaceHeader    header;
-        AutoString8       name;
-        DynamicArray<U64> tables;
-        ReplicationClass  replication_class;
-        U64               replication_factor;
-        bool              do_durable_writes;
-    };
-    struct TableStorage {
-        U64               offset_in_blob_bytes;
-        TableHeader       header;
-        AutoString8       name;
-        DynamicArray<U64> columns;
-    };
-    struct ColumnStorage {
-        U64          offset_in_blob_bytes;
-        ColumnHeader header;
-        AutoString8  name;
+    // UDT-decl record. Field records are written to the udts_blob too but are folded
+    // back into the parent UdtStorage on load (their state lives in field_names/field_types).
+    struct UdtStorage {
+        U64             offset_in_blob_bytes;
+        UdtRecordHeader header;
+        AutoString8     keyspace;
+        AutoString8     name;
+        // owning storage for field names; type::UDT in Schema.udts views into these via String8.
+        DynamicArray<AutoString8> field_names;
+        DynamicArray<type::Type>  field_types;
+        // matching record offsets in the udts blob, one entry per (live) field record
+        DynamicArray<U64> field_record_offsets;
     };
 
     struct Storage {
-        DynamicArray<ColumnStorage>     columns;
-        DynamicArray<TableStorage>      tables;
-        DynamicArray<KeyspaceStorage>   keyspaces;
-        DynamicArray<TypeRegistryEntry> type_entries;
-        DynamicArray<IndexStorage>      indexes;
+        DynamicArray<ColumnStorage>   columns;
+        DynamicArray<TableStorage>    tables;
+        DynamicArray<KeyspaceStorage> keyspaces;
+        DynamicArray<IndexStorage>    indexes;
+        DynamicArray<UdtStorage>      udts;
     };
 
+    // ========================================================================
+    // schema
+    // ========================================================================
     struct Schema {
-        DynamicArray<Keyspace> keyspaces;
-        Storage                storage;
+        DynamicArray<Keyspace>   keyspaces;
+        DynamicMap<String8, U64> keyspaces_by_name;
+
+        // @warn pointers into this deque are stable for the deque's lifetime. type::UDT*
+        // references from columns and from Keyspace.udts_by_name point into here.
+        DynamicDeque<type::UDT> udts;
+
+        Storage storage;
 
         blob::BlobStaticPaged  schema_blob;
         blob::BlobDynamicPaged keyspaces_blob;
         blob::BlobDynamicPaged tables_blob;
         blob::BlobDynamicPaged columns_blob;
-        blob::BlobDynamicPaged types_blob;
+        blob::BlobDynamicPaged udts_blob;
         blob::BlobDynamicPaged indexes_blob;
 
         Schema() = default;
@@ -212,8 +307,11 @@ export namespace cql::schema {
     coroutine::Task<>    load(Schema& schema, Pager* in_pager, U64 page);
     coroutine::Task<U64> create_schema(Pager& pager);
 
+    // ========================================================================
+    // errors and result wrapper
+    // ========================================================================
     enum class Error {
-        None,
+        None = 0,
         InvalidOptions,
         SyntaxOptions,
         MissingKeyspace,
@@ -222,6 +320,8 @@ export namespace cql::schema {
         MissingTable,
         MissingColumn,
         MissingIndex,
+        MissingType,
+        TypeInUse,
     };
     template<typename T>
     struct Result {
@@ -235,30 +335,58 @@ export namespace cql::schema {
         String8 message = "";
     };
 
-    Result<Keyspace*> read_keyspace(Schema& schema, String8 name);
-    Result<Table*>    read_table(Schema& schema, Keyspace& ks, String8 name);
-    Result<Column*>   read_column(Schema& schema, Table& tbl, String8 name);
+    // ========================================================================
+    // option parsing (single source of truth for create/alter)
+    // ========================================================================
+    struct KeyspaceOptionsParsed {
+        ReplicationClass replication_class  = ReplicationClass::SimpleStrategy;
+        U64              replication_factor = 1;
+        bool             do_durable_writes  = true;
+    };
+    Result<KeyspaceOptionsParsed> parse_keyspace_options(const Options& opts);
 
+    struct TableOptionsParsed {
+        TableOptions options;
+    };
+    Result<TableOptionsParsed> parse_table_options(const CreateTable::TableOptions& opts);
+
+    // ========================================================================
+    // lookups (O(1) via *_by_name maps; tombstoned entries are excluded)
+    // ========================================================================
+    Result<Keyspace*>  read_keyspace(Schema& schema, String8 name);
+    Result<Table*>     read_table(Schema& schema, Keyspace& ks, String8 name);
+    Result<Column*>    read_column(Schema& schema, Table& tbl, String8 name);
+    Result<Index*>     read_index(Schema& schema, Table& tbl, String8 name);
+    Result<type::UDT*> read_udt(Schema& schema, Keyspace& ks, String8 name);
+
+    // ========================================================================
+    // DDL
+    // ========================================================================
     coroutine::Task<Result<Keyspace*>> create_keyspace(Schema& schema, const CreateKeyspace& create);
-    Result<void>                       validate_keyspace_options(const Options& opts);
+    coroutine::Task<Result<void>>      alter_keyspace(Schema& schema, Keyspace& ks, const Options& opts);
     coroutine::Task<Result<void>>      delete_keyspace(Schema& schema, String8 name);
 
-    struct TableExtraOptions {
-        S32 gc_grace_seconds            = 864000;
-        S32 min_index_interval          = 128;
-        S32 max_index_interval          = 2048;
-        S32 memtable_flush_period_in_ms = 0;
-    };
-
-    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create, S64 default_ttl_ms = 0, TableExtraOptions extras = {});
-    coroutine::Task<Result<void>>   set_default_ttl_ms(Schema& schema, Table& tbl, S64 default_ttl_ms);
-    coroutine::Task<Result<void>>   set_table_extra_options(Schema& schema, Table& tbl, TableExtraOptions extras);
+    coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create);
+    coroutine::Task<Result<void>>   set_table_options(Schema& schema, Table& tbl, const TableOptions& options);
     coroutine::Task<Result<void>>   delete_table(Schema& schema, Keyspace& ks, String8 name);
 
-    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, const ColumnDefinition& create, KeyKind key_kind = KeyKind::None, U16 key_position = 0, Sort clustering_order = Sort::ASC);
+    coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, String8 name, type::Type type, bool is_static = false, KeyKind key_kind = KeyKind::None, U16 key_position = 0, Sort clustering_order = Sort::ASC);
     coroutine::Task<Result<void>>    delete_column(Schema& schema, Table& tbl, String8 name);
 
-    Result<Index*>                  read_index(Schema& schema, Table& tbl, String8 name);
     coroutine::Task<Result<Index*>> create_index(Schema& schema, Table& tbl, U64 col_idx, String8 index_name, IndexKind kind);
-    coroutine::Task<Result<void>>   drop_index(Schema& schema, Table& tbl, String8 name);
+    coroutine::Task<Result<void>>   delete_index(Schema& schema, Table& tbl, String8 name);
+
+    // ========================================================================
+    // user-defined types
+    // ========================================================================
+
+    struct UdtDependent {
+        AutoString8 description;
+    };
+    DynamicArray<UdtDependent> find_udt_dependents(Schema& schema, const Keyspace& ks, String8 name);
+
+    coroutine::Task<Result<type::UDT*>> create_udt(Schema& schema, Keyspace& ks, String8 name, DynamicArray<AutoString8>&& field_names, DynamicArray<type::Type>&& field_types);
+    coroutine::Task<Result<void>>       alter_udt_add_field(Schema& schema, Keyspace& ks, String8 name, AutoString8 field_name, type::Type field_type);
+    coroutine::Task<Result<void>>       alter_udt_rename_fields(Schema& schema, Keyspace& ks, String8 name, const DynamicArray<Pair<ColumnName, ColumnName>>& renames);
+    coroutine::Task<Result<void>>       delete_udt(Schema& schema, Keyspace& ks, String8 name);
 }

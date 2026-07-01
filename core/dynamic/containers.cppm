@@ -866,6 +866,190 @@ export namespace plexdb {
     };
 
     // ========================================================================
+    // deque
+    // ========================================================================
+    template<typename T>
+    struct DynamicDeque;
+
+    template<typename T>
+    void clear(DynamicDeque<T>& deque);
+
+    template<typename T>
+    struct DynamicDeque {
+        using Node = typename Deque<T>::Node;
+
+        Deque<T> deque;
+
+        DynamicDeque() = default;
+
+        DynamicDeque(const DynamicDeque& other) {
+            for (const T& value : other) {
+                emplace_back(*this, value);
+            }
+        }
+
+        DynamicDeque(DynamicDeque&& other) noexcept
+            : deque(other.deque) {
+            other.deque = {};
+        }
+
+        DynamicDeque& operator=(const DynamicDeque& other) {
+            if (this != &other) {
+                clear(*this);
+
+                for (const T& value : other) {
+                    emplace_back(*this, value);
+                }
+            }
+
+            return *this;
+        }
+
+        DynamicDeque& operator=(DynamicDeque&& other) noexcept {
+            if (this != &other) {
+                clear(*this);
+
+                deque       = other.deque;
+                other.deque = {};
+            }
+
+            return *this;
+        }
+
+        ~DynamicDeque() {
+            clear(*this);
+        }
+
+        auto begin() noexcept {
+            return deque.begin();
+        }
+
+        auto end() noexcept {
+            return deque.end();
+        }
+
+        auto begin() const noexcept {
+            return deque.begin();
+        }
+
+        auto end() const noexcept {
+            return deque.end();
+        }
+    };
+
+    template<typename T>
+    T* front(DynamicDeque<T>& deque) {
+        return front(deque.deque);
+    }
+
+    template<typename T>
+    const T* front(const DynamicDeque<T>& deque) {
+        return front(deque.deque);
+    }
+
+    template<typename T>
+    T* back(DynamicDeque<T>& deque) {
+        return back(deque.deque);
+    }
+
+    template<typename T>
+    const T* back(const DynamicDeque<T>& deque) {
+        return back(deque.deque);
+    }
+
+    template<typename T, typename... Args>
+    typename DynamicDeque<T>::Node* emplace_back(DynamicDeque<T>& deque, Args&&... args) {
+        using Node = typename DynamicDeque<T>::Node;
+
+        Node* node = reinterpret_cast<Node*>(os::allocate(sizeof(Node)));
+        new (node) Node{
+            .value = T(forward<Args>(args)...),
+        };
+
+        push_back(deque.deque, node);
+
+        return node;
+    }
+
+    template<typename T, typename... Args>
+    typename DynamicDeque<T>::Node* emplace_front(DynamicDeque<T>& deque, Args&&... args) {
+        using Node = typename DynamicDeque<T>::Node;
+
+        Node* node = reinterpret_cast<Node*>(os::allocate(sizeof(Node)));
+        new (node) Node{
+            .value = T(forward<Args>(args)...),
+        };
+
+        push_front(deque.deque, node);
+
+        return node;
+    }
+
+    template<typename T>
+    typename DynamicDeque<T>::Node* push_back(DynamicDeque<T>& deque, const T& value) {
+        return emplace_back(deque, value);
+    }
+
+    template<typename T>
+    typename DynamicDeque<T>::Node* push_back(DynamicDeque<T>& deque, T&& value) {
+        return emplace_back(deque, move(value));
+    }
+
+    template<typename T>
+    typename DynamicDeque<T>::Node* push_front(DynamicDeque<T>& deque, const T& value) {
+        return emplace_front(deque, value);
+    }
+
+    template<typename T>
+    typename DynamicDeque<T>::Node* push_front(DynamicDeque<T>& deque, T&& value) {
+        return emplace_front(deque, move(value));
+    }
+
+    template<typename T>
+    void pop_front(DynamicDeque<T>& deque) {
+        auto* node = deque.deque.head;
+
+        pop_front(deque.deque);
+
+        node->~Node();
+        os::deallocate(node);
+    }
+
+    template<typename T>
+    void pop_back(DynamicDeque<T>& deque) {
+        auto* node = deque.deque.tail;
+
+        pop_back(deque.deque);
+
+        node->~Node();
+        os::deallocate(node);
+    }
+
+    template<typename T>
+    void remove(DynamicDeque<T>& deque, typename DynamicDeque<T>::Node* node) {
+        remove(deque.deque, node);
+
+        node->~Node();
+        os::deallocate(node);
+    }
+
+    template<typename T>
+    void clear(DynamicDeque<T>& deque) {
+        auto* node = deque.deque.head;
+
+        while (node != nullptr) {
+            auto* next = node->next;
+
+            node->~Node();
+            os::deallocate(node);
+
+            node = next;
+        }
+
+        clear(deque.deque);
+    }
+
+    // ========================================================================
     // types
     // ========================================================================
     template<typename T>

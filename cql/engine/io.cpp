@@ -433,10 +433,108 @@ namespace cql::io {
                 co_await r(value.value.ptr, length);
                 co_return {move(value)};
             } break;
+            case type::Basic::COUNT: {
+            } break;
         }
 
         assert_true(false, "invalid basic type for read");
         co_return {};
+    }
+
+    // ========================================================================
+    // masked-payload helpers (shared by Tuple and UDT value serialisation)
+    //
+    // Shared on-disk form: a ceil(count/64)-word null bitmask, followed by per-field payloads
+    // for fields with bit set. Tuple uses the type's immutable arity as the count; UDT writes
+    // a leading U64 count so readers can tolerate ALTER TYPE ADD.
+    // ========================================================================
+    static coroutine::Task<DynamicArray<NestedColumnValue>> read_masked_payloads(Reader r, const type::Type* field_types, U64 count) {
+        U64               mask_words = (count + 63_u64) / 64_u64;
+        DynamicArray<U64> mask;
+        resize(mask, mask_words);
+        for (U64 i = 0; i < mask_words; i++) {
+            co_await r(reinterpret_cast<U8*>(&mask[i]), sizeof(U64));
+        }
+        DynamicArray<NestedColumnValue> arr;
+        for (U64 i = 0; i < count; i++) {
+            NestedColumnValue nv;
+            bool              present = mask_words > 0 && ((mask[i / 64] >> (i % 64)) & 1_u64) != 0_u64;
+            if (present) {
+                nv.value = co_await read_column_value(r, field_types[i]);
+            } else {
+                nv.value = {Null{}};
+            }
+            push_back(arr, move(nv));
+        }
+        co_return arr;
+    }
+
+    static coroutine::Task<void> skip_masked_payloads(Reader r, const type::Type* field_types, U64 count) {
+        U64               mask_words = (count + 63_u64) / 64_u64;
+        DynamicArray<U64> mask;
+        resize(mask, mask_words);
+        for (U64 i = 0; i < mask_words; i++) {
+            co_await r(reinterpret_cast<U8*>(&mask[i]), sizeof(U64));
+        }
+        for (U64 i = 0; i < count; i++) {
+            bool present = mask_words > 0 && ((mask[i / 64] >> (i % 64)) & 1_u64) != 0_u64;
+            if (present) {
+                co_await skip_column_value(r, field_types[i]);
+            }
+        }
+    }
+
+    static void write_empty_mask(Writer w, U64 count) {
+        U64 mask_words = (count + 63_u64) / 64_u64;
+        U64 zero       = 0_u64;
+        for (U64 i = 0; i < mask_words; i++) {
+            w(reinterpret_cast<const U8*>(&zero), sizeof(zero));
+        }
+    }
+
+    // Writes mask + payloads. The bitmask reflects, for i in [0, count), whether
+    // `values[i]` (capped at values.length) is non-null. Out-of-range or null indices
+    // contribute no payload bytes.
+    static void write_masked_payloads(Writer w, const DynamicArray<NestedColumnValue>& values, const type::Type* field_types, U64 count) {
+        U64               mask_words = (count + 63_u64) / 64_u64;
+        DynamicArray<U64> mask;
+        resize(mask, mask_words);
+        for (U64 i = 0; i < values.length && i < count; i++) {
+            if (!type_matches_tag<Null>(values[i].value)) {
+                mask[i / 64] |= 1_u64 << (i % 64);
+            }
+        }
+        for (U64 i = 0; i < mask_words; i++) {
+            w(reinterpret_cast<const U8*>(&mask[i]), sizeof(U64));
+        }
+        for (U64 i = 0; i < values.length && i < count; i++) {
+            if ((mask[i / 64] >> (i % 64) & 1_u64) == 0_u64) {
+                continue;
+            }
+            write_column_value(w, values[i].value, field_types[i]);
+        }
+    }
+
+    // UDT-specific wrappers that handle the leading written-count and the trailing
+    // null-pad against the current type's arity (so ALTER TYPE ADD is tolerated on read).
+    static coroutine::Task<DynamicArray<NestedColumnValue>> read_udt_fields(Reader r, const type::Type* field_types, U64 current_field_count) {
+        U64 written = 0;
+        co_await r(reinterpret_cast<U8*>(&written), sizeof(written));
+        assert_true(written <= current_field_count, "UDT wire stream describes more fields than the current type's arity");
+        DynamicArray<NestedColumnValue> arr = co_await read_masked_payloads(r, field_types, written);
+        for (U64 i = written; i < current_field_count; i++) {
+            NestedColumnValue nv;
+            nv.value = {Null{}};
+            push_back(arr, move(nv));
+        }
+        co_return arr;
+    }
+
+    static coroutine::Task<void> skip_udt_fields(Reader r, const type::Type* field_types, U64 current_field_count) {
+        U64 written = 0;
+        co_await r(reinterpret_cast<U8*>(&written), sizeof(written));
+        assert_true(written <= current_field_count, "UDT skip: wire stream describes more fields than the current type's arity");
+        co_await skip_masked_payloads(r, field_types, written);
     }
 
     coroutine::Task<ColumnValue> read_column_value(Reader r, const type::Type& cdtype) {
@@ -484,8 +582,7 @@ namespace cql::io {
             co_return {move(m)};
         }
 
-        // Vector
-        {
+        if (type_matches_tag<type::Vector>(cdtype.value)) {
             auto&                           v     = get<type::Vector>(cdtype.value);
             U64                             count = v.count;
             DynamicArray<NestedColumnValue> arr{};
@@ -494,6 +591,20 @@ namespace cql::io {
                 nv.value = co_await read_column_value(r, v.element);
                 push_back(arr, move(nv));
             }
+            co_return {move(arr)};
+        }
+
+        if (type_matches_tag<type::Tuple>(cdtype.value)) {
+            const auto&                     t   = get<type::Tuple>(cdtype.value);
+            DynamicArray<NestedColumnValue> arr = co_await read_masked_payloads(r, t.elements.ptr, t.elements.length);
+            co_return {move(arr)};
+        }
+
+        // UDT
+        {
+            type::UDT* u = get<type::UDT*>(cdtype.value);
+            assert_true(u != nullptr, "UDT* column type is null");
+            DynamicArray<NestedColumnValue> arr = co_await read_udt_fields(r, u->field_types.ptr, u->field_types.length);
             co_return {move(arr)};
         }
     }
@@ -576,6 +687,8 @@ namespace cql::io {
                 co_await r(nullptr, is_v6 ? 16_u64 : 4_u64);
                 co_return;
             }
+            case type::Basic::COUNT:
+                break;
         }
         assert_true(false, "invalid basic type in skip_column_value");
     }
@@ -638,6 +751,15 @@ namespace cql::io {
             } else {
                 elem_bt = get<type::Basic>(vv.element.value);
             }
+        } else if (type_matches_tag<type::Tuple>(col_type.value)) {
+            const auto& t = get<type::Tuple>(col_type.value);
+            co_await skip_masked_payloads(r, t.elements.ptr, t.elements.length);
+            co_return;
+        } else if (type_matches_tag<type::UDT*>(col_type.value)) {
+            type::UDT* u = get<type::UDT*>(col_type.value);
+            assert_true(u != nullptr, "UDT* column type is null");
+            co_await skip_udt_fields(r, u->field_types.ptr, u->field_types.length);
+            co_return;
         }
 
         for (U64 i = 0; i < count; i++) {
@@ -741,6 +863,8 @@ namespace cql::io {
                 U64 length = 0_u64;
                 w(reinterpret_cast<const U8*>(&length), sizeof(length));
             } break;
+            case type::Basic::COUNT:
+                break;
         }
     }
 
@@ -749,6 +873,13 @@ namespace cql::io {
             using T = RemoveCVRef<decltype(v)>;
             if constexpr (SameAs<T, type::Basic>) {
                 write_default_column_value(w, v);
+            } else if constexpr (SameAs<T, type::Tuple>) {
+                write_empty_mask(w, v.elements.length);
+            } else if constexpr (SameAs<T, type::UDT*>) {
+                assert_true(v != nullptr, "UDT* column type is null in default write");
+                U64 field_count = v->field_types.length;
+                w(reinterpret_cast<const U8*>(&field_count), sizeof(field_count));
+                write_empty_mask(w, field_count);
             } else {
                 U64 length = 0_u64;
                 w(reinterpret_cast<const U8*>(&length), sizeof(length));
@@ -768,11 +899,9 @@ namespace cql::io {
             } else if constexpr (SameAs<T, ListOrVectorLiteral>) {
                 return type_matches_tag<type::List>(cdtype.value) || type_matches_tag<type::Vector>(cdtype.value);
             } else if constexpr (SameAs<T, UdtLiteral>) {
-                assert_not_implemented("writing UDT literal as column value is not implemented");
-                return false;
+                return type_matches_tag<type::UDT*>(cdtype.value);
             } else if constexpr (SameAs<T, TupleLiteral>) {
-                assert_not_implemented("writing tuple literal as column value is not implemented");
-                return false;
+                return type_matches_tag<type::Tuple>(cdtype.value);
             } else if constexpr (SameAs<T, ColumnValue>) {
                 return can_write_column_value(cv, cdtype);
             } else {
@@ -789,7 +918,7 @@ namespace cql::io {
             if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
                 return type_matches_tag<type::Basic>(cdtype.value) && can_write_typed_basic_as_column_value<T>(get<type::Basic>(cdtype.value));
             } else if constexpr (SameAs<T, DynamicArray<NestedColumnValue>>) {
-                return type_matches_tag<type::List>(cdtype.value) || type_matches_tag<type::Vector>(cdtype.value);
+                return type_matches_tag<type::List>(cdtype.value) || type_matches_tag<type::Vector>(cdtype.value) || type_matches_tag<type::Tuple>(cdtype.value) || type_matches_tag<type::UDT*>(cdtype.value);
             } else if constexpr (SameAs<T, DynamicSet<NestedColumnValue>>) {
                 return type_matches_tag<type::Set>(cdtype.value);
             } else if constexpr (SameAs<T, DynamicMap<NestedColumnValue, NestedColumnValue>>) {
@@ -811,15 +940,38 @@ namespace cql::io {
                 assert_true(type_matches_tag<type::Basic>(cdtype.value), "static value type requires ctype basic, this should never happen");
                 write_typed_basic(w, v, get<type::Basic>(cdtype.value));
             } else if constexpr (SameAs<T, DynamicArray<NestedColumnValue>>) {
-                bool is_vec = type_matches_tag<type::Vector>(cdtype.value);
-                assert_true(type_matches_tag<type::List>(cdtype.value) || is_vec, "array requires ctype list/vector");
-                if (!is_vec) {
-                    U64 len = v.length;
-                    w(reinterpret_cast<const U8*>(&len), sizeof(len));
-                }
-                const auto& elem = is_vec ? get<type::Vector>(cdtype.value).element : get<type::List>(cdtype.value).element;
-                for (const auto& el : v) {
-                    write_column_value(w, el.value, elem);
+                bool is_vec   = type_matches_tag<type::Vector>(cdtype.value);
+                bool is_list  = type_matches_tag<type::List>(cdtype.value);
+                bool is_tuple = type_matches_tag<type::Tuple>(cdtype.value);
+                bool is_udt   = type_matches_tag<type::UDT*>(cdtype.value);
+                assert_true(is_list || is_vec || is_tuple || is_udt, "array requires ctype list/vector/tuple/udt");
+                if (is_tuple || is_udt) {
+                    const type::Type* fields    = nullptr;
+                    U64               field_cnt = 0;
+                    if (is_tuple) {
+                        const auto& t = get<type::Tuple>(cdtype.value);
+                        fields        = t.elements.ptr;
+                        field_cnt     = t.elements.length;
+                    } else {
+                        type::UDT* u = get<type::UDT*>(cdtype.value);
+                        assert_true(u != nullptr, "UDT* column type is null");
+                        fields    = u->field_types.ptr;
+                        field_cnt = u->field_types.length;
+                    }
+                    if (is_udt) {
+                        U64 fc = field_cnt;
+                        w(reinterpret_cast<const U8*>(&fc), sizeof(fc));
+                    }
+                    write_masked_payloads(w, v, fields, field_cnt);
+                } else {
+                    if (!is_vec) {
+                        U64 len = v.length;
+                        w(reinterpret_cast<const U8*>(&len), sizeof(len));
+                    }
+                    const auto& elem = is_vec ? get<type::Vector>(cdtype.value).element : get<type::List>(cdtype.value).element;
+                    for (const auto& el : v) {
+                        write_column_value(w, el.value, elem);
+                    }
                 }
             } else if constexpr (SameAs<T, DynamicSet<NestedColumnValue>>) {
                 assert_true(type_matches_tag<type::Set>(cdtype.value), "set requires ctype set");
@@ -892,10 +1044,74 @@ namespace cql::io {
                     Evaluated el = evaluate(cv.elements[i], ctx);
                     cast_write_evaluated_as_column_value(w, el, el_type, ctx);
                 }
-            } else if constexpr (SameAs<T, UdtLiteral>) {
-                assert_not_implemented("writing UDT literal as column value is not implemented");
-            } else if constexpr (SameAs<T, TupleLiteral>) {
-                assert_not_implemented("writing tuple literal as column value is not implemented");
+            } else if constexpr (SameAs<T, UdtLiteral> || SameAs<T, TupleLiteral>) {
+                // Resolve `field_types` from the column type, plus a parallel `terms` array
+                // (per-field source `Term*`) so the literal's positional or named fields look
+                // like a NestedColumnValue array for write_masked_payloads.
+                const type::Type* field_types = nullptr;
+                U64               field_count = 0;
+                if constexpr (SameAs<T, UdtLiteral>) {
+                    assert_true(type_matches_tag<type::UDT*>(cdtype.value), "UDT literal written to non-UDT column");
+                    type::UDT* u = get<type::UDT*>(cdtype.value);
+                    assert_true(u != nullptr, "UDT* column type is null");
+                    field_types = u->field_types.ptr;
+                    field_count = u->field_types.length;
+                } else {
+                    assert_true(type_matches_tag<type::Tuple>(cdtype.value), "tuple literal written to non-tuple column");
+                    const auto& t = get<type::Tuple>(cdtype.value);
+                    field_types   = t.elements.ptr;
+                    field_count   = t.elements.length;
+                }
+
+                DynamicArray<const Term*> per_field_term;
+                resize(per_field_term, field_count);
+                for (U64 i = 0; i < field_count; i++) {
+                    per_field_term[i] = nullptr;
+                }
+                if constexpr (SameAs<T, UdtLiteral>) {
+                    type::UDT* u = get<type::UDT*>(cdtype.value);
+                    for (U64 i = 0; i < cv.identifier_values.length; i++) {
+                        const auto& fname = cv.identifier_values[i].first;
+                        for (U64 j = 0; j < field_count; j++) {
+                            if (String8(fname) == u->field_names[j]) {
+                                per_field_term[j] = &cv.identifier_values[i].second;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    for (U64 i = 0; i < cv.elements.length && i < field_count; i++) {
+                        per_field_term[i] = &cv.elements[i];
+                    }
+                }
+
+                U64               mask_words = (field_count + 63_u64) / 64_u64;
+                DynamicArray<U64> mask;
+                resize(mask, mask_words);
+                for (U64 i = 0; i < field_count; i++) {
+                    if (per_field_term[i] == nullptr) {
+                        continue;
+                    }
+                    Evaluated ev = evaluate(*per_field_term[i], ctx);
+                    if (type_matches_tag<Constant>(ev.value) && type_matches_tag<Null>(get<Constant>(ev.value).value)) {
+                        continue;
+                    }
+                    mask[i / 64] |= 1_u64 << (i % 64);
+                }
+                if constexpr (SameAs<T, UdtLiteral>) {
+                    U64 fc = field_count;
+                    w(reinterpret_cast<const U8*>(&fc), sizeof(fc));
+                }
+                for (U64 i = 0; i < mask_words; i++) {
+                    w(reinterpret_cast<const U8*>(&mask[i]), sizeof(U64));
+                }
+                for (U64 i = 0; i < field_count; i++) {
+                    if ((mask[i / 64] >> (i % 64) & 1_u64) == 0_u64) {
+                        continue;
+                    }
+                    Evaluated ev = evaluate(*per_field_term[i], ctx);
+                    cast_write_evaluated_as_column_value(w, ev, field_types[i], ctx);
+                }
             } else if constexpr (SameAs<T, ColumnValue>) {
                 write_column_value(w, cv, cdtype);
             } else {
@@ -984,6 +1200,34 @@ namespace plexdb {
         return visit(value, [&cdtype](auto& v) -> AutoString8 {
             using T = Decay<decltype(v)>;
             if constexpr (SameAs<T, DynamicArray<cql::NestedColumnValue>>) {
+                if (type_matches_tag<cql::type::Tuple>(cdtype.value)) {
+                    const auto& t      = get<cql::type::Tuple>(cdtype.value);
+                    AutoString8 result = "("_as;
+                    for (U64 i = 0; i < v.length; i++) {
+                        if (i > 0) {
+                            result = result + ", ";
+                        }
+                        if (i < t.elements.length) {
+                            result = result + to_str(v[i].value, t.elements[i]);
+                        }
+                    }
+                    return result + ")";
+                }
+                if (type_matches_tag<cql::type::UDT*>(cdtype.value)) {
+                    cql::type::UDT* u = get<cql::type::UDT*>(cdtype.value);
+                    assert_true(u != nullptr, "UDT* column type is null");
+                    AutoString8 result = "{"_as;
+                    for (U64 i = 0; i < v.length; i++) {
+                        if (i > 0) {
+                            result = result + ", ";
+                        }
+                        if (i < u->field_names.length) {
+                            result = result + AutoString8(u->field_names[i]) + ": ";
+                            result = result + to_str(v[i].value, u->field_types[i]);
+                        }
+                    }
+                    return result + "}";
+                }
                 bool        is_vec = type_matches_tag<cql::type::Vector>(cdtype.value);
                 const auto& elem   = is_vec ? get<cql::type::Vector>(cdtype.value).element : get<cql::type::List>(cdtype.value).element;
                 AutoString8 result = "["_as;

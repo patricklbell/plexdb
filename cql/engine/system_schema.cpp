@@ -358,17 +358,17 @@ namespace cql::engine {
                 emplace_back(row.values, default_compression());
                 emplace_back(row.values, F64(1.0));
                 emplace_back(row.values, F64(0.0));
-                emplace_back(row.values, S32(tbl.default_ttl_ms / 1000));
+                emplace_back(row.values, S32(tbl.options.default_ttl_ms / 1000));
                 {
                     DynamicSet<NestedColumnValue> s{};
                     insert(s, ncv("compound"_as));
                     emplace_back(row.values, move(s));
                 }
-                emplace_back(row.values, tbl.gc_grace_seconds);
+                emplace_back(row.values, tbl.options.gc_grace_seconds);
                 emplace_back(row.values, table_uuid(ks.name, tbl.name));
-                emplace_back(row.values, tbl.max_index_interval);
-                emplace_back(row.values, tbl.memtable_flush_period_in_ms);
-                emplace_back(row.values, tbl.min_index_interval);
+                emplace_back(row.values, tbl.options.max_index_interval);
+                emplace_back(row.values, tbl.options.memtable_flush_period_in_ms);
+                emplace_back(row.values, tbl.options.min_index_interval);
                 emplace_back(row.values, "BLOCKING"_as);
                 emplace_back(row.values, F64(0.0));
                 emplace_back(row.values, "99PERCENTILE"_as);
@@ -556,8 +556,35 @@ namespace cql::engine {
         emplace_back(vr.columns, VirtualColumn{"field_names", type::create_list(type::Basic::text)});
         emplace_back(vr.columns, VirtualColumn{"field_types", type::create_list(type::Basic::text)});
 
-        // @todo support UDTs
-        (void)schema;
+        for (auto& ks : schema.keyspaces) {
+            if (ks.tombstone) {
+                continue;
+            }
+            for (auto it = ks.udts_by_name.begin(); it != ks.udts_by_name.end(); ++it) {
+                type::UDT* udt = (*it).second;
+                if (udt == nullptr) {
+                    continue;
+                }
+                VirtualRow row;
+                emplace_back(row.values, AutoString8(ks.name));
+                emplace_back(row.values, AutoString8(udt->name));
+                {
+                    DynamicArray<NestedColumnValue> names;
+                    for (const auto& fn : udt->field_names) {
+                        push_back(names, ncv(AutoString8(fn)));
+                    }
+                    emplace_back(row.values, move(names));
+                }
+                {
+                    DynamicArray<NestedColumnValue> types;
+                    for (const auto& ft : udt->field_types) {
+                        push_back(types, ncv(to_str(ft)));
+                    }
+                    emplace_back(row.values, move(types));
+                }
+                emplace_back(vr.rows, move(row));
+            }
+        }
         return vr;
     }
 

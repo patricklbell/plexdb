@@ -5,6 +5,7 @@ export module cql.engine;
 
 export import cql.engine.types;
 export import cql.engine.schema;
+export import cql.engine.schema.types;
 export import cql.engine.system_schema;
 export import cql.engine.virtual_table;
 export import cql.engine.it;

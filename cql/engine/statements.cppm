@@ -138,8 +138,8 @@ export namespace cql {
     // type hinting
     // ========================================================================
     struct TypeHint {
-        type::Type type;
-        Term       operand;
+        type::ast::Type type;
+        Term            operand;
     };
 
     // ========================================================================
@@ -289,7 +289,7 @@ export namespace cql {
 
     struct ColumnDefinition {
         ColumnName           name;
-        type::Type           type;
+        type::ast::Type      type;
         bool                 _static;
         Optional<ColumnMask> mask;
         bool                 primary_key;
@@ -505,8 +505,8 @@ export namespace cql {
             HybridTaggedUnion<TypeList<ColumnName, Term, Function, Count>, TypeList<Cast>> value;
         };
         struct Cast {
-            Selector   column;
-            type::Type to;
+            Selector        column;
+            type::ast::Type to;
         };
         struct SelectColumn {
             Selector              column;

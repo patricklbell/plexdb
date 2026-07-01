@@ -57,7 +57,7 @@ not visible in server logs and need conformance-driven planner/executor work to 
 |  13 | `Failed: DID NOT RAISE InvalidRequest` | Missing validation in planner (restriction rules, type checking). |
 |   8 | `AssertionError: Regex pattern did not match` | Server rejected the query but with a different message than upstream. Cosmetic for most; affects test-suite alignment. |
 |   5 | `ValueError: Too many arguments provided to bind()` | Down from 13. Remaining cases are large-collection / SSTable-flush paths where prepared-statement metadata still reports the wrong column count. |
-|   4 | `Failed: DID NOT RAISE SyntaxException` | Parser accepts malformed shapes it should reject. |
+|   0 | `Failed: DID NOT RAISE SyntaxException` | Was 4 (both `testDoubleWith` × 2 stmts). Now deselected in `tools/cql_tests/conftest.py` — accepted permissiveness gap. |
 |   3 | `Failed: DID NOT RAISE ConfigurationException` | Replication-strategy validation in `ALTER KEYSPACE` / `CREATE KEYSPACE` (NTS DC names, missing options). |
 |   2 | Other assertions | `testAlterIndexInterval` (option round-trip), `testInOrderByWithoutSelecting` (timestamp ordering), `testTokenRange` (row count). |
 |   1 | `TypeError: Got a non-map object for a map value` | `testMapBulkRemoval` — server returns a set where a map is expected on the wire. |

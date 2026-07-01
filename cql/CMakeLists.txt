@@ -8,6 +8,7 @@ project(cql)
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../core core)
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../support/lexy lexy)
+  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../support/sort sort)
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../support/tracy tracy)
 endif()
 
@@ -58,6 +59,7 @@ target_sources(plexbd_cql
             engine/key.cppm
             engine/planner.cppm
             engine/schema.cppm
+            engine/schema.types.cppm
             engine/system_schema.cppm
             engine/statements.cppm
             engine/token.cppm
@@ -77,6 +79,7 @@ target_sources(plexbd_cql
         engine/it.cpp
         engine/planner.cpp
         engine/schema.cpp
+        engine/schema.types.cpp
         engine/system_schema.cpp
         engine/token.cpp
         log/log.cpp
@@ -101,6 +104,7 @@ target_link_libraries(plexbd_cql
         plexdb::compiler_config
         plexdb::core::macros
         plexdb::support::lexy
+        plexdb::support::sort
         plexdb::support::tracy
         foonathan::lexy::core # @note pulled in by support
         foonathan::lexy::ext
