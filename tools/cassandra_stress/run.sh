@@ -62,23 +62,6 @@ LD_PRELOAD=${PRELOAD} "$BINARY" "$DB" --port "$PORT" &
 LD_PRELOAD=""
 SERVER_PID=$!
 
-echo "Checking server"
-
-python3 - "$PORT" <<'EOF'
-import socket, time, sys
-port = int(sys.argv[1])
-for _ in range(100):
-    try:
-        s = socket.create_connection(('127.0.0.1', port), timeout=1)
-        s.close()
-        sys.exit(0)
-    except OSError:
-        time.sleep(0.2)
-print("error: server did not become ready", file=sys.stderr)
-sys.exit(1)
-EOF
-echo
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="cassandra-stress-apache"
 
