@@ -2,7 +2,7 @@ module;
 #include <coroutine>
 #include <plexdb/support/tracy/tracy.hpp>
 
-export module plexdb.btree.detail;
+export module plexdb.btree.algorithm;
 
 export import plexdb.btree.in_memory.detail;
 export import plexdb.btree.paged.detail;
@@ -20,18 +20,170 @@ import plexdb.btree.slots;
 import plexdb.btree.iterator;
 
 export namespace plexdb::btree {
-    // ========================================================================
-    // rebalancing helpers
-    // ========================================================================
+    // @note occupancy policy (fullness/underflow/split-point) lives here, not in
+    // btree.node — node/page code has no notion of the tree's order
     template<KeyPolicy KP, ValuePolicy VP>
-    void move_from_left(Node* parent, Node* left, Node* node, CountType node_idx, U32 ns, KP kp, VP vp, bool is_leaf) {
+    bool is_leaf_full(const Node* node, U32 node_size, KP kp, VP vp, U16 next_key_bytes, U16 next_val_bytes) noexcept {
+        auto page = leaf_page(node, node_size, kp, vp);
+        if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
+            return page.count >= page.capacity;
+        } else {
+            // leaf_page for varlen KP always returns SlottedLeafPage<true,true>
+            U16 needed = static_cast<U16>(sizeof(SlotEntry<true, true>) + next_key_bytes + next_val_bytes);
+            return free_bytes(page) < needed;
+        }
+    }
+
+    template<KeyPolicy KP>
+    bool is_internal_full(const Node* node, U32 node_size, KP kp, U16 next_key_bytes) noexcept {
+        auto page = internal_page(node, node_size, kp);
+        if constexpr (KP::is_fixed_size) {
+            return page.count >= page.capacity;
+        } else {
+            // @perf O(n): sums key lengths to compute compacted free space; insert_key
+            // compacts on demand so fragmented free_space() underestimates actual space.
+            const auto* slots           = page.slots();
+            U16         total_key_bytes = 0;
+            for (CountType i = 0; i < page.count; i++) {
+                total_key_bytes += slots[i].key_len;
+            }
+            U16 compacted_free = static_cast<U16>(page.usable_capacity() - total_key_bytes - page.slot_end);
+            U16 needed         = static_cast<U16>(sizeof(InternalSlotEntry) + next_key_bytes);
+            return compacted_free < needed;
+        }
+    }
+
+    template<KeyPolicy KP, ValuePolicy VP>
+    bool is_underfull_leaf(const Node* node, U32 ns, KP kp, VP vp) noexcept {
+        auto page = leaf_page(node, ns, kp, vp);
+        return static_cast<U32>(used_bytes(page)) * 2 < capacity_bytes(page);
+    }
+
+    // @note fixed-size keys make every entry the same width, so two nodes each
+    // below half of a shared integer capacity always sum with one separator to
+    // at most that capacity (classic B-tree occupancy proof); varlen separators
+    // aren't uniform width, so the threshold must reserve max_key_bytes (see
+    // Header::max_key_bytes) worth of headroom for the merge's pulled-down
+    // separator instead of relying on that proof
+    template<KeyPolicy KP>
+    bool is_underfull_internal(const Node* node, U32 ns, KP kp, U16 max_key_bytes) noexcept {
+        auto page = internal_page(node, ns, kp);
+        if (page.count == 0) {
+            return true;
+        }
+        if constexpr (KP::is_fixed_size) {
+            return static_cast<U32>(used_bytes(page)) * 2 < capacity_bytes(page);
+        } else {
+            U16 reserve   = static_cast<U16>(sizeof(InternalSlotEntry) + max_key_bytes);
+            U16 cap       = capacity_bytes(page);
+            U16 threshold = max(cap, reserve) - reserve;
+            return static_cast<U32>(used_bytes(page)) * 2 < threshold;
+        }
+    }
+
+    // @note m follows the reference course's m = ceil((n+1)/2), but taken over
+    // n keys rather than n+1 since this implementation splits eagerly on
+    // descent (CLRS's strategy) rather than via the course's lazy virtual
+    // overflow node
+    template<KeyPolicy KP, ValuePolicy VP>
+    CountType split_index_leaf(const Node* node, U32 node_size, KP kp, VP vp) noexcept {
+        assert_true(node->key_count > 0, "split_index_leaf: cannot split an empty leaf");
+        if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
+            return static_cast<CountType>((node->key_count + 1) / 2);
+        } else {
+            // @perf O(n): scans all entries to find byte-balanced split point
+            auto      page = leaf_page(node, node_size, kp, vp);
+            U16       half = static_cast<U16>(used_bytes(page) / 2);
+            U16       acc  = 0;
+            CountType ret  = 0;
+            for (CountType i = 0; i < page.count; i++) {
+                acc += static_cast<U16>(key_at(page, i).length + value_at(page, i).length + sizeof(LeafSlotEntry));
+                if (acc >= half) {
+                    ret = static_cast<CountType>(i + 1);
+                    break;
+                }
+            }
+            if (ret == 0) {
+                ret = static_cast<CountType>(page.count / 2);
+            }
+            if (ret >= page.count) {
+                ret = static_cast<CountType>(page.count - 1);
+            }
+            return ret;
+        }
+    }
+
+    template<KeyPolicy KP>
+    CountType split_index_internal(const Node* node, U32 node_size, KP kp) noexcept {
+        assert_true(node->key_count > 0, "split_index_internal: cannot split an empty internal node");
+        if constexpr (KP::is_fixed_size) {
+            return static_cast<CountType>((node->key_count + 1) / 2);
+        } else {
+            // @perf O(n): two passes over slots to compute actual used bytes and split point
+            auto        page            = internal_page(node, node_size, kp);
+            const auto* slots           = page.slots();
+            U16         total_key_bytes = 0;
+            for (CountType i = 0; i < page.count; i++) {
+                total_key_bytes += slots[i].key_len;
+            }
+            U16       actual_used = static_cast<U16>(page.slot_end + total_key_bytes);
+            U16       half        = static_cast<U16>(actual_used / 2);
+            U16       acc         = 0;
+            CountType ret         = 0;
+            for (CountType i = 0; i < page.count; i++) {
+                acc += static_cast<U16>(slots[i].key_len + sizeof(InternalSlotEntry));
+                if (acc >= half) {
+                    ret = static_cast<CountType>(i + 1);
+                    break;
+                }
+            }
+            if (ret == 0) {
+                ret = static_cast<CountType>(page.count / 2);
+            }
+            if (ret >= page.count) {
+                ret = static_cast<CountType>(page.count - 1);
+            }
+            return ret;
+        }
+    }
+
+    // @note compiled out unless PLEXDB_DEBUG
+    template<KeyPolicy KP, ValuePolicy VP>
+    void assert_sorted_leaf(const Node* node, U32 ns, KP kp, VP vp) noexcept {
+        if constexpr (k_assert_enabled) {
+            for (CountType i = 1; i < node->key_count; i++) {
+                auto ab = leaf_get_key_bytes(node, ns, kp, vp, static_cast<CountType>(i - 1));
+                auto bb = leaf_get_key_bytes(node, ns, kp, vp, i);
+                auto a  = read_key(kp, ab.ptr, ab.length);
+                auto b  = read_key(kp, bb.ptr, bb.length);
+                assert_true(compare_key(kp, a, b) == Ordering::Less, "leaf keys must be strictly increasing");
+            }
+        }
+    }
+
+    template<KeyPolicy KP>
+    void assert_sorted_internal(const Node* node, U32 ns, KP kp) noexcept {
+        if constexpr (k_assert_enabled) {
+            for (CountType i = 1; i < node->key_count; i++) {
+                auto a = internal_get_key(node, ns, kp, static_cast<CountType>(i - 1));
+                auto b = internal_get_key(node, ns, kp, i);
+                assert_true(compare_key(kp, a, b) == Ordering::Less, "internal separator keys must be strictly increasing");
+            }
+        }
+    }
+
+    template<KeyPolicy KP, ValuePolicy VP>
+    void transfer_from_left(Node* parent, Node* left, Node* node, CountType node_idx, U32 ns, KP kp, VP vp, bool is_leaf) noexcept {
+        assert_true(node_idx >= 1, "transfer_from_left requires a left sibling to exist");
+        CountType pre_parent_count = parent->key_count;
+
         if (is_leaf) {
             auto      left_page = leaf_page(left, ns, kp, vp);
             auto      node_page = leaf_page(node, ns, kp, vp);
             CountType ll        = static_cast<CountType>(left->key_count - 1);
             auto      lk        = key_at(left_page, ll);
             auto      lv        = value_at(left_page, ll);
-            assert_true(insert(node_page, 0, lk, lv), "move_from_left: insert (leaf) failed — target leaf unexpectedly full");
+            assert_true(insert(node_page, 0, lk, lv), "transfer_from_left: insert (leaf) failed — target leaf unexpectedly full");
             node->key_count = node_page.count;
             internal_set_sep(parent, ns, kp, static_cast<CountType>(node_idx - 1), lk);
             remove(left_page, ll);
@@ -55,7 +207,7 @@ export namespace plexdb::btree {
                 auto      sep         = key_at(parent_page, static_cast<CountType>(node_idx - 1));
                 auto      lk          = key_at(left_page, ll);
                 NodeRef   lc          = child_at(left_page, left->key_count);
-                assert_true(insert_key(node_page, 0, sep), "move_from_left: insert_key failed — target internal node unexpectedly full");
+                assert_true(insert_key(node_page, 0, sep), "transfer_from_left: insert_key failed — target internal node unexpectedly full");
                 insert_child(node_page, 0, lc);
                 node->key_count = node_page.count;
                 replace_key(parent_page, static_cast<CountType>(node_idx - 1), lk);
@@ -63,16 +215,29 @@ export namespace plexdb::btree {
                 left->key_count = left_page.count;
             }
         }
+
+        assert_true(parent->key_count == pre_parent_count, "transfer must not change the parent's key count");
+        if (is_leaf) {
+            assert_sorted_leaf(node, ns, kp, vp);
+            assert_sorted_leaf(left, ns, kp, vp);
+        } else {
+            assert_sorted_internal(node, ns, kp);
+            assert_sorted_internal(left, ns, kp);
+        }
+        assert_sorted_internal(parent, ns, kp);
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    void move_from_right(Node* parent, Node* right, Node* node, CountType node_idx, U32 ns, KP kp, VP vp, bool is_leaf) {
+    void transfer_from_right(Node* parent, Node* right, Node* node, CountType node_idx, U32 ns, KP kp, VP vp, bool is_leaf) noexcept {
+        assert_true(node_idx < parent->key_count, "transfer_from_right requires a right sibling to exist");
+        CountType pre_parent_count = parent->key_count;
+
         if (is_leaf) {
             auto right_page = leaf_page(right, ns, kp, vp);
             auto node_page  = leaf_page(node, ns, kp, vp);
             auto rk         = key_at(right_page, 0);
             auto rv         = value_at(right_page, 0);
-            assert_true(insert(node_page, node_page.count, rk, rv), "move_from_right: insert (leaf) failed — target leaf unexpectedly full");
+            assert_true(insert(node_page, node_page.count, rk, rv), "transfer_from_right: insert (leaf) failed — target leaf unexpectedly full");
             node->key_count = node_page.count;
             remove(right_page, 0);
             right->key_count = right_page.count;
@@ -96,7 +261,7 @@ export namespace plexdb::btree {
                 auto    sep         = key_at(parent_page, node_idx);
                 auto    rk          = key_at(right_page, 0);
                 NodeRef rc          = child_at(right_page, 0);
-                assert_true(insert_key(node_page, node_page.count, sep), "move_from_right: insert_key failed — target internal node unexpectedly full");
+                assert_true(insert_key(node_page, node_page.count, sep), "transfer_from_right: insert_key failed — target internal node unexpectedly full");
                 insert_child(node_page, node_page.count, rc);
                 node->key_count = node_page.count;
                 replace_key(parent_page, node_idx, rk);
@@ -104,10 +269,23 @@ export namespace plexdb::btree {
                 right->key_count = right_page.count;
             }
         }
+
+        assert_true(parent->key_count == pre_parent_count, "transfer must not change the parent's key count");
+        if (is_leaf) {
+            assert_sorted_leaf(node, ns, kp, vp);
+            assert_sorted_leaf(right, ns, kp, vp);
+        } else {
+            assert_sorted_internal(node, ns, kp);
+            assert_sorted_internal(right, ns, kp);
+        }
+        assert_sorted_internal(parent, ns, kp);
     }
 
     template<KeyPolicy KP, ValuePolicy VP>
-    void merge(Node* a, Node* b, Node* parent, CountType a_idx, U32 ns, KP kp, VP vp, bool is_leaf) {
+    void merge(Node* a, Node* b, Node* parent, CountType a_idx, U32 ns, KP kp, VP vp, bool is_leaf) noexcept {
+        assert_true(a_idx < parent->key_count, "merge requires a valid separator between a and b");
+        CountType pre_parent_count = parent->key_count;
+
         a->next = b->next;
         if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
             using KT          = typename KP::key_type;
@@ -154,11 +332,16 @@ export namespace plexdb::btree {
                 parent->key_count = parent_page.count;
             }
         }
+
+        assert_true(parent->key_count == pre_parent_count - 1, "merge must remove exactly one entry from the parent");
+        if (is_leaf) {
+            assert_sorted_leaf(a, ns, kp, vp);
+        } else {
+            assert_sorted_internal(a, ns, kp);
+        }
+        assert_sorted_internal(parent, ns, kp);
     }
 
-    // ========================================================================
-    // insert
-    // ========================================================================
     template<BTree BT>
     coroutine::Task<void> insert_child_to_right(BT& t, U32 ns, Node* parent, CountType idx, TArrayView<const U8, U16> key_bytes, NodeRef child_ref, Node* child) {
         auto kp = key_policy(t);
@@ -174,8 +357,9 @@ export namespace plexdb::btree {
     coroutine::Task<void> split_child(BT& t, U32 ns, KP kp, VP vp, Node* parent, CountType child_idx, bool is_child_leaf) {
         ZoneScopedN("btree::split");
 
-        NodeRef left_ref = internal_children(parent, ns, kp)[child_idx];
-        Node*   left     = co_await update_node(t, left_ref);
+        NodeRef   left_ref  = internal_children(parent, ns, kp)[child_idx];
+        Node*     left      = co_await update_node(t, left_ref);
+        CountType pre_count = left->key_count;
 
         NodeRef right_ref;
         if (is_child_leaf) {
@@ -192,6 +376,8 @@ export namespace plexdb::btree {
             leaf_copy_suffix(left, right, ns, kp, vp, m);
             left->key_count = m;
             assert_true(left->key_count >= 1, "split_child: leaf left half has 0 keys after split");
+            assert_true(right->key_count >= 1, "split_child: leaf right half has 0 keys after split");
+            assert_true(static_cast<CountType>(left->key_count + right->key_count) == pre_count, "split_child: leaf split must preserve the total key count");
         } else {
             CountType m = split_index_internal(left, ns, kp);
             assert_true(m >= 2, "split_child: split_index_internal returned < 2, would leave internal left half empty");
@@ -201,6 +387,15 @@ export namespace plexdb::btree {
             left->key_count = static_cast<CountType>(m - 1);
             assert_true(left->key_count >= 1, "split_child: internal left half has 0 keys after split");
             assert_true(right->key_count >= 1, "split_child: internal right half has 0 keys after copy");
+            assert_true(static_cast<CountType>(left->key_count + right->key_count + 1) == pre_count, "split_child: internal split must preserve the total key count (separator extracted)");
+        }
+
+        if (is_child_leaf) {
+            assert_sorted_leaf(left, ns, kp, vp);
+            assert_sorted_leaf(right, ns, kp, vp);
+        } else {
+            assert_sorted_internal(left, ns, kp);
+            assert_sorted_internal(right, ns, kp);
         }
 
         co_await insert_child_to_right(t, ns, parent, child_idx, sep_key_bytes, right_ref, right);
@@ -208,12 +403,17 @@ export namespace plexdb::btree {
 
     template<BTree BT, KeyPolicy KP, ValuePolicy VP>
     coroutine::Task<bool> insert_recursive(BT& t, const Header& h, U32 ns, KP kp, VP vp, NodeRef n_ref, CountType depth, BTreeKeyType<BT> key, TArrayView<const U8, U16> value) {
+        assert_true(depth <= h.depth, "insert_recursive: depth must not exceed tree depth");
+
         if (depth == h.depth) {
             Node*     n      = co_await update_node(t, n_ref);
             CountType idx    = leaf_bsearch_geq(n, ns, kp, vp, key);
             bool      is_new = leaf_upsert(n, ns, kp, vp, idx, key, value);
+            assert_sorted_leaf(n, ns, kp, vp);
             if (is_new) {
-                (co_await update_header(t))->size++;
+                auto& hw = *(co_await update_header(t));
+                hw.size++;
+                hw.max_key_bytes = max(hw.max_key_bytes, stored_key_size(kp, key));
             }
             co_return is_new;
         }
@@ -231,7 +431,7 @@ export namespace plexdb::btree {
 
             bool child_full = is_child_leaf
                                 ? is_leaf_full(child, ns, kp, vp, key_bytes, val_bytes)
-                                : is_internal_full(child, ns, kp, key_bytes);
+                                : is_internal_full(child, ns, kp, max(h.max_key_bytes, key_bytes));
 
             if (child_full) {
                 co_await split_child(t, ns, kp, vp, co_await update_node(t, n_ref), child_idx, is_child_leaf);
@@ -265,7 +465,7 @@ export namespace plexdb::btree {
             const Node* root         = co_await read_node(t, h0.root);
             bool        root_full    = is_root_leaf
                                          ? is_leaf_full(root, ns, kp, vp, key_bytes, val_bytes)
-                                         : is_internal_full(root, ns, kp, key_bytes);
+                                         : is_internal_full(root, ns, kp, max(h0.max_key_bytes, key_bytes));
             if (root_full) {
                 NodeRef new_root_ref                   = co_await create_internal(t);
                 Node*   new_root                       = co_await update_node(t, new_root_ref);
@@ -276,14 +476,11 @@ export namespace plexdb::btree {
                 hw.depth++;
             }
         }
-        // @note re-read header after potential root split so insert_recursive uses the updated root/depth.
+        // @note re-read header after potential root split so insert_recursive uses the updated root/depth
         const auto& h = *(co_await read_header(t));
         co_return co_await insert_recursive(t, h, ns, kp, vp, h.root, 0, key, value);
     }
 
-    // ========================================================================
-    // search
-    // ========================================================================
     template<bool Mutable>
     struct Search {
         Conditional<Mutable, Node*, const Node*> leaf         = nullptr;
@@ -330,9 +527,7 @@ export namespace plexdb::btree {
         }
     }
 
-    // ========================================================================
-    // remove
-    // ========================================================================
+    // Delete
     struct RemoveStackItem {
         NodeRef   node;
         CountType idx;
@@ -369,12 +564,13 @@ export namespace plexdb::btree {
 
         Node* node = co_await update_node(t, node_ref);
         leaf_remove(node, ns, kp, vp, idx);
+        assert_sorted_leaf(node, ns, kp, vp);
 
         bool is_leaf = true;
         while (true) {
             bool underfull = is_leaf
                                ? is_underfull_leaf(node, ns, kp, vp)
-                               : is_underfull_internal(node, ns, kp);
+                               : is_underfull_internal(node, ns, kp, h.max_key_bytes);
             if (!underfull) {
                 break;
             }
@@ -405,8 +601,13 @@ export namespace plexdb::btree {
             if (left_ref != 0) {
                 left = co_await update_node(t, left_ref);
             }
-            if (left && !(is_leaf ? is_underfull_leaf(left, ns, kp, vp) : is_underfull_internal(left, ns, kp))) {
-                move_from_left(parent, left, node, item_idx, ns, kp, vp, is_leaf);
+            // @note a single oversized varlen entry can make a node byte-wise
+            // "not underfull" with only one key; key_count >= 2 keeps a donor
+            // transfer from emptying it
+            bool left_has_spare = left && left->key_count >= 2
+                               && !(is_leaf ? is_underfull_leaf(left, ns, kp, vp) : is_underfull_internal(left, ns, kp, h.max_key_bytes));
+            if (left_has_spare) {
+                transfer_from_left(parent, left, node, item_idx, ns, kp, vp, is_leaf);
                 break;
             }
 
@@ -417,8 +618,10 @@ export namespace plexdb::btree {
             if (right_ref != 0) {
                 right = co_await update_node(t, right_ref);
             }
-            if (right && !(is_leaf ? is_underfull_leaf(right, ns, kp, vp) : is_underfull_internal(right, ns, kp))) {
-                move_from_right(parent, right, node, item_idx, ns, kp, vp, is_leaf);
+            bool right_has_spare = right && right->key_count >= 2
+                                && !(is_leaf ? is_underfull_leaf(right, ns, kp, vp) : is_underfull_internal(right, ns, kp, h.max_key_bytes));
+            if (right_has_spare) {
+                transfer_from_right(parent, right, node, item_idx, ns, kp, vp, is_leaf);
                 break;
             }
 
@@ -492,17 +695,16 @@ export namespace plexdb::btree {
         new_root->prev       = 0;
         new_root->next       = 0;
 
-        auto& hw  = *(co_await update_header(t));
-        hw.root   = new_root_ref;
-        hw.leaves = new_root_ref;
-        hw.size   = 0;
-        hw.depth  = 0;
+        auto& hw         = *(co_await update_header(t));
+        hw.root          = new_root_ref;
+        hw.leaves        = new_root_ref;
+        hw.size          = 0;
+        hw.depth         = 0;
+        hw.max_key_bytes = 0;
         co_await delete_node(t, old_root_ref);
     }
 
-    // ========================================================================
-    // iterators
-    // ========================================================================
+    // Iteration
     template<BTree BT>
     coroutine::Task<IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>> begin_iterator_impl(BT& t) {
         using Impl    = IteratorImpl<BTreeKP<BT>, BTreeVP<BT>>;

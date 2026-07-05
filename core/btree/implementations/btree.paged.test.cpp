@@ -386,8 +386,8 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.paged]") {
             auto               pager = create_test_pager(pfile, 256_u64);
             pager::Transaction tx{&pager};
             co_await tx.begin();
-            header_page = co_await btree::create_paged(pager, VarlenKeyPolicy<>{}, VarlenValuePolicy{});
-            BTreePaged<VarlenKeyPolicy<>, VarlenValuePolicy> t(&pager, header_page, VarlenKeyPolicy<>{}, VarlenValuePolicy{});
+            header_page = co_await btree::create_paged(pager, VarlenKeyPolicy<>{}, VarlenValuePolicy<>{});
+            BTreePaged<VarlenKeyPolicy<>, VarlenValuePolicy<>> t(&pager, header_page, VarlenKeyPolicy<>{}, VarlenValuePolicy<>{});
 
             auto k = [](const char* s) {
                 return TArrayView<const U8, U16>{reinterpret_cast<const U8*>(s), static_cast<U16>(strlen(s))};
@@ -403,7 +403,7 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.paged]") {
             auto               pager = test_pager(pfile);
             pager::Transaction tx{&pager};
             co_await tx.begin();
-            BTreePaged<VarlenKeyPolicy<>, VarlenValuePolicy> t(&pager, header_page, VarlenKeyPolicy<>{}, VarlenValuePolicy{});
+            BTreePaged<VarlenKeyPolicy<>, VarlenValuePolicy<>> t(&pager, header_page, VarlenKeyPolicy<>{}, VarlenValuePolicy<>{});
 
             auto k = [](const char* s) {
                 return TArrayView<const U8, U16>{reinterpret_cast<const U8*>(s), static_cast<U16>(strlen(s))};

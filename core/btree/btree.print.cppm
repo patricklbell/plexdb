@@ -8,7 +8,7 @@ import plexdb.os;
 import plexdb.coroutine;
 
 import plexdb.btree;
-import plexdb.btree.detail;
+import plexdb.btree.algorithm;
 import plexdb.btree.node;
 import plexdb.btree.types;
 import plexdb.btree.constraint;

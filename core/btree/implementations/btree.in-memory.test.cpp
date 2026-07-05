@@ -140,8 +140,8 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.in-memory]") {
     }
 
     SECTION("varlen key and value basic insert, find, and remove") {
-        BTreeInMemory<VarlenKeyPolicy<>, VarlenValuePolicy> t(
-            VarlenKeyPolicy<>{}, VarlenValuePolicy{}, 256u
+        BTreeInMemory<VarlenKeyPolicy<>, VarlenValuePolicy<>> t(
+            VarlenKeyPolicy<>{}, VarlenValuePolicy<>{}, 256u
         );
 
         auto k = [](const char* s) {
@@ -166,6 +166,28 @@ PAGER_TEST_CASE("insert", "[plexdb.btree.in-memory]") {
         REQUIRE(!co_await find(t, k("banana"), buf, sizeof(buf)));
         REQUIRE(co_await find(t, k("apple"), buf, sizeof(buf), &sz));
         REQUIRE(std::equal(buf, buf + sz, reinterpret_cast<const U8*>("fruit")));
+    }
+
+    SECTION("varlen key and value with an explicit max_length bound: boundary-sized entries succeed") {
+        BTreeInMemory<VarlenKeyPolicy<8>, VarlenValuePolicy<8>> t(
+            VarlenKeyPolicy<8>{}, VarlenValuePolicy<8>{}, 256u
+        );
+
+        auto k = [](const char* s) {
+            return TArrayView<const U8, U16>{reinterpret_cast<const U8*>(s), static_cast<U16>(strlen(s))};
+        };
+
+        co_await insert(t, k("12345678"), k("87654321"));
+        co_await insert(t, k("short"), k("val"));
+
+        U8  buf[64];
+        U16 sz;
+        REQUIRE(co_await find(t, k("12345678"), buf, sizeof(buf), &sz));
+        REQUIRE(sz == 8);
+        REQUIRE(std::equal(buf, buf + sz, reinterpret_cast<const U8*>("87654321")));
+
+        REQUIRE(co_await find(t, k("short"), buf, sizeof(buf), &sz));
+        REQUIRE(std::equal(buf, buf + sz, reinterpret_cast<const U8*>("val")));
     }
 
     BENCHMARK_ADVANCED("(internal=5,leaf=7) key with same value")(Catch::Benchmark::Chronometer meter) {

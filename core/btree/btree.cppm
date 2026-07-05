@@ -13,7 +13,7 @@ import plexdb.coroutine;
 
 import plexdb.btree.types;
 import plexdb.btree.iterator;
-import plexdb.btree.detail;
+import plexdb.btree.algorithm;
 import plexdb.btree.constraint;
 import plexdb.btree.node;
 

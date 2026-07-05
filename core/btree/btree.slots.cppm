@@ -487,10 +487,14 @@ export namespace plexdb::btree {
         return true;
     }
 
+    // Called after insert_key() has already incremented p.count for the new key,
+    // unlike FixedInternalSlots::insert_child (whose s.count is a snapshot the
+    // caller bumps separately) — so the shift width here is p.count - i, one
+    // less than the pre-increment-count formula used by the fixed-size overload.
     template<bool VK>
     void insert_child(SlottedInternalPage<VK>& p, CountType i, NodeRef ref) noexcept {
         NodeRef* cp = p.children() + i;
-        os::memory_move(cp + 1, cp, (p.count - i + 1) * sizeof(NodeRef));
+        os::memory_move(cp + 1, cp, (p.count - i) * sizeof(NodeRef));
         *cp = ref;
     }
 
@@ -521,7 +525,7 @@ export namespace plexdb::btree {
         p.count--;
     }
 
-    // remove first key and leftmost child (children[0]) — used in move_from_right for internal
+    // remove first key and leftmost child (children[0]) — used by transfer_from_right for internal nodes
     template<bool VK>
     void remove_front(SlottedInternalPage<VK>& p) noexcept {
         static_assert(VK, "remove_front requires varlen key");
@@ -538,9 +542,11 @@ export namespace plexdb::btree {
         os::memory_move(slots, slots + 1, (p.count - 1) * sizeof(SlotEntry<VK, false>));
         p.slot_end -= sizeof(SlotEntry<VK, false>);
         p.count--;
-        // shift children left to remove children[0]
+        // p.count is already post-decrement here, but there are p.count + 1
+        // surviving children (indices 1..old count, i.e. old count = p.count + 1
+        // elements) that must shift down over the removed children[0].
         NodeRef* cp = p.children();
-        os::memory_move(cp, cp + 1, p.count * sizeof(NodeRef));
+        os::memory_move(cp, cp + 1, (p.count + 1) * sizeof(NodeRef));
     }
 
     template<bool VK>

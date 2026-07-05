@@ -9,9 +9,6 @@ import plexdb.btree.policy;
 import plexdb.btree.slots;
 
 export namespace plexdb::btree {
-    // ========================================================================
-    // capacity helpers
-    // ========================================================================
     inline CountType max_keys_internal(U32 node_size, U16 key_stride) noexcept {
         assert_true(node_size >= sizeof(Node) + key_stride + 2 * sizeof(NodeRef), "enough bytes for at least one key in internal node");
         U64 count = min(
@@ -30,9 +27,6 @@ export namespace plexdb::btree {
         return static_cast<CountType>(count);
     }
 
-    // ========================================================================
-    // raw pointer accessors (fixed layout)
-    // ========================================================================
     template<typename T>
     T* keys_raw(Node* node) noexcept {
         return reinterpret_cast<T*>(reinterpret_cast<U8*>(node) + sizeof(Node));
@@ -60,9 +54,6 @@ export namespace plexdb::btree {
         return reinterpret_cast<const U8*>(node) + sizeof(Node) + mk * key_stride;
     }
 
-    // ========================================================================
-    // view accessors (fixed layout)
-    // ========================================================================
     template<typename T>
     TArrayView<T, CountType> keys(Node* node) noexcept {
         return {keys_raw<T>(node), node->key_count};
@@ -86,9 +77,6 @@ export namespace plexdb::btree {
         return ArrayView{values_raw(node, node_size, key_stride, val_stride), val_stride, node->key_count};
     }
 
-    // ========================================================================
-    // policy-parameterized slot accessors
-    // ========================================================================
     template<KeyPolicy KP, ValuePolicy VP>
         requires(KP::is_fixed_size && VP::is_fixed_size)
     FixedLeafSlots leaf_page(Node* node, U32 node_size, KP, VP) noexcept {
@@ -206,9 +194,6 @@ export namespace plexdb::btree {
         return internal_page(const_cast<Node*>(node), node_size, kp);
     }
 
-    // ========================================================================
-    // binary search on nodes
-    // ========================================================================
     template<BinarySearchPolicy Policy, KeyPolicy KP, ValuePolicy VP>
     CountType leaf_bsearch(const Node* node, U32 ns, KP kp, VP vp, typename KP::key_type key) noexcept {
         if constexpr (KP::is_fixed_size) {
@@ -269,7 +254,6 @@ export namespace plexdb::btree {
         }
     }
 
-    // named wrappers
     template<KeyPolicy KP, ValuePolicy VP>
     CountType leaf_bsearch_geq(const Node* node, U32 ns, KP kp, VP vp, typename KP::key_type key) noexcept {
         return leaf_bsearch<BinarySearchPolicy::GreaterEqual>(node, ns, kp, vp, key);
@@ -297,9 +281,6 @@ export namespace plexdb::btree {
         return internal_bsearch<BinarySearchPolicy::Greater>(node, ns, kp, key);
     }
 
-    // ========================================================================
-    // generic internal node helpers
-    // ========================================================================
     template<KeyPolicy KP>
     NodeRef* internal_children(Node* node, U32 ns, KP kp) noexcept {
         if constexpr (KP::is_fixed_size) {
@@ -363,16 +344,12 @@ export namespace plexdb::btree {
         dst->key_count = dp.count;
     }
 
-    // bytes of internal key at index i (raw bytes, for passing to parent during split)
     template<KeyPolicy KP>
     TArrayView<const U8, U16> internal_get_key_bytes(const Node* node, U32 ns, KP kp, CountType i) noexcept {
         auto page = internal_page(node, ns, kp);
         return key_at(page, i);
     }
 
-    // ========================================================================
-    // generic leaf node helpers
-    // ========================================================================
     template<KeyPolicy KP, ValuePolicy VP>
     bool leaf_key_eq(const Node* node, U32 ns, KP kp, VP vp, CountType idx, typename KP::key_type key) noexcept {
         if constexpr (KP::is_fixed_size) {
@@ -491,105 +468,4 @@ export namespace plexdb::btree {
         dst->key_count = dp.count;
     }
 
-    template<KeyPolicy KP, ValuePolicy VP>
-    bool is_underfull_leaf(const Node* node, U32 ns, KP kp, VP vp) noexcept {
-        auto page = leaf_page(node, ns, kp, vp);
-        return static_cast<U32>(used_bytes(page)) * 2 < capacity_bytes(page);
-    }
-
-    template<KeyPolicy KP>
-    bool is_underfull_internal(const Node* node, U32 ns, KP kp) noexcept {
-        auto page = internal_page(node, ns, kp);
-        return static_cast<U32>(used_bytes(page)) * 2 < capacity_bytes(page);
-    }
-
-    // ========================================================================
-    // fullness checks
-    // ========================================================================
-    template<KeyPolicy KP, ValuePolicy VP>
-    bool is_leaf_full(const Node* node, U32 node_size, KP kp, VP vp, U16 next_key_bytes, U16 next_val_bytes) noexcept {
-        auto page = leaf_page(node, node_size, kp, vp);
-        if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
-            return page.count >= page.capacity;
-        } else {
-            // leaf_page for varlen KP always returns SlottedLeafPage<true,true>
-            U16 needed = static_cast<U16>(sizeof(SlotEntry<true, true>) + next_key_bytes + next_val_bytes);
-            return free_bytes(page) < needed;
-        }
-    }
-
-    template<KeyPolicy KP>
-    bool is_internal_full(const Node* node, U32 node_size, KP kp, U16 next_key_bytes) noexcept {
-        auto page = internal_page(node, node_size, kp);
-        if constexpr (KP::is_fixed_size) {
-            return page.count >= page.capacity;
-        } else {
-            // @perf O(n): sums key lengths to compute compacted free space; insert_key
-            // compacts on demand so fragmented free_space() underestimates actual space.
-            const auto* slots           = page.slots();
-            U16         total_key_bytes = 0;
-            for (CountType i = 0; i < page.count; i++) {
-                total_key_bytes += slots[i].key_len;
-            }
-            U16 compacted_free = static_cast<U16>(page.usable_capacity() - total_key_bytes - page.slot_end);
-            U16 needed         = static_cast<U16>(sizeof(InternalSlotEntry) + next_key_bytes);
-            return compacted_free < needed;
-        }
-    }
-
-    // ========================================================================
-    // split index
-    // ========================================================================
-    template<KeyPolicy KP, ValuePolicy VP>
-    CountType split_index_leaf(const Node* node, U32 node_size, KP kp, VP vp) noexcept {
-        if constexpr (KP::is_fixed_size && VP::is_fixed_size) {
-            return static_cast<CountType>((node->key_count + 1) / 2);
-        } else {
-            // @perf O(n): scans all entries to find byte-balanced split point
-            auto page = leaf_page(node, node_size, kp, vp);
-            U16  half = static_cast<U16>(used_bytes(page) / 2);
-            U16  acc  = 0;
-            for (CountType i = 0; i < page.count; i++) {
-                acc += static_cast<U16>(key_at(page, i).length + value_at(page, i).length + sizeof(LeafSlotEntry));
-                if (acc >= half) {
-                    return static_cast<CountType>(i + 1);
-                }
-            }
-            return static_cast<CountType>(page.count / 2);
-        }
-    }
-
-    template<KeyPolicy KP>
-    CountType split_index_internal(const Node* node, U32 node_size, KP kp) noexcept {
-        if constexpr (KP::is_fixed_size) {
-            return static_cast<CountType>((node->key_count + 1) / 2);
-        } else {
-            // @perf O(n): two passes over slots to compute actual used bytes and split point
-            auto        page            = internal_page(node, node_size, kp);
-            const auto* slots           = page.slots();
-            U16         total_key_bytes = 0;
-            for (CountType i = 0; i < page.count; i++) {
-                total_key_bytes += slots[i].key_len;
-            }
-            U16       actual_used = static_cast<U16>(page.slot_end + total_key_bytes);
-            U16       half        = static_cast<U16>(actual_used / 2);
-            U16       acc         = 0;
-            CountType ret         = 0;
-            for (CountType i = 0; i < page.count; i++) {
-                acc += static_cast<U16>(slots[i].key_len + sizeof(InternalSlotEntry));
-                if (acc >= half) {
-                    ret = static_cast<CountType>(i + 1);
-                    break;
-                }
-            }
-            if (ret == 0) {
-                ret = static_cast<CountType>(page.count / 2);
-            }
-            // Safety: never leave right half empty
-            if (ret >= page.count) {
-                ret = static_cast<CountType>(page.count - 1);
-            }
-            return ret;
-        }
-    }
 }

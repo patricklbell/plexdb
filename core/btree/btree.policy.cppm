@@ -52,6 +52,8 @@ export namespace plexdb::btree {
 
     template<TriviallyCopyable T>
     struct FixedKeyPolicy {
+        static_assert(sizeof(T) <= NumericLimits<U16>::max(), "key stride must fit in U16");
+
         using key_type                      = T;
         static constexpr bool is_fixed_size = true;
         static constexpr U16  key_stride    = sizeof(T);
@@ -74,19 +76,23 @@ export namespace plexdb::btree {
         }
     };
 
-    template<typename Comparator = LexicographicComparator>
+    template<U16 max_key_length = NumericLimits<U16>::max(), typename Comparator = LexicographicComparator>
     struct VarlenKeyPolicy {
         using key_type                                 = TArrayView<const U8, U16>;
         static constexpr bool            is_fixed_size = false;
+        static constexpr U16             max_length    = max_key_length;
         [[no_unique_address]] Comparator comparator{};
 
         friend U16 stored_key_size(const VarlenKeyPolicy&, TArrayView<const U8, U16> k) noexcept {
+            assert_true(k.length <= max_key_length, "key exceeds VarlenKeyPolicy's max_key_length");
             return k.length;
         }
         friend void write_key(const VarlenKeyPolicy&, U8* dst, TArrayView<const U8, U16> k) noexcept {
+            assert_true(k.length <= max_key_length, "key exceeds VarlenKeyPolicy's max_key_length");
             os::memory_copy(dst, k.ptr, k.length);
         }
         friend TArrayView<const U8, U16> read_key(const VarlenKeyPolicy&, const U8* src, U16 len) noexcept {
+            assert_true(len <= max_key_length, "stored key length exceeds VarlenKeyPolicy's max_key_length");
             return {const_cast<U8*>(src), len};
         }
         friend Ordering compare_key(const VarlenKeyPolicy& p, TArrayView<const U8, U16> a, TArrayView<const U8, U16> b) noexcept {
@@ -96,6 +102,8 @@ export namespace plexdb::btree {
 
     template<U64 stride_byte_count>
     struct FixedValuePolicy {
+        static_assert(stride_byte_count > 0 && stride_byte_count <= NumericLimits<U16>::max(), "value stride must be nonzero and fit in U16");
+
         using value_type                    = TArrayView<const U8, U16>;
         static constexpr bool is_fixed_size = true;
         static constexpr U16  value_stride  = stride_byte_count;
@@ -110,14 +118,18 @@ export namespace plexdb::btree {
         }
     };
 
+    template<U16 max_value_length = NumericLimits<U16>::max()>
     struct VarlenValuePolicy {
         using value_type                    = TArrayView<const U8, U16>;
         static constexpr bool is_fixed_size = false;
+        static constexpr U16  max_length    = max_value_length;
 
         friend U16 stored_value_size(VarlenValuePolicy, TArrayView<const U8, U16> v) noexcept {
+            assert_true(v.length <= max_value_length, "value exceeds VarlenValuePolicy's max_value_length");
             return v.length;
         }
         friend void write_value(VarlenValuePolicy, U8* dst, TArrayView<const U8, U16> v) noexcept {
+            assert_true(v.length <= max_value_length, "value exceeds VarlenValuePolicy's max_value_length");
             os::memory_copy(dst, v.ptr, v.length);
         }
     };

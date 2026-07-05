@@ -68,7 +68,7 @@ target_sources(plexdb_core
             btree/implementations/btree.paged.detail.cppm
             btree/btree.cppm
             btree/btree.constraint.cppm
-            btree/btree.detail.cppm
+            btree/btree.algorithm.cppm
             btree/btree.iterator.cppm
             btree/btree.node.cppm
             btree/btree.policy.cppm

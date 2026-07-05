@@ -1,3 +1,4 @@
+- Pager algorithm insert/delete should be modified for varlen key case to use two passes which avoids pre-emptive splitting
 - Pager cache: consider page handle design as alternative to transaction-scoped arena cache
     - rpage/rwpage return a RAII handle that pins the cache entry; handle destruction releases the pin
     - On slot collision with a pinned entry, spill to arena overflow instead of evicting
