@@ -79,6 +79,43 @@ jobs:
       - name: Run keyvalue tests
         run: ./build/keyvalue/keyvalue_tests
 
+  asan:
+    needs: format-check
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19
+
+      - name: Configure
+        run: |
+          cmake -B build-asan -G Ninja \
+            -DPLEXDB_ENABLE_TESTS=ON \
+            -DPLEXDB_ENABLE_PLUGINS=ON \
+            -DPLEXDB_DEBUG=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_SCAN_FOR_MODULES=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        run: ninja -C build-asan core_tests cql_tests keyvalue_tests
+
+      - name: Run core tests
+        run: ./build-asan/core/core_tests --skip-benchmarks
+
+      - name: Run cql tests
+        run: ./build-asan/cql/cql_tests --skip-benchmarks
+
+      - name: Run keyvalue tests
+        run: ./build-asan/keyvalue/keyvalue_tests
+
   cql-conformance:
     needs: test
     if: github.event_name == 'push'

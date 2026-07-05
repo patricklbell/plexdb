@@ -3,6 +3,8 @@
 .opencode/
 .claude/
 build/
+build-bench/
+build-asan/
 .cache/
 out/
 _codeql_detected_source_root
@@ -13,3 +15,4 @@ _codeql_detected_source_root
 **/node_modules
 **/__pycache__
 .orktree
+tools/bench/results/*.json

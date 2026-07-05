@@ -15,7 +15,7 @@ endif()
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/compiler_config.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/options.cmake)
 
-option(CQL_ENABLE_SERVER "Build cql server" ON)
+option(PLEXDB_CQL_ENABLE_SERVER "Build cql server" ON)
 
 add_subdirectory(test_macros)
 
@@ -112,7 +112,7 @@ target_link_libraries(plexbd_cql
 # =============================================================================
 # Executables
 # =============================================================================
-if(CQL_ENABLE_SERVER)
+if(PLEXDB_CQL_ENABLE_SERVER)
   add_executable(plexdb_cql_server)
 
   target_sources(plexdb_cql_server

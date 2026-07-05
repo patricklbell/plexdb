@@ -14,12 +14,12 @@ endif()
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/compiler_config.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/options.cmake)
 
-option(plexdb_CORE_ENABLE_IO_URING "Enable using io_uring for io" ON)
+option(PLEXDB_CORE_ENABLE_IO_URING "Enable using io_uring for io" ON)
 
 # =============================================================================
 # Third part dependencies
 # =============================================================================
-if(plexdb_CORE_ENABLE_IO_URING)
+if(PLEXDB_CORE_ENABLE_IO_URING)
   include(FindPkgConfig)
   pkg_check_modules(liburing REQUIRED IMPORTED_TARGET GLOBAL liburing>=2.0)
 endif()
@@ -35,7 +35,7 @@ add_library(plexdb::core ALIAS plexdb_core)
 
 target_compile_features(plexdb_core PUBLIC cxx_std_23)
 set_target_properties(plexdb_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_definitions(plexdb_core PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${CORE_ENABLE_IO_URING}>,1,0>)
+target_compile_definitions(plexdb_core PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${PLEXDB_CORE_ENABLE_IO_URING}>,1,0>)
 
 target_include_directories(plexdb_core
     PRIVATE
@@ -135,7 +135,7 @@ target_link_libraries(plexdb_core
         plexdb::core::macros
         plexdb::core::plugin_abi
         plexdb::support::tracy
-        $<$<BOOL:${CORE_ENABLE_IO_URING}>:PkgConfig::liburing>
+        $<$<BOOL:${PLEXDB_CORE_ENABLE_IO_URING}>:PkgConfig::liburing>
         stdc++exp # std::stacktrace may require linking experimental c++ library
 )
 
@@ -158,7 +158,7 @@ if(PLEXDB_ENABLE_TESTS)
 
   add_executable(core_tests)
 
-  target_compile_definitions(plexdb_core PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${CORE_ENABLE_IO_URING}>,1,0>)
+  target_compile_definitions(plexdb_core PRIVATE CORE_ENABLE_IO_URING=$<IF:$<BOOL:${PLEXDB_CORE_ENABLE_IO_URING}>,1,0>)
 
   file(GLOB_RECURSE CORE_TEST_SOURCES CONFIGURE_DEPENDS
       "${CMAKE_CURRENT_SOURCE_DIR}/**/*.test.cpp"

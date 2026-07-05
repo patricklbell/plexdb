@@ -7,6 +7,8 @@
 #   -t <threads> client threads           (default: 16)
 #   -p <port>    native protocol port     (default: 9042)
 #   -P <port>    LD_PRELOAD for binary    (default: )
+#   -C <cpulist> pin server (taskset) and stress client (--cpuset-cpus) to this cpu list (default: unpinned)
+#   -e           external server: don't start $BINARY, target an already-running -node/-port
 #   -h           show this help
 
 set -euo pipefail
@@ -18,16 +20,20 @@ OPS="${OPS:-100000}"
 THREADS="${THREADS:-16}"
 PORT="${PORT:-9042}"
 PRELOAD=""
+CPULIST=""
+EXTERNAL=false
 
-while getopts "b:n:t:p:P:h" opt; do
+while getopts "b:n:t:p:P:C:eh" opt; do
     case "$opt" in
         b) BINARY="$OPTARG" ;;
         n) OPS="$OPTARG" ;;
         t) THREADS="$OPTARG" ;;
         p) PORT="$OPTARG" ;;
         P) PRELOAD="$OPTARG" ;;
+        C) CPULIST="$OPTARG" ;;
+        e) EXTERNAL=true ;;
         h)
-            sed -n '2,9p' "$0" | sed 's/^# \?//'
+            sed -n '2,13p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         *) exit 1 ;;
@@ -40,30 +46,43 @@ if ! command -v docker >/dev/null 2>&1; then
     exit 1
 fi
 
-if [ ! -f "$BINARY" ]; then
-    echo "error: cql binary not found at '$BINARY'" >&2
-    exit 1
-fi
-
-DB="$(mktemp -t bench_cql_XXXXXX.db)"
+DB=""
 SERVER_PID=""
 
 cleanup() {
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
-    rm -f "$DB"
+    [ -n "$DB" ] && rm -f "$DB"
 }
 trap cleanup EXIT
 
-echo "Starting cql on port $PORT..."
-if [ -n "$PRELOAD" ]; then
-    echo "Setting LD_PRELOAD=${PRELOAD}"
+if $EXTERNAL; then
+    echo "Targeting external server on port $PORT..."
+else
+    if [ ! -f "$BINARY" ]; then
+        echo "error: cql binary not found at '$BINARY'" >&2
+        exit 1
+    fi
+
+    DB="$(mktemp -t bench_cql_XXXXXX.db)"
+
+    echo "Starting cql on port $PORT..."
+    if [ -n "$PRELOAD" ]; then
+        echo "Setting LD_PRELOAD=${PRELOAD}"
+    fi
+    LAUNCH=("$BINARY" "$DB" --port "$PORT")
+    if [ -n "$CPULIST" ]; then
+        LAUNCH=(taskset -c "$CPULIST" "${LAUNCH[@]}")
+    fi
+    LD_PRELOAD=${PRELOAD} "${LAUNCH[@]}" &
+    LD_PRELOAD=""
+    SERVER_PID=$!
 fi
-LD_PRELOAD=${PRELOAD} "$BINARY" "$DB" --port "$PORT" &
-LD_PRELOAD=""
-SERVER_PID=$!
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="cassandra-stress-apache"
+
+CLIENT_CPU_ARGS=()
+[ -n "$CPULIST" ] && CLIENT_CPU_ARGS=(--cpuset-cpus="$CPULIST")
 
 echo
 echo "=== Building cassandra-stress image ==="
@@ -71,10 +90,10 @@ docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
 
 echo
 echo "=== Write benchmark (n=$OPS, threads=$THREADS) ==="
-docker run --rm --network host "$IMAGE_NAME" \
+docker run --rm --network host "${CLIENT_CPU_ARGS[@]}" "$IMAGE_NAME" \
   cassandra-stress write n="$OPS" -rate threads="$THREADS" -node 127.0.0.1 -port native="$PORT"
 
 echo
 echo "=== Read benchmark (n=$OPS, threads=$THREADS) ==="
-docker run --rm --network host "$IMAGE_NAME" \
+docker run --rm --network host "${CLIENT_CPU_ARGS[@]}" "$IMAGE_NAME" \
   cassandra-stress read n="$OPS" -rate threads="$THREADS" -node 127.0.0.1 -port native="$PORT"

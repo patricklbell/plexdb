@@ -43,4 +43,4 @@ jobs:
       - name: Run Cassandra stress
         run: |
           ARGS="-n ${{ inputs.ops }} -t ${{ inputs.threads }}"
-          bash tools/cql_stress/run.sh $ARGS || true
+          bash tools/cassandra_stress/run.sh $ARGS || true

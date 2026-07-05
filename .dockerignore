@@ -1,0 +1,7 @@
+build/
+out/
+.cache/
+.git/
+extra/**/node_modules
+extra/**/.venv
+tools/bench/results/
