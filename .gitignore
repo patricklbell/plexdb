@@ -3,8 +3,6 @@
 .opencode/
 .claude/
 build/
-build-bench/
-build-asan/
 .cache/
 out/
 _codeql_detected_source_root
