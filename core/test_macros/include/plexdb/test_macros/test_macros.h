@@ -1,7 +1,7 @@
 #include <coroutine>
 #include <cassert>
 import plexdb.coroutine;
-import plexdb.pager.test_helpers;
+import plexdb.test.pager_helpers;
 
 #define PLEXDB_PAGER_TEST_CAT2(a, b) a##b
 #define PLEXDB_PAGER_TEST_CAT(a, b)  PLEXDB_PAGER_TEST_CAT2(a, b)

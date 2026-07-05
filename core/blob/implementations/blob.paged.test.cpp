@@ -9,7 +9,7 @@ import plexdb.pager;
 import plexdb.blob;
 import plexdb.threads;
 import plexdb.arena;
-import plexdb.pager.test_helpers;
+import plexdb.test.pager_helpers;
 
 using namespace plexdb;
 using namespace plexdb::blob;

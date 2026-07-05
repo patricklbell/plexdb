@@ -1,3 +1,4 @@
+module;
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_message.hpp>
 #include <catch2/reporters/catch_reporter_event_listener.hpp>
@@ -9,8 +10,9 @@
 #include <vector>
 #include <mutex>
 
-namespace {
+module plexdb.test.log_consumer_helpers;
 
+namespace {
     struct LogBuffer {
         std::map<std::pair<uint32_t, uint32_t>, std::string>    stat_names;
         std::map<uint32_t, std::string>                         producer_names;
@@ -145,17 +147,11 @@ namespace {
         }
     };
     CATCH_REGISTER_LISTENER(LogListener)
+}
 
-    // @note Static init order: consumer only sees messages fired after registration.
-    //   Producer catch-up is replayed (see abi.h load-order contract).
-    struct LogConsumerInstaller {
-        LogConsumerInstaller() {
-            plexdb_plugin_register_consumer(on_log_event, nullptr);
-        }
-        ~LogConsumerInstaller() {
-            plexdb_plugin_unregister_consumer(on_log_event, nullptr);
-        }
-    };
-    static LogConsumerInstaller g_log_install;
-
+void register_test_log_consumer() {
+    plexdb_plugin_register_consumer(on_log_event, nullptr);
+}
+void unregister_test_log_consumer() {
+    plexdb_plugin_unregister_consumer(on_log_event, nullptr);
 }

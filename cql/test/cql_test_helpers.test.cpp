@@ -11,7 +11,7 @@ import plexdb.pager;
 import plexdb.coroutine;
 import plexdb.dynamic.containers;
 
-import plexdb.pager.test_helpers;
+import plexdb.test.pager_helpers;
 
 import cql.engine;
 

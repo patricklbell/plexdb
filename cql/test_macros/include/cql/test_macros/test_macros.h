@@ -7,7 +7,7 @@
 import plexdb.base;
 import plexdb.dynamic.containers;
 import plexdb.coroutine;
-import plexdb.pager.test_helpers;
+import plexdb.test.pager_helpers;
 import cql.test_helpers;
 
 #define PLEXDB_CQL_CAT2(a, b) a##b

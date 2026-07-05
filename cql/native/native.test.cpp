@@ -10,9 +10,9 @@
 import plexdb.base;
 import plexdb.os;
 import plexdb.pager;
-import plexdb.pager.test_helpers;
+import plexdb.test.pager_helpers;
 import plexdb.aio;
-import plexdb.server.test_helpers;
+import plexdb.test.server_helpers;
 
 import cql.engine;
 import cql.native;

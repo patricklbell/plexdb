@@ -9,7 +9,7 @@ import plexdb.base;
 import plexdb.os;
 import plexdb.threads;
 import plexdb.aio;
-import plexdb.server.test_helpers;
+import plexdb.test.server_helpers;
 
 import keyvalue.engine;
 import keyvalue.resp;

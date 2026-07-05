@@ -18,7 +18,7 @@ import plexdb.os;
 import plexdb.pager;
 import plexdb.pager.types;
 import plexdb.pager.wal;
-import plexdb.pager.test_helpers;
+import plexdb.test.pager_helpers;
 
 using namespace plexdb;
 

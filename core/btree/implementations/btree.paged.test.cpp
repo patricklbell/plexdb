@@ -12,7 +12,7 @@ import plexdb.arena;
 import plexdb.btree;
 import plexdb.btree.print;
 import plexdb.pager;
-import plexdb.pager.test_helpers;
+import plexdb.test.pager_helpers;
 
 using namespace plexdb;
 using namespace plexdb::btree;

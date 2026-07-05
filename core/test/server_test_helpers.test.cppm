@@ -1,4 +1,4 @@
-export module plexdb.server.test_helpers;
+export module plexdb.test.server_helpers;
 
 import plexdb.os;
 import plexdb.aio;

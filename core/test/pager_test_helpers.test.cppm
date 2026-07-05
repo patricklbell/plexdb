@@ -1,7 +1,7 @@
 module;
 #include <coroutine>
 
-export module plexdb.pager.test_helpers;
+export module plexdb.test.pager_helpers;
 
 import plexdb.base;
 import plexdb.os;
