@@ -854,7 +854,10 @@ PAGER_TEST_CASE("concurrent begin_transaction serializes second writer via queue
 
     // Task1: begin transaction, allocate a page, then pause (simulating a long operation),
     // then commit.
-    auto task1 = [&]() -> coroutine::Task<U64> {
+    // @note task1_fn must outlive task1: an eager coroutine's frame keeps
+    // referencing its [&]-captured closure on every resume, so an
+    // immediately-invoked lambda temporary would dangle after the first one.
+    auto task1_fn = [&]() -> coroutine::Task<U64> {
         pager::Transaction tx{&pager};
         co_await tx.begin();
         U64 p1 = co_await pager::new_page(pager);
@@ -866,16 +869,18 @@ PAGER_TEST_CASE("concurrent begin_transaction serializes second writer via queue
         };
         co_await tx.commit();
         co_return p1;
-    }();
+    };
+    auto task1 = task1_fn();
 
     // Task2: begin transaction (should queue because task1 holds it), allocate a page, commit.
-    U64  p2    = 0;
-    auto task2 = [&]() -> coroutine::Task<> {
+    U64  p2       = 0;
+    auto task2_fn = [&]() -> coroutine::Task<> {
         pager::Transaction tx{&pager};
         co_await tx.begin();
         p2 = co_await pager::new_page(pager);
         co_await tx.commit();
-    }();
+    };
+    auto task2 = task2_fn();
 
     // Drive task1 until it pauses at the artificial yield inside the transaction
     task1.resume();

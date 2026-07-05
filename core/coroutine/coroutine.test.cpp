@@ -23,10 +23,14 @@ TEST_CASE("Task<int> returns value", "[coroutine]") {
 
 TEST_CASE("Task<void> completes", "[coroutine]") {
     bool executed = false;
-    auto task     = [&]() -> Task<> {
+    // A lazy task's body only runs on resume(), so the [&]-capturing closure
+    // must outlive that call — an immediately-invoked lambda temporary would
+    // dangle by then.
+    auto task_fn = [&]() -> Task<> {
         executed = true;
         co_return;
-    }();
+    };
+    auto task = task_fn();
     REQUIRE_FALSE(executed);
     task.resume();
     REQUIRE(executed);
@@ -37,11 +41,12 @@ TEST_CASE("Task chaining with co_await", "[coroutine]") {
     auto inner = []() -> Task<int> {
         co_return 10;
     };
-    auto outer = [&]() -> Task<int> {
+    auto outer_fn = [&]() -> Task<int> {
         auto a = co_await inner();
         auto b = co_await inner();
         co_return a + b;
-    }();
+    };
+    auto outer = outer_fn();
     outer.resume();
     REQUIRE(outer.done());
     REQUIRE(outer.value() == 20);
@@ -83,11 +88,12 @@ TEST_CASE("Task<void> chaining", "[coroutine]") {
         counter++;
         co_return;
     };
-    auto pipeline = [&]() -> Task<> {
+    auto pipeline_fn = [&]() -> Task<> {
         co_await step();
         co_await step();
         co_await step();
-    }();
+    };
+    auto pipeline = pipeline_fn();
     pipeline.resume();
     REQUIRE(pipeline.done());
     REQUIRE(counter == 3);
@@ -124,10 +130,11 @@ TEST_CASE("Task<int, Start::Eager> co_await from lazy task", "[coroutine]") {
     auto sub = []() -> Task<int, Start::Eager> {
         co_return 5;
     };
-    auto outer = [&]() -> Task<int> {
+    auto outer_fn = [&]() -> Task<int> {
         auto v = co_await sub();
         co_return v * 2;
-    }();
+    };
+    auto outer = outer_fn();
     outer.resume();
     REQUIRE(outer.done());
     REQUIRE(outer.value() == 10);
@@ -142,7 +149,7 @@ TEST_CASE("Awaitable suspends and resumes with result", "[coroutine]") {
     std::coroutine_handle<> stored;
     int                     result = 0;
 
-    auto task = [&]() -> Task<int> {
+    auto task_fn = [&]() -> Task<int> {
         int v = co_await Awaitable{
             [&](std::coroutine_handle<> h) { stored = h; },
             [&]() -> int {
@@ -150,7 +157,8 @@ TEST_CASE("Awaitable suspends and resumes with result", "[coroutine]") {
             }
         };
         co_return v * 2;
-    }();
+    };
+    auto task = task_fn();
 
     task.resume();
     REQUIRE_FALSE(task.done());
@@ -166,14 +174,15 @@ TEST_CASE("Awaitable<void> fire-and-forget", "[coroutine]") {
     std::coroutine_handle<> stored;
     bool                    completed = false;
 
-    auto task = [&]() -> Task<> {
+    auto task_fn = [&]() -> Task<> {
         co_await Awaitable{
             [&](std::coroutine_handle<> h) { stored = h; },
             [&]() {
                 completed = true;
             }
         };
-    }();
+    };
+    auto task = task_fn();
 
     task.resume();
     REQUIRE_FALSE(task.done());
@@ -263,11 +272,12 @@ TEST_CASE("Generator early destruction", "[coroutine]") {
     };
 
     {
-        auto gen = [&]() -> Generator<int> {
+        auto gen_fn = [&]() -> Generator<int> {
             Guard g{destroyed};
             co_yield 1;
             co_yield 2;
-        }();
+        };
+        auto gen = gen_fn();
         auto val = gen.next();
         REQUIRE(val.has_value());
         REQUIRE(val.value() == 1);
