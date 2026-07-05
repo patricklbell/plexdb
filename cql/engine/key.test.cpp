@@ -2,8 +2,9 @@
 
 import plexdb.base;
 import plexdb.os;
-import plexdb.dynamic.containers;
 import plexdb.tagged_union;
+import plexdb.dynamic.tagged_union;
+import plexdb.dynamic.containers;
 
 import cql.engine.column_value;
 import cql.engine.evaluator;
