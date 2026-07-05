@@ -271,7 +271,9 @@ namespace plexdb::uring {
 
             os::deallocate(this->ring_vptr);
             os::deallocate(this->iovecs_vptr);
+            os::deallocate(this->buffers);
             this->ring_vptr = nullptr;
+            this->buffers   = nullptr;
 
             // @todo @thread safe
             {

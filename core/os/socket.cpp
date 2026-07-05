@@ -120,13 +120,19 @@ namespace plexdb::os {
     }
 
     SocketResult socket_send(Handle socket, const void* data, U32 length) {
-        ssize_t result = ::send(handle_to_fd(socket), data, length, 0);
+        ssize_t result;
+        int     err;
+        do {
+            result = ::send(handle_to_fd(socket), data, length, 0);
+            err    = errno;
+            // @note a socket with SO_SNDTIMEO set is not restarted by the kernel on signal
+            // delivery even with SA_RESTART, so a spurious EINTR must be retried here.
+        } while (result < 0 && err == EINTR);
 
         assert_true(result <= MAX_S32, "send length out of range, this should never happen!");
         if (result >= 0) {
             return {static_cast<U32>(result), SocketError::None};
         }
-        int err = errno;
         if (err == EAGAIN || err == EWOULDBLOCK) {
             return {0, SocketError::WouldBlock};
         }
@@ -140,7 +146,14 @@ namespace plexdb::os {
     }
 
     SocketResult socket_receive(Handle socket, void* data, U32 length) {
-        ssize_t result = ::recv(handle_to_fd(socket), data, length, 0);
+        ssize_t result;
+        int     err;
+        do {
+            result = ::recv(handle_to_fd(socket), data, length, 0);
+            err    = errno;
+            // @note SO_RCVTIMEO sockets always return EINTR on signal
+            // delivery, so retry rather than surfacing it as a spurious error.
+        } while (result < 0 && err == EINTR);
 
         assert_true(result <= MAX_S32, "send length out of range, this should never happen!");
         if (result > 0) {
@@ -149,7 +162,6 @@ namespace plexdb::os {
         if (result == 0) {
             return {0, SocketError::ConnectionClosed};
         }
-        int err = errno;
         if (err == EAGAIN || err == EWOULDBLOCK) {
             return {0, SocketError::WouldBlock};
         }

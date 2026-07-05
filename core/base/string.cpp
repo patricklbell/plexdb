@@ -5,6 +5,14 @@ module;
 #include <inttypes.h>
 #include <stdlib.h>
 
+#if defined(__has_feature)
+#if __has_feature(undefined_behavior_sanitizer)
+// stb_sprintf's fast path reads/writes through misaligned U32 pointers, which UBSan
+// flags; this opts into its byte-wise fallback instead.
+#define STB_SPRINTF_NOUNALIGNED
+#endif
+#endif
+
 #define STB_SPRINTF_IMPLEMENTATION
 #include "stb_sprintf.h"
 

@@ -244,6 +244,9 @@ namespace plexdb::blob {
         assert_true(new_data_pages.length == new_data_page_count, "data page view matches calculation");
         assert_true(new_header_pages.length == new_header_page_count, "header page view matches calculation");
 
+        // @note data_pages and header_pages share a single allocation rooted at data_pages.ptr
+        os::deallocate(blob.data_pages.ptr);
+
         blob.data_pages   = new_data_pages;
         blob.header_pages = new_header_pages;
     }

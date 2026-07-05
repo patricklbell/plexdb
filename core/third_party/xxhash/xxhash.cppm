@@ -1,5 +1,6 @@
 module;
 #include <stdint.h>
+#include <string.h>
 
 export module xxhash;
 
@@ -185,10 +186,13 @@ private:
 
     /// process a block of 4x4 bytes, this is the main part of the XXHash32 algorithm
     static inline void process(const void* data, uint64_t& state0, uint64_t& state1, uint64_t& state2, uint64_t& state3) {
-        const uint64_t* block = (const uint64_t*)data;
-        state0                = processSingle(state0, block[0]);
-        state1                = processSingle(state1, block[1]);
-        state2                = processSingle(state2, block[2]);
-        state3                = processSingle(state3, block[3]);
+        // @note avoids unaligned cast to u64, compiler fold this into the same load when safe.
+        // @todo fix at call sites?
+        uint64_t block[4];
+        memcpy(block, data, sizeof(block));
+        state0 = processSingle(state0, block[0]);
+        state1 = processSingle(state1, block[1]);
+        state2 = processSingle(state2, block[2]);
+        state3 = processSingle(state3, block[3]);
     }
 };
