@@ -203,7 +203,7 @@ export namespace plexdb::tcp {
             .max_events = U64(in_s->ring.buffer_count) + 2,
             .on_unblock = aio::OnUnblockFunctor{
                 [in_s, in_handler]([[maybe_unused]] const TArrayView<os::PollEvent>& events) mutable -> bool {
-                    auto close_and_cleanup = [in_s](const os::Handle& client, bool is_in_close_handler) {
+                    auto close_and_cleanup = [in_s](os::Handle client, bool is_in_close_handler) {
                         auto it = find_it(in_s->client_to_connection, client);
                         if (it == in_s->client_to_connection.end()) {
                             return false;
@@ -236,27 +236,37 @@ export namespace plexdb::tcp {
                             using T = RemoveCVRef<decltype(ev)>;
                             if constexpr (SameAs<T, uring::ReadEvent>) {
                                 assert_true_not_implemented(ev.error == uring::Error::None, "TCP read error handling not implemented");
-                                BufferInfo& info = in_s->buffer_infos[ev.buffer_idx];
-                                Connection* conn = find(in_s->client_to_connection, info.client);
+                                Connection* conn;
+                                {
+                                    // @note info is only valid up to this lookup: resuming the
+                                    // connection's coroutine below may release the buffer, which
+                                    // clears BufferInfo::client.
+                                    BufferInfo& info = in_s->buffer_infos[ev.buffer_idx];
+                                    conn             = find(in_s->client_to_connection, info.client);
+                                }
                                 assert_true(conn != nullptr, "connection dropped before read completion");
                                 in_s->stats.total_bytes_read += ev.bytes_read;
                                 conn->error_rwc = ev.bytes_read == 0 ? Error::ConnectionClosed : Error::None;
                                 conn->count_rwc = ev.bytes_read;
                                 conn->waiting_rwc.resume();
                                 if (static_cast<bool>(conn->task) && conn->task->done()) {
-                                    close_and_cleanup(info.client, /*is_in_close_handler=*/false);
+                                    close_and_cleanup(conn->client, /*is_in_close_handler=*/false);
                                 }
                             } else if constexpr (SameAs<T, uring::WriteEvent>) {
                                 assert_true_not_implemented(ev.error == uring::Error::None, "TCP write error handling not implemented");
-                                BufferInfo& info = in_s->buffer_infos[ev.buffer_idx];
-                                Connection* conn = find(in_s->client_to_connection, info.client);
+                                Connection* conn;
+                                {
+                                    // @note scope, see above
+                                    BufferInfo& info = in_s->buffer_infos[ev.buffer_idx];
+                                    conn             = find(in_s->client_to_connection, info.client);
+                                }
                                 assert_true(conn != nullptr, "connection dropped before write completion");
                                 in_s->stats.total_bytes_written += ev.bytes_written;
                                 conn->error_rwc = Error::None;
                                 conn->count_rwc = ev.bytes_written;
                                 conn->waiting_rwc.resume();
                                 if (static_cast<bool>(conn->task) && conn->task->done()) {
-                                    close_and_cleanup(info.client, /*is_in_close_handler=*/false);
+                                    close_and_cleanup(conn->client, /*is_in_close_handler=*/false);
                                 }
                             } else if constexpr (Either<T, uring::AcceptEvent, uring::MultishotAcceptEvent>) {
                                 assert_true_not_implemented(ev.error == uring::Error::None, "TCP accept error handling not implemented");
