@@ -373,8 +373,9 @@ namespace cql::native {
 
     template<U8 Version, bool Compressed>
     coroutine::Task<> send_native_frame(Frame& f) {
-        ZoneScopedN("send_native_frame")
-            assert_true(f.body.length <= MAX_U32, "body length too large");
+        ZoneScopedN("send_native_frame");
+
+        assert_true(f.body.length <= MAX_U32, "body length too large");
         U32 body_len = U32(f.body.length);
 
         constexpr U8 resp_flags                                  = (Version >= 5) ? 0x10u : 0x00u;

@@ -93,27 +93,37 @@ export namespace cql::test {
     void append_cql_short_bytes(DynamicArray<U8>& buf, const U8* data, U16 n);
     void append_cql_bytes(DynamicArray<U8>& buf, const U8* data, S32 n);
 
-    // Wrap the buffer with the 9-byte v4 frame header
+    // Wrap the buffer with the 9-byte frame header at the given protocol version.
+    void prepend_frame_header(DynamicArray<U8>& buf, U8 opcode, S16 stream, U8 version);
+    // Convenience for the (still common) v4-only case.
     void prepend_v4_header(DynamicArray<U8>& buf, U8 opcode, S16 stream);
 
     // Construct ready-to-send frames
-    DynamicArray<U8> build_startup(S16 stream = 0);
+    DynamicArray<U8> build_startup(S16 stream = 0, U8 version = 4);
     DynamicArray<U8> build_options(S16 stream = 0);
     DynamicArray<U8> build_query(String8 cql, S16 stream = 0);
     DynamicArray<U8> build_prepare(String8 cql, S16 stream = 0);
 
+    // Version-aware: once handshake() has negotiated protocol 5 on this
+    // thread, these transparently wrap/unwrap the v5 outer frame (CRC24
+    // header, CRC32 payload) around the same v4-style envelope bytes.
+    // STARTUP/OPTIONS never go through this — see send_startup/send_options.
     void  send_frame(Socket& socket, const DynamicArray<U8>& frame);
     Frame recv_frame(Socket& socket);
 
     // Send-then-recv convenience
-    Frame send_startup(Socket& socket, S16 stream = 0);
+    Frame send_startup(Socket& socket, S16 stream = 0, U8 version = 4);
     Frame send_options(Socket& socket, S16 stream = 0);
     Frame send_query(Socket& socket, String8 cql, S16 stream = 0);
     Frame send_prepare(Socket& socket, String8 cql, S16 stream = 0);
 
-    // Perform STARTUP and assert via assert_true that READY is returned. For
-    // tests that do not care about the handshake exchange itself.
-    void handshake(Socket& socket);
+    // Perform STARTUP at the given protocol version and assert via
+    // assert_true that READY is returned. Negotiating version 5 switches
+    // send_frame/recv_frame on this thread to v5 outer-frame wrapping for
+    // the rest of the connection — the same low-level helpers every existing
+    // test already uses, so no test body needs to know which version it's
+    // running under.
+    void handshake(Socket& socket, U8 version = 4);
 
     // ========================================================================
     // frame inspection
@@ -168,19 +178,21 @@ export namespace cql::test {
                 client_fn(client, interrupt); }, [&](auto on_ready, auto& signal_consumer, auto& poll) { native::run(port, engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll); });
     }
 
-    // Handshake variants (perform STARTUP before handing socket to client_fn)
+    // Handshake variants (perform STARTUP before handing socket to client_fn).
+    // `version` selects the negotiated protocol (4 or 5) for the whole
+    // connection; defaults to 4 so existing callers are unaffected.
     template<typename ClientFn>
-    void run_native_server_with_handshake(ServerFixture& f, ClientFn&& client_fn) {
+    void run_native_server_with_handshake(ServerFixture& f, ClientFn&& client_fn, U8 version = 4) {
         run_native_server(f, [&](Socket& client, Notifier& interrupt) {
-            handshake(client);
+            handshake(client, version);
             client_fn(client, interrupt);
         });
     }
 
     template<typename ClientFn>
-    void run_native_server_with_handshake(Engine& engine, U16 port, ClientFn&& client_fn) {
+    void run_native_server_with_handshake(Engine& engine, U16 port, ClientFn&& client_fn, U8 version = 4) {
         run_native_server(engine, port, [&](Socket& client, Notifier& interrupt) {
-            handshake(client);
+            handshake(client, version);
             client_fn(client, interrupt);
         });
     }
