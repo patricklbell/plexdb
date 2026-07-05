@@ -464,6 +464,14 @@ namespace plexdb::pager {
                 data
             );
         }
+
+        // @note a concurrent rpage/rwpage for the same idx may have raced ahead and
+        // inserted its own entry while we awaited disk I/O; reuse it instead of
+        // overwriting, which would free a buffer the racing coroutine still holds.
+        if (auto* entry = find(pager.page_cache, idx)) {
+            os::deallocate(data);
+            co_return entry->data.ptr;
+        }
         insert(pager.page_cache, idx, PageCacheEntry{UniquePtr<U8>{data}, false});
         co_return data;
     }
@@ -497,6 +505,14 @@ namespace plexdb::pager {
                 Rng1U64{.start = offset, .end = offset + pager.header.page_size},
                 data
             );
+        }
+
+        // @note see matching comment in rpage: reuse a racing coroutine's entry
+        // instead of overwriting it out from under that coroutine.
+        if (auto* entry = find(pager.page_cache, idx)) {
+            os::deallocate(data);
+            entry->dirty = true;
+            co_return entry->data.ptr;
         }
         insert(pager.page_cache, idx, PageCacheEntry{UniquePtr<U8>{data}, true});
         co_return data;
