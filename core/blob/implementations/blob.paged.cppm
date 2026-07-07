@@ -60,8 +60,8 @@ export namespace plexdb::blob {
     // preserving offset reads. Disadvantage in that reading offset into large
     // blob requires reading first data page.
     struct BlobDynamicPaged {
-        Pager*               pager;
-        U64                  size_bytes;
+        Pager*               pager      = nullptr;
+        U64                  size_bytes = 0;
         TArrayView<U64, U64> header_pages;
         TArrayView<U64, U64> data_pages;
 

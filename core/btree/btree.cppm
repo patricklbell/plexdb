@@ -24,7 +24,7 @@ export namespace plexdb::btree {
     template<BTree BT, typename T>
     struct Iterator {
         IteratorImpl<BTreeKP<BT>, BTreeVP<BT>> impl;
-        BT*                                    btree;
+        BT*                                    btree   = nullptr;
         bool                                   reverse = false;
 
         Iterator() = default;
