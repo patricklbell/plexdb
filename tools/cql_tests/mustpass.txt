@@ -1,5 +1,5 @@
 # Mustpass list — tests that must pass to prevent regressions.
-# Generated: 2026-06-26
+# Generated: 2026-07-06
 # Regenerate: tools/cql_tests/run.sh -o tools/cql_tests/mustpass.txt
 #
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testAlterCollections
@@ -29,14 +29,20 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_te
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_test.py::testRegularCounters
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/timestamp_test.py::testInsertTimestampWithUnset
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/timestamp_test.py::testNegativeTimestamps
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/timestamp_test.py::testTimestampAndTTLPrepared
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/timestamp_test.py::testTimestampAndTTLUpdatePrepared
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/timestamp_test.py::testTimestampTTL
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/timestamp_test.py::testTimestampsOnUnsetColumns
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/timestamp_test.py::testTimestampsOnUnsetColumnsWide
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/type_test.py::testNonExistingOnes
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/type_test.py::testNowToUUIDCompatibility
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/type_test.py::testReversedTypeCompatibility
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAddList
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAddMap
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAlterDropEmptySSTable
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAlterIndexInterval
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAlterKeyspaceWithMultipleInstancesOfSameDCThrowsSyntaxException
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAlterKeyspaceWithNTSOnlyAcceptsConfiguredDataCenterNames
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAlterKeyspaceWithNoOptionThrowsConfigurationException
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testAlterStatementWithAdd
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/alter_test.py::testChangeStrategyWithUnquotedAgrument

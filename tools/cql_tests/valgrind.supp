@@ -1,0 +1,23 @@
+# Valgrind (memcheck) suppressions for the plexdb CQL server run under the
+# conformance harness. Keep this list minimal — only genuine false positives.
+
+# WAL header padding write.
+#
+# core/pager/pager.wal.cpp writes sizeof(wal::Header) bytes at startup. The struct
+# begins with Array<U8,N> magic / Array<U8,M> version fields followed by U64 members,
+# so the compiler inserts inter-field padding that designated-initialisation does not
+# zero. Persisting that benign padding trips memcheck's io_submit(PWRITE) check. The
+# padding is never read back as data, so this is a false positive.
+#
+# @note This matches any uninitialised io_submit(PWRITE); in practice only the WAL
+# header write has uninitialised (padding) bytes — every other write submits a fully
+# initialised buffer. Genuine data corruption surfaces as uninitialised *read* errors
+# (Conditional jump / Use of uninitialised value), which are NOT suppressed here.
+{
+   wal-header-padding-pwrite
+   Memcheck:Param
+   io_submit(PWRITE)
+   fun:syscall
+   fun:_ZN6plexdb2osL10_io_submitEmlPP4iocb
+   ...
+}

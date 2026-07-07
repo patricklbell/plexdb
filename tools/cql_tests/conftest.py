@@ -279,14 +279,29 @@ class CqlSession:
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
 
+def _connect_active(cql_session, host, port, attempts=60, delay=0.5):
+    """Wait for the server to be CQL-active, not merely listening.
+
+    _wait_for_port only confirms the TCP port is open; the CQL handshake may not
+    be ready yet (notably under slower builds like ASAN), which otherwise makes
+    every test skip. Retry the driver connect until it succeeds or we give up.
+    Returns True on success.
+    """
+    for _ in range(attempts):
+        try:
+            cql_session.connect(host, port)
+            return True
+        except NoHostAvailable:
+            time.sleep(delay)
+    return False
+
+
 @pytest.fixture(scope="session")
 def cql(request, server_manager):
     host = request.config.getoption("--host")
     port = int(request.config.getoption("--port"))
     cql_session = CqlSession()
-    try:
-        cql_session.connect(host, port)
-    except NoHostAvailable:
+    if not _connect_active(cql_session, host, port):
         if server_manager is None:
             pytest.exit(
                 f"Cannot connect to cql at {host}:{port}",
@@ -309,10 +324,8 @@ def cql_test_connection(cql, server_manager, request):
     if not cql.connected:
         if server_manager is None:
             pytest.skip("No connection to server")
-        try:
-            server_manager.restart()
-            cql.connect(host, port)
-        except Exception:
+        server_manager.restart()
+        if not _connect_active(cql, host, port):
             pytest.skip("Cannot connect after server restart")
 
     yield
@@ -324,16 +337,56 @@ def cql_test_connection(cql, server_manager, request):
         cql.disconnect()
         if server_manager is not None:
             print(f"\nServer crashed during {request.node.nodeid}; restarting...")
-            try:
-                server_manager.restart()
-                cql.connect(host, port)
-            except Exception:
-                pass  # next test's pre-test check will retry
+            server_manager.restart()
+            _connect_active(cql, host, port)  # best-effort; next test's pre-test check retries
         else:
             pytest.exit(
                 f"cql crashed during {request.node.nodeid}",
                 returncode=pytest.ExitCode.INTERNAL_ERROR,
             )
+
+
+# Keyspaces owned by the server that must never be dropped between tests.
+_SYSTEM_KEYSPACES = frozenset(
+    {
+        "system",
+        "system_schema",
+        "system_auth",
+        "system_distributed",
+        "system_traces",
+        "system_views",
+        "system_virtual_schema",
+    }
+)
+
+
+def _drop_user_keyspaces(cql):
+    """Drop every non-system keyspace (cascading to its tables/types) so the schema
+    is clean. Best-effort: ignores failures so a wedged server doesn't abort the run."""
+    if not cql.connected:
+        return
+    try:
+        rows = list(cql.execute("SELECT keyspace_name FROM system_schema.keyspaces"))
+    except Exception:
+        return
+    for row in rows:
+        ks = row[0]
+        if ks in _SYSTEM_KEYSPACES:
+            continue
+        try:
+            cql.execute(f"DROP KEYSPACE {ks}")
+        except Exception:
+            pass
+
+
+# Autouse: enforce test independence. The suite shares one session-scoped server, so a
+# keyspace leaked by a prior test — or one whose context-manager cleanup was skipped after
+# a failure/crash — would otherwise bleed into the next test (order-dependent flakiness and
+# unbounded schema growth). Reset to a system-only schema before every test.
+@pytest.fixture(scope="function", autouse=True)
+def reset_shared_state(cql_test_connection, cql):
+    _drop_user_keyspaces(cql)
+    yield
 
 
 @pytest.fixture(scope="session")
@@ -350,7 +403,10 @@ def _unique_ks():
     if _unique_ks.last >= ms:
         ms = _unique_ks.last + 1
     _unique_ks.last = ms
-    return f"cqltest{ms}"
+    # Distinct prefix from the tests' own unique_name() ("cqltest<ms>"): both are millisecond
+    # based with independent counters, so a shared prefix collides when a test uses this fixture
+    # and create_keyspace()/create_table() in the same millisecond → spurious AlreadyExists.
+    return f"ksfixture{ms}"
 
 
 _unique_ks.last = 0

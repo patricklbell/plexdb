@@ -43,7 +43,8 @@ MUSTPASS_FILE=""
 OUTPUT_MUSTPASS=""
 SKIPLIST_FILE="$SCRIPT_DIR/skiplist.txt"
 
-while getopts "b:p:P:r:t:m:o:s:xlL:h" opt; do
+VALGRIND=false
+while getopts "b:p:P:r:t:m:o:s:xlL:Vh" opt; do
     case "$opt" in
         b) BINARY="$OPTARG" ;;
         p) PLUGINS+=("$OPTARG") ;;
@@ -56,6 +57,7 @@ while getopts "b:p:P:r:t:m:o:s:xlL:h" opt; do
         x) PYTEST_EXTRA="$PYTEST_EXTRA -x" ;;
         l) LIST_ONLY=true ;;
         L) LOG_DIR="$OPTARG" ;;
+        V) VALGRIND=true ;;
         h)
             sed -n '2,27p' "$0" | sed 's/^# \?//'
             exit 0
@@ -66,6 +68,46 @@ done
 
 HOST="${CQL_TEST_HOST:-127.0.0.1}"
 PORT="${CQL_TEST_PORT:-$PORT}"
+
+# ── Valgrind (memcheck) ───────────────────────────────────────────────────
+# -V wraps the server in valgrind. The harness restarts the server on a detected
+# crash, so each server process logs to its own vg.<pid>.log; after the run we scan
+# them all and fail if any real error remains (known false positives are suppressed).
+VG_LOG_DIR=""
+if [ "$VALGRIND" = true ]; then
+    command -v valgrind >/dev/null || { echo "error: -V requires valgrind on PATH" >&2; exit 1; }
+    VG_LOG_DIR="$(mktemp -d /tmp/plexdb_cql_vg_XXXXXX)"
+    VG_WRAPPER="$(mktemp /tmp/plexdb_cql_vgwrap_XXXXXX.sh)"
+    cat > "$VG_WRAPPER" <<EOF
+#!/bin/bash
+exec valgrind \\
+    --error-exitcode=0 \\
+    --track-origins=yes \\
+    --num-callers=25 \\
+    --suppressions="$SCRIPT_DIR/valgrind.supp" \\
+    --log-file="$VG_LOG_DIR/vg.%p.log" \\
+    "$BINARY" "\$@"
+EOF
+    chmod +x "$VG_WRAPPER"
+    BINARY="$VG_WRAPPER"
+    echo "Valgrind enabled — server runs under memcheck (logs: $VG_LOG_DIR)"
+fi
+
+# Scan valgrind logs; echoes a summary and returns non-zero if any error remains.
+check_valgrind() {
+    [ "$VALGRIND" = true ] || return 0
+    local errs
+    errs=$(grep -hc 'ERROR SUMMARY: [1-9]' "$VG_LOG_DIR"/vg.*.log 2>/dev/null | awk '{s+=$1} END{print s+0}')
+    if [ "${errs:-0}" -gt 0 ]; then
+        echo ""
+        echo "VALGRIND ERRORS — memcheck reported issues in $errs server process(es):"
+        grep -h -A12 'Invalid read\|Invalid write\|uninitialised\|Mismatched free\|Invalid free' "$VG_LOG_DIR"/vg.*.log 2>/dev/null | head -80
+        return 1
+    fi
+    echo ""
+    echo "Valgrind OK — no memcheck errors."
+    return 0
+}
 
 # ── Fetch ScyllaDB tests ──────────────────────────────────────────────────
 TESTS_DIR="$SCRIPT_DIR/scylla_cql_tests"
@@ -277,7 +319,13 @@ sys.exit(exit_code)
 PYEOF
     MUSTPASS_EXIT=$?
     rm -f "$MUSTPASS_TMP"
+    check_valgrind || MUSTPASS_EXIT=1
     exit $MUSTPASS_EXIT
 else
+    set +e
     run_pytest
+    RC=$?
+    set -e
+    check_valgrind || RC=1
+    exit $RC
 fi

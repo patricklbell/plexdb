@@ -1,0 +1,56 @@
+name: CQL Valgrind
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_filter:
+        description: "pytest -k expression to select tests (empty = all)"
+        required: false
+        default: ""
+      scylla_ref:
+        description: "ScyllaDB git ref for test content (default: master)"
+        required: false
+        default: "master"
+
+jobs:
+  cql-valgrind:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 valgrind
+
+      - name: Configure
+        # Debug (not Release): valgrind needs unoptimised frames for readable stacks
+        # and accurate uninitialised-value origins.
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_SCAN_FOR_MODULES=ON
+
+      - name: Build
+        run: ninja -C build plexdb_cql_server
+
+      - name: Install uv
+        run: |
+          curl -Ls https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Run CQL conformance under valgrind
+        run: |
+          set -o pipefail
+          bash tools/cql_tests/run.sh \
+            -b build/cql/plexdb_cql_server -P 9042 \
+            -r "${{ inputs.scylla_ref || 'master' }}" \
+            -m tools/cql_tests/mustpass.txt \
+            -s tools/cql_tests/skiplist.txt \
+            -V \
+            ${{ inputs.test_filter && format('-t ''{0}''', inputs.test_filter) || '' }} \
+            2>&1 | tee "$RUNNER_TEMP/cql_valgrind_output.txt"
