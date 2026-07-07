@@ -122,8 +122,14 @@ export namespace cql::io {
     void write_default_column_value(Writer w, type::Basic dtype);
     void write_default_column_value(Writer w, const type::Type& cdtype);
 
-    bool can_cast_write_evaluated_as_column_value(const Evaluated& evaluated, const type::Type& cdtype);
+    bool can_cast_write_evaluated_as_column_value(const Evaluated& evaluated, const type::Type& cdtype, const EvalContext& ctx);
     bool can_write_column_value(const ColumnValue& value, const type::Type& cdtype);
+
+    // @todo cover non-basic targets and string/blob->wide-type coercions; caller falls back to the byte path.
+    Optional<ColumnValue> resolve_literal_scalar(const Literal& lit, const type::Type& cdtype);
+
+    // @todo cover tuple/UDT literals; caller falls back to the byte path.
+    Optional<ColumnValue> resolve_evaluated(const Evaluated& eval, const type::Type& cdtype, const EvalContext& ctx);
 
     void write_column_value(Writer w, const ColumnValue& value, const type::Type& cdtype);
     void cast_write_evaluated_as_column_value(Writer w, const Evaluated& evaluated, const type::Type& cdtype, const EvalContext& ctx);

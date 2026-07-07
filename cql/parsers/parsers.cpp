@@ -489,14 +489,14 @@ namespace cql::parsers {
                 auto integer  = dsl::p<integer_literal>;
                 return str | dollar | boolean | null | uuid | flt | duration | integer;
             }();
-            static constexpr auto value = lexy::callback<Constant>(
-                [](AutoString8&& s) -> Constant { return {.value = move(s)}; },
-                [](bool b) -> Constant { return {.value = b}; },
-                [](Null n) -> Constant { return {.value = n}; },
-                [](F64 f) -> Constant { return {.value = f}; },
-                [](S64 i) -> Constant { return {.value = i}; },
-                [](UUID&& u) -> Constant { return {.value = move(u)}; },
-                [](Duration&& d) -> Constant { return {.value = move(d)}; }
+            static constexpr auto value = lexy::callback<Literal>(
+                [](AutoString8&& s) -> Literal { return {.value = move(s)}; },
+                [](bool b) -> Literal { return {.value = b}; },
+                [](Null n) -> Literal { return {.value = n}; },
+                [](F64 f) -> Literal { return {.value = f}; },
+                [](S64 i) -> Literal { return {.value = i}; },
+                [](UUID&& u) -> Literal { return {.value = move(u)}; },
+                [](Duration&& d) -> Literal { return {.value = move(d)}; }
             );
         };
 
@@ -820,7 +820,7 @@ namespace cql::parsers {
         struct constant_term {
             static constexpr auto rule  = dsl::p<constant_value>;
             static constexpr auto value = lexy::callback<Term>(
-                [](Constant&& cv) -> Term { return Term{.value = move(cv)}; }
+                [](Literal&& cv) -> Term { return Term{.value = move(cv)}; }
             );
         };
 
@@ -1217,7 +1217,7 @@ namespace cql::parsers {
             }();
             static constexpr auto value = lexy::callback<OptionPair>(
                 [](AutoString8&& key, MapLiteral&& m) -> OptionPair { return {move(key), move(m)}; },
-                [](AutoString8&& key, Constant&& cv) -> OptionPair { return {move(key), move(cv)}; },
+                [](AutoString8&& key, Literal&& cv) -> OptionPair { return {move(key), move(cv)}; },
                 [](AutoString8&& key, AutoString8&& id) -> OptionPair { return {move(key), move(id)}; }
             );
         };

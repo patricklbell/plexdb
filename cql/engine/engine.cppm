@@ -40,7 +40,8 @@ export namespace cql::engine {
         AutoString8                    keyspace;
         AutoString8                    table;
         DynamicArray<BindVariableSpec> bind_variables;
-        S32                            pk_index = -1;
+        S32                            pk_index       = -1;
+        U64                            schema_version = 0;
     };
 
     // @todo determine what the correct strategy is here

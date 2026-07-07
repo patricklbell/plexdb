@@ -28,9 +28,9 @@ export namespace cql {
     // ========================================================================
     // constants
     // ========================================================================
-    using ConstantTypes = TypeList<AutoString8, S64, bool, F64, Null, UUID, Hex, Blob, Duration, Unset>;
-    struct Constant {
-        ExpandTaggedUnion<ConstantTypes> value;
+    using LiteralTypes = TypeList<AutoString8, S64, bool, F64, Null, UUID, Hex, Blob, Duration, Unset>;
+    struct Literal {
+        ExpandTaggedUnion<LiteralTypes> value;
     };
 
     struct BindMarker {
@@ -42,7 +42,7 @@ export namespace cql {
     // ========================================================================
     struct Term {
         HybridTaggedUnion<
-            TypeList<Constant, BindMarker>,
+            TypeList<Literal, BindMarker>,
             TypeList<
                 MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
                 FunctionCall, ArithmeticOperation, TypeHint, ColumnValue>>
@@ -76,7 +76,7 @@ export namespace cql {
         }
 
         HybridTaggedUnion<
-            TypeList<Constant, BindMarker>,
+            TypeList<Literal, BindMarker>,
             TypeList<
                 MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral,
                 FunctionCall, ArithmeticOperation, TypeHint,
@@ -169,7 +169,7 @@ export namespace cql {
     };
 
     using OptionKey   = AutoString8;
-    using OptionValue = ExpandTaggedUnion<TypeList<AutoString8, Constant, MapLiteral>>;
+    using OptionValue = ExpandTaggedUnion<TypeList<AutoString8, Literal, MapLiteral>>;
     using OptionPair  = Pair<OptionKey, OptionValue>;
     struct Options {
         DynamicArray<OptionPair> identifier_values;

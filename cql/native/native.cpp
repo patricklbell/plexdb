@@ -60,15 +60,15 @@ namespace cql::native {
         return len;
     }
 
-    Constant read_cql_value_as_constant(const U8*& p, const U8* end, type::Basic dtype) {
+    Literal read_cql_value_as_constant(const U8*& p, const U8* end, type::Basic dtype) {
         assert_true(p + 4 <= end, "truncated value length");
         S32 len = read_be_s32(p);
         p += 4;
         if (len == -2) {
-            return Constant{.value = Unset{}};
+            return Literal{.value = Unset{}};
         }
         if (len < 0) {
-            return Constant{.value = Null{}};
+            return Literal{.value = Null{}};
         }
         assert_true(p + len <= end, "value body truncated");
         const U8* val = p;
@@ -78,11 +78,11 @@ namespace cql::native {
             case type::Basic::text:
             case type::Basic::ascii:
             case type::Basic::varchar:
-                return Constant{.value = AutoString8(val, U64(len))};
+                return Literal{.value = AutoString8(val, U64(len))};
             case type::Basic::int_: {
                 assert_true(len == 4, "int value must be 4 bytes");
                 S64 v = S64(S32((U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3])));
-                return Constant{.value = v};
+                return Literal{.value = v};
             }
             case type::Basic::bigint:
             case type::Basic::timestamp:
@@ -90,68 +90,68 @@ namespace cql::native {
             case type::Basic::time: {
                 assert_true(len == 8, "bigint value must be 8 bytes");
                 S64 v = read_be_s64(val);
-                return Constant{.value = v};
+                return Literal{.value = v};
             }
             case type::Basic::smallint: {
                 assert_true(len == 2, "smallint value must be 2 bytes");
                 S64 v = S64(S16((U16(val[0]) << 8) | U16(val[1])));
-                return Constant{.value = v};
+                return Literal{.value = v};
             }
             case type::Basic::double_: {
                 assert_true(len == 8, "double value must be 8 bytes");
                 U64 bits = (U64(val[0]) << 56) | (U64(val[1]) << 48) | (U64(val[2]) << 40) | (U64(val[3]) << 32) | (U64(val[4]) << 24) | (U64(val[5]) << 16) | (U64(val[6]) << 8) | U64(val[7]);
                 F64 d;
                 os::memory_copy(&d, &bits, sizeof(d));
-                return Constant{.value = d};
+                return Literal{.value = d};
             }
             case type::Basic::float_: {
                 assert_true(len == 4, "float value must be 4 bytes");
                 U32 bits = (U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3]);
                 F32 fv;
                 os::memory_copy(&fv, &bits, sizeof(fv));
-                return Constant{.value = F64(fv)};
+                return Literal{.value = F64(fv)};
             }
             case type::Basic::boolean: {
                 assert_true(len == 1, "boolean value must be 1 byte");
-                return Constant{.value = bool(val[0])};
+                return Literal{.value = bool(val[0])};
             }
             case type::Basic::uuid: {
                 assert_true(len == 16, "uuid value must be 16 bytes");
                 UUID uuid{};
                 os::memory_copy(&uuid.value[0], val, 16);
-                return Constant{.value = uuid};
+                return Literal{.value = uuid};
             }
             case type::Basic::timeuuid: {
                 assert_true(len == 16, "timeuuid value must be 16 bytes");
                 UUID uuid{};
                 os::memory_copy(&uuid.value[0], val, 16);
-                return Constant{.value = uuid};
+                return Literal{.value = uuid};
             }
             case type::Basic::tinyint: {
                 S64 v = S64(S8(val[0]));
-                return Constant{.value = v};
+                return Literal{.value = v};
             }
             case type::Basic::date: {
                 assert_true(len == 4, "date value must be 4 bytes");
                 S64 v = S64(read_be_s32(val));
-                return Constant{.value = v};
+                return Literal{.value = v};
             }
             case type::Basic::blob: {
                 Blob b{};
                 resize(b.value, U64(len));
                 os::memory_copy(b.value.ptr, val, U64(len));
-                return Constant{.value = move(b)};
+                return Literal{.value = move(b)};
             }
             case type::Basic::decimal:
             case type::Basic::duration:
             case type::Basic::inet:
             case type::Basic::varint:
             case type::Basic::hex: {
-                return Constant{.value = AutoString8(val, U64(len))};
+                return Literal{.value = AutoString8(val, U64(len))};
             }
             default:
                 assert_not_implemented("CQL value decoding for this basic type is not implemented");
-                return Constant{.value = Null{}};
+                return Literal{.value = Null{}};
         }
     }
 
@@ -165,10 +165,10 @@ namespace cql::native {
                 S32 outer_len = read_be_s32(p);
                 p += 4;
                 if (outer_len == -2) {
-                    return Term{.value = Constant{.value = Unset{}}};
+                    return Term{.value = Literal{.value = Unset{}}};
                 }
                 if (outer_len < 0) {
-                    return Term{.value = Constant{.value = Null{}}};
+                    return Term{.value = Literal{.value = Null{}}};
                 }
                 const U8* coll_end = p + U64(outer_len);
                 assert_true(coll_end <= end, "list bind value body truncated");
@@ -187,10 +187,10 @@ namespace cql::native {
                 S32 outer_len = read_be_s32(p);
                 p += 4;
                 if (outer_len == -2) {
-                    return Term{.value = Constant{.value = Unset{}}};
+                    return Term{.value = Literal{.value = Unset{}}};
                 }
                 if (outer_len < 0) {
-                    return Term{.value = Constant{.value = Null{}}};
+                    return Term{.value = Literal{.value = Null{}}};
                 }
                 const U8* coll_end = p + U64(outer_len);
                 assert_true(coll_end <= end, "set bind value body truncated");
@@ -209,10 +209,10 @@ namespace cql::native {
                 S32 outer_len = read_be_s32(p);
                 p += 4;
                 if (outer_len == -2) {
-                    return Term{.value = Constant{.value = Unset{}}};
+                    return Term{.value = Literal{.value = Unset{}}};
                 }
                 if (outer_len < 0) {
-                    return Term{.value = Constant{.value = Null{}}};
+                    return Term{.value = Literal{.value = Null{}}};
                 }
                 const U8* coll_end = p + U64(outer_len);
                 assert_true(coll_end <= end, "map bind value body truncated");
@@ -234,10 +234,10 @@ namespace cql::native {
                 S32 outer_len = read_be_s32(p);
                 p += 4;
                 if (outer_len == -2) {
-                    return Term{.value = Constant{.value = Unset{}}};
+                    return Term{.value = Literal{.value = Unset{}}};
                 }
                 if (outer_len < 0) {
-                    return Term{.value = Constant{.value = Null{}}};
+                    return Term{.value = Literal{.value = Null{}}};
                 }
                 const U8* tup_end = p + U64(outer_len);
                 assert_true(tup_end <= end, "tuple bind value body truncated");
@@ -249,7 +249,7 @@ namespace cql::native {
                 return Term{.value = move(lit)};
             } else {
                 assert_not_implemented("vector collection type bind parameters are not implemented");
-                return Term{.value = Constant{.value = Null{}}};
+                return Term{.value = Literal{.value = Null{}}};
             }
         });
     }
@@ -296,7 +296,7 @@ namespace cql::native {
 
             if (flags & 0x40u) {
                 for (U64 bi = 0; bi < bind_specs.length; bi++) {
-                    push_back(bound_values, Term{.value = Constant{.value = Null{}}});
+                    push_back(bound_values, Term{.value = Literal{.value = Null{}}});
                 }
                 for (U16 value_idx = 0; value_idx < n_values && p < end; value_idx++) {
                     String8 name          = read_cql_string(p, end);
@@ -556,9 +556,26 @@ namespace cql::native {
         });
     }
 
-    void append_error_body(Frame& f, engine::ExecutionStatus status, String8 message) {
+    void append_error_body(Frame& f, engine::ExecutionStatus status, String8 message, String8 keyspace, String8 table) {
         append_be_s32(f, S32(static_cast<U16>(status)));
         append_cql_string(f, message);
+        // ALREADY_EXISTS (0x2400) carries two extra [string] fields: the keyspace, and the table
+        // (empty for a keyspace-level conflict). Omitting them yields a truncated frame that the
+        // driver cannot decode, which tears down the connection. See CQL native protocol v4 §9.
+        if (status == engine::ExecutionStatus::AlreadyExists) {
+            append_cql_string(f, keyspace);
+            append_cql_string(f, table);
+        }
+    }
+
+    // UNPREPARED (0x2500): [int code][string message][short bytes id]. Distinct from a generic
+    // Invalid so the driver re-prepares the statement (keyed on the returned id) and retries,
+    // instead of surfacing a hard error — this happens routinely after the server's prepared
+    // cache is invalidated (e.g. a schema change bumps the epoch, or the server restarts).
+    void append_unprepared_error(Frame& f, const U8* id, U16 id_len) {
+        append_be_s32(f, 0x2500);
+        append_cql_string(f, "Prepared statement not found");
+        append_cql_short_bytes(f, id, id_len);
     }
 
     void append_result_void(Frame& f) {
@@ -756,7 +773,7 @@ namespace cql::native {
         if (result.status != engine::ExecutionStatus::Success) {
             Frame   frame{.body = {}, .req = req, .op = op_codes::ERROR, .stream = stream};
             String8 msg = result.message.length ? result.message : engine::to_str(result.status);
-            append_error_body(frame, result.status, msg);
+            append_error_body(frame, result.status, msg, String8(result.keyspace), String8(result.table));
             co_await send_native_frame<Version, Compressed>(frame);
             co_return true;
         }
@@ -1058,7 +1075,7 @@ namespace cql::native {
                 auto* entry = engine::try_get_prepared(engine, prepared_id);
                 if (entry == nullptr) {
                     Frame frame{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
-                    append_error_body(frame, engine::ExecutionStatus::Invalid, "Prepared statement not found (unprepared)");
+                    append_unprepared_error(frame, id_data, id_len);
                     co_await send_native_frame<Version, Compressed>(frame);
                     cql::log::db_operation_duration(os::monotonic_us() - t0);
                     break;
@@ -1132,7 +1149,9 @@ namespace cql::native {
                         }
                         auto* entry = engine::try_get_prepared(engine, prepared_id);
                         if (entry == nullptr) {
-                            co_await send_invalid("Prepared statement not found (unprepared)");
+                            Frame ef{.body = {}, .req = &req, .op = op_codes::ERROR, .stream = stream};
+                            append_unprepared_error(ef, id_data, id_len);
+                            co_await send_native_frame<Version, Compressed>(ef);
                             fatal = true;
                             break;
                         }

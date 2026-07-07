@@ -400,20 +400,20 @@ namespace cql::schema {
         // @note Cassandra rejects duplicate keys in the replication map as a SyntaxException.
         for (U64 i = 0; i < map.key_values.length; i++) {
             const auto& ki = map.key_values[i].first;
-            if (!type_matches_tag<Constant>(ki.value)) {
+            if (!type_matches_tag<Literal>(ki.value)) {
                 continue;
             }
-            const auto& kic = get<Constant>(ki.value);
+            const auto& kic = get<Literal>(ki.value);
             if (!type_matches_tag<AutoString8>(kic.value)) {
                 continue;
             }
             const auto& ki_str = get<AutoString8>(kic.value);
             for (U64 j = i + 1; j < map.key_values.length; j++) {
                 const auto& kj = map.key_values[j].first;
-                if (!type_matches_tag<Constant>(kj.value)) {
+                if (!type_matches_tag<Literal>(kj.value)) {
                     continue;
                 }
-                const auto& kjc = get<Constant>(kj.value);
+                const auto& kjc = get<Literal>(kj.value);
                 if (!type_matches_tag<AutoString8>(kjc.value)) {
                     continue;
                 }
@@ -424,20 +424,20 @@ namespace cql::schema {
         }
 
         for (const auto& [key_term, value_term] : map.key_values) {
-            if (!type_matches_tag<Constant>(key_term.value)) {
+            if (!type_matches_tag<Literal>(key_term.value)) {
                 return {Error::InvalidOptions, "replication option key should be a string"};
             }
-            const auto& kc = get<Constant>(key_term.value);
+            const auto& kc = get<Literal>(key_term.value);
             if (!type_matches_tag<AutoString8>(kc.value)) {
                 return {Error::InvalidOptions, "replication option key should be a string"};
             }
             const auto& key = get<AutoString8>(kc.value);
 
             if (key == "class") {
-                if (!type_matches_tag<Constant>(value_term.value)) {
+                if (!type_matches_tag<Literal>(value_term.value)) {
                     return {Error::InvalidOptions, "replication class should be a string"};
                 }
-                const auto& vc = get<Constant>(value_term.value);
+                const auto& vc = get<Literal>(value_term.value);
                 if (!type_matches_tag<AutoString8>(vc.value)) {
                     return {Error::InvalidOptions, "replication class should be a string"};
                 }
@@ -451,10 +451,10 @@ namespace cql::schema {
                     return {Error::InvalidOptions, "unknown replication class"};
                 }
             } else if (key == "replication_factor") {
-                if (!type_matches_tag<Constant>(value_term.value)) {
+                if (!type_matches_tag<Literal>(value_term.value)) {
                     return {Error::InvalidOptions, "replication factor should be an integer"};
                 }
-                const auto& vc    = get<Constant>(value_term.value);
+                const auto& vc    = get<Literal>(value_term.value);
                 S64         value = 0;
                 if (type_matches_tag<S64>(vc.value)) {
                     value = get<S64>(vc.value);
@@ -493,10 +493,10 @@ namespace cql::schema {
                     return {{}, r.error, r.message};
                 }
             } else if (key == "durable_writes") {
-                if (!type_matches_tag<Constant>(value)) {
+                if (!type_matches_tag<Literal>(value)) {
                     return {{}, Error::InvalidOptions, "durable write option should be a boolean"};
                 }
-                const auto& vc = get<Constant>(value);
+                const auto& vc = get<Literal>(value);
                 if (!type_matches_tag<bool>(vc.value)) {
                     return {{}, Error::InvalidOptions, "durable write option should be a boolean"};
                 }
@@ -514,10 +514,10 @@ namespace cql::schema {
 // ============================================================================
 namespace cql::schema {
     static Optional<S32> s32_from_option_value(const OptionValue& v) {
-        if (!type_matches_tag<Constant>(v)) {
+        if (!type_matches_tag<Literal>(v)) {
             return {};
         }
-        const auto& c = get<Constant>(v);
+        const auto& c = get<Literal>(v);
         if (type_matches_tag<S64>(c.value)) {
             return Optional<S32>{static_cast<S32>(get<S64>(c.value))};
         }
@@ -528,10 +528,10 @@ namespace cql::schema {
         return {};
     }
     static Optional<S64> s64_seconds_from_option_value(const OptionValue& v) {
-        if (!type_matches_tag<Constant>(v)) {
+        if (!type_matches_tag<Literal>(v)) {
             return {};
         }
-        const auto& c = get<Constant>(v);
+        const auto& c = get<Literal>(v);
         if (type_matches_tag<S64>(c.value)) {
             return Optional<S64>{get<S64>(c.value)};
         }
@@ -602,6 +602,7 @@ namespace cql::schema {
 // ============================================================================
 namespace cql::schema {
     coroutine::Task<Result<Keyspace*>> create_keyspace(Schema& schema, const CreateKeyspace& create) {
+        bump_version(schema);
         assert_true(read_keyspace(schema, create.name).error == Error::MissingKeyspace, "keyspace already exists");
 
         auto popts = parse_keyspace_options(create.options);
@@ -638,6 +639,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<void>> alter_keyspace(Schema& schema, Keyspace& ks, const Options& opts) {
+        bump_version(schema);
         auto popts = parse_keyspace_options(opts);
         if (popts.error != Error::None) {
             co_return Result<void>{popts.error, popts.message};
@@ -655,6 +657,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<void>> delete_keyspace(Schema& schema, String8 name) {
+        bump_version(schema);
         auto ks_res = read_keyspace(schema, name);
         if (ks_res.error != Error::None) {
             co_return Result<void>{ks_res.error, ks_res.message};
@@ -753,6 +756,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
+        bump_version(schema);
         assert_true(read_table(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
 
         // sanity-check primary key declarations
@@ -956,6 +960,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<void>> delete_table(Schema& schema, Keyspace& ks, String8 name) {
+        bump_version(schema);
         auto tbl_res = read_table(schema, ks, name);
         if (tbl_res.error != Error::None) {
             co_return Result<void>{tbl_res.error, tbl_res.message};
@@ -977,6 +982,7 @@ namespace cql::schema {
 // ============================================================================
 namespace cql::schema {
     coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, String8 name, type::Type type, bool is_static, KeyKind key_kind, U16 key_position, Sort clustering_order) {
+        bump_version(schema);
         assert_true(read_column(schema, tbl, name).error == Error::MissingColumn, "column already exists");
 
         U64           off = schema.columns_blob.size_bytes;
@@ -1015,6 +1021,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<void>> delete_column(Schema& schema, Table& tbl, String8 name) {
+        bump_version(schema);
         auto col_res = read_column(schema, tbl, name);
         if (col_res.error != Error::None) {
             co_return Result<void>{col_res.error, col_res.message};
@@ -1041,6 +1048,7 @@ namespace cql::schema {
 // ============================================================================
 namespace cql::schema {
     coroutine::Task<Result<Index*>> create_index(Schema& schema, Table& tbl, U64 col_idx, String8 index_name, IndexKind kind) {
+        bump_version(schema);
         U64 btree_page = co_await btree::create_paged(
             *schema.indexes_blob.pager,
             btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}
@@ -1078,6 +1086,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<void>> delete_index(Schema& schema, Table& tbl, String8 name) {
+        bump_version(schema);
         auto idx_res = read_index(schema, tbl, name);
         if (idx_res.error != Error::None) {
             co_return Result<void>{idx_res.error, idx_res.message};
@@ -1163,6 +1172,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<type::UDT*>> create_udt(Schema& schema, Keyspace& ks, String8 name, DynamicArray<AutoString8>&& field_names, DynamicArray<type::Type>&& field_types) {
+        bump_version(schema);
         if (read_udt(schema, ks, name).error == Error::None) {
             co_return Result<type::UDT*>{nullptr, Error::InvalidOptions, "type already exists"};
         }
@@ -1203,6 +1213,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<void>> alter_udt_add_field(Schema& schema, Keyspace& ks, String8 name, AutoString8 field_name, type::Type field_type) {
+        bump_version(schema);
         auto udt_res = read_udt(schema, ks, name);
         if (udt_res.error != Error::None) {
             co_return Result<void>{Error::MissingType, "user-defined type does not exist"};
@@ -1267,6 +1278,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<void>> alter_udt_rename_fields(Schema& schema, Keyspace& ks, String8 name, const DynamicArray<Pair<ColumnName, ColumnName>>& renames) {
+        bump_version(schema);
         auto udt_res = read_udt(schema, ks, name);
         if (udt_res.error != Error::None) {
             co_return Result<void>{Error::MissingType, "user-defined type does not exist"};
@@ -1301,6 +1313,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<void>> delete_udt(Schema& schema, Keyspace& ks, String8 name) {
+        bump_version(schema);
         auto udt_res = read_udt(schema, ks, name);
         if (udt_res.error != Error::None) {
             co_return Result<void>{Error::MissingType, "user-defined type does not exist"};

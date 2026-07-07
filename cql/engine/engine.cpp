@@ -366,26 +366,16 @@ namespace cql::engine {
     static coroutine::Task<ColumnValue> materialize_as_column_value(
         const Evaluated& eval, const type::Type& cdtype, const EvalContext& ctx
     ) {
-        if (type_matches_tag<ColumnValue>(eval.value)) {
-            co_return get<ColumnValue>(eval.value);
-        }
-        DynamicArray<U8> tmp;
-        auto             w_fn = create_sync_buffer_writer(tmp);
-        io::cast_write_evaluated_as_column_value(io::to_writer(w_fn), eval, cdtype, ctx);
-        U64  off  = 0;
-        auto r_fn = [&tmp, &off](U8* dst, U64 sz) -> coroutine::Task<void> {
-            if (dst) {
-                os::memory_copy(dst, tmp.ptr + off, sz);
-            }
-            off += sz;
-            co_return;
-        };
-        co_return co_await io::read_column_value(io::to_reader(r_fn), cdtype);
+        // Direct Evaluated -> ColumnValue (coercion spec §4, §5); no serialize/deserialize round-trip.
+        // resolve_evaluated is total over every arm that passes can_cast_write.
+        Optional<ColumnValue> direct = io::resolve_evaluated(eval, cdtype, ctx);
+        assert_true(direct.has_value(), "resolve_evaluated failed for a writable value");
+        co_return move(*direct);
     }
 
     static bool eval_is_null(const Evaluated& eval) {
-        if (type_matches_tag<Constant>(eval.value)) {
-            return type_matches_tag<Null>(get<Constant>(eval.value).value);
+        if (type_matches_tag<Literal>(eval.value)) {
+            return type_matches_tag<Null>(get<Literal>(eval.value).value);
         }
         if (type_matches_tag<ColumnValue>(eval.value)) {
             return type_matches_tag<Null>(get<ColumnValue>(eval.value));
@@ -394,19 +384,19 @@ namespace cql::engine {
     }
 
     static bool eval_is_unset(const Evaluated& eval) {
-        return type_matches_tag<Constant>(eval.value) && type_matches_tag<Unset>(get<Constant>(eval.value).value);
+        return type_matches_tag<Literal>(eval.value) && type_matches_tag<Unset>(get<Literal>(eval.value).value);
     }
 
     static S64 evaluated_to_s64(const Evaluated& eval) {
         return visit(eval.value, [](const auto& top) -> S64 {
             using T = RemoveCVRef<decltype(top)>;
-            if constexpr (SameAs<T, Constant>) {
+            if constexpr (SameAs<T, Literal>) {
                 return visit(top.value, [](const auto& c) -> S64 {
                     using C = RemoveCVRef<decltype(c)>;
                     if constexpr (SameAs<C, S64>) {
                         return c;
                     } else {
-                        assert_not_implemented("evaluated_to_s64: non-integer Constant");
+                        assert_not_implemented("evaluated_to_s64: non-integer Literal");
                         return 0;
                     }
                 });
@@ -743,7 +733,7 @@ namespace cql::engine {
                 eval = get<Evaluated>(upd.new_value);
             }
             // UNSET → column unchanged (Cassandra semantics for both counter and non-counter).
-            if (type_matches_tag<Constant>(eval.value) && type_matches_tag<Unset>(get<Constant>(eval.value).value)) {
+            if (type_matches_tag<Literal>(eval.value) && type_matches_tag<Unset>(get<Literal>(eval.value).value)) {
                 continue;
             }
             if (type_matches_tag<ColumnValue>(eval.value)) {
@@ -756,10 +746,10 @@ namespace cql::engine {
                     col_values[idx]  = cv;
                     touch_cell(idx);
                 }
-            } else if (type_matches_tag<Constant>(eval.value) && type_matches_tag<Null>(get<Constant>(eval.value).value)) {
+            } else if (type_matches_tag<Literal>(eval.value) && type_matches_tag<Null>(get<Literal>(eval.value).value)) {
                 col_present[idx] = false;
                 touch_cell(idx);
-            } else if (io::can_cast_write_evaluated_as_column_value(eval, tbl->cols[idx].type)) {
+            } else if (io::can_cast_write_evaluated_as_column_value(eval, tbl->cols[idx].type, ctx)) {
                 col_present[idx] = true;
                 col_values[idx]  = co_await materialize_as_column_value(eval, tbl->cols[idx].type, ctx);
                 touch_cell(idx);
@@ -1201,10 +1191,10 @@ namespace cql::engine {
                             return true;
                         }
                         Evaluated eval = evaluate(r.value, ctx);
-                        if (!type_matches_tag<Constant>(eval.value)) {
+                        if (!type_matches_tag<Literal>(eval.value)) {
                             return true;
                         }
-                        const auto& con = get<Constant>(eval.value);
+                        const auto& con = get<Literal>(eval.value);
                         if (col_idx >= row.values.length) {
                             return false;
                         }
@@ -1898,16 +1888,16 @@ namespace cql::engine {
 
     // Convert a registry-result Evaluated into a ColumnValue narrowed to the
     // declared SELECT-projection return type. The registry returns Evaluated
-    // values whose inner Constant uses S64/F64/etc.; the projection frame
+    // values whose inner Literal uses S64/F64/etc.; the projection frame
     // expects S32/S16/F32 for the corresponding narrower CQL types.
     static ColumnValue narrow_evaluated(const Evaluated& e, type::Basic target) {
         if (type_matches_tag<ColumnValue>(e.value)) {
             return get<ColumnValue>(e.value);
         }
-        if (!type_matches_tag<Constant>(e.value)) {
+        if (!type_matches_tag<Literal>(e.value)) {
             return ColumnValue{Null{}};
         }
-        return visit(get<Constant>(e.value).value, [&](const auto& v) -> ColumnValue {
+        return visit(get<Literal>(e.value).value, [&](const auto& v) -> ColumnValue {
             using T = Decay<decltype(v)>;
             if constexpr (SameAs<T, Null> || SameAs<T, Unset>) {
                 return ColumnValue{Null{}};
@@ -1975,10 +1965,10 @@ namespace cql::engine {
                             if (ci < present.length && present[ci]) {
                                 push_back(args, Evaluated{cv[ci]});
                             } else {
-                                push_back(args, Evaluated{Constant{Null{}}});
+                                push_back(args, Evaluated{Literal{Null{}}});
                             }
                         } else {
-                            push_back(args, Evaluated{get<Constant>(a.value)});
+                            push_back(args, Evaluated{get<Literal>(a.value)});
                         }
                     }
                     EvalContext rc = base_ctx;
@@ -2713,10 +2703,10 @@ namespace cql::engine {
                     const auto& m               = get<MapLiteral>(opt.second);
                     U64         non_class_count = 0;
                     for (const auto& [kt, vt] : m.key_values) {
-                        if (!type_matches_tag<Constant>(kt.value)) {
+                        if (!type_matches_tag<Literal>(kt.value)) {
                             continue;
                         }
-                        const auto& kc = get<Constant>(kt.value);
+                        const auto& kc = get<Literal>(kt.value);
                         if (!type_matches_tag<AutoString8>(kc.value)) {
                             continue;
                         }
@@ -2879,8 +2869,12 @@ namespace cql::engine {
                 if (stmt.transform && *stmt.transform == Select::Transform::JSON) {
                     co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "SELECT JSON is not supported"};
                 }
-                assert_true_not_implemented(!stmt.group_by, "GROUP BY is not implemented");
-                assert_true_not_implemented(!stmt.per_partition_limit.value, "PER PARTITION LIMIT is not implemented");
+                if (stmt.group_by) {
+                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "GROUP BY is not supported"};
+                }
+                if (stmt.per_partition_limit.value) {
+                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "PER PARTITION LIMIT is not supported"};
+                }
 
                 U64 limit_count = MAX_U64;
                 if (type_matches_tag<S64>(stmt.limit.value)) {
@@ -3050,7 +3044,7 @@ namespace cql::engine {
                                     }
                                     continue;
                                 }
-                                if (!io::can_cast_write_evaluated_as_column_value(eval, col.type)) {
+                                if (!io::can_cast_write_evaluated_as_column_value(eval, col.type, ctx)) {
                                     co_return create_insert_incompatible_literal(ks->name, tbl->name);
                                 }
                             }
@@ -3118,7 +3112,7 @@ namespace cql::engine {
                             if (eval_is_null(eval)) {
                                 return false;
                             }
-                            if (type_matches_tag<Constant>(eval.value) && type_matches_tag<Unset>(get<Constant>(eval.value).value)) {
+                            if (type_matches_tag<Literal>(eval.value) && type_matches_tag<Unset>(get<Literal>(eval.value).value)) {
                                 return false;
                             }
                             return true;
@@ -4298,8 +4292,8 @@ namespace cql::engine {
                 continue;
             }
             const auto& b = bv[idx++];
-            if (type_matches_tag<Constant>(b.value)) {
-                const auto& c = get<Constant>(b.value);
+            if (type_matches_tag<Literal>(b.value)) {
+                const auto& c = get<Literal>(b.value);
                 if (type_matches_tag<S64>(c.value)) {
                     params[i].value = get<S64>(c.value);
                 } else if (type_matches_tag<Unset>(c.value) || type_matches_tag<Null>(c.value)) {
@@ -4408,8 +4402,8 @@ namespace cql::engine {
                 if (type_matches_tag<BindMarker>(s.limit.value)) {
                     if (idx < bound_values.length) {
                         const auto& bv = bound_values[idx++];
-                        if (type_matches_tag<Constant>(bv.value)) {
-                            const auto& c = get<Constant>(bv.value);
+                        if (type_matches_tag<Literal>(bv.value)) {
+                            const auto& c = get<Literal>(bv.value);
                             if (type_matches_tag<S64>(c.value)) {
                                 s.limit.value = get<S64>(c.value);
                             }
@@ -4443,7 +4437,7 @@ namespace cql::engine {
         U64 query_hash = hash(query);
 
         auto* existing = find(engine.prepared_cache, query_hash);
-        if (existing != nullptr) {
+        if (existing != nullptr && existing->schema_version == engine.schema.version) {
             return {.status = ExecutionStatus::Success, .id = query_hash, .entry = existing};
         }
 
@@ -4455,9 +4449,12 @@ namespace cql::engine {
             return r;
         }
 
-        auto& entry          = insert(engine.prepared_cache, query_hash);
+        // Fresh entry, or a stale one (schema changed since it was derived) refreshed in place.
+        auto& entry          = (existing != nullptr) ? *existing : insert(engine.prepared_cache, query_hash);
         entry.query_string   = AutoString8(query);
         entry.bind_variables = collect_bind_variables_with_keyspace(engine, *pr.statement, current_keyspace);
+        entry.pk_index       = -1;
+        entry.schema_version = engine.schema.version;
 
         visit(pr.statement->value, [&, current_keyspace](const auto& stmt) {
             using T = RemoveCVRef<decltype(stmt)>;

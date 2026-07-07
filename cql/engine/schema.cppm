@@ -301,8 +301,15 @@ export namespace cql::schema {
         blob::BlobDynamicPaged udts_blob;
         blob::BlobDynamicPaged indexes_blob;
 
+        // @note in-memory schema epoch: monotonic counter bumped on every DDL mutation.
+        U64 version = 0;
+
         Schema() = default;
     };
+
+    inline void bump_version(Schema& schema) {
+        schema.version++;
+    }
 
     coroutine::Task<>    load(Schema& schema, Pager* in_pager, U64 page);
     coroutine::Task<U64> create_schema(Pager& pager);

@@ -130,8 +130,8 @@ namespace cql::planner {
     }
 
     static bool is_null_eval(const Evaluated& eval) {
-        if (type_matches_tag<Constant>(eval.value)) {
-            return type_matches_tag<Null>(get<Constant>(eval.value).value);
+        if (type_matches_tag<Literal>(eval.value)) {
+            return type_matches_tag<Null>(get<Literal>(eval.value).value);
         }
         if (type_matches_tag<ColumnValue>(eval.value)) {
             return type_matches_tag<Null>(get<ColumnValue>(eval.value));
@@ -239,7 +239,7 @@ namespace cql::planner {
     }
 
     static bool term_is_literal_null(const Term& t) {
-        return type_matches_tag<Constant>(t.value) && type_matches_tag<Null>(get<Constant>(t.value).value);
+        return type_matches_tag<Literal>(t.value) && type_matches_tag<Null>(get<Literal>(t.value).value);
     }
 
     // @note Unset is only meaningful in INSERT/UPDATE assignment positions, where it
@@ -249,12 +249,12 @@ namespace cql::planner {
     static bool term_contains_unset_binding(const Term& term, const EvalContext& ctx) {
         return visit(term.value, [&](const auto& v) -> bool {
             using T = RemoveCVRef<decltype(v)>;
-            if constexpr (SameAs<T, BindMarker> || SameAs<T, Constant>) {
+            if constexpr (SameAs<T, BindMarker> || SameAs<T, Literal>) {
                 Evaluated e = evaluate(term, ctx);
-                if (!type_matches_tag<Constant>(e.value)) {
+                if (!type_matches_tag<Literal>(e.value)) {
                     return false;
                 }
-                return type_matches_tag<Unset>(get<Constant>(e.value).value);
+                return type_matches_tag<Unset>(get<Literal>(e.value).value);
             } else if constexpr (SameAs<T, ListOrVectorLiteral> || SameAs<T, TupleLiteral>) {
                 for (const auto& e : v.elements) {
                     if (term_contains_unset_binding(e, ctx)) {
@@ -1384,12 +1384,12 @@ namespace cql::planner {
                                 return false;
                             } else if constexpr (SameAs<AT, Term>) {
                                 Evaluated e = evaluate(av, ctx);
-                                if (!type_matches_tag<Constant>(e.value)) {
+                                if (!type_matches_tag<Literal>(e.value)) {
                                     plan.result.error   = PlanError::ColumnNotFound;
                                     plan.result.context = AutoString8("Function argument must be a column reference or a constant");
                                     return false;
                                 }
-                                fca.value = get<Constant>(e.value);
+                                fca.value = get<Literal>(e.value);
                                 return true;
                             } else {
                                 plan.result.error   = PlanError::ColumnNotFound;
@@ -1654,12 +1654,12 @@ namespace cql::planner {
                 patch.op    = CollectionPatch::Op::SubscriptSet;
                 patch.key   = evaluate(sub_term.index, ctx);
                 patch.value = evaluate(assign.value, ctx);
-                if (type_matches_tag<Constant>(patch.key.value) && type_matches_tag<Unset>(get<Constant>(patch.key.value).value)) {
+                if (type_matches_tag<Literal>(patch.key.value) && type_matches_tag<Unset>(get<Literal>(patch.key.value).value)) {
                     plan.result.error   = PlanError::UnsetSubscriptValue;
                     plan.result.context = AutoString8(col_name);
                     return plan;
                 }
-                if (type_matches_tag<Constant>(patch.value.value) && type_matches_tag<Unset>(get<Constant>(patch.value.value).value)) {
+                if (type_matches_tag<Literal>(patch.value.value) && type_matches_tag<Unset>(get<Literal>(patch.value.value).value)) {
                     continue;
                 }
                 if (!col.is_static) {
@@ -1698,13 +1698,13 @@ namespace cql::planner {
                     return plan;
                 }
                 patch.value = evaluate(*cf->other, ctx);
-                if (type_matches_tag<Constant>(patch.value.value) && type_matches_tag<Unset>(get<Constant>(patch.value.value).value)) {
+                if (type_matches_tag<Literal>(patch.value.value) && type_matches_tag<Unset>(get<Literal>(patch.value.value).value)) {
                     continue;
                 }
                 // @note `Map - X` expects `set<map.key>` on the RHS; all other compound forms take the column's own type.
                 bool rhs_ok = (is_map && patch.op == CollectionPatch::Op::Subtract)
-                                ? io::can_cast_write_evaluated_as_column_value(patch.value, type::create_set(get<type::Map>(col.type.value).key))
-                                : io::can_cast_write_evaluated_as_column_value(patch.value, col.type);
+                                ? io::can_cast_write_evaluated_as_column_value(patch.value, type::create_set(get<type::Map>(col.type.value).key), ctx)
+                                : io::can_cast_write_evaluated_as_column_value(patch.value, col.type, ctx);
                 if (!rhs_ok) {
                     plan.result.error   = PlanError::InvalidCollectionMutation;
                     plan.result.context = AutoString8("Incompatible right-hand side collection for ") + col_name;
@@ -1855,7 +1855,7 @@ namespace cql::planner {
                     CollectionPatch patch;
                     patch.op  = CollectionPatch::Op::SubscriptDelete;
                     patch.key = evaluate(sub_term.index, ctx);
-                    if (type_matches_tag<Constant>(patch.key.value) && type_matches_tag<Unset>(get<Constant>(patch.key.value).value)) {
+                    if (type_matches_tag<Literal>(patch.key.value) && type_matches_tag<Unset>(get<Literal>(patch.key.value).value)) {
                         // @note Cassandra rejects UNSET map key but silently no-ops UNSET list index.
                         if (type_matches_tag<type::List>(col.type.value)) {
                             continue;
@@ -1867,7 +1867,7 @@ namespace cql::planner {
                     push_back(plan.spec.updates, ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});
                     continue;
                 }
-                push_back(plan.spec.updates, ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{Evaluated{Constant{Null{}}}}});
+                push_back(plan.spec.updates, ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{Evaluated{Literal{Null{}}}}});
             }
 
             if (is_static_only && ck_specified) {

@@ -27,7 +27,7 @@ deleted, not by dependency order.
 | # | Redesign | LOC delta (est.) | Retires |
 |---|----------|-----------------:|---------|
 | R1 | AST → typed physical plan tree; walker replaces the 116-arm executor | −3 000 (net) | §H2, §H4, §H14, 116 `SameAs<T,X>` arms + `SelectOp`/`FilterPlan`/`MutationPlan` variants |
-| R2 | Consolidate the five value shapes into `Value`; keep the layout flexible | −1 200 | §H2 (empty-union asserts), §H12 |
+| R2 | **Done** — value shapes consolidated into `Literal`/`Value`; coercion behaviour in the [coercion spec](cql-type-coercion-spec.md) | −1 200 | §H2 (empty-union asserts), §H12 |
 | R3 | Type dispatch via existing `visit()`; delete redundant `switch(type::Basic)` | −900 | §H8, §H10 (compile-time), §H14 (testMapBulkRemoval), and 350+ scattered `switch(type::Basic)` |
 | R4 | Arena-backed coroutine promise allocator; keep coroutines pervasive | −0, huge alloc reduction | promise-frame heap pressure on every request |
 | R5 | Native protocol as a declarative message spec, generated code committed | −1 400 | §H1 (partial), §H7 (structurally impossible), §H10 (declarative) |
@@ -129,78 +129,59 @@ localised tree rewrites.
 
 ---
 
-### R2 — Consolidate value shapes into `Value`; keep the layout flexible
+### R2 — Consolidate value shapes into `Literal`/`Value` — **done**
 
-**Problem shape.** Five representations of a value coexist:
-- `Constant` — literal from the AST
-- AST literal types (`MapLiteral`, `SetLiteral`, etc.) — pre-evaluation collection shapes
-- `ColumnValue` + `NestedColumnValue` — engine-side row values with recursive collections
-- `Evaluated` — a variant holding *any of the above* — used only at the AST/engine boundary
-- Raw wire bytes — used in a few native-layer fast paths
+**Problem shape.** Five representations of a value coexisted — `Constant`
+(AST literal), the AST collection literals (`MapLiteral`/`SetLiteral`/…),
+`ColumnValue` + `NestedColumnValue` (engine-side row values), `Evaluated`
+(a variant over all of the above), and raw wire bytes. Every crossing was a
+switch; several SIGABRT'd (`evaluated_to_s64`, `column_value.cppm` hash/eq),
+and the default-constructed empty `TaggedUnion` SIGABRT'd (§H12). Worst of
+all, `materialize_as_column_value` converted `Evaluated → ColumnValue` by
+*serializing to a temp buffer and deserializing it back* — a full wire
+round-trip per value on the INSERT/UPDATE hot path.
 
-Every crossing is a switch, and several crossings SIGABRT
-(`evaluated_to_s64` at `engine.cpp:409, 425, 430`;
-`column_value.cppm:38, 60`). The default-constructed empty `TaggedUnion`
-also SIGABRTs (§H12), guarded by ad-hoc `Null{}` fills at two call sites.
+**What landed.** The redesign settled on **two** types, not one, because the
+shapes serve two genuinely different roles:
 
-**Redesign.** One value type used by the plan walker, expression evaluator,
-and mutation apply path. The internal layout is deliberately *not* pinned to
-"bytes + type" — some operations (collation-aware comparison,
-collection-element equality, decimal arithmetic) need typed access. The
-value type owns whichever layout serves those best; consumers only see:
+- `Literal` (was `Constant`) — parse-time, width-unresolved; owns `bool`/`Hex`/
+  `Unset` and S64-for-all-ints. Lives only in the AST/expression layer.
+- `Value` (was `ColumnValue` + `NestedColumnValue`) — resolved, width-correct,
+  storage/wire/key shape; recursive collections with `visit()`-based hash/eq
+  (the two `assert_not_implemented`s deleted).
 
-```
-Value = tagged variant over kinds:
-    Null | Unset
-    Bool | I8 | I16 | I32 | I64 | F32 | F64
-    Bytes                                    (blob, ascii/text/varchar,
-                                              inet, varint, decimal,
-                                              duration, hex)
-    Uuid | Timestamp
-    List | Set | Map | Tuple | Udt
+The single crossing is `resolve(Literal | expr, type::Type) -> Value`, now
+total over scalars, list/set/map/vector, tuple, and UDT — which **deleted the
+serialize/deserialize round-trip** (`materialize` is now `resolve` + assert).
+The unreachable string→inet/varint/… io write arms were removed, making the
+write and read encoders symmetric by construction.
 
-  payload storage:
-    - scalars inline
-    - large blobs and collections reference the per-request arena (R6)
-    - consumers use accessors (as_i64, as_bytes, visit) and never
-      inspect the payload representation directly
-```
+`Evaluated` is **retained as a thin wrapper** (a type-safe marker that
+pre-calculation ran), not deleted: its collection-literal arms are the
+deferred-resolution mechanism, and collapsing them fully belongs to R1's typed
+expression tree. The parent-plan idea of a single `Value` with a `Bytes`
+kind was dropped — folding `Literal` into `Value` would drag `Unset`/`Hex`/
+unresolved-width variants into every storage consumer, re-introducing the
+empty-arm asserts R2 exists to remove.
 
-`Bytes` covers every "opaque byte sequence" type (blob, ascii/text/varchar,
-inet, varint, decimal, duration, hex). The value carries bytes; the column
-type describes how to interpret them at boundaries where interpretation
-matters (comparators, wire encoding, string formatters). This mirrors
-Cassandra's `AbstractType` split.
+**Also landed (adjacent).** Schema epoch — `Schema.version` bumped on every DDL
+mutation, and `PreparedEntry.schema_version` re-derives a stale prepared entry
+instead of serving stale bind metadata. This makes "evaluate time" a
+schema-stable cache boundary.
 
-Every operation takes and returns `Value`. AST literals produce `Value` at
-parse time (a `MapLiteral` in the source is a `Value{Kind::Map, ...}`
-constant in the plan-tree arena). The plan walker (R1) operates on
-`Value[]`.
+**Remaining → coercion spec.** `resolve` currently reproduces the pre-R2
+coercion (string→text only, raw S64/F64 arithmetic). The full coercion
+behaviour — assignability matrix, numeric precision model with the
+`PLEXDB_CQL_WRAP_ON_OVERFLOW` flag, temporal arithmetic, and string-parse
+coercions — is specified in the
+[type-coercion spec](cql-type-coercion-spec.md) and implemented incrementally
+against the conformance gate.
 
-**Flexibility guarantee.** The `Value` type may later split into
-`ColumnValue` (row storage) and `EvalValue` (expression evaluation) if a
-future workload proves it worthwhile — for instance, if a computed
-aggregation benefits from typed rather than boxed representation. What is
-deleted now is the *redundant* triple `Constant`/`Evaluated`/`ColumnValue`
-which today only crosses back and forth without semantic value. R2 removes
-the crossings; it does not commit to a single layout forever.
-
-**Deletes.**
-- `Evaluated` + all callers (~500 LOC across `evaluator.cpp` and `engine.cpp`).
-- `ColumnValue` + `NestedColumnValue` (~200 LOC).
-- The AST literal variants collapse to a single `LiteralValue` node holding a `Value`.
-- §H12's two `Null{}`-fill guards.
-
-**Invariants.**
-- `Value{}` is `Null` by construction. `visit(Value)` is total.
-- No `Value` constructor or accessor triggers `assert_not_implemented`. A
-  missing `Kind` in a visitor is a compile error (`-Werror=switch-enum`).
-- Payload heap ownership is external: `Value` never allocates. Large payloads
-  reference the per-request arena (R6).
-
-**Verification.** `Value` invariants are `constexpr`-checkable in tests:
-default construction, size, alignment. Every existing `column_value.test.cpp`
-case runs unchanged against the unified type.
+**Invariants (met).** `Value{}` is `Null`; `visit(Value)` is total; no `Value`
+accessor reaches `assert_not_implemented`; the storage `Value` visitor is total
+by construction (only storable kinds exist, because `Literal` stays separate).
+Byte-equivalence of `resolve` vs the old round-trip is covered by a unit test;
+totality was proven by a full conformance run with no assert-fire.
 
 ---
 

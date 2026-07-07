@@ -275,8 +275,8 @@ namespace cql::native {
     // Read [short bytes]: [short] n + n bytes, returns length and sets out_data
     U16 read_cql_short_bytes(const U8*& p, const U8* end, const U8*& out_data);
 
-    Constant read_cql_value_as_constant(const U8*& p, const U8* end, type::Basic dtype);
-    Term     read_cql_value_as_term(const U8*& p, const U8* end, const type::Type& dtype);
+    Literal read_cql_value_as_constant(const U8*& p, const U8* end, type::Basic dtype);
+    Term    read_cql_value_as_term(const U8*& p, const U8* end, const type::Type& dtype);
 
     // Acquire a TCP buffer, read data into it, append to buf, then release.
     coroutine::Task<bool> try_append_tcp_read(const tcp::Request& req, DynamicArray<U8>& buf);
@@ -400,7 +400,8 @@ namespace cql::native {
     }
 
     void                 append_type_codes_option(Frame& f, type::Type cdtype);
-    void                 append_error_body(Frame& f, engine::ExecutionStatus status, String8 message);
+    void                 append_error_body(Frame& f, engine::ExecutionStatus status, String8 message, String8 keyspace = "", String8 table = "");
+    void                 append_unprepared_error(Frame& f, const U8* id, U16 id_len);
     void                 append_result_void(Frame& f);
     void                 append_result_set_keyspace(Frame& f, String8 keyspace);
     void                 append_result_schema_change(Frame& f, String8 change_type, String8 target, String8 keyspace, String8 table);
@@ -635,7 +636,9 @@ namespace cql::native {
                 co_await frame_handler<Version, Compressed>(engine, req, frame.ptr, &frame.ptr[V4_FRAME_HEADER_BYTE_COUNT], body_byte_count, conn_keyspace);
 
                 if (frame.length > frame_byte_count) {
-                    os::memory_copy(frame.ptr, &frame.ptr[frame_byte_count], frame.length - frame_byte_count);
+                    // Source and destination overlap when more than one frame is buffered
+                    // (pipelined requests), so this must be memmove, not memcpy.
+                    os::memory_move(frame.ptr, &frame.ptr[frame_byte_count], frame.length - frame_byte_count);
                 }
                 resize(frame, frame.length - frame_byte_count);
             }

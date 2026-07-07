@@ -105,8 +105,8 @@ namespace cql::key {
     }
 
     static S64 eval_as_s64(const Evaluated& eval) {
-        if (type_matches_tag<Constant>(eval.value)) {
-            const auto& cv = get<Constant>(eval.value).value;
+        if (type_matches_tag<Literal>(eval.value)) {
+            const auto& cv = get<Literal>(eval.value).value;
             if (type_matches_tag<S64>(cv)) {
                 return get<S64>(cv);
             }
@@ -138,14 +138,14 @@ namespace cql::key {
         return 0;
     }
     static bool eval_as_bool(const Evaluated& eval) {
-        if (type_matches_tag<Constant>(eval.value)) {
-            return get<bool>(get<Constant>(eval.value).value);
+        if (type_matches_tag<Literal>(eval.value)) {
+            return get<bool>(get<Literal>(eval.value).value);
         }
         return get<U8>(get<ColumnValue>(eval.value)) != 0;
     }
     static F64 eval_as_f64(const Evaluated& eval) {
-        if (type_matches_tag<Constant>(eval.value)) {
-            return get<F64>(get<Constant>(eval.value).value);
+        if (type_matches_tag<Literal>(eval.value)) {
+            return get<F64>(get<Literal>(eval.value).value);
         }
         const ColumnValue& cv = get<ColumnValue>(eval.value);
         if (type_matches_tag<F64>(cv)) {
@@ -162,8 +162,8 @@ namespace cql::key {
     // for fixed-width components the length is constant and inverting it would not change
     // any pair's relative order.
     static void append_component(DynamicArray<U8>& out, const Evaluated& eval, type::Basic dtype, bool is_composite, Sort direction = Sort::ASC) {
-        const Constant& c           = get<Constant>(eval.value);
-        U64             value_start = out.length;
+        const Literal& c           = get<Literal>(eval.value);
+        U64            value_start = out.length;
         switch (dtype) {
             case type::Basic::bigint:
             case type::Basic::timestamp:
@@ -506,10 +506,10 @@ namespace cql::key {
         return dtype == type::Basic::text || dtype == type::Basic::varchar || dtype == type::Basic::ascii || dtype == type::Basic::blob || dtype == type::Basic::hex;
     }
 
-    // @note append_component encodes from Constant, so widen ColumnValue's narrow
-    // numeric representations (S16, S32, S8, F32, U8-as-bool) into the matching Constant types.
+    // @note append_component encodes from Literal, so widen ColumnValue's narrow
+    // numeric representations (S16, S32, S8, F32, U8-as-bool) into the matching Literal types.
     static Evaluated cv_to_const_eval(const ColumnValue& cv, type::Basic dtype) {
-        Constant c{};
+        Literal c{};
         switch (dtype) {
             case type::Basic::bigint:
             case type::Basic::timestamp:
@@ -524,7 +524,7 @@ namespace cql::key {
             case type::Basic::smallint:
                 c.value = S64(get<S16>(cv));
                 break;
-            // tinyint: ColumnValue holds raw U8 bit pattern (S8 reinterpreted). Constant needs S64.
+            // tinyint: ColumnValue holds raw U8 bit pattern (S8 reinterpreted). Literal needs S64.
             case type::Basic::tinyint:
                 c.value = S64(static_cast<S8>(get<U8>(cv)));
                 break;
@@ -534,7 +534,7 @@ namespace cql::key {
             case type::Basic::double_:
                 c.value = get<F64>(cv);
                 break;
-            // float: ColumnValue holds F32. Constant needs F64; append_component casts back.
+            // float: ColumnValue holds F32. Literal needs F64; append_component casts back.
             case type::Basic::float_:
                 c.value = F64(get<F32>(cv));
                 break;
@@ -591,7 +591,7 @@ namespace cql::key {
                 append_be(val, U64(U16(static_cast<S16>(eval_as_s64(eval)))), 2);
                 break;
             case type::Basic::tinyint:
-                push_back(val, static_cast<U8>(static_cast<S8>(get<S64>(get<Constant>(eval.value).value))));
+                push_back(val, static_cast<U8>(static_cast<S8>(get<S64>(get<Literal>(eval.value).value))));
                 break;
             case type::Basic::boolean:
                 push_back(val, eval_as_bool(eval) ? U8(1) : U8(0));
@@ -604,7 +604,7 @@ namespace cql::key {
                 break;
             }
             case type::Basic::float_: {
-                F32 v = static_cast<F32>(get<F64>(get<Constant>(eval.value).value));
+                F32 v = static_cast<F32>(get<F64>(get<Literal>(eval.value).value));
                 U32 bits;
                 os::memory_copy(&bits, &v, sizeof(bits));
                 append_be(val, U64(bits), 4);
@@ -613,23 +613,23 @@ namespace cql::key {
             case type::Basic::text:
             case type::Basic::varchar:
             case type::Basic::ascii: {
-                const AutoString8& s = get<AutoString8>(get<Constant>(eval.value).value);
+                const AutoString8& s = get<AutoString8>(get<Literal>(eval.value).value);
                 append_bytes(val, reinterpret_cast<const U8*>(s.c_str), static_cast<U16>(s.length));
                 break;
             }
             case type::Basic::uuid:
             case type::Basic::timeuuid: {
-                const UUID& u = get<UUID>(get<Constant>(eval.value).value);
+                const UUID& u = get<UUID>(get<Literal>(eval.value).value);
                 append_bytes(val, &u.value[0], static_cast<U16>(UUID::length));
                 break;
             }
             case type::Basic::blob: {
-                const Blob& b = get<Blob>(get<Constant>(eval.value).value);
+                const Blob& b = get<Blob>(get<Literal>(eval.value).value);
                 append_bytes(val, b.value.ptr, static_cast<U16>(b.value.length));
                 break;
             }
             case type::Basic::hex: {
-                const Hex& h = get<Hex>(get<Constant>(eval.value).value);
+                const Hex& h = get<Hex>(get<Literal>(eval.value).value);
                 append_bytes(val, h.value.ptr, static_cast<U16>(h.value.length));
                 break;
             }
@@ -828,7 +828,7 @@ export namespace cql::key {
         return out;
     }
 
-    // Deserialize partition key bytes back into ColumnValues.
+    // Deserialize partition key bytes back into Values.
     // Returns one ColumnValue per tbl.partition_key_col_indices entry.
     // @note skips the leading PARTITION_TOKEN_PREFIX_BYTES that precede the lex components.
     DynamicArray<ColumnValue> deserialize_partition(const schema::Table& tbl, TArrayView<const U8, U16> key_bytes) {

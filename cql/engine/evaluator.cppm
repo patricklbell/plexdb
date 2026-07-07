@@ -15,14 +15,14 @@ using namespace plexdb;
 
 export namespace cql {
     struct EvalContext {
-        TArrayView<const Constant>                    positional_bindings{};
-        TArrayView<const Pair<AutoString8, Constant>> named_bindings{};
-        const schema::Table*                          table      = nullptr;
-        const ColumnValue*                            row_values = nullptr; // array of length table->cols.length
+        TArrayView<const Literal>                    positional_bindings{};
+        TArrayView<const Pair<AutoString8, Literal>> named_bindings{};
+        const schema::Table*                         table      = nullptr;
+        const ColumnValue*                           row_values = nullptr; // array of length table->cols.length
     };
 
     using EvaluatedTypes = TypeList<
-        Constant, MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral, ColumnValue>;
+        Literal, MapLiteral, SetLiteral, ListOrVectorLiteral, UdtLiteral, TupleLiteral, ColumnValue>;
 
     struct Evaluated {
         // @note @warn DO NOT modify without also checking TermWithIdentifier
@@ -36,7 +36,7 @@ export namespace cql {
     bool evaluate_where(TArrayView<const WhereClause::Relation> predicates, const EvalContext& ctx);
 
     // Invoke a built-in function by name (case-insensitive) with pre-evaluated
-    // arguments. Returns Evaluated{Constant{Null{}}} when no registered function
+    // arguments. Returns Evaluated{Literal{Null{}}} when no registered function
     // matches `name`. The lookup is the same registry the term evaluator uses
     // for FunctionCall terms, so SELECT-projection sites can route generic
     // function calls through it.

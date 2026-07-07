@@ -39,23 +39,26 @@ namespace cql {
         return (static_cast<S64>(ts) - UUID_EPOCH_OFFSET_100NS) / 10000LL;
     }
 
-    static UUID make_timeuuid_from_unix_ms(S64 unix_ms, U16 clock_seq, const Array<U8, 6>& node) {
+    static UUID make_timeuuid_from_ts_100ns(U64 timestamp, U16 clock_seq, const Array<U8, 6>& node) {
         UUID uuid{};
-        U64  timestamp = unix_ms_to_uuid_timestamp_100ns(unix_ms);
-        uuid.value[0]  = static_cast<U8>((timestamp >> 24) & 0xff_u64);
-        uuid.value[1]  = static_cast<U8>((timestamp >> 16) & 0xff_u64);
-        uuid.value[2]  = static_cast<U8>((timestamp >> 8) & 0xff_u64);
-        uuid.value[3]  = static_cast<U8>(timestamp & 0xff_u64);
-        uuid.value[4]  = static_cast<U8>((timestamp >> 40) & 0xff_u64);
-        uuid.value[5]  = static_cast<U8>((timestamp >> 32) & 0xff_u64);
-        uuid.value[6]  = static_cast<U8>(0x10_u8 | static_cast<U8>((timestamp >> 56) & 0x0f_u64));
-        uuid.value[7]  = static_cast<U8>((timestamp >> 48) & 0xff_u64);
-        uuid.value[8]  = static_cast<U8>(0x80_u8 | static_cast<U8>((clock_seq >> 8) & 0x3f_u16));
-        uuid.value[9]  = static_cast<U8>(clock_seq & 0xff_u16);
+        uuid.value[0] = static_cast<U8>((timestamp >> 24) & 0xff_u64);
+        uuid.value[1] = static_cast<U8>((timestamp >> 16) & 0xff_u64);
+        uuid.value[2] = static_cast<U8>((timestamp >> 8) & 0xff_u64);
+        uuid.value[3] = static_cast<U8>(timestamp & 0xff_u64);
+        uuid.value[4] = static_cast<U8>((timestamp >> 40) & 0xff_u64);
+        uuid.value[5] = static_cast<U8>((timestamp >> 32) & 0xff_u64);
+        uuid.value[6] = static_cast<U8>(0x10_u8 | static_cast<U8>((timestamp >> 56) & 0x0f_u64));
+        uuid.value[7] = static_cast<U8>((timestamp >> 48) & 0xff_u64);
+        uuid.value[8] = static_cast<U8>(0x80_u8 | static_cast<U8>((clock_seq >> 8) & 0x3f_u16));
+        uuid.value[9] = static_cast<U8>(clock_seq & 0xff_u16);
         for (U64 i = 0; i < 6; i++) {
             uuid.value[10 + i] = node.values[i];
         }
         return uuid;
+    }
+
+    static UUID make_timeuuid_from_unix_ms(S64 unix_ms, U16 clock_seq, const Array<U8, 6>& node) {
+        return make_timeuuid_from_ts_100ns(unix_ms_to_uuid_timestamp_100ns(unix_ms), clock_seq, node);
     }
 
     static S64 timeuuid_to_unix_ms(const UUID& uuid) {
@@ -80,17 +83,34 @@ namespace cql {
     }
 
     static UUID now_timeuuid() {
-        Array<U8, 8> entropy{};
-        os::random_bytes(entropy.values, 8);
-        Array<U8, 6> node{};
-        for (U64 i = 0; i < 6; i++) {
-            node.values[i] = entropy.values[i];
-        }
+        // Stable per-host node id (RFC 4122): every timeuuid this process emits shares it, so they
+        // are attributable to this node and collision-free against a peer's.
+        Array<U8, 6> node = os::get_node_id();
+
+        Array<U8, 2> cs_entropy{};
+        os::random_bytes(cs_entropy.values, 2);
         U16 clock_seq = static_cast<U16>(
-                            static_cast<U16>(entropy.values[6]) | (static_cast<U16>(entropy.values[7]) << 8)
+                            static_cast<U16>(cs_entropy.values[0]) | (static_cast<U16>(cs_entropy.values[1]) << 8)
                         )
                       & 0x3fff_u16;
-        return make_timeuuid_from_unix_ms(static_cast<S64>(os::unix_ms_now()), clock_seq, node);
+        // Cassandra guarantees consecutive now() values are strictly increasing (UUIDGen's per-tick
+        // counter). Our clock is only millisecond-resolution, so two calls in the same millisecond
+        // would otherwise share a timestamp and be ordered by the random clock_seq — making
+        // `b < now()` a coin flip. Guard with a monotonic 100ns counter so each now() is strictly
+        // greater than the last.
+        //
+        // @warn Single-node ordering only. The node id above makes timeuuids globally attributable
+        // and collision-free, but strict cross-node *ordering* of now() would still need
+        // synchronised clocks or a coordinator — `last_ts_100ns` orders calls within THIS process
+        // only. Guard this the same way as USING TIMESTAMP (assert_true(engine.single_node, ...) in
+        // engine.cpp) once the single_node flag reaches the function-evaluation path.
+        static U64 last_ts_100ns = 0;
+        U64        ts_100ns      = unix_ms_to_uuid_timestamp_100ns(static_cast<S64>(os::unix_ms_now()));
+        if (ts_100ns <= last_ts_100ns) {
+            ts_100ns = last_ts_100ns + 1;
+        }
+        last_ts_100ns = ts_100ns;
+        return make_timeuuid_from_ts_100ns(ts_100ns, clock_seq, node);
     }
 
     static UUID min_timeuuid(S64 unix_ms) {
@@ -110,14 +130,14 @@ namespace cql {
     // value extraction helpers
     // ========================================================================
 
-    // Extract a typed value from the inner union of an Evaluated (searches both Constant.value
+    // Extract a typed value from the inner union of an Evaluated (searches both Literal.value
     // and ColumnValue). Returns nullptr if not found.
     template<typename T>
     static const T* as_value(const Evaluated& e) {
         const T* result = nullptr;
         visit(e.value, [&](const auto& top) {
             using TT = Decay<decltype(top)>;
-            if constexpr (SameAs<TT, Constant>) {
+            if constexpr (SameAs<TT, Literal>) {
                 visit(top.value, [&](const auto& v) {
                     if constexpr (SameAs<Decay<decltype(v)>, T>) {
                         result = &v;
@@ -137,14 +157,14 @@ namespace cql {
     // Look up a column by name and return its value as Evaluated.
     static Evaluated lookup_column_value(const AutoString8& col_name, const EvalContext& ctx) {
         if (!ctx.table || !ctx.row_values) {
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         }
         for (U64 ci = 0; ci < ctx.table->cols.length; ci++) {
             if (ctx.table->cols[ci].name == String8(col_name.c_str, col_name.length)) {
                 return Evaluated{ctx.row_values[ci]};
             }
         }
-        return Evaluated{Constant{Null{}}};
+        return Evaluated{Literal{Null{}}};
     }
 
     // ========================================================================
@@ -163,187 +183,187 @@ namespace cql {
         };
 
         add("uuid"_as, [](TArrayView<const Evaluated>, const EvalContext&) -> Evaluated {
-            return Evaluated{Constant{random_uuid_v4()}};
+            return Evaluated{Literal{random_uuid_v4()}};
         });
         add("now"_as, [](TArrayView<const Evaluated>, const EvalContext&) -> Evaluated {
-            return Evaluated{Constant{now_timeuuid()}};
+            return Evaluated{Literal{now_timeuuid()}};
         });
         add("currenttimeuuid"_as, [](TArrayView<const Evaluated>, const EvalContext&) -> Evaluated {
-            return Evaluated{Constant{now_timeuuid()}};
+            return Evaluated{Literal{now_timeuuid()}};
         });
         add("currenttimestamp"_as, [](TArrayView<const Evaluated>, const EvalContext&) -> Evaluated {
-            return Evaluated{Constant{static_cast<S64>(os::unix_ms_now())}};
+            return Evaluated{Literal{static_cast<S64>(os::unix_ms_now())}};
         });
         add("currentdate"_as, [](TArrayView<const Evaluated>, const EvalContext&) -> Evaluated {
-            return Evaluated{Constant{os::unix_days_now()}};
+            return Evaluated{Literal{os::unix_days_now()}};
         });
         add("currenttime"_as, [](TArrayView<const Evaluated>, const EvalContext&) -> Evaluated {
-            return Evaluated{Constant{os::unix_ns_since_midnight_now()}};
+            return Evaluated{Literal{os::unix_ns_since_midnight_now()}};
         });
         add("todate"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             if (const S64* ts = as_value<S64>(args[0])) {
-                return Evaluated{Constant{static_cast<S64>(*ts / MS_PER_DAY)}};
+                return Evaluated{Literal{static_cast<S64>(*ts / MS_PER_DAY)}};
             }
             if (const UUID* uuid = as_value<UUID>(args[0])) {
-                return Evaluated{Constant{static_cast<S64>(timeuuid_to_unix_ms(*uuid) / MS_PER_DAY)}};
+                return Evaluated{Literal{static_cast<S64>(timeuuid_to_unix_ms(*uuid) / MS_PER_DAY)}};
             }
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         });
         add("totimestamp"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             if (const S64* ts = as_value<S64>(args[0])) {
-                return Evaluated{Constant{*ts}};
+                return Evaluated{Literal{*ts}};
             }
             if (const UUID* uuid = as_value<UUID>(args[0])) {
-                return Evaluated{Constant{timeuuid_to_unix_ms(*uuid)}};
+                return Evaluated{Literal{timeuuid_to_unix_ms(*uuid)}};
             }
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         });
         add("tounixtimestamp"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             if (const S64* ts = as_value<S64>(args[0])) {
-                return Evaluated{Constant{*ts}};
+                return Evaluated{Literal{*ts}};
             }
             if (const UUID* uuid = as_value<UUID>(args[0])) {
-                return Evaluated{Constant{timeuuid_to_unix_ms(*uuid)}};
+                return Evaluated{Literal{timeuuid_to_unix_ms(*uuid)}};
             }
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         });
         add("mintimeuuid"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             const S64* ts = as_value<S64>(args[0]);
             if (!ts) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
-            return Evaluated{Constant{min_timeuuid(*ts)}};
+            return Evaluated{Literal{min_timeuuid(*ts)}};
         });
         add("maxtimeuuid"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             const S64* ts = as_value<S64>(args[0]);
             if (!ts) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
-            return Evaluated{Constant{max_timeuuid(*ts)}};
+            return Evaluated{Literal{max_timeuuid(*ts)}};
         });
         add("dateof"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             const UUID* uuid = as_value<UUID>(args[0]);
             if (!uuid) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
-            return Evaluated{Constant{timeuuid_to_unix_ms(*uuid)}};
+            return Evaluated{Literal{timeuuid_to_unix_ms(*uuid)}};
         });
         add("unixtimestampof"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             const UUID* uuid = as_value<UUID>(args[0]);
             if (!uuid) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
-            return Evaluated{Constant{timeuuid_to_unix_ms(*uuid)}};
+            return Evaluated{Literal{timeuuid_to_unix_ms(*uuid)}};
         });
 
         add("textasblob"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             const AutoString8* s = as_value<AutoString8>(args[0]);
             if (!s) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             Blob b{};
             resize(b.value, s->length);
             if (s->length > 0) {
                 memcpy(b.value.ptr, s->c_str, s->length);
             }
-            return Evaluated{Constant{move(b)}};
+            return Evaluated{Literal{move(b)}};
         });
         add("blobastext"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             if (const Blob* b = as_value<Blob>(args[0])) {
                 AutoString8 s(reinterpret_cast<const U8*>(b->value.ptr), b->value.length);
-                return Evaluated{Constant{move(s)}};
+                return Evaluated{Literal{move(s)}};
             }
             if (const Hex* h = as_value<Hex>(args[0])) {
                 AutoString8 s(reinterpret_cast<const U8*>(h->value.ptr), h->value.length);
-                return Evaluated{Constant{move(s)}};
+                return Evaluated{Literal{move(s)}};
             }
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         });
         add("intasblob"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             const S64* v = as_value<S64>(args[0]);
             if (!v) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             Blob b{};
             resize(b.value, 4_u64);
             U32 be = __builtin_bswap32(static_cast<U32>(*v));
             memcpy(b.value.ptr, &be, 4);
-            return Evaluated{Constant{move(b)}};
+            return Evaluated{Literal{move(b)}};
         });
         add("blobasint"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             const Blob* b = as_value<Blob>(args[0]);
             if (!b || b->value.length != 4) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             U32 be;
             memcpy(&be, b->value.ptr, 4);
-            return Evaluated{Constant{S64(static_cast<S32>(__builtin_bswap32(be)))}};
+            return Evaluated{Literal{S64(static_cast<S32>(__builtin_bswap32(be)))}};
         });
         add("bigintasblob"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             const S64* v = as_value<S64>(args[0]);
             if (!v) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             Blob b{};
             resize(b.value, 8_u64);
             U64 be = __builtin_bswap64(static_cast<U64>(*v));
             memcpy(b.value.ptr, &be, 8);
-            return Evaluated{Constant{move(b)}};
+            return Evaluated{Literal{move(b)}};
         });
         add("blobasbigint"_as, [](TArrayView<const Evaluated> args, const EvalContext&) -> Evaluated {
             if (args.length != 1) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             const Blob* b = as_value<Blob>(args[0]);
             if (!b || b->value.length != 8) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             U64 be;
             memcpy(&be, b->value.ptr, 8);
-            return Evaluated{Constant{S64(__builtin_bswap64(be))}};
+            return Evaluated{Literal{S64(__builtin_bswap64(be))}};
         });
 
         add("token"_as, [](TArrayView<const Evaluated> args, const EvalContext& ctx) -> Evaluated {
             if (!ctx.table || args.length != ctx.table->partition_key_col_indices.length) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
-            return Evaluated{Constant{key::compute_partition_token_from_evals(*ctx.table, args)}};
+            return Evaluated{Literal{key::compute_partition_token_from_evals(*ctx.table, args)}};
         });
 
         return registry;
@@ -364,7 +384,7 @@ namespace cql {
     Evaluated call_registered_function(String8 name, TArrayView<const Evaluated> args, const EvalContext& ctx) {
         FunctionEntry* fn = find_function(AutoString8(name));
         if (fn == nullptr) {
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         }
         return fn->fn(args, ctx);
     }
@@ -411,7 +431,7 @@ namespace cql {
     // ========================================================================
     // bind marker resolution
     // ========================================================================
-    static const Constant* lookup_positional_binding(const AutoString8& identifier, const EvalContext& ctx) {
+    static const Literal* lookup_positional_binding(const AutoString8& identifier, const EvalContext& ctx) {
         if (identifier.length == 0) {
             return nullptr;
         }
@@ -431,7 +451,7 @@ namespace cql {
         return &ctx.positional_bindings[index];
     }
 
-    static const Constant* lookup_named_binding(const AutoString8& identifier, const EvalContext& ctx) {
+    static const Literal* lookup_named_binding(const AutoString8& identifier, const EvalContext& ctx) {
         if (identifier.length == 0) {
             return nullptr;
         }
@@ -474,85 +494,85 @@ namespace cql {
 
     static Evaluated evaluate_binary_arithmetic(const Evaluated& lhs, ArithmeticOperator op, const Evaluated& rhs) {
         if (eval_is_unset(lhs) || eval_is_unset(rhs)) {
-            return Evaluated{Constant{Unset{}}};
+            return Evaluated{Literal{Unset{}}};
         }
         if (eval_is_null(lhs) || eval_is_null(rhs)) {
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         }
 
         const AutoString8* ls = as_value<AutoString8>(lhs);
         const AutoString8* rs = as_value<AutoString8>(rhs);
         if (ls && rs) {
             if (op != ArithmeticOperator::plus) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
-            return Evaluated{Constant{*ls + *rs}};
+            return Evaluated{Literal{*ls + *rs}};
         }
 
         if (eval_is_float_like(lhs) || eval_is_float_like(rhs)) {
             if (op == ArithmeticOperator::mod) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             F64 l, r;
             if (!as_f64(lhs, l) || !as_f64(rhs, r)) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
             switch (op) {
                 case ArithmeticOperator::plus:
-                    return Evaluated{Constant{l + r}};
+                    return Evaluated{Literal{l + r}};
                 case ArithmeticOperator::minus:
-                    return Evaluated{Constant{l - r}};
+                    return Evaluated{Literal{l - r}};
                 case ArithmeticOperator::times:
-                    return Evaluated{Constant{l * r}};
+                    return Evaluated{Literal{l * r}};
                 case ArithmeticOperator::divide:
-                    return Evaluated{Constant{l / r}};
+                    return Evaluated{Literal{l / r}};
                 case ArithmeticOperator::mod:
                     break;
             }
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         }
 
         S64 l, r;
         if (!as_s64(lhs, l) || !as_s64(rhs, r)) {
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         }
         if ((op == ArithmeticOperator::divide || op == ArithmeticOperator::mod) && r == 0) {
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         }
         switch (op) {
             case ArithmeticOperator::plus:
-                return Evaluated{Constant{l + r}};
+                return Evaluated{Literal{l + r}};
             case ArithmeticOperator::minus:
-                return Evaluated{Constant{l - r}};
+                return Evaluated{Literal{l - r}};
             case ArithmeticOperator::times:
-                return Evaluated{Constant{l * r}};
+                return Evaluated{Literal{l * r}};
             case ArithmeticOperator::divide:
-                return Evaluated{Constant{l / r}};
+                return Evaluated{Literal{l / r}};
             case ArithmeticOperator::mod:
-                return Evaluated{Constant{l % r}};
+                return Evaluated{Literal{l % r}};
         }
-        return Evaluated{Constant{Null{}}};
+        return Evaluated{Literal{Null{}}};
     }
 
     static Evaluated evaluate_unary_minus(const Evaluated& value) {
         if (eval_is_unset(value)) {
-            return Evaluated{Constant{Unset{}}};
+            return Evaluated{Literal{Unset{}}};
         }
         if (eval_is_null(value)) {
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         }
         if (eval_is_float_like(value)) {
             F64 v;
             if (!as_f64(value, v)) {
-                return Evaluated{Constant{Null{}}};
+                return Evaluated{Literal{Null{}}};
             }
-            return Evaluated{Constant{-v}};
+            return Evaluated{Literal{-v}};
         }
         S64 v;
         if (!as_s64(value, v)) {
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         }
-        return Evaluated{Constant{-v}};
+        return Evaluated{Literal{-v}};
     }
 
     // Shared handler for all term variants that are identical between Term and TermWithIdentifiers.
@@ -560,16 +580,16 @@ namespace cql {
     template<typename V>
     static Evaluated evaluate_term_content(const V& v, const EvalContext& ctx) {
         using T = Decay<V>;
-        if constexpr (SameAs<T, Constant>) {
+        if constexpr (SameAs<T, Literal>) {
             return {v};
         } else if constexpr (SameAs<T, BindMarker>) {
-            if (const Constant* c = lookup_positional_binding(v.identifier, ctx)) {
+            if (const Literal* c = lookup_positional_binding(v.identifier, ctx)) {
                 return {*c};
             }
-            if (const Constant* c = lookup_named_binding(v.identifier, ctx)) {
+            if (const Literal* c = lookup_named_binding(v.identifier, ctx)) {
                 return {*c};
             }
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         } else if constexpr (SameAs<T, MapLiteral> || SameAs<T, SetLiteral> || SameAs<T, ListOrVectorLiteral> || SameAs<T, UdtLiteral> || SameAs<T, TupleLiteral>) {
             return {v};
         } else if constexpr (SameAs<T, FunctionCall>) {
@@ -583,7 +603,7 @@ namespace cql {
                     return evaluate_binary_arithmetic(evaluate_term(arith_v.lhs, ctx), arith_v.op, evaluate_term(arith_v.rhs, ctx));
                 } else {
                     static_assert(!SameAs<AT, AT>, "missing ArithmeticOperation case");
-                    return Evaluated{Constant{Null{}}};
+                    return Evaluated{Literal{Null{}}};
                 }
             });
         } else if constexpr (SameAs<T, TypeHint>) {
@@ -592,7 +612,7 @@ namespace cql {
             return Evaluated{v};
         } else {
             static_assert(!SameAs<T, T>, "evaluate_term_content missing Term variant case");
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         }
     }
 
@@ -609,7 +629,7 @@ namespace cql {
         }
         FunctionEntry* fn = find_function(call.identifier);
         if (fn == nullptr) {
-            return Evaluated{Constant{Null{}}};
+            return Evaluated{Literal{Null{}}};
         }
         return fn->fn(args, ctx);
     }
@@ -628,7 +648,7 @@ namespace cql {
                         return evaluate_binary_arithmetic(evaluate_toi(arith_v.lhs, ctx), arith_v.op, evaluate_toi(arith_v.rhs, ctx));
                     } else {
                         static_assert(!SameAs<AT, AT>, "missing TOIArithmeticOperation case");
-                        return Evaluated{Constant{Null{}}};
+                        return Evaluated{Literal{Null{}}};
                     }
                 });
             } else {
@@ -654,7 +674,7 @@ namespace cql {
         bool found = false;
         visit(e.value, [&](const auto& top) {
             using T = Decay<decltype(top)>;
-            if constexpr (SameAs<T, Constant>) {
+            if constexpr (SameAs<T, Literal>) {
                 visit(top.value, [&](const auto& v) {
                     using V = Decay<decltype(v)>;
                     if constexpr (SameAs<V, S64>) {
@@ -691,7 +711,7 @@ namespace cql {
         bool found = false;
         visit(e.value, [&](const auto& top) {
             using T = Decay<decltype(top)>;
-            if constexpr (SameAs<T, Constant>) {
+            if constexpr (SameAs<T, Literal>) {
                 visit(top.value, [&](const auto& v) {
                     using V = Decay<decltype(v)>;
                     if constexpr (SameAs<V, F64>) {
@@ -971,7 +991,7 @@ namespace cql {
                     }
                     TArrayView<const ColumnValue, U64> row_view{ctx.row_values, ctx.table->cols.length};
                     S64                                lhs_tok = key::compute_partition_token(*ctx.table, row_view);
-                    Evaluated                          lhs{Constant{lhs_tok}};
+                    Evaluated                          lhs{Literal{lhs_tok}};
                     Evaluated                          rhs        = evaluate_term(value.value, ctx);
                     bool                               comparable = false;
                     S64                                cmp        = compare_evaluated(lhs, rhs, comparable);
@@ -1074,10 +1094,10 @@ namespace cql {
 // ============================================================================
 namespace plexdb {
     AutoString8 to_str(cql::Evaluated c, cql::type::Basic dtype) {
-        if (!type_matches_tag<cql::Constant>(c.value)) {
+        if (!type_matches_tag<cql::Literal>(c.value)) {
             return "@todo"_as;
         }
-        auto& con = get<cql::Constant>(c.value);
+        auto& con = get<cql::Literal>(c.value);
 
         if (type_matches_tag<cql::Null>(con.value)) {
             return "null"_as;

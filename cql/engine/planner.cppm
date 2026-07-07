@@ -108,10 +108,10 @@ export namespace cql::planner {
             DynamicArray<U64> pk_col_indices;
         };
         // Generic registry-backed function call. Args are either a column
-        // reference (resolved per-row) or a pre-evaluated literal Constant.
+        // reference (resolved per-row) or a pre-evaluated literal Literal.
         // The evaluator's term registry supplies the implementation.
         struct FuncCallArg {
-            TaggedUnion<U64, Constant> value;
+            TaggedUnion<U64, Literal> value;
         };
         struct FuncCall {
             AutoString8               name; // lowercased

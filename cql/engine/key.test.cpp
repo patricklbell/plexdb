@@ -84,8 +84,8 @@ TEST_CASE("clustering key round-trip ASC and DESC for fixed-width types", "[cql.
     for (const auto& c : int_cases) {
         for (Sort order : {Sort::ASC, Sort::DESC}) {
             auto tbl = make_single_ck_table(c.dtype, order);
-            auto e_a = Evaluated{Constant{c.a}};
-            auto e_b = Evaluated{Constant{c.b}};
+            auto e_a = Evaluated{Literal{c.a}};
+            auto e_b = Evaluated{Literal{c.b}};
 
             auto ka = ser_ck_single(tbl, e_a);
             auto kb = ser_ck_single(tbl, e_b);
@@ -112,8 +112,8 @@ TEST_CASE("clustering key round-trip ASC and DESC for boolean and uuid", "[cql.k
         auto tbl_asc  = make_single_ck_table(type::Basic::boolean, Sort::ASC);
         auto tbl_desc = make_single_ck_table(type::Basic::boolean, Sort::DESC);
 
-        auto t = Evaluated{Constant{true}};
-        auto f = Evaluated{Constant{false}};
+        auto t = Evaluated{Literal{true}};
+        auto f = Evaluated{Literal{false}};
 
         CHECK(lex_compare(ser_ck_single(tbl_asc, f), ser_ck_single(tbl_asc, t)) < 0);
         CHECK(lex_compare(ser_ck_single(tbl_desc, f), ser_ck_single(tbl_desc, t)) > 0);
@@ -125,8 +125,8 @@ TEST_CASE("clustering key round-trip ASC and DESC for boolean and uuid", "[cql.k
         u2.value[0]   = 0x10;
         auto tbl_asc  = make_single_ck_table(type::Basic::uuid, Sort::ASC);
         auto tbl_desc = make_single_ck_table(type::Basic::uuid, Sort::DESC);
-        CHECK(lex_compare(ser_ck_single(tbl_asc, Evaluated{Constant{u1}}), ser_ck_single(tbl_asc, Evaluated{Constant{u2}})) < 0);
-        CHECK(lex_compare(ser_ck_single(tbl_desc, Evaluated{Constant{u1}}), ser_ck_single(tbl_desc, Evaluated{Constant{u2}})) > 0);
+        CHECK(lex_compare(ser_ck_single(tbl_asc, Evaluated{Literal{u1}}), ser_ck_single(tbl_asc, Evaluated{Literal{u2}})) < 0);
+        CHECK(lex_compare(ser_ck_single(tbl_desc, Evaluated{Literal{u1}}), ser_ck_single(tbl_desc, Evaluated{Literal{u2}})) > 0);
     }
 }
 
@@ -140,10 +140,10 @@ TEST_CASE("clustering key round-trip ASC and DESC for variable-width composite t
         // exercise the composite layout (length prefix is irrelevant for ordering of c1).
         auto tbl = make_two_ck_table(type::Basic::text, order, type::Basic::int_, Sort::ASC);
 
-        auto a   = Evaluated{Constant{AutoString8("apple")}};
-        auto b   = Evaluated{Constant{AutoString8("banana")}};
-        auto a_p = Evaluated{Constant{AutoString8("app")}}; // prefix of a
-        auto z0  = Evaluated{Constant{S64(0)}};
+        auto a   = Evaluated{Literal{AutoString8("apple")}};
+        auto b   = Evaluated{Literal{AutoString8("banana")}};
+        auto a_p = Evaluated{Literal{AutoString8("app")}}; // prefix of a
+        auto z0  = Evaluated{Literal{S64(0)}};
 
         auto k_a   = ser_ck_pair(tbl, a, z0);
         auto k_b   = ser_ck_pair(tbl, b, z0);
@@ -179,9 +179,9 @@ TEST_CASE("clustering key round-trip ASC and DESC for variable-width composite t
         b1.value[2] = 0xBB; // contains an embedded NUL — must be escape-encoded.
         resize(b2.value, 1_u64);
         b2.value[0] = 0xAA;
-        auto z0     = Evaluated{Constant{S64(0)}};
-        auto k1     = ser_ck_pair(tbl, Evaluated{Constant{b1}}, z0);
-        auto k2     = ser_ck_pair(tbl, Evaluated{Constant{b2}}, z0);
+        auto z0     = Evaluated{Literal{S64(0)}};
+        auto k1     = ser_ck_pair(tbl, Evaluated{Literal{b1}}, z0);
+        auto k2     = ser_ck_pair(tbl, Evaluated{Literal{b2}}, z0);
         CHECK(lex_compare(k1, k2) != 0);
 
         auto dec = key::deserialize_clustering(tbl, {k1.ptr, U16(k1.length)});
@@ -198,15 +198,15 @@ TEST_CASE("date and time are usable as clustering key types", "[cql.key]") {
     // date: stored as S32, encoded like int_.
     {
         auto tbl   = make_single_ck_table(type::Basic::date, Sort::ASC);
-        auto small = Evaluated{Constant{S64(100)}};
-        auto large = Evaluated{Constant{S64(20000)}};
+        auto small = Evaluated{Literal{S64(100)}};
+        auto large = Evaluated{Literal{S64(20000)}};
         CHECK(lex_compare(ser_ck_single(tbl, small), ser_ck_single(tbl, large)) < 0);
     }
     // time: stored as S64, encoded like bigint.
     {
         auto tbl     = make_single_ck_table(type::Basic::time, Sort::DESC);
-        auto morning = Evaluated{Constant{S64(8 * 3600LL * 1000LL * 1000LL * 1000LL)}};
-        auto evening = Evaluated{Constant{S64(20 * 3600LL * 1000LL * 1000LL * 1000LL)}};
+        auto morning = Evaluated{Literal{S64(8 * 3600LL * 1000LL * 1000LL * 1000LL)}};
+        auto evening = Evaluated{Literal{S64(20 * 3600LL * 1000LL * 1000LL * 1000LL)}};
         // DESC: evening (logical greater) sorts first physically.
         CHECK(lex_compare(ser_ck_single(tbl, evening), ser_ck_single(tbl, morning)) < 0);
     }

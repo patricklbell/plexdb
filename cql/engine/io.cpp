@@ -35,7 +35,7 @@ namespace {
         } else if constexpr (Either<RemoveCV<T>, F32>) {
             return dtype == type::Basic::float_;
         } else if constexpr (Either<RemoveCV<T>, F64>) {
-            return dtype == type::Basic::double_;
+            return dtype == type::Basic::float_ || dtype == type::Basic::double_;
         } else if constexpr (Either<RemoveCV<T>, UUID>) {
             return dtype == type::Basic::uuid || dtype == type::Basic::timeuuid;
         } else if constexpr (Either<RemoveCV<T>, Null>) {
@@ -62,7 +62,7 @@ namespace {
         }
     }
 
-    static bool can_cast_write_constant_as_column_value(const Constant& constant, type::Basic dtype) {
+    static bool can_cast_write_constant_as_column_value(const Literal& constant, type::Basic dtype) {
         return visit(constant.value, [&](const auto& cv) -> bool {
             using T = Decay<decltype(cv)>;
             return can_write_typed_basic_as_column_value<T>(dtype);
@@ -75,17 +75,12 @@ namespace {
             switch (dtype) {
                 case type::Basic::text:
                 case type::Basic::ascii:
-                case type::Basic::varchar:
-                case type::Basic::inet:
-                case type::Basic::varint:
-                case type::Basic::decimal:
-                case type::Basic::duration:
-                case type::Basic::hex: {
+                case type::Basic::varchar: {
                     w(reinterpret_cast<const U8*>(&src.length), sizeof(src.length));
                     w(reinterpret_cast<const U8*>(src.c_str), src.length);
                 } break;
                 default: {
-                    assert_not_implemented("writing string-like value to this dtype is not implemented");
+                    assert_not_implemented("writing string literal to a non-textual dtype is not supported");
                 } break;
             }
         } else if constexpr (SameAs<T, S64>) {
@@ -149,7 +144,7 @@ namespace {
             w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
             w(src.value.ptr, src.value.length);
         } else if constexpr (SameAs<T, Blob>) {
-            assert_true(dtype == type::Basic::blob || dtype == type::Basic::inet || dtype == type::Basic::varint || dtype == type::Basic::decimal || dtype == type::Basic::duration || dtype == type::Basic::hex, "blob value written to incompatible column dtype");
+            assert_true(dtype == type::Basic::blob || dtype == type::Basic::hex, "blob value written to incompatible column dtype");
             w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
             w(src.value.ptr, src.value.length);
         } else if constexpr (SameAs<T, Duration>) {
@@ -887,21 +882,265 @@ namespace cql::io {
         });
     }
 
-    bool can_cast_write_evaluated_as_column_value(const Evaluated& evaluated, const type::Type& cdtype) {
-        return visit(evaluated.value, [&cdtype](const auto& cv) -> bool {
+    Optional<ColumnValue> resolve_literal_scalar(const Literal& lit, const type::Type& cdtype) {
+        if (!type_matches_tag<type::Basic>(cdtype.value)) {
+            return {};
+        }
+        type::Basic b = get<type::Basic>(cdtype.value);
+        return visit(lit.value, [&](const auto& c) -> Optional<ColumnValue> {
+            using T = Decay<decltype(c)>;
+            if constexpr (SameAs<T, Null>) {
+                // @note A null scalar carries no width; it is written via the column mask
+                return ColumnValue{Null{}};
+            } else if constexpr (SameAs<T, S64>) {
+                switch (b) {
+                    case type::Basic::tinyint:
+                        return ColumnValue{static_cast<U8>(static_cast<S8>(c))};
+                    case type::Basic::smallint:
+                        return ColumnValue{static_cast<S16>(c)};
+                    case type::Basic::int_:
+                    case type::Basic::date:
+                        return ColumnValue{static_cast<S32>(c)};
+                    case type::Basic::bigint:
+                    case type::Basic::timestamp:
+                    case type::Basic::counter:
+                    case type::Basic::time:
+                        return ColumnValue{static_cast<S64>(c)};
+                    default:
+                        return {};
+                }
+            } else if constexpr (SameAs<T, bool>) {
+                return b == type::Basic::boolean ? Optional<ColumnValue>{ColumnValue{static_cast<U8>(c ? 1 : 0)}} : Optional<ColumnValue>{};
+            } else if constexpr (SameAs<T, F64>) {
+                switch (b) {
+                    case type::Basic::float_:
+                        return ColumnValue{static_cast<F32>(c)};
+                    case type::Basic::double_:
+                        return ColumnValue{static_cast<F64>(c)};
+                    default:
+                        return {};
+                }
+            } else if constexpr (SameAs<T, AutoString8>) {
+                switch (b) {
+                    case type::Basic::text:
+                    case type::Basic::ascii:
+                    case type::Basic::varchar:
+                        return ColumnValue{AutoString8{c}};
+                    default:
+                        // string->inet/varint/decimal/duration/hex are asymmetric; use byte path
+                        return {};
+                }
+            } else if constexpr (SameAs<T, UUID>) {
+                return (b == type::Basic::uuid || b == type::Basic::timeuuid) ? Optional<ColumnValue>{ColumnValue{c}} : Optional<ColumnValue>{};
+            } else if constexpr (SameAs<T, Blob>) {
+                return (b == type::Basic::blob || b == type::Basic::hex) ? Optional<ColumnValue>{ColumnValue{c}} : Optional<ColumnValue>{};
+            } else if constexpr (SameAs<T, Hex>) {
+                // hex columns read back as Blob; carry the raw bytes across.
+                if (b != type::Basic::hex) {
+                    return {};
+                }
+                Blob out{};
+                out.value = c.value;
+                return ColumnValue{move(out)};
+            } else if constexpr (SameAs<T, Duration>) {
+                return b == type::Basic::duration ? Optional<ColumnValue>{ColumnValue{c}} : Optional<ColumnValue>{};
+            } else {
+                // Unset — leave to the byte path
+                return {};
+            }
+        });
+    }
+
+    Optional<ColumnValue> resolve_evaluated(const Evaluated& eval, const type::Type& cdtype, const EvalContext& ctx) {
+        return visit(eval.value, [&](const auto& cv) -> Optional<ColumnValue> {
             using T = Decay<decltype(cv)>;
-            if constexpr (SameAs<T, Constant>) {
-                return type_matches_tag<type::Basic>(cdtype.value) && can_cast_write_constant_as_column_value(cv, get<type::Basic>(cdtype.value));
-            } else if constexpr (SameAs<T, MapLiteral>) {
-                return type_matches_tag<type::Map>(cdtype.value);
-            } else if constexpr (SameAs<T, SetLiteral>) {
-                return type_matches_tag<type::Set>(cdtype.value);
+            if constexpr (SameAs<T, ColumnValue>) {
+                return cv;
+            } else if constexpr (SameAs<T, Literal>) {
+                return resolve_literal_scalar(cv, cdtype);
             } else if constexpr (SameAs<T, ListOrVectorLiteral>) {
-                return type_matches_tag<type::List>(cdtype.value) || type_matches_tag<type::Vector>(cdtype.value);
-            } else if constexpr (SameAs<T, UdtLiteral>) {
-                return type_matches_tag<type::UDT*>(cdtype.value);
+                const type::Type* el_type = nullptr;
+                if (type_matches_tag<type::List>(cdtype.value)) {
+                    el_type = &get<type::List>(cdtype.value).element;
+                } else if (type_matches_tag<type::Vector>(cdtype.value)) {
+                    el_type = &get<type::Vector>(cdtype.value).element;
+                } else {
+                    return {};
+                }
+                DynamicArray<NestedColumnValue> arr{};
+                for (U64 i = 0; i < cv.elements.length; i++) {
+                    Optional<ColumnValue> ev = resolve_evaluated(evaluate(cv.elements[i], ctx), *el_type, ctx);
+                    if (!ev.has_value()) {
+                        return {};
+                    }
+                    push_back(arr, NestedColumnValue{move(*ev)});
+                }
+                return ColumnValue{move(arr)};
+            } else if constexpr (SameAs<T, SetLiteral>) {
+                if (!type_matches_tag<type::Set>(cdtype.value)) {
+                    return {};
+                }
+                const type::Type&             key_type = get<type::Set>(cdtype.value).key;
+                DynamicSet<NestedColumnValue> s{};
+                for (U64 i = 0; i < cv.keys.length; i++) {
+                    Optional<ColumnValue> ev = resolve_evaluated(evaluate(cv.keys[i], ctx), key_type, ctx);
+                    if (!ev.has_value()) {
+                        return {};
+                    }
+                    insert(s, NestedColumnValue{move(*ev)});
+                }
+                return ColumnValue{move(s)};
+            } else if constexpr (SameAs<T, MapLiteral>) {
+                if (!type_matches_tag<type::Map>(cdtype.value)) {
+                    return {};
+                }
+                const auto&                                      m = get<type::Map>(cdtype.value);
+                DynamicMap<NestedColumnValue, NestedColumnValue> out{};
+                for (U64 i = 0; i < cv.key_values.length; i++) {
+                    Optional<ColumnValue> k = resolve_evaluated(evaluate(cv.key_values[i].first, ctx), m.key, ctx);
+                    Optional<ColumnValue> v = resolve_evaluated(evaluate(cv.key_values[i].second, ctx), m.value, ctx);
+                    if (!k.has_value() || !v.has_value()) {
+                        return {};
+                    }
+                    insert(out, NestedColumnValue{move(*k)}, NestedColumnValue{move(*v)});
+                }
+                return ColumnValue{move(out)};
             } else if constexpr (SameAs<T, TupleLiteral>) {
-                return type_matches_tag<type::Tuple>(cdtype.value);
+                if (!type_matches_tag<type::Tuple>(cdtype.value)) {
+                    return {};
+                }
+                const auto&                     tup = get<type::Tuple>(cdtype.value);
+                DynamicArray<NestedColumnValue> arr{};
+                for (U64 i = 0; i < tup.elements.length; i++) {
+                    if (i < cv.elements.length) {
+                        Optional<ColumnValue> ev = resolve_evaluated(evaluate(cv.elements[i], ctx), tup.elements[i], ctx);
+                        if (!ev.has_value()) {
+                            return {};
+                        }
+                        push_back(arr, NestedColumnValue{move(*ev)});
+                    } else {
+                        push_back(arr, NestedColumnValue{ColumnValue{Null{}}});
+                    }
+                }
+                return ColumnValue{move(arr)};
+            } else if constexpr (SameAs<T, UdtLiteral>) {
+                if (!type_matches_tag<type::UDT*>(cdtype.value)) {
+                    return {};
+                }
+                type::UDT* u = get<type::UDT*>(cdtype.value);
+                if (u == nullptr) {
+                    return {};
+                }
+                DynamicArray<NestedColumnValue> arr{};
+                for (U64 j = 0; j < u->field_types.length; j++) {
+                    const Term* term = nullptr;
+                    for (U64 i = 0; i < cv.identifier_values.length; i++) {
+                        if (String8(cv.identifier_values[i].first) == u->field_names[j]) {
+                            term = &cv.identifier_values[i].second;
+                            break;
+                        }
+                    }
+                    if (term == nullptr) {
+                        push_back(arr, NestedColumnValue{ColumnValue{Null{}}});
+                        continue;
+                    }
+                    Optional<ColumnValue> ev = resolve_evaluated(evaluate(*term, ctx), u->field_types[j], ctx);
+                    if (!ev.has_value()) {
+                        return {};
+                    }
+                    push_back(arr, NestedColumnValue{move(*ev)});
+                }
+                return ColumnValue{move(arr)};
+            } else {
+                static_assert(!SameAs<T, T>, "resolve_evaluated: unhandled Evaluated arm");
+                return {};
+            }
+        });
+    }
+
+    // @note Recurses into every literal element/key/value via the same structure as
+    // resolve_evaluated, so a container literal only passes here if resolve_evaluated is
+    // guaranteed to resolve every element too — checking only the outer container tag let a
+    // type-mismatched element (e.g. a list<int> literal containing a string) pass this gate and
+    // then hit resolve_evaluated's failure assert downstream.
+    bool can_cast_write_evaluated_as_column_value(const Evaluated& evaluated, const type::Type& cdtype, const EvalContext& ctx) {
+        return visit(evaluated.value, [&cdtype, &ctx](const auto& cv) -> bool {
+            using T = Decay<decltype(cv)>;
+            if constexpr (SameAs<T, Literal>) {
+                return type_matches_tag<type::Basic>(cdtype.value) && can_cast_write_constant_as_column_value(cv, get<type::Basic>(cdtype.value));
+            } else if constexpr (SameAs<T, ListOrVectorLiteral>) {
+                const type::Type* el_type = nullptr;
+                if (type_matches_tag<type::List>(cdtype.value)) {
+                    el_type = &get<type::List>(cdtype.value).element;
+                } else if (type_matches_tag<type::Vector>(cdtype.value)) {
+                    el_type = &get<type::Vector>(cdtype.value).element;
+                } else {
+                    return false;
+                }
+                for (U64 i = 0; i < cv.elements.length; i++) {
+                    if (!can_cast_write_evaluated_as_column_value(evaluate(cv.elements[i], ctx), *el_type, ctx)) {
+                        return false;
+                    }
+                }
+                return true;
+            } else if constexpr (SameAs<T, SetLiteral>) {
+                if (!type_matches_tag<type::Set>(cdtype.value)) {
+                    return false;
+                }
+                const type::Type& key_type = get<type::Set>(cdtype.value).key;
+                for (U64 i = 0; i < cv.keys.length; i++) {
+                    if (!can_cast_write_evaluated_as_column_value(evaluate(cv.keys[i], ctx), key_type, ctx)) {
+                        return false;
+                    }
+                }
+                return true;
+            } else if constexpr (SameAs<T, MapLiteral>) {
+                if (!type_matches_tag<type::Map>(cdtype.value)) {
+                    return false;
+                }
+                const auto& m = get<type::Map>(cdtype.value);
+                for (U64 i = 0; i < cv.key_values.length; i++) {
+                    if (!can_cast_write_evaluated_as_column_value(evaluate(cv.key_values[i].first, ctx), m.key, ctx)
+                        || !can_cast_write_evaluated_as_column_value(evaluate(cv.key_values[i].second, ctx), m.value, ctx)) {
+                        return false;
+                    }
+                }
+                return true;
+            } else if constexpr (SameAs<T, TupleLiteral>) {
+                if (!type_matches_tag<type::Tuple>(cdtype.value)) {
+                    return false;
+                }
+                const auto& tup = get<type::Tuple>(cdtype.value);
+                for (U64 i = 0; i < cv.elements.length && i < tup.elements.length; i++) {
+                    if (!can_cast_write_evaluated_as_column_value(evaluate(cv.elements[i], ctx), tup.elements[i], ctx)) {
+                        return false;
+                    }
+                }
+                return true;
+            } else if constexpr (SameAs<T, UdtLiteral>) {
+                if (!type_matches_tag<type::UDT*>(cdtype.value)) {
+                    return false;
+                }
+                type::UDT* u = get<type::UDT*>(cdtype.value);
+                if (u == nullptr) {
+                    return false;
+                }
+                for (U64 j = 0; j < u->field_types.length; j++) {
+                    const Term* term = nullptr;
+                    for (U64 i = 0; i < cv.identifier_values.length; i++) {
+                        if (String8(cv.identifier_values[i].first) == u->field_names[j]) {
+                            term = &cv.identifier_values[i].second;
+                            break;
+                        }
+                    }
+                    if (term == nullptr) {
+                        continue; // missing field defaults to Null, matching resolve_evaluated
+                    }
+                    if (!can_cast_write_evaluated_as_column_value(evaluate(*term, ctx), u->field_types[j], ctx)) {
+                        return false;
+                    }
+                }
+                return true;
             } else if constexpr (SameAs<T, ColumnValue>) {
                 return can_write_column_value(cv, cdtype);
             } else {
@@ -999,11 +1238,11 @@ namespace cql::io {
     }
 
     void cast_write_evaluated_as_column_value(Writer w, const Evaluated& evaluated, const type::Type& cdtype, const EvalContext& ctx) {
-        assert_true(can_cast_write_evaluated_as_column_value(evaluated, cdtype), "invalid evaluated value for write");
+        assert_true(can_cast_write_evaluated_as_column_value(evaluated, cdtype, ctx), "invalid evaluated value for write");
 
         visit(evaluated.value, [&](const auto& cv) {
             using T = Decay<decltype(cv)>;
-            if constexpr (SameAs<T, Constant>) {
+            if constexpr (SameAs<T, Literal>) {
                 assert_true(type_matches_tag<type::Basic>(cdtype.value), "bad can write check!");
                 visit(cv.value, [&](const auto& c) {
                     write_typed_basic_as_column_value(w, c, get<type::Basic>(cdtype.value));
@@ -1093,7 +1332,7 @@ namespace cql::io {
                         continue;
                     }
                     Evaluated ev = evaluate(*per_field_term[i], ctx);
-                    if (type_matches_tag<Constant>(ev.value) && type_matches_tag<Null>(get<Constant>(ev.value).value)) {
+                    if (type_matches_tag<Literal>(ev.value) && type_matches_tag<Null>(get<Literal>(ev.value).value)) {
                         continue;
                     }
                     mask[i / 64] |= 1_u64 << (i % 64);

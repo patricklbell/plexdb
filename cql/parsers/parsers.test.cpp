@@ -76,9 +76,9 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
         REQUIRE(ks.if_not_exists == true);
         REQUIRE(ks.options.identifier_values.length == 1);
         REQUIRE(ks.options.identifier_values[0].first == "replication");
-        // @note quoted option values are stored as Constant{AutoString8}
-        REQUIRE(type_matches_tag<Constant>(ks.options.identifier_values[0].second));
-        REQUIRE(get<AutoString8>(get<Constant>(ks.options.identifier_values[0].second).value) == "NetworkTopologyStrategy");
+        // @note quoted option values are stored as Literal{AutoString8}
+        REQUIRE(type_matches_tag<Literal>(ks.options.identifier_values[0].second));
+        REQUIRE(get<AutoString8>(get<Literal>(ks.options.identifier_values[0].second).value) == "NetworkTopologyStrategy");
     }
 
     SECTION("CREATE KEYSPACE with multiple options") {
@@ -93,12 +93,12 @@ TEST_CASE("CQL CREATE TABLE", "[cql.cql]") {
         REQUIRE(ks.if_not_exists == false);
         REQUIRE(ks.options.identifier_values.length == 2);
         REQUIRE(ks.options.identifier_values[0].first == "replication");
-        // @note quoted option values are stored as Constant{AutoString8}
-        REQUIRE(type_matches_tag<Constant>(ks.options.identifier_values[0].second));
-        REQUIRE(get<AutoString8>(get<Constant>(ks.options.identifier_values[0].second).value) == "SimpleStrategy");
+        // @note quoted option values are stored as Literal{AutoString8}
+        REQUIRE(type_matches_tag<Literal>(ks.options.identifier_values[0].second));
+        REQUIRE(get<AutoString8>(get<Literal>(ks.options.identifier_values[0].second).value) == "SimpleStrategy");
         REQUIRE(ks.options.identifier_values[1].first == "durable_writes");
-        REQUIRE(type_matches_tag<Constant>(ks.options.identifier_values[1].second));
-        REQUIRE(get<AutoString8>(get<Constant>(ks.options.identifier_values[1].second).value) == "true");
+        REQUIRE(type_matches_tag<Literal>(ks.options.identifier_values[1].second));
+        REQUIRE(get<AutoString8>(get<Literal>(ks.options.identifier_values[1].second).value) == "true");
     }
 
     SECTION("CREATE KEYSPACE with three options") {
@@ -395,7 +395,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
     }
 
     SECTION("INSERT INTO with negative integers") {
-        // @note negation is represented as UnaryMinusArithmeticOperation, not a folded Constant
+        // @note negation is represented as UnaryMinusArithmeticOperation, not a folded Literal
         auto query  = "INSERT INTO ks.data VALUES (-100, -50, -1);";
         auto result = parse(query).statement;
 
@@ -406,7 +406,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
         auto check_neg = [](const Term& t, S64 expected) {
             const auto& arith = get<ArithmeticOperation>(t.value);
             const auto& unary = get<UnaryMinusArithmeticOperation>(arith.value);
-            REQUIRE(get<S64>(get<Constant>(unary.operand.value).value) == expected);
+            REQUIRE(get<S64>(get<Literal>(unary.operand.value).value) == expected);
         };
         check_neg(nv.values[0], 100);
         check_neg(nv.values[1], 50);
@@ -427,14 +427,14 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
         const auto& left     = get<ArithmeticOperation>(top.lhs.value);
         const auto& left_bin = get<BinaryArithmeticOperation>(left.value);
         REQUIRE(left_bin.op == ArithmeticOperator::plus);
-        REQUIRE(get<S64>(get<Constant>(left_bin.lhs.value).value) == 1);
+        REQUIRE(get<S64>(get<Literal>(left_bin.lhs.value).value) == 1);
 
         const auto& times_expr = get<ArithmeticOperation>(left_bin.rhs.value);
         const auto& times_bin  = get<BinaryArithmeticOperation>(times_expr.value);
         REQUIRE(times_bin.op == ArithmeticOperator::times);
-        REQUIRE(get<S64>(get<Constant>(times_bin.lhs.value).value) == 2);
-        REQUIRE(get<S64>(get<Constant>(times_bin.rhs.value).value) == 3);
-        REQUIRE(get<S64>(get<Constant>(top.rhs.value).value) == 5);
+        REQUIRE(get<S64>(get<Literal>(times_bin.lhs.value).value) == 2);
+        REQUIRE(get<S64>(get<Literal>(times_bin.rhs.value).value) == 3);
+        REQUIRE(get<S64>(get<Literal>(top.rhs.value).value) == 5);
     }
 
     SECTION("INSERT INTO modulo operator") {
@@ -447,8 +447,8 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
         const auto& expr    = get<ArithmeticOperation>(get<Insert::NamesValues>(ins.insert_clause).values[0].value);
         const auto& mod_bin = get<BinaryArithmeticOperation>(expr.value);
         REQUIRE(mod_bin.op == ArithmeticOperator::mod);
-        REQUIRE(get<S64>(get<Constant>(mod_bin.lhs.value).value) == 20);
-        REQUIRE(get<S64>(get<Constant>(mod_bin.rhs.value).value) == 6);
+        REQUIRE(get<S64>(get<Literal>(mod_bin.lhs.value).value) == 20);
+        REQUIRE(get<S64>(get<Literal>(mod_bin.rhs.value).value) == 6);
     }
 
     SECTION("INSERT INTO named values with arithmetic expression") {
@@ -482,7 +482,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
         REQUIRE(get<Insert::NamesValues>(ins.insert_clause).values.length == 1);
-        REQUIRE(get<S64>(get<Constant>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value) == 9223372036854775807LL);
+        REQUIRE(get<S64>(get<Literal>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value) == 9223372036854775807LL);
     }
 
     SECTION("INSERT INTO case insensitive") {
@@ -500,7 +500,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
         REQUIRE(get<Insert::NamesValues>(ins.insert_clause).values.length == 1);
-        REQUIRE(get<AutoString8>(get<Constant>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value) == "");
+        REQUIRE(get<AutoString8>(get<Literal>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value) == "");
     }
 
     SECTION("INSERT INTO with string containing spaces") {
@@ -510,8 +510,8 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
         REQUIRE(get<Insert::NamesValues>(ins.insert_clause).values.length == 2);
-        REQUIRE(get<AutoString8>(get<Constant>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value) == "hello world");
-        REQUIRE(get<AutoString8>(get<Constant>(get<Insert::NamesValues>(ins.insert_clause).values[1].value).value) == "foo bar baz");
+        REQUIRE(get<AutoString8>(get<Literal>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value) == "hello world");
+        REQUIRE(get<AutoString8>(get<Literal>(get<Insert::NamesValues>(ins.insert_clause).values[1].value).value) == "foo bar baz");
     }
 
     SECTION("INSERT INTO with escaped quotes") {
@@ -522,7 +522,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
         REQUIRE(get<Insert::NamesValues>(ins.insert_clause).values.length == 1);
-        REQUIRE(get<AutoString8>(get<Constant>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value) == "'quoted'");
+        REQUIRE(get<AutoString8>(get<Literal>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value) == "'quoted'");
     }
 
     SECTION("INSERT INTO with zero value") {
@@ -531,7 +531,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
 
         REQUIRE(result.has_value());
         const auto& ins = get<Insert>(result->value);
-        REQUIRE(get<S64>(get<Constant>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value) == 0);
+        REQUIRE(get<S64>(get<Literal>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value) == 0);
     }
 
     SECTION("INSERT INTO with multiple string values") {
@@ -542,7 +542,7 @@ TEST_CASE("CQL SELECT", "[cql.cql]") {
         const auto& ins = get<Insert>(result->value);
         REQUIRE(get<Insert::NamesValues>(ins.insert_clause).values.length == 5);
         for (size_t i = 0; i < 5; ++i) {
-            REQUIRE(type_matches_tag<AutoString8>(get<Constant>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value));
+            REQUIRE(type_matches_tag<AutoString8>(get<Literal>(get<Insert::NamesValues>(ins.insert_clause).values[0].value).value));
         }
     }
 }
@@ -1061,9 +1061,9 @@ TEST_CASE("Parse CREATE KEYSPACE with map literal replication", "[cql.parser]") 
         const auto& ks = get<CreateKeyspace>(result->value);
         REQUIRE(ks.options.identifier_values.length == 2);
         REQUIRE(type_matches_tag<MapLiteral>(ks.options.identifier_values[0].second));
-        // @note quoted option values are stored as Constant{AutoString8}
-        REQUIRE(type_matches_tag<Constant>(ks.options.identifier_values[1].second));
-        REQUIRE(get<AutoString8>(get<Constant>(ks.options.identifier_values[1].second).value) == "true");
+        // @note quoted option values are stored as Literal{AutoString8}
+        REQUIRE(type_matches_tag<Literal>(ks.options.identifier_values[1].second));
+        REQUIRE(get<AutoString8>(get<Literal>(ks.options.identifier_values[1].second).value) == "true");
     }
 }
 
@@ -1106,7 +1106,7 @@ TEST_CASE("CQL string escape", "[cql.cql]") {
     REQUIRE(result.has_value());
     auto& stmt    = get<Insert>(result->value);
     auto& nv      = get<Insert::NamesValues>(stmt.insert_clause);
-    auto& str_val = get<AutoString8>(get<Constant>(nv.values[1].value).value);
+    auto& str_val = get<AutoString8>(get<Literal>(nv.values[1].value).value);
     REQUIRE(str_val == "it's");
 }
 
@@ -1917,7 +1917,7 @@ TEST_CASE("Conformance: UPDATE counter columns", "[cql.conformance.parser]") {
         auto& bin   = get<TOIBinaryArithmetic>(arith.value);
         REQUIRE(bin.op == ArithmeticOperator::plus);
         REQUIRE(get<AutoString8>(bin.lhs.value) == "c");
-        REQUIRE(get<S64>(get<Constant>(bin.rhs.value).value) == 1);
+        REQUIRE(get<S64>(get<Literal>(bin.rhs.value).value) == 1);
     }
     SECTION("decrement counter") {
         auto r = parse("UPDATE ks.t SET c = c - 1 WHERE k = 0;").statement;
@@ -2227,7 +2227,7 @@ TEST_CASE("Conformance: UUID literals", "[cql.conformance.parser]") {
         auto r = parse("INSERT INTO ks.t (k, u) VALUES (1, 4d481800-4c5f-11e1-82e0-3f484de45426);").statement;
         REQUIRE(r.has_value());
         auto& nv   = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
-        auto& uuid = get<UUID>(get<Constant>(nv.values[1].value).value);
+        auto& uuid = get<UUID>(get<Literal>(nv.values[1].value).value);
         REQUIRE(uuid.value[0] == 0x4d);
         REQUIRE(uuid.value[1] == 0x48);
         REQUIRE(uuid.value[15] == 0x26);
@@ -2236,7 +2236,7 @@ TEST_CASE("Conformance: UUID literals", "[cql.conformance.parser]") {
         auto r = parse("INSERT INTO ks.t (k, u) VALUES (1, faceb00c-cafe-babe-dead-beefdeadbeef);").statement;
         REQUIRE(r.has_value());
         auto& nv = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
-        REQUIRE(type_matches_tag<UUID>(get<Constant>(nv.values[1].value).value));
+        REQUIRE(type_matches_tag<UUID>(get<Literal>(nv.values[1].value).value));
     }
     SECTION("UUID in WHERE clause") {
         auto r = parse("SELECT * FROM ks.t WHERE u = 4d481800-4c5f-11e1-82e0-3f484de45426;").statement;
@@ -2244,7 +2244,7 @@ TEST_CASE("Conformance: UUID literals", "[cql.conformance.parser]") {
         auto& sel = get<Select>(r->value);
         REQUIRE(sel.where.has_value());
         REQUIRE(sel.where->relations.length == 1);
-        REQUIRE(type_matches_tag<UUID>(get<Constant>(get<WhereClause::ColumnExpressionRelation>(sel.where->relations[0].value).value.value).value));
+        REQUIRE(type_matches_tag<UUID>(get<Literal>(get<WhereClause::ColumnExpressionRelation>(sel.where->relations[0].value).value.value).value));
     }
 }
 
@@ -2253,7 +2253,7 @@ TEST_CASE("Conformance: Duration literals", "[cql.conformance.parser]") {
         auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1s);").statement;
         REQUIRE(r.has_value());
         auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
-        auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
+        auto& dur = get<Duration>(get<Literal>(nv.values[1].value).value);
         REQUIRE(dur.months == 0);
         REQUIRE(dur.days == 0);
         REQUIRE(dur.nanoseconds == 1'000'000'000LL);
@@ -2262,14 +2262,14 @@ TEST_CASE("Conformance: Duration literals", "[cql.conformance.parser]") {
         auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 2h30m);").statement;
         REQUIRE(r.has_value());
         auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
-        auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
+        auto& dur = get<Duration>(get<Literal>(nv.values[1].value).value);
         REQUIRE(dur.nanoseconds == 2 * 3'600'000'000'000LL + 30 * 60'000'000'000LL);
     }
     SECTION("compound duration (years, months, days)") {
         auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1y2mo3d);").statement;
         REQUIRE(r.has_value());
         auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
-        auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
+        auto& dur = get<Duration>(get<Literal>(nv.values[1].value).value);
         REQUIRE(dur.months == 12 + 2);
         REQUIRE(dur.days == 3);
         REQUIRE(dur.nanoseconds == 0);
@@ -2281,14 +2281,14 @@ TEST_CASE("Conformance: Duration literals", "[cql.conformance.parser]") {
         REQUIRE(type_matches_tag<ListOrVectorLiteral>(nv.values[1].value));
         auto& list = get<ListOrVectorLiteral>(nv.values[1].value);
         REQUIRE(list.elements.length == 2);
-        REQUIRE(type_matches_tag<Duration>(get<Constant>(list.elements[0].value).value));
-        REQUIRE(type_matches_tag<Duration>(get<Constant>(list.elements[1].value).value));
+        REQUIRE(type_matches_tag<Duration>(get<Literal>(list.elements[0].value).value));
+        REQUIRE(type_matches_tag<Duration>(get<Literal>(list.elements[1].value).value));
     }
     SECTION("milliseconds and microseconds and nanoseconds") {
         auto r = parse("INSERT INTO ks.t (k, d) VALUES (1, 1ms);").statement;
         REQUIRE(r.has_value());
         auto& nv  = get<Insert::NamesValues>(get<Insert>(r->value).insert_clause);
-        auto& dur = get<Duration>(get<Constant>(nv.values[1].value).value);
+        auto& dur = get<Duration>(get<Literal>(nv.values[1].value).value);
         REQUIRE(dur.nanoseconds == 1'000'000LL);
     }
 }
