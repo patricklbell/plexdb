@@ -1,6 +1,7 @@
 ## Code style
 - Prefer `plexdb` library over STL.
 - Prefer structs of POD. Only use classes for lifetime/resource management. Only make members private if strictly necessary.
+    - Prefer struct designated initialization or default constructors rather than setting members as this is more fragile if the struct changes.
 - Use functions instead of class methods except for library compatibility.
 - Wrap OS-specific includes and calls in platform macros from `macros.h`.
 - Prefer single-expression idioms over ternaries or if-else. E.g. saturating subtract: `max(x, y) - y`.
