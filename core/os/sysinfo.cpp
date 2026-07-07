@@ -434,6 +434,95 @@ namespace plexdb::os {
         return status;
     }
 
+    namespace {
+        int hex_nibble(char c) {
+            if (c >= '0' && c <= '9') {
+                return c - '0';
+            }
+            if (c >= 'a' && c <= 'f') {
+                return c - 'a' + 10;
+            }
+            if (c >= 'A' && c <= 'F') {
+                return c - 'A' + 10;
+            }
+            return -1;
+        }
+
+        // Parse "aa:bb:cc:dd:ee:ff" into out[6]. Rejects malformed input and the all-zero MAC.
+        bool parse_mac(const char* s, U8 out[6]) {
+            bool all_zero = true;
+            for (int i = 0; i < 6; i++) {
+                int hi = hex_nibble(s[i * 3]);
+                int lo = hex_nibble(s[i * 3 + 1]);
+                if (hi < 0 || lo < 0) {
+                    return false;
+                }
+                if (i < 5 && s[i * 3 + 2] != ':') {
+                    return false;
+                }
+                out[i] = static_cast<U8>((hi << 4) | lo);
+                all_zero &= (out[i] == 0);
+            }
+            return !all_zero;
+        }
+    }
+
+    Array<U8, 6> get_node_id() {
+        static Array<U8, 6> node{};
+        static bool         initialized = false;
+        if (initialized) {
+            return node;
+        }
+        initialized = true;
+
+        // Prefer a real network interface MAC (skip loopback and virtual all-zero addresses).
+        if (DIR* dir = opendir("/sys/class/net")) {
+            struct dirent* entry;
+            while ((entry = readdir(dir)) != nullptr) {
+                if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0 || strcmp(entry->d_name, "lo") == 0) {
+                    continue;
+                }
+                char path[288];
+                snprintf(path, sizeof(path), "/sys/class/net/%s/address", entry->d_name);
+                int fd = open(path, O_RDONLY);
+                if (fd < 0) {
+                    continue;
+                }
+                char    buf[32] = {};
+                ssize_t n       = read(fd, buf, sizeof(buf) - 1);
+                close(fd);
+                if (n < 17) { // "aa:bb:cc:dd:ee:ff"
+                    continue;
+                }
+                U8 mac[6];
+                if (parse_mac(buf, mac)) {
+                    for (int i = 0; i < 6; i++) {
+                        node.values[i] = mac[i];
+                    }
+                    closedir(dir);
+                    return node;
+                }
+            }
+            closedir(dir);
+        }
+
+        // Fallback: FNV-1a hash of the hostname, marked non-IEEE via the multicast bit (RFC 4122 §4.5).
+        char host[256] = {};
+        if (gethostname(host, sizeof(host) - 1) != 0) {
+            host[0] = '\0';
+        }
+        U64 h = 1469598103934665603ULL;
+        for (const char* p = host; *p != '\0'; p++) {
+            h ^= static_cast<U8>(*p);
+            h *= 1099511628211ULL;
+        }
+        for (int i = 0; i < 6; i++) {
+            node.values[i] = static_cast<U8>(h >> (i * 8));
+        }
+        node.values[0] |= 0x01;
+        return node;
+    }
+
 #else
 #error "sysinfo not implemented for this OS"
 #endif

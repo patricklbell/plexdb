@@ -89,3 +89,22 @@ TEST_CASE("sysinfo singleton returns same pointer", "[plexdb.os.sysinfo]") {
     const KernelFeatures* kb = get_kernel_features();
     REQUIRE(ka == kb);
 }
+
+TEST_CASE("get_node_id is stable and non-zero", "[plexdb.os.sysinfo]") {
+    Array<U8, 6> a = get_node_id();
+    Array<U8, 6> b = get_node_id();
+
+    SECTION("stable across calls") {
+        for (U64 i = 0; i < 6; i++) {
+            REQUIRE(a.values[i] == b.values[i]);
+        }
+    }
+
+    SECTION("not the all-zero node") {
+        bool any = false;
+        for (U64 i = 0; i < 6; i++) {
+            any |= (a.values[i] != 0);
+        }
+        REQUIRE(any);
+    }
+}

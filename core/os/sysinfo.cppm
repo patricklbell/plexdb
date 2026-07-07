@@ -62,6 +62,12 @@ export namespace plexdb::os {
     const ProcessInfo*    get_process_info();
     const KernelFeatures* get_kernel_features();
 
+    // 6-byte host node identifier for RFC 4122 time-based (v1) UUIDs. Derived once from a network
+    // interface MAC address; when none is usable, from a hash of the hostname with the RFC 4122
+    // §4.5 multicast bit set to mark it as a non-IEEE (synthesised) address. Stable for the process
+    // lifetime, so a node's timeuuids are attributable to it and collision-free against peers.
+    Array<U8, 6> get_node_id();
+
     // ========================================================================
     // dynamic queries
     // @note these may be expensive and should be used sparingly
