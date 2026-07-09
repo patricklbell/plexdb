@@ -18,7 +18,7 @@
 #     -L <dir>     write per-session server log to <dir>/server.log
 #     -m <file>    fail if a listed test regresses                   (default: none)
 #     -o <file>    write passing test IDs to <file> (gen mustpass)   (default: none)
-#     -s <file>    skiplist (deselect permissive-parser tests)        (default: tools/cql_tests/skiplist.txt)
+#     -s <file>    skiplist (deselect permissive-parser tests)       (default: tools/cql_tests/skiplist.txt)
 #     -h           show this help
 #
 # Environment:

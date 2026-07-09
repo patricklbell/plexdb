@@ -3,13 +3,13 @@
 #
 # Deliberately thin: no daemon, no registration step. The target just needs
 # to be reachable over ssh with docker and the build toolchain already
-# installed, and a checkout of this repo at the given path (default ~/plexbd).
+# installed, and a checkout of this repo at the given path (default ~/.cache/plexdb).
 # Results come back automatically named with that machine's hostname (see
 # run.sh), so there's no collision with local results.
 #
 # Usage:
 #   ./tools/bench/remote_run.sh <user@host> [-p <remote_path>] [-- <run.sh args...>]
-#     -p <path>    repo checkout path on the remote host   (default: ~/plexbd)
+#     -p <path>    repo checkout path on the remote host   (default: ~/.cache/plexdb)
 #     -h           show this help
 #
 # If the local working tree has uncommitted changes, they're rsynced to the
@@ -30,7 +30,7 @@ fi
 HOST="$1"
 shift
 
-REMOTE_PATH="~/plexbd"
+REMOTE_PATH="~/.cache/plexdb"
 while [ $# -gt 0 ]; do
     case "$1" in
         -p) REMOTE_PATH="$2"; shift 2 ;;
