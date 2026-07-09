@@ -165,7 +165,8 @@ export namespace plexdb::tcp {
             co_return co_await coroutine::Awaitable{
                 [in_s, connection, buffer, byte_offset, max_byte_count](std::coroutine_handle<> h) {
                     connection->waiting_rwc = h;
-                    uring::sqe_push_read(in_s->ring, connection->client, bounds_checked_cast<U32>(buffer->idx), byte_offset, max_byte_count);
+                    bool pushed             = uring::sqe_push_read(in_s->ring, connection->client, bounds_checked_cast<U32>(buffer->idx), byte_offset, max_byte_count);
+                    assert_true_always(pushed, "failed to submit io_uring read SQE");
                 },
                 [connection, buffer]() -> Error {
                     buffer->view.length     = connection->count_rwc;
@@ -185,7 +186,8 @@ export namespace plexdb::tcp {
             co_return co_await coroutine::Awaitable{
                 [in_s, connection, buffer, byte_offset, target_byte_count](std::coroutine_handle<> h) {
                     connection->waiting_rwc = h;
-                    uring::sqe_push_write(in_s->ring, connection->client, bounds_checked_cast<U32>(buffer->idx), byte_offset, target_byte_count);
+                    bool pushed             = uring::sqe_push_write(in_s->ring, connection->client, bounds_checked_cast<U32>(buffer->idx), byte_offset, target_byte_count);
+                    assert_true_always(pushed, "failed to submit io_uring write SQE");
                 },
                 [connection, target_byte_count]() -> Error {
                     connection->waiting_rwc = std::coroutine_handle<>{};
@@ -195,7 +197,7 @@ export namespace plexdb::tcp {
             };
         }};
 
-        uring::sqe_push_multishot_accept(in_s->ring);
+        assert_true_always(uring::sqe_push_multishot_accept(in_s->ring), "failed to submit io_uring multishot accept SQE");
         uring::sqe_submit_non_blocking(in_s->ring);
         os::poll_unblock_on(poll, in_s->ring.event_fd);
 
@@ -214,7 +216,7 @@ export namespace plexdb::tcp {
                         in_s->stats.active_connections--;
 
                         if (!is_in_close_handler) {
-                            uring::sqe_push_close(in_s->ring, client);
+                            assert_true_always(uring::sqe_push_close(in_s->ring, client), "failed to submit io_uring close SQE");
                         }
 
                         connection.task.reset();
@@ -222,11 +224,14 @@ export namespace plexdb::tcp {
                         return true;
                     };
 
-                    if (!uring::ring_drain_event_fd(in_s->ring)) {
+                    // @note a coroutine resumed via another ring's completion can push an SQE
+                    // here without this ring's eventfd firing; submit unconditionally, before
+                    // checking for new events, or that push never reaches the kernel.
+                    bool has_new_events = uring::ring_drain_event_fd(in_s->ring);
+                    uring::sqe_submit_non_blocking(in_s->ring);
+                    if (!has_new_events) {
                         return true;
                     }
-
-                    uring::sqe_submit_non_blocking(in_s->ring);
 
                     while (uring::cqe_get_size(in_s->ring) > 0) {
                         auto cqe = uring::cqe_top(in_s->ring);
@@ -235,7 +240,6 @@ export namespace plexdb::tcp {
                         visit(cqe, [&](const auto& ev) {
                             using T = RemoveCVRef<decltype(ev)>;
                             if constexpr (SameAs<T, uring::ReadEvent>) {
-                                assert_true_not_implemented(ev.error == uring::Error::None, "TCP read error handling not implemented");
                                 Connection* conn;
                                 {
                                     // @note info is only valid up to this lookup: resuming the
@@ -246,14 +250,15 @@ export namespace plexdb::tcp {
                                 }
                                 assert_true(conn != nullptr, "connection dropped before read completion");
                                 in_s->stats.total_bytes_read += ev.bytes_read;
-                                conn->error_rwc = ev.bytes_read == 0 ? Error::ConnectionClosed : Error::None;
+                                conn->error_rwc = ev.error != uring::Error::None ? Error::Other
+                                                : ev.bytes_read == 0             ? Error::ConnectionClosed
+                                                                                 : Error::None;
                                 conn->count_rwc = ev.bytes_read;
                                 conn->waiting_rwc.resume();
                                 if (static_cast<bool>(conn->task) && conn->task->done()) {
                                     close_and_cleanup(conn->client, /*is_in_close_handler=*/false);
                                 }
                             } else if constexpr (SameAs<T, uring::WriteEvent>) {
-                                assert_true_not_implemented(ev.error == uring::Error::None, "TCP write error handling not implemented");
                                 Connection* conn;
                                 {
                                     // @note scope, see above
@@ -262,16 +267,20 @@ export namespace plexdb::tcp {
                                 }
                                 assert_true(conn != nullptr, "connection dropped before write completion");
                                 in_s->stats.total_bytes_written += ev.bytes_written;
-                                conn->error_rwc = Error::None;
+                                conn->error_rwc = ev.error != uring::Error::None ? Error::Other : Error::None;
                                 conn->count_rwc = ev.bytes_written;
                                 conn->waiting_rwc.resume();
                                 if (static_cast<bool>(conn->task) && conn->task->done()) {
                                     close_and_cleanup(conn->client, /*is_in_close_handler=*/false);
                                 }
                             } else if constexpr (Either<T, uring::AcceptEvent, uring::MultishotAcceptEvent>) {
-                                assert_true_not_implemented(ev.error == uring::Error::None, "TCP accept error handling not implemented");
                                 if constexpr (!SameAs<T, uring::MultishotAcceptEvent>) {
-                                    uring::sqe_push_accept(in_s->ring);
+                                    assert_true_always(uring::sqe_push_accept(in_s->ring), "failed to submit io_uring accept SQE");
+                                }
+                                // @note a failed accept only drops this one connection attempt;
+                                // the listener keeps accepting others.
+                                if (ev.error != uring::Error::None) {
+                                    return;
                                 }
                                 os::socket_set_option(ev.client, os::SocketOption::NoDelay, true);
                                 Connection& conn = find_or_insert(in_s->client_to_connection, ev.client);
@@ -287,7 +296,7 @@ export namespace plexdb::tcp {
                                 };
                                 conn.task = (*in_handler)(conn.req);
                             } else if constexpr (SameAs<T, uring::CloseEvent>) {
-                                assert_true_not_implemented(ev.error == uring::Error::None, "TCP close error handling not implemented");
+                                // @note intentionally ignores a close error, the connection is gone anyways
                                 close_and_cleanup(ev.client, /*is_in_close_handler*/ true);
                             }
                         });

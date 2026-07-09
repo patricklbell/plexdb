@@ -363,8 +363,12 @@ namespace cql::native {
             U64  chunk = min(len, static_cast<U64>(buf.length));
             os::memory_copy(buf.view.ptr, data, chunk);
             buf.view.length = chunk;
-            co_await tcp::write(req, &buf);
+            tcp::Error err  = co_await tcp::write(req, &buf);
             tcp::release(req, &buf);
+
+            if (err != tcp::Error::None) {
+                co_return;
+            }
 
             data += chunk;
             len -= chunk;

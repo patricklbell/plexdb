@@ -178,8 +178,9 @@ namespace plexdb::aio {
             op.bytes = 0;
 
             // @note SQE submitted before co_await; the single-threaded loop cannot deliver the completion until after await_suspend stores the handle
-            uring::sqe_push_file_read(*state->ring, file, buf_idx, rng.start, U32(rng.end - rng.start), U64(buf_idx));
+            bool pushed = uring::sqe_push_file_read(*state->ring, file, buf_idx, rng.start, U32(rng.end - rng.start), U64(buf_idx));
             uring::sqe_submit_non_blocking(*state->ring);
+            assert_true_always(pushed, "failed to submit io_uring file read SQE");
             co_await coroutine::Awaitable{
                 [s = state, buf_idx](std::coroutine_handle<> h) { s->ops[buf_idx].handle = h; },
                 []() {},
@@ -205,8 +206,9 @@ namespace plexdb::aio {
             op.dst   = nullptr;
             op.bytes = 0;
 
-            uring::sqe_push_file_write(*state->ring, file, buf_idx, rng.start, count, U64(buf_idx));
+            bool pushed = uring::sqe_push_file_write(*state->ring, file, buf_idx, rng.start, count, U64(buf_idx));
             uring::sqe_submit_non_blocking(*state->ring);
+            assert_true_always(pushed, "failed to submit io_uring file write SQE");
             co_await coroutine::Awaitable{
                 [s = state, buf_idx](std::coroutine_handle<> h) { s->ops[buf_idx].handle = h; },
                 []() {},
@@ -219,9 +221,10 @@ namespace plexdb::aio {
         }};
 
         auto sync_fn = FileSyncFunctor{[state](os::Handle file) -> coroutine::Task<> {
-            U32 sync_idx = state->next_sync_slot++ % MAX_SYNC_SLOTS;
-            uring::sqe_push_file_sync(*state->ring, file, U64(sync_idx));
+            U32  sync_idx = state->next_sync_slot++ % MAX_SYNC_SLOTS;
+            bool pushed   = uring::sqe_push_file_sync(*state->ring, file, U64(sync_idx));
             uring::sqe_submit_non_blocking(*state->ring);
+            assert_true_always(pushed, "failed to submit io_uring file sync SQE");
             co_await coroutine::Awaitable{
                 [s = state, sync_idx](std::coroutine_handle<> h) { s->sync_handles[sync_idx] = h; },
                 []() {},
@@ -234,11 +237,15 @@ namespace plexdb::aio {
         EventConsumer consumer{
             .max_events = U64(buf_count) + MAX_SYNC_SLOTS,
             .on_unblock = OnUnblockFunctor{[state]([[maybe_unused]] const TArrayView<os::PollEvent>&) -> bool {
-                if (!uring::ring_drain_event_fd(*state->ring)) {
+                // @note a coroutine resumed via another ring's completion can push an SQE here
+                // without this ring's eventfd firing; submit unconditionally, before checking
+                // for new events, or that push never reaches the kernel.
+                bool has_new_events = uring::ring_drain_event_fd(*state->ring);
+                uring::sqe_submit_non_blocking(*state->ring);
+                if (!has_new_events) {
                     return true;
                 }
 
-                uring::sqe_submit_non_blocking(*state->ring);
                 while (uring::cqe_get_size(*state->ring) > 0) {
                     auto cqe = uring::cqe_top(*state->ring);
                     uring::cqe_pop(*state->ring, 1);
