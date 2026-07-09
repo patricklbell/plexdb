@@ -48,17 +48,13 @@ export namespace plexdb::tcp {
         os::Handle                    socket,
         const ConnectionHandler auto* in_handler,
         os::Poll&                     poll,
-        bool                          try_uring = true
+        bool                          try_uring        = true,
+        uring::IOBudgetOverride       network_override = {}
     ) {
-        if (try_uring) {
-            auto ring_settings = uring::get_ring_settings();
-            if (ring_settings->recommended) {
-                uring::Ring ring{
-                    socket,
-                    ring_settings->recommended_queue_depth,
-                    ring_settings->recommended_buffer_size,
-                    ring_settings->recommended_buffer_count
-                };
+        if (try_uring && uring::get_ring_settings()->available) {
+            uring::NetworkIOBudget budget = uring::compute_network_io_budget(network_override);
+            if (budget.buffer_count > 0 && budget.buffer_size > 0) {
+                uring::Ring ring{socket, budget.queue_depth, budget.buffer_size, budget.buffer_count};
                 if (ring && !os::is_zero_handle(ring.event_fd)) {
                     return TcpServer{UringListenerState{move(ring)}, in_handler, poll};
                 }

@@ -51,41 +51,69 @@ namespace plexdb::uring {
 
     Optional<RingSettings> g_ring_settings_opt;
 
-    // call after making changes to ring settings
-    static void finalize_ring_settings(RingSettings* settings) {
-        constexpr U64 minimum_recommended_buffer_size = 1_kb;
+    // Hard safety ceiling/floor for a single ring's registered-buffer footprint,
+    // applied unconditionally regardless of measured RLIMIT_MEMLOCK/total_memory — a
+    // generous or "unlimited" memlock limit must never translate into an unbounded
+    // mlock request (registering tens of GB of buffers can pin enough physical
+    // memory to bring the host down). Starting values follow common io_uring/reactor
+    // practice (e.g. Seastar/ScyllaDB shard-local buffer pools, liburing benchmark
+    // defaults): dozens-to-a-few-hundred in-flight buffers of tens of KB each is
+    // enough to keep a NIC/NVMe queue full without registering more than a few MB of
+    // locked memory per ring. Tune with tools, not by hand.
+    constexpr U64 MIN_RING_BUFFER_SIZE  = 4_kb;
+    constexpr U64 MAX_RING_BUFFER_SIZE  = 64_kb;
+    constexpr U32 MIN_RING_BUFFER_COUNT = 8;
+    constexpr U32 MAX_RING_BUFFER_COUNT = 256;
+    constexpr U32 MIN_RING_QUEUE_DEPTH  = 8;
+    constexpr U32 MAX_RING_QUEUE_DEPTH  = 256;
 
-        U64 page_size = os::get_system_info()->page_size;
+    struct ClampedRingSize {
+        U64  buffer_size;
+        U32  buffer_count;
+        U32  queue_depth;
+        bool ok;
+    };
 
-        settings->available = os::get_kernel_features()->io_uring.supported && (settings->available_buffer_bytes > 0) && (settings->available_buffer_count > 0) && (settings->available_ring_count > 0) && (page_size >= minimum_recommended_buffer_size);
-
+    static ClampedRingSize clamp_ring_size(
+        U64 available_bytes, U32 available_buffer_count_cap, U32 available_queue_depth,
+        U64 page_size, U64 wanted_buffer_size, U32 wanted_buffer_count, U32 wanted_queue_depth
+    ) {
         // @note buffer_size must be page-aligned for io_uring_register_buffers mlock accounting
-        settings->recommended = settings->available;
-        if (!settings->recommended) {
-            settings->recommended_queue_depth  = 0;
-            settings->recommended_buffer_size  = 0;
-            settings->recommended_buffer_count = 0;
-            return;
-        }
-
-        settings->recommended_queue_depth  = settings->available_queue_depth;
-        settings->recommended_buffer_size  = align_down(settings->available_buffer_bytes / settings->available_buffer_count, page_size);
-        settings->recommended_buffer_count = min(
-            settings->available_buffer_bytes / max(settings->recommended_buffer_size, 1_u64),
-            settings->available_buffer_count
+        U64 buffer_size = align_down(
+            min(max(wanted_buffer_size, MIN_RING_BUFFER_SIZE), MAX_RING_BUFFER_SIZE),
+            max(page_size, 1_u64)
         );
-
-        if (settings->recommended_buffer_size < minimum_recommended_buffer_size) {
-            settings->recommended_buffer_size  = align_down(minimum_recommended_buffer_size, page_size);
-            settings->recommended_buffer_count = min(
-                settings->available_buffer_bytes / max(minimum_recommended_buffer_size, 1_u64),
-                settings->available_buffer_count
-            );
-
-            if (settings->recommended_buffer_count == 0 || settings->recommended_buffer_size == 0) {
-                settings->recommended = false;
-            }
+        if (buffer_size == 0) {
+            return {.buffer_size = 0, .buffer_count = 0, .queue_depth = 0, .ok = false};
         }
+
+        U32 wanted_count_clamped = min(max(wanted_buffer_count, MIN_RING_BUFFER_COUNT), MAX_RING_BUFFER_COUNT);
+        U32 buffer_count         = U32(min(
+            U64(wanted_count_clamped),
+            min(available_bytes / buffer_size, U64(available_buffer_count_cap))
+        ));
+
+        U32 queue_depth = min(max(wanted_queue_depth, MIN_RING_QUEUE_DEPTH), min(MAX_RING_QUEUE_DEPTH, available_queue_depth));
+
+        bool ok = buffer_count >= MIN_RING_BUFFER_COUNT && queue_depth >= MIN_RING_QUEUE_DEPTH;
+        return {
+            .buffer_size  = buffer_size,
+            .buffer_count = ok ? buffer_count : 0,
+            .queue_depth  = ok ? queue_depth : 0,
+            .ok           = ok,
+        };
+    }
+
+    // @warn re-run after allocations, since a ring being constructed or destroyed changes global budget
+    static bool ring_settings_available(const RingSettings* settings) {
+        return os::get_kernel_features()->io_uring.supported
+            && settings->available_ring_count > 0
+            && clamp_ring_size(
+                   settings->available_buffer_bytes, settings->available_buffer_count,
+                   settings->available_queue_depth, os::get_system_info()->page_size,
+                   MIN_RING_BUFFER_SIZE, MIN_RING_BUFFER_COUNT, MIN_RING_QUEUE_DEPTH
+            )
+                   .ok;
     }
 
     static RingSettings* get_ring_settings_internal() {
@@ -96,12 +124,8 @@ namespace plexdb::uring {
             U64           usable_mlock            = max(mlock_limit, IO_URING_OVERHEAD_BYTES) - IO_URING_OVERHEAD_BYTES;
 
             RingSettings ring_settings = {
-                .recommended              = false,
-                .recommended_queue_depth  = 0,
-                .recommended_buffer_size  = 0,
-                .recommended_buffer_count = 0,
-                .available                = false,
-                .available_queue_depth    = min(
+                .available             = false,
+                .available_queue_depth = min(
                     os::get_kernel_features()->io_uring.max_sq_entries,
                     os::get_kernel_features()->io_uring.max_cq_entries
                 ),
@@ -114,7 +138,8 @@ namespace plexdb::uring {
                 .available_ring_count   = os::get_system_info()->vma_limit,
             };
 
-            finalize_ring_settings(&ring_settings);
+            ring_settings.available = ring_settings_available(&ring_settings);
+
             g_ring_settings_opt.emplace(move(ring_settings));
         }
 
@@ -129,44 +154,43 @@ namespace plexdb::uring {
         return &ring.buffers[buffer_idx * ring.buffer_size];
     }
 
-    GlobalIOBudget compute_io_budget(U64 page_size) {
-        constexpr U64 IO_URING_OVERHEAD_BYTES = 64_kb;
-
-        U64 mlock_limit = os::get_system_info()->mlock_limit;
-        U64 total_mlock = max(mlock_limit, 2 * IO_URING_OVERHEAD_BYTES) - 2 * IO_URING_OVERHEAD_BYTES;
+    NetworkIOBudget compute_network_io_budget(IOBudgetOverride ring_override) {
+        RingSettings* settings = get_ring_settings_internal();
+        if (!settings->available) {
+            return NetworkIOBudget{.queue_depth = 0, .buffer_size = 0, .buffer_count = 0};
+        }
 
         auto* kf             = os::get_kernel_features();
         U32   max_sq_entries = kf->io_uring.supported ? min(kf->io_uring.max_sq_entries, kf->io_uring.max_cq_entries) : 0;
-        U32   max_iovecs     = kf->io_uring.supported ? kf->io_uring.max_iovecs : 0;
-        U64   total_memory   = os::get_system_info()->total_memory;
 
-        U64 usable_bytes  = min(total_mlock, total_memory);
-        U64 network_bytes = usable_bytes / 2;
-        U64 file_bytes    = usable_bytes / 2;
+        U64 wanted_buffer_size  = ring_override.buffer_size ? *ring_override.buffer_size : 64_kb;
+        U32 wanted_buffer_count = ring_override.buffer_count ? *ring_override.buffer_count : 64;
+        U32 wanted_queue_depth  = ring_override.queue_depth ? *ring_override.queue_depth : (max_sq_entries > 0 ? max_sq_entries / 2 : 32);
 
-        U32 disk_queue_depth    = os::get_system_info()->disk_queue_depth;
-        U32 network_queue_depth = max_sq_entries > 0 ? max_sq_entries / 2 : 32;
+        ClampedRingSize clamped = clamp_ring_size(
+            settings->available_buffer_bytes, settings->available_buffer_count, settings->available_queue_depth,
+            os::get_system_info()->page_size, wanted_buffer_size, wanted_buffer_count, wanted_queue_depth
+        );
 
-        U64 network_buffer_size  = 64_kb;
-        U32 network_buffer_count = U32(network_bytes / network_buffer_size);
-        if (network_buffer_count > max_iovecs) {
-            network_buffer_count = max_iovecs;
+        return NetworkIOBudget{.queue_depth = clamped.queue_depth, .buffer_size = clamped.buffer_size, .buffer_count = clamped.buffer_count};
+    }
+
+    FileIOBudget compute_file_io_budget(U64 page_size, IOBudgetOverride ring_override) {
+        RingSettings* settings = get_ring_settings_internal();
+        if (!settings->available) {
+            return FileIOBudget{.queue_depth = 0, .buffer_size = 0, .buffer_count = 0};
         }
 
-        U64 file_buffer_size  = align_up(page_size, os::get_system_info()->page_size);
-        U32 file_buffer_count = U32(file_bytes / file_buffer_size);
-        if (file_buffer_count > max_iovecs) {
-            file_buffer_count = max_iovecs;
-        }
+        U64 wanted_buffer_size  = ring_override.buffer_size ? *ring_override.buffer_size : align_up(page_size, os::get_system_info()->page_size);
+        U32 wanted_buffer_count = ring_override.buffer_count ? *ring_override.buffer_count : 64;
+        U32 wanted_queue_depth  = ring_override.queue_depth ? *ring_override.queue_depth : os::get_system_info()->disk_queue_depth;
 
-        return GlobalIOBudget{
-            .network_queue_depth  = network_queue_depth,
-            .network_buffer_size  = network_buffer_size,
-            .network_buffer_count = network_buffer_count,
-            .file_queue_depth     = disk_queue_depth,
-            .file_buffer_size     = file_buffer_size,
-            .file_buffer_count    = file_buffer_count,
-        };
+        ClampedRingSize clamped = clamp_ring_size(
+            settings->available_buffer_bytes, settings->available_buffer_count, settings->available_queue_depth,
+            page_size, wanted_buffer_size, wanted_buffer_count, wanted_queue_depth
+        );
+
+        return FileIOBudget{.queue_depth = clamped.queue_depth, .buffer_size = clamped.buffer_size, .buffer_count = clamped.buffer_count};
     }
 
 #if CORE_ENABLE_IO_URING
@@ -248,10 +272,10 @@ namespace plexdb::uring {
 
         // @todo @thread safe
         {
-            get_ring_settings_internal()->available_buffer_bytes -= this->buffer_size * this->buffer_count;
-            get_ring_settings_internal()->available_buffer_count -= this->buffer_count;
-            get_ring_settings_internal()->available_ring_count -= 1;
-            finalize_ring_settings(get_ring_settings_internal());
+            RingSettings* settings = get_ring_settings_internal();
+            settings->available_buffer_bytes -= this->buffer_size * this->buffer_count;
+            settings->available_ring_count -= 1;
+            settings->available = ring_settings_available(settings);
         }
     }
 
@@ -277,10 +301,10 @@ namespace plexdb::uring {
 
             // @todo @thread safe
             {
-                get_ring_settings_internal()->available_buffer_bytes += this->buffer_size * this->buffer_count;
-                get_ring_settings_internal()->available_buffer_count += this->buffer_count;
-                get_ring_settings_internal()->available_ring_count += 1;
-                finalize_ring_settings(get_ring_settings_internal());
+                RingSettings* settings = get_ring_settings_internal();
+                settings->available_buffer_bytes += this->buffer_size * this->buffer_count;
+                settings->available_ring_count += 1;
+                settings->available = ring_settings_available(settings);
             }
         }
     }

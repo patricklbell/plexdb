@@ -15,11 +15,6 @@ export namespace plexdb::uring {
     // ring
     // ========================================================================
     struct RingSettings {
-        bool recommended;
-        U32  recommended_queue_depth;
-        U64  recommended_buffer_size;
-        U32  recommended_buffer_count;
-
         bool available;
         U32  available_queue_depth;
         U64  available_buffer_bytes;
@@ -135,18 +130,33 @@ export namespace plexdb::uring {
     bool sqe_submit_non_blocking(Ring& ring);
 
     // ========================================================================
-    // global I/O budget
+    // per-ring I/O budget
     // ========================================================================
-    struct GlobalIOBudget {
-        U32 network_queue_depth;
-        U64 network_buffer_size;
-        U32 network_buffer_count;
-        U32 file_queue_depth;
-        U64 file_buffer_size;
-        U32 file_buffer_count;
+    // Optional overrides for experimenting with ring sizing (e.g. via CLI flags,
+    // see tools/bench/uring_sweep.py); unset fields fall back to the built-in
+    // heuristic. Every field, overridden or not, is still clamped to the hard
+    // MIN_RING_*/MAX_RING_* safety bounds in uring.cpp — that clamp is a safety
+    // invariant, not just a default, so it cannot be bypassed via override.
+    struct IOBudgetOverride {
+        Optional<U64> buffer_size;
+        Optional<U32> buffer_count;
+        Optional<U32> queue_depth;
     };
 
-    GlobalIOBudget compute_io_budget(U64 page_size);
+    struct NetworkIOBudget {
+        U32 queue_depth;
+        U64 buffer_size;
+        U32 buffer_count;
+    };
+
+    struct FileIOBudget {
+        U32 queue_depth;
+        U64 buffer_size;
+        U32 buffer_count;
+    };
+
+    NetworkIOBudget compute_network_io_budget(IOBudgetOverride ring_override = {});
+    FileIOBudget    compute_file_io_budget(U64 page_size, IOBudgetOverride ring_override = {});
 
     // ========================================================================
     // stats

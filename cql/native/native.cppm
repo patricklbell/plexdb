@@ -653,7 +653,8 @@ export namespace cql::native {
     Optional<String8> run(
         U16 port, Engine& engine,
         const OnReady auto& on_ready_callback, bool use_uring,
-        aio::EventConsumer& file_io_consumer, aio::EventConsumer& signal_consumer, os::Poll& io_poll
+        aio::EventConsumer& file_io_consumer, aio::EventConsumer& signal_consumer, os::Poll& io_poll,
+        uring::IOBudgetOverride network_override = {}
     ) {
         const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> {
             ZoneScopedN("request");
@@ -691,7 +692,7 @@ export namespace cql::native {
                 return {"failed to listen on server socket"};
             }
 
-            auto tcp_server = tcp::create_tcp_server(socket, &connection_handler, io_poll, use_uring);
+            auto tcp_server = tcp::create_tcp_server(socket, &connection_handler, io_poll, use_uring, network_override);
 
             on_ready_callback();
 

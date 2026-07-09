@@ -25,7 +25,7 @@ static volatile sig_atomic_t g_signal_count = 0;
 
 static void                                         assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
 static void                                         signal_handler(int);
-static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll);
+static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll, uring::IOBudgetOverride file_budget_override = {});
 
 int main(int argc, char* argv[]) {
     plexdb::threads::Context main_thread_ctx{.arenas = {}, .is_main = true};
@@ -44,6 +44,13 @@ int main(int argc, char* argv[]) {
     U64 checkpoint_interval_arg = argparse::add_option(arg_parser, "--checkpoint-interval", "-c", "Maximum number of transactions held in-memory before writing to database", "1000");
     U64 no_uring_arg            = argparse::add_flag(arg_parser, "--no-uring", "-U", "Disable io_uring and use synchronous socket I/O");
     U64 no_wal_arg              = argparse::add_flag(arg_parser, "--no-wal", "-W", "Disable write-ahead-log (WAL)");
+
+    U64 net_buffer_size_arg   = argparse::add_option(arg_parser, "--net-buffer-size", "", "Override io_uring network ring buffer size in bytes");
+    U64 net_buffer_count_arg  = argparse::add_option(arg_parser, "--net-buffer-count", "", "Override io_uring network ring buffer count");
+    U64 net_queue_depth_arg   = argparse::add_option(arg_parser, "--net-queue-depth", "", "Override io_uring network ring queue depth");
+    U64 file_buffer_size_arg  = argparse::add_option(arg_parser, "--file-buffer-size", "", "Override io_uring file ring buffer size in bytes");
+    U64 file_buffer_count_arg = argparse::add_option(arg_parser, "--file-buffer-count", "", "Override io_uring file ring buffer count");
+    U64 file_queue_depth_arg  = argparse::add_option(arg_parser, "--file-queue-depth", "", "Override io_uring file ring queue depth");
 
     auto args = argparse::parse(arg_parser, argc, argv);
     if (args.help_requested) {
@@ -66,6 +73,26 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    auto opt_u64_option = [&args](U64 option_arg) -> Optional<U64> {
+        String8 value = argparse::get_option(args, option_arg);
+        return value.length > 0 ? Optional<U64>{u64_from_str(value)} : Optional<U64>{};
+    };
+    auto opt_u32_option = [&args](U64 option_arg) -> Optional<U32> {
+        String8 value = argparse::get_option(args, option_arg);
+        return value.length > 0 ? Optional<U32>{u32_from_str(value)} : Optional<U32>{};
+    };
+
+    uring::IOBudgetOverride network_budget_override{
+        .buffer_size  = opt_u64_option(net_buffer_size_arg),
+        .buffer_count = opt_u32_option(net_buffer_count_arg),
+        .queue_depth  = opt_u32_option(net_queue_depth_arg),
+    };
+    uring::IOBudgetOverride file_budget_override{
+        .buffer_size  = opt_u64_option(file_buffer_size_arg),
+        .buffer_count = opt_u32_option(file_buffer_count_arg),
+        .queue_depth  = opt_u32_option(file_queue_depth_arg),
+    };
+
     String8 pid_file_path = "plexdb_cql_server.pid";
     {
         os::File    pid_file{os::file_open(pid_file_path, os::AccessFlags(os::READ | os::WRITE | os::TRUNCATE))};
@@ -77,7 +104,7 @@ int main(int argc, char* argv[]) {
     {
         threads::Scope                           scratch = threads::scratch();
         TaggedUnion<uring::Ring, os::AIOContext> file_io_resource;
-        auto [file_io_ctx, file_io_consumer] = create_file_io_context(file_io_resource, *scratch.arena, io_poll);
+        auto [file_io_ctx, file_io_consumer] = create_file_io_context(file_io_resource, *scratch.arena, io_poll, file_budget_override);
 
         Optional<os::File> opt_wal_file;
         os::File           db_file{os::file_open(db_path)};
@@ -128,7 +155,7 @@ int main(int argc, char* argv[]) {
         auto              signal_consumer = aio::create_notifier_consumer(g_signal_notifier, io_poll);
         Optional<String8> err             = native::run(
             port, engine, on_ready, !no_uring,
-            file_io_consumer, signal_consumer, io_poll
+            file_io_consumer, signal_consumer, io_poll, network_budget_override
         );
         if (err) {
             println(*err);
@@ -173,13 +200,13 @@ static void signal_handler(int) {
     os::signal_notify_safe(g_signal_notifier);
 }
 
-static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll) {
+static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll, uring::IOBudgetOverride file_budget_override) {
     auto* rs = uring::get_ring_settings();
-    if (rs->recommended) {
-        U64                   page_size = os::get_system_info()->page_size;
-        uring::GlobalIOBudget budget    = uring::compute_io_budget(page_size);
-        if (budget.file_buffer_count > 0 && budget.file_buffer_size > 0) {
-            uring::Ring ring{os::zero_handle(), budget.file_queue_depth, budget.file_buffer_size, budget.file_buffer_count};
+    if (rs->available) {
+        U64                 page_size = os::get_system_info()->page_size;
+        uring::FileIOBudget budget    = uring::compute_file_io_budget(page_size, file_budget_override);
+        if (budget.buffer_count > 0 && budget.buffer_size > 0) {
+            uring::Ring ring{os::zero_handle(), budget.queue_depth, budget.buffer_size, budget.buffer_count};
             if (ring && !os::is_zero_handle(ring.event_fd)) {
                 resource = plexdb::move(ring);
                 return aio::create_uring_async_file_io_context(&get<uring::Ring>(resource), arena, poll);
