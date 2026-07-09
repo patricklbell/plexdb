@@ -5,6 +5,11 @@
     - Pro: rpage valid without transaction; pointers released early reclaim cache slots; memory bounded in common case
     - Con: two-tier cache lookup (slot array + arena overflow), handle lifetime management at all call sites
 - Proper prepared (and non-prepared) query caching
+- CQL native protocol: stream multiplexing/pipelining. `post_startup_loop` awaits each
+  frame's `frame_handler` to completion before reading the next frame
+  (`cql/native/native.cppm:600,636`); stream IDs are parsed and echoed back correctly
+  (`native.cpp:960` etc.) but never used to dispatch concurrent in-flight requests on one
+  connection.
 - Avoid storing pager pointer per btree/blob
 - Shard across cores
     - OS layer
