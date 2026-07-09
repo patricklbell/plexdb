@@ -463,10 +463,21 @@ namespace plexdb::uring {
     // submission queue entry
     // ========================================================================
 
+    // @note io_uring_get_sqe fails only when the SQ ring is full; submitting
+    // frees every prepped-but-unsubmitted slot, so retry once after a flush.
+    static io_uring_sqe* get_sqe_or_submit(io_uring* uring_ring) {
+        io_uring_sqe* sqe = io_uring_get_sqe(uring_ring);
+        if (sqe == nullptr) {
+            io_uring_submit(uring_ring);
+            sqe = io_uring_get_sqe(uring_ring);
+        }
+        return sqe;
+    }
+
     bool sqe_push_accept(Ring& ring) {
         assert_true(static_cast<bool>(ring), "invalid ring");
         auto*         uring_ring = static_cast<io_uring*>(ring.ring_vptr);
-        io_uring_sqe* sqe        = io_uring_get_sqe(uring_ring);
+        io_uring_sqe* sqe        = get_sqe_or_submit(uring_ring);
         if (sqe == nullptr) {
             return false;
         }
@@ -482,7 +493,7 @@ namespace plexdb::uring {
     bool sqe_push_multishot_accept(Ring& ring) {
         assert_true(static_cast<bool>(ring), "invalid ring");
         auto*         uring_ring = static_cast<io_uring*>(ring.ring_vptr);
-        io_uring_sqe* sqe        = io_uring_get_sqe(uring_ring);
+        io_uring_sqe* sqe        = get_sqe_or_submit(uring_ring);
         if (sqe == nullptr) {
             return false;
         }
@@ -498,7 +509,7 @@ namespace plexdb::uring {
     bool sqe_push_close(Ring& ring, os::Handle client) {
         assert_true(static_cast<bool>(ring), "invalid ring");
         auto*         uring_ring = static_cast<io_uring*>(ring.ring_vptr);
-        io_uring_sqe* sqe        = io_uring_get_sqe(uring_ring);
+        io_uring_sqe* sqe        = get_sqe_or_submit(uring_ring);
         if (sqe == nullptr) {
             return false;
         }
@@ -518,7 +529,7 @@ namespace plexdb::uring {
         assert_true(byte_offset <= ring.buffer_size, "byte_offset out of range");
         assert_true(byte_offset + byte_count <= ring.buffer_size, "byte_count out of range");
         auto*         uring_ring = static_cast<io_uring*>(ring.ring_vptr);
-        io_uring_sqe* sqe        = io_uring_get_sqe(uring_ring);
+        io_uring_sqe* sqe        = get_sqe_or_submit(uring_ring);
         if (sqe == nullptr) {
             return false;
         }
@@ -537,7 +548,7 @@ namespace plexdb::uring {
         assert_true(buffer_idx < ring.buffer_count, "buffer_idx out of range");
         assert_true(byte_offset <= ring.buffer_size, "byte_offset out of range");
         auto*         uring_ring = static_cast<io_uring*>(ring.ring_vptr);
-        io_uring_sqe* sqe        = io_uring_get_sqe(uring_ring);
+        io_uring_sqe* sqe        = get_sqe_or_submit(uring_ring);
         if (sqe == nullptr) {
             return false;
         }
@@ -555,7 +566,7 @@ namespace plexdb::uring {
         assert_true(static_cast<bool>(ring), "invalid ring");
         assert_true(buffer_idx < ring.buffer_count, "buffer_idx out of range");
         auto*         uring_ring = static_cast<io_uring*>(ring.ring_vptr);
-        io_uring_sqe* sqe        = io_uring_get_sqe(uring_ring);
+        io_uring_sqe* sqe        = get_sqe_or_submit(uring_ring);
         if (sqe == nullptr) {
             return false;
         }
@@ -573,7 +584,7 @@ namespace plexdb::uring {
         assert_true(static_cast<bool>(ring), "invalid ring");
         assert_true(buffer_idx < ring.buffer_count, "buffer_idx out of range");
         auto*         uring_ring = static_cast<io_uring*>(ring.ring_vptr);
-        io_uring_sqe* sqe        = io_uring_get_sqe(uring_ring);
+        io_uring_sqe* sqe        = get_sqe_or_submit(uring_ring);
         if (sqe == nullptr) {
             return false;
         }
@@ -590,7 +601,7 @@ namespace plexdb::uring {
     bool sqe_push_file_sync(Ring& ring, os::Handle file, U64 token) {
         assert_true(static_cast<bool>(ring), "invalid ring");
         auto*         uring_ring = static_cast<io_uring*>(ring.ring_vptr);
-        io_uring_sqe* sqe        = io_uring_get_sqe(uring_ring);
+        io_uring_sqe* sqe        = get_sqe_or_submit(uring_ring);
         if (sqe == nullptr) {
             return false;
         }
