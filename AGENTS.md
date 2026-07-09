@@ -29,6 +29,9 @@ Non-obvious invariants:
 - Frozen collection types (LIST, SET, MAP) are parsed and stored but treated identically to non-frozen counterparts; this is intentional.
 - Row count from `btree::size` is incorrect for filtered or range queries; always count from actual iteration.
 
+## Git safety
+- Never run `git checkout --`, `git restore`, `git reset --hard`, `git clean`, or any other command that discards working-tree changes without first running `git status`/`git diff` and confirming with the user which files/hunks are safe to discard. Uncommitted edits may predate the current task and have no reflog entry or may be added while you are working.
+
 ## Testing
 - Tests use [Catch2](https://github.com/catchorg/Catch2/blob/devel/docs/). Create tests for your changes.
 - Additional test-file conventions (applied to `*.test.cpp`) are in `.github/instructions/tests.instructions.md`.
