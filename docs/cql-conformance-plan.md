@@ -4,37 +4,34 @@ Companion to [`cql-conformance-status.md`](cql-conformance-status.md); that
 document enumerates the concrete failures and hacks (§H1–§H14). This one
 names the architectural redesigns that would delete the hacks as a *class*.
 
-The `cql/engine` + `cql/native` tree is 20,489 LOC serving 313 tests, and
-three cross-cutting inefficiencies compound to produce every §H entry:
+The `cql/engine` + `cql/native` tree is 20,489 LOC serving 313 tests. Two
+cross-cutting structural problems produce most §H entries:
 
 1. **The AST is the runtime representation.** `execute_inside_transaction` in `engine.cpp` is a single lambda with 116 `if constexpr (SameAs<T, X>)` arms. Prepared statements do not exist as a runtime artefact — `PreparedEntry` stores the raw query string, and every `EXECUTE` re-parses it (`engine.cpp:4499`, `engine.cpp:4513`, `native.cpp:1143`). Type dispatch is a nested chain of `SameAs<T, X>` at 205+ sites in `engine.cpp` alone.
-2. **Coroutine promise frames allocate on the heap.** 184 `coroutine::Task<>` sites across the CQL tree. The compiler can HALO (Heap Allocation eLision Optimization) many of them, but the coroutines currently share a global `operator new`, so any that survives inlining pays a general-purpose malloc pair on a path that is otherwise cold.
-3. **Five representations of "a value".** `Constant`, `Evaluated`, `ColumnValue`, `NestedColumnValue`, and the AST literal types (`MapLiteral`, `SetLiteral`, `ListOrVectorLiteral`, `UdtLiteral`, `TupleLiteral`) all describe values with different in-memory shapes. Every crossing between them is a switch, and several crossings SIGABRT (`column_value.cppm:38`, `column_value.cppm:60`, `engine.cpp:409`, `engine.cpp:425`, `engine.cpp:430`).
+2. **Values are materialised even when only copied.** `Literal` (AST scalar), the AST collection literals, `Evaluated` (partial-evaluation result), and `ColumnValue` (typed in-memory) each encode a real constraint, but the engine builds a fully-typed `ColumnValue` even for pass-through — projecting a stored column to the wire, or writing an exact-type bound value — because the storage format (native-LE) differs from the wire format (big-endian). R2 stores values wire-compatibly so pass-through is a copy and `ColumnValue` is built only to operate — see R2.
 
-Beyond these three, the engine leans on `assert_not_implemented` at ~20 sites
-for type-completeness gaps (§H2, §H6, §H10, `column_value.cppm:38/60`,
+Beyond these, the engine leans on `assert_not_implemented` at 34 sites for
+type-completeness gaps (§H2, §H6, §H10, `column_value.cppm:38/60`,
 `engine.cpp:409/425/430`, `key.cppm:279/410/496/554/637`, ten sites across
 `native.cppm`). This was a fair shortcut during initial bringup; the engine
 is now mature enough that it is a bug when new code needs one. The R3
 redesign — and every redesign below — bans the pattern going forward and
 replaces it with compile-time exhaustiveness.
 
-The redesigns below compose: R1 depends on R2 (typed plan needs a single
-runtime value), which is cheap in memory only with R6; R3 makes R7
-mechanical; R5 makes R4 tractable. Ordering below is by leverage per line
-deleted, not by dependency order.
+The redesigns below compose: R1 depends on R2 (typed plan needs one runtime
+value) and R3 (per-node type-aware wire ops); R3 makes R7 mechanical.
+Ordering below is by leverage per line deleted, not by dependency order.
 
-| # | Redesign | LOC delta (est.) | Retires |
-|---|----------|-----------------:|---------|
-| R1 | AST → typed physical plan tree; walker replaces the 116-arm executor | −3 000 (net) | §H2, §H4, §H14, 116 `SameAs<T,X>` arms + `SelectOp`/`FilterPlan`/`MutationPlan` variants |
-| R2 | **Done** — value shapes consolidated into `Literal`/`Value`; coercion behaviour in the [coercion spec](cql-type-coercion-spec.md) | −1 200 | §H2 (empty-union asserts), §H12 |
-| R3 | Type dispatch via existing `visit()`; delete redundant `switch(type::Basic)` | −900 | §H8, §H10 (compile-time), §H14 (testMapBulkRemoval), and 350+ scattered `switch(type::Basic)` |
-| R4 | Arena-backed coroutine promise allocator; keep coroutines pervasive | −0, huge alloc reduction | promise-frame heap pressure on every request |
+| # | Redesign | LOC delta | Retires |
+|---|----------|----------:|---------|
+| R1 | AST → typed physical plan tree; walker replaces the 116-arm executor | −3 000 (est.) | §H2, §H4, §H14, 116 `SameAs<T,X>` arms + `SelectOp`/`FilterPlan`/`MutationPlan` variants |
+| R2 | Materialise `ColumnValue` only to operate (wire-format value storage); one traversal for the crossings; clearer names (partly landed) | alloc reduction | §H2 (empty-union asserts), §H12 |
+| R3 | Collapse the `ast::Type`/`type::Type` duplication; drive `assert_not_implemented` to 0 | −250 | §H8, §H10, 34 `assert_not_implemented` |
 | R5 | Native protocol as a declarative message spec, generated code committed | −1 400 | §H1 (partial), §H7 (structurally impossible), §H10 (declarative) |
-| R6 | Bounded per-request bump arena + STL-style templated allocator | −400 (call sites), massive alloc reduction | 126 `AutoString8` sites in `engine.cpp`; heap pressure on every query |
 | R7 | Structured errors + Cassandra-source-extracted message strings | −600 | §H1, §H4 |
 | R8 | Schema mutation as `SchemaMutation` diff, precheck-then-commit | −300 | §H6, §H13 |
 | R9 | Cell-writetime and dropped-column shadowing | +200 (new logic) | §H9, part of §H11, §H14 (dropped-column state) |
+
 
 Out-of-scope: standalone LWT and Conditional BATCH (multi-node), documented
 at the bottom. JIT compilation of the plan tree is discussed under R1 as an
@@ -129,197 +126,158 @@ localised tree rewrites.
 
 ---
 
-### R2 — Consolidate value shapes into `Literal`/`Value` — **done**
+### R2 — Materialise `ColumnValue` only to operate; rename the value crossings (partly landed)
 
-**Problem shape.** Five representations of a value coexisted — `Constant`
-(AST literal), the AST collection literals (`MapLiteral`/`SetLiteral`/…),
-`ColumnValue` + `NestedColumnValue` (engine-side row values), `Evaluated`
-(a variant over all of the above), and raw wire bytes. Every crossing was a
-switch; several SIGABRT'd (`evaluated_to_s64`, `column_value.cppm` hash/eq),
-and the default-constructed empty `TaggedUnion` SIGABRT'd (§H12). Worst of
-all, `materialize_as_column_value` converted `Evaluated → ColumnValue` by
-*serializing to a temp buffer and deserializing it back* — a full wire
-round-trip per value on the INSERT/UPDATE hot path.
+**Representations.** A value passes through four forms, each solving a
+constraint the others cannot:
 
-**What landed.** The redesign settled on **two** types, not one, because the
-shapes serve two genuinely different roles:
+- `Literal` (`statements.cppm:32`) — a scalar from the parse tree.
+  Width-unresolved (`S64`/`F64` stand in for every int/float width) and
+  carries kinds that never reach storage: `Unset` (bind placeholder → "leave
+  the column unchanged"), `Hex`, `bool`, `Null`.
+- AST collection literals (`MapLiteral`/`SetLiteral`/…, `statements.cppm:90`)
+  — hold `Term`s, so their elements may still be unevaluated expressions,
+  bind markers, or already-substituted `ColumnValue`s; they cannot take a
+  storage shape until the target column type is known (`[1,2,3]` may be a
+  list, set, vector, or frozen collection).
+- `Evaluated` (`evaluator.cppm:27`) — the result of partially evaluating a
+  `Term` against bindings and schema: bind markers, functions, arithmetic and
+  type hints are folded; collection literals are kept (deferred until the
+  type is known); a resolved `ColumnValue` passes through. This is the value
+  form of the raw-AST → prepared-query division.
+- `ColumnValue` (`column_value.cppm:26`) — a typed in-memory value; the only
+  form you can compare, hash, order, aggregate, or edit element-wise.
 
-- `Literal` (was `Constant`) — parse-time, width-unresolved; owns `bool`/`Hex`/
-  `Unset` and S64-for-all-ints. Lives only in the AST/expression layer.
-- `Value` (was `ColumnValue` + `NestedColumnValue`) — resolved, width-correct,
-  storage/wire/key shape; recursive collections with `visit()`-based hash/eq
-  (the two `assert_not_implemented`s deleted).
+**Formats and the transformation ledger.** Three byte formats also exist:
+**wire** (CQL native — big-endian, `[bytes]` = 4-byte length + body; `int`=4B,
+`bigint`=8B); **storage** (plexdb blob — host-native little-endian, 8-byte
+`U64` length prefixes; `read_column_value`/`write_column_value`); and **key**
+(order-preserving, byte-comparable; `key.cppm`, separate). Trace two hot paths
+with `v bigint`:
 
-The single crossing is `resolve(Literal | expr, type::Type) -> Value`, now
-total over scalars, list/set/map/vector, tuple, and UDT — which **deleted the
-serialize/deserialize round-trip** (`materialize` is now `resolve` + assert).
-The unreachable string→inet/varint/… io write arms were removed, making the
-write and read encoders symmetric by construction.
+| path | today | necessary work |
+|------|-------|----------------|
+| `INSERT … VALUES(?)`, exact-type bind | wire→`Literal`→`Evaluated`→`ColumnValue`→storage (2 endian flips, 3 wraps, 2 walks) | copy bytes |
+| `SELECT v` (projected, not filtered) | storage→`ColumnValue`→wire (materialise tagged union, endian flip) | copy bytes |
+| `SELECT … WHERE v > 10`, `m + {…}`, `ORDER BY`, index | storage→`ColumnValue`→operate→reserialize | **must** materialise |
+| coercion (`123`→text, `'1'`→int, int→bigint) | typed conversion | **must** materialise |
 
-`Evaluated` is **retained as a thin wrapper** (a type-safe marker that
-pre-calculation ran), not deleted: its collection-literal arms are the
-deferred-resolution mechanism, and collapsing them fully belongs to R1's typed
-expression tree. The parent-plan idea of a single `Value` with a `Bytes`
-kind was dropped — folding `Literal` into `Value` would drag `Unset`/`Hex`/
-unresolved-width variants into every storage consumer, re-introducing the
-empty-arm asserts R2 exists to remove.
+The pass-through rows do real work only because storage ≠ wire (endianness,
+length-prefix width) — a *chosen* mismatch. `ColumnValue` is genuinely needed
+only in the bottom two rows: when the engine operates on the value, or coerces
+a literal whose type differs from the column's. Materialising it for
+projection or exact-type writes is pure overhead (it also allocates
+`AutoString8`/`DynamicArray` per value).
 
-**Also landed (adjacent).** Schema epoch — `Schema.version` bumped on every DDL
-mutation, and `PreparedEntry.schema_version` re-derives a stale prepared entry
-instead of serving stale bind metadata. This makes "evaluate time" a
-schema-stable cache boundary.
+**Redesign.**
 
-**Remaining → coercion spec.** `resolve` currently reproduces the pre-R2
-coercion (string→text only, raw S64/F64 arithmetic). The full coercion
-behaviour — assignability matrix, numeric precision model with the
-`PLEXDB_CQL_WRAP_ON_OVERFLOW` flag, temporal arithmetic, and string-parse
-coercions — is specified in the
-[type-coercion spec](cql-type-coercion-spec.md) and implemented incrementally
-against the conformance gate.
+1. **Store non-key column values in wire format** (or a form memcpy-able to
+   it). Then a projected-but-unfiltered column is copied storage→result, and
+   an exact-type bound value is copied wire→storage — no `ColumnValue`.
+   Keys keep `key_encode`; on an operation or a type mismatch, decode to
+   `ColumnValue` as today. This makes materialisation lazy: pay it only where
+   the ledger says it is necessary.
+2. **One traversal, three intents.** Validate, build a `ColumnValue`, and
+   encode-to-bytes are currently three separate walks over `Evaluated × type`
+   kept in agreement by a runtime assert (`engine.cpp:370`). Fold them into a
+   single per-kind traversal so a type handled by one is handled by all three
+   by construction.
+3. **Rename the crossings** to say source→target and intent:
 
-**Invariants (met).** `Value{}` is `Null`; `visit(Value)` is total; no `Value`
-accessor reaches `assert_not_implemented`; the storage `Value` visitor is total
-by construction (only storable kinds exist, because `Literal` stays separate).
-Byte-equivalence of `resolve` vs the old round-trip is covered by a unit test;
-totality was proven by a full conformance run with no assert-fire.
+   | today | proposed | meaning |
+   |-------|----------|---------|
+   | `read_column_value` | `decode_value` | storage bytes → `ColumnValue` |
+   | `write_column_value` | `encode_value` | `ColumnValue` → storage bytes |
+   | `resolve_evaluated` | `coerce_to_value` | `Evaluated` → `ColumnValue` (target type) |
+   | `resolve_literal_scalar` | `coerce_scalar` | scalar `Literal` → `ColumnValue` |
+   | `cast_write_evaluated_as_column_value` | `encode_evaluated` | `Evaluated` → storage bytes, no intermediate |
+   | `can_cast_write_evaluated_as_column_value` | `can_coerce` | validate the crossing |
+   | `can_write_column_value` | `can_encode_value` | validate a `ColumnValue` fits |
+   | `materialize_as_column_value` | *(drop)* | inline `coerce_to_value` |
+
+Keep the four representations distinct — do not merge `Literal` into
+`ColumnValue` (its `Unset`/`Hex`/unresolved widths reintroduce empty-arm
+asserts). `NestedColumnValue` may fold into `ColumnValue` as an independent
+wrapper cleanup. Per-arm coercion behaviour follows the
+[type-coercion spec](cql-type-coercion-spec.md).
+
+**Landed.** `Constant` → `Literal`; §H12 empty-union and the
+`column_value.cppm` hash/eq crashes fixed; the direct `resolve_evaluated`
+path (no byte round-trip). Schema epoch — `Schema.version` bumps on DDL,
+`PreparedEntry.schema_version` re-derives a stale prepared entry.
+
+**Deletes.** `ColumnValue` materialisation on the projection and exact-type
+write paths; the three-walk agreement assert (`engine.cpp:370`) becomes
+structural.
+
+**Migration.** Wire-format storage is a blob layout change — gate it behind a
+storage format version and read old native-LE blobs through the existing
+`decode_value` until rewritten, or migrate on read. This is the one part with
+on-disk cost; the rename and the single traversal do not touch storage.
+
+**Invariants.**
+- `ColumnValue{}` is `Null`; `visit(ColumnValue)` is total; no value accessor
+  reaches `assert_not_implemented`.
+- A value is decoded to `ColumnValue` only on an operation or a coercing
+  write; projection and exact-type writes copy bytes.
+- `can_coerce`, `coerce_to_value`, and `encode_evaluated` share one traversal.
+
+**Verification.** For every `Evaluated × column-type` fixture (scalars, each
+collection kind, tuple, UDT, widenings): `can_coerce` agrees with whether the
+traversal succeeds, and the bytes from `encode_evaluated` equal those from
+`coerce_to_value` then `encode_value`. A projection benchmark shows zero
+`ColumnValue` allocations for a `SELECT` of unfiltered columns.
 
 ---
 
-### R3 — Use existing `visit()` for type dispatch; ban `assert_not_implemented` for completeness
+### R3 — Collapse the `ast::Type`/`type::Type` duplication; drive `assert_not_implemented` to 0
 
-**Problem shape.** `type::Type` and `type::ast::Type` are two parallel trees
-differing only in UDT reference (pointer vs textual name). Every operator==,
-hash, and `create_*` is duplicated (~200 LOC in `types.cppm`). Then 350+
-scattered `switch(type::Basic)` sites in eight files each re-implement
-structural recursion over the tree (`io.cpp`: 102 sites, `planner.cpp`: 87,
-`evaluator.cpp`: 58, `system_schema.cpp`: 254, `key.cppm`: 103, `native.cppm`:
-48). Many switches take a `type::Type` but only look at the `Basic` variant,
-crashing on collections at runtime via `assert_not_implemented`
-(`key.cppm:279, 410, 496, 554, 637`; `native.cppm` × 10; §H8). Adding a type
-means editing eight files; forgetting one is §H8.
+**Problem shape.** `type::Type` (`types.cppm:243`) and `ast::Type`
+(`types.cppm:380`) are parallel trees differing only in UDT reference
+(handle vs textual name), with duplicated `operator==`/hash/`create_*`.
+Separately, 34 `assert_not_implemented` sites remain for type-completeness
+gaps — each a runtime crash on a collection/tuple/UDT shape (§H8, §H10;
+`key.cppm` collection-key encoders, `native.cppm` wire arms,
+`column_value.cppm` hash/eq). Dispatch already runs through
+`plexdb.tagged_union`'s `visit()`; these two are what is left.
 
-**Redesign.** Two coordinated changes, both leveraging patterns already used
-in the codebase:
+**Redesign.**
 
-1. **Single parameterised type tree.** `Type<UdtRep>` parameterised on the
-   UDT reference representation. The parser produces `Type<UdtName>`; the
-   engine produces `Type<UdtHandle>`; `resolve(Type<UdtName>, Schema) →
-   Type<UdtHandle>` is a `visit()` walk. All duplicated `operator==`, hash,
-   and `create_*` collapse to one instantiation per representation.
+1. Optionally parameterise the type tree as `Type<UdtRep>` — `Type<UdtName>`
+   from the parser, `Type<UdtHandle>` in the engine, `resolve(Type<UdtName>,
+   Schema) -> Type<UdtHandle>` a `visit()` walk — collapsing the duplicated
+   boilerplate to one instantiation per representation. Worth doing only if
+   the shared template is smaller and clearer than the two structs; measure
+   `types.cppm` first.
 
-2. **Dispatch through the existing `visit()`.** `plexdb.tagged_union` already
-   provides `visit(tu, lambda)` and this codebase uses it in
-   `column_value.cppm` and `evaluator.cpp`. Every site that today does
+2. Drive the 34 `assert_not_implemented` sites to 0 by implementing each
+   case. The `key.cppm`/`column_value.cppm` collection recursion can land
+   now; a few depend on R2 finishing (`engine.cpp` value accessors) or R5
+   (native encoder arms).
 
-   ```
-   switch (type::Basic tag) { ... }        // on a full type::Type
-   ```
-
-   becomes
-
-   ```
-   visit(t.value, per-node lambda)         // covers every Type variant
-   ```
-
-   Sites that genuinely receive only a `type::Basic` (the wire type-code
-   table, for instance) keep the `switch` but the compilation unit builds
-   with `-Werror=switch-enum` so a missing enumerator is a build failure.
-
-   No new visitor-concept infrastructure — `visit()` and generic lambdas do
-   the exhaustiveness work. A generic lambda dispatches on the node type
-   with a per-node arm; the fallback arm is a compile-time assertion that
-   fires at instantiation for any unhandled node.
-
-**Assert-not-implemented is banned.** Every existing
-`assert_not_implemented` for type completeness is deleted as part of this
-change:
-- `column_value.cppm:38, 60` — replaced by real hash / equality via
-  `visit()` recursion.
-- `engine.cpp:409, 425, 430` — replaced by proper `Value` accessors (R2).
-- `key.cppm:279, 410, 496, 554, 637` — replaced by real collection-key
-  encoders driven off `visit()`.
-- `native.cppm:180, 236, 240, 244, 247, 390, 392, 394, 396` — folded into
-  R5's declarative encoder.
-- `native.cpp:153, 251, 493` — same.
-
-New code that would previously reach for `assert_not_implemented` must
-instead implement the case. The engine is mature enough that
-"not-implemented" is a bug, not a placeholder.
+Sites that legitimately handle only `type::Basic` (the wire type-code table)
+keep their `switch`, built with `-Werror=switch-enum` so a missing
+enumerator is a build failure. New type-completeness gaps must implement the
+case, not `assert_not_implemented`.
 
 **Deletes.**
-- ~200 LOC of `ast::Type` boilerplate.
-- 350+ switches replaced by ~15 `visit()` call sites (~40 LOC each = ~600
-  LOC total, replacing 2 000+ LOC of switches and their `not_implemented`
-  fallbacks).
-- `key.cppm` shrinks from 900 LOC to ~250 (one KeyEncoder + one KeyDecoder,
-  each a single `visit()` over `type::Type`).
-- `native.cppm`'s type-code, encode, and size functions collapse into one
-  encoder driven by `visit()`.
+- `ast::Type` boilerplate, if item 1 is taken.
+- The 34 `assert_not_implemented` fallbacks, replaced by real
+  implementations.
 
 **Invariants.**
-- `wire_type_string`, `wire_type_code`, `key_encode`, `wire_encode` all agree
-  by construction — each is a `visit()` over the same `type::Type<UDT*>`
-  variants.
-- Adding a type is: one variant in `type::Type` + one arm in every
-  `visit()`. The compile fails until every arm is complete.
 - No `assert_not_implemented` for type completeness exists after R3 lands,
-  and none may be introduced in future code.
+  and none may be introduced later (CI grep gate).
+- If item 1 is taken: `wire_type_string`, `wire_type_code`, `key_encode`,
+  `wire_encode` each remain a single `visit()` over the shared `Type`
+  variants; adding a type is one variant + one arm per `visit()`,
+  compile-enforced.
 
-**Verification.** Property tests parameterised over `all_types()` — for
-each fixture type, `wire_encode ∘ wire_decode` is identity;
-`key_encode(v, ASC)` and `key_encode(v, DESC)` produce prefix-orderable
-bytes; `wire_type_string` matches the driver's captured type name.
-Compile-time verification: a static assert in each `visit()` site that all
-`Type` variants are handled.
-
----
-
-### R4 — Arena-backed coroutine promise allocator; keep coroutines pervasive
-
-**Problem shape.** 184 `coroutine::Task<>` sites across `cql/engine` and
-`cql/native`. Whether coroutines are the *right* structure is not the
-question — they read well and the request-response shape maps cleanly onto
-them. The problem is that any coroutine the C++ compiler does not HALO-elide
-allocates its promise frame on the general heap, contributing to the
-per-query allocation load. There is no `coroutine::Task<>::promise_type::operator new`
-override.
-
-**Redesign.** Override the coroutine promise's allocator on
-`coroutine::Task<>` so promise frames come from the current thread's
-per-request arena (R6). The scratch arena is already equipped on the main
-thread by `main.test.cpp`; the arena reset at request end frees every
-non-HALO promise frame in a single pointer bump.
-
-```
-Task promise allocation:
-    allocate(n bytes)  → bump current thread's per-request arena
-    deallocate         → no-op; arena reset at request end frees the lot
-```
-
-Coroutines stay everywhere they are today. Async is not restructured. What
-disappears is the per-suspend malloc pair for every non-elided frame.
-
-**Deletes.** Zero source-line deletions in the engine. Massive reduction
-in per-query malloc traffic on suspending call chains: the pager fetches
-that dominate today's promise allocations move to the arena bump.
-
-**Invariants.**
-- `promise_type::operator new` is thread-local; the arena is per-request and
-  reset when the response frame ships. Coroutine promise frames outliving
-  the request are a bug (they would return a dangling pointer to the
-  arena-freed frame).
-- HALO remains an optimisation the compiler is free to apply.
-
-**Verification.** Benchmark: prepared point-lookup on a warm cache
-allocates ≤ 1 heap block (the response frame body) — the same target as
-R6's arena win. Compile-time check: `coroutine::Task<>::promise_type` has an
-`operator new` override.
-
-**Note on scope.** Earlier drafts of this plan proposed rewriting the
-majority of the 184 coroutine sites to plain functions ("sync-default").
-That was overstated: HALO handles the elidable ones already, and the arena
-allocator here handles the rest. The pervasive-coroutine shape is a
-deliberate choice; R4 makes it cheap, not different.
+**Verification.** Property tests over `all_types()` — including every
+collection/tuple/UDT shape that currently asserts: `wire_encode ∘
+wire_decode` is identity; `key_encode(v, ASC/DESC)` produces prefix-orderable
+bytes; `wire_type_string` matches the driver's captured type name. A CI grep
+asserts zero type-completeness `assert_not_implemented`.
 
 ---
 
@@ -382,67 +340,6 @@ output; CI runs it and checks the tree is clean.
 
 ---
 
-### R6 — Bounded per-request bump arena; STL-style templated allocator
-
-**Problem shape.** 126 `AutoString8` construction sites in `engine.cpp`
-alone. Every error message, every projected column alias, every type
-string, every `AutoString8(some_slice) + "..."` concatenation allocates.
-Per-query, the load is measured in dozens of malloc/free pairs, all on
-data that dies when the response frame ships.
-
-**Redesign.** Two pieces:
-
-1. **Per-request bounded arena.** The scratch arena is extended to
-   per-request lifetime for the native handler:
-   - Scope opens when a request frame arrives.
-   - Every intermediate — parsed AST (R1), planned tree, `Value` collection
-     payloads (R2), non-HALO coroutine promise frames (R4), error message
-     bytes on the success-path (R7), result row buffers before frame ship
-     — allocated on the arena.
-   - Scope resets when the response frame is on the wire.
-
-   The arena has a **default cap of 64 MB per request** and rejects
-   allocations that would exceed it with a `CqlError::RequestTooLarge`.
-   Individual element / key allocations are capped at **64 KB**, matching
-   Cassandra's per-value limit; this closes the three `over64K` xpasses
-   with an explicit, documented decision. Both caps are policy knobs
-   surfaced in the config; the defaults match upstream.
-
-2. **STL-style templated allocator.** Dynamic containers gain an allocator
-   template parameter, C++-standard-library style:
-
-   ```
-   DynamicArray<T, Allocator = HeapAllocator>
-   DynamicMap<K, V, Allocator = HeapAllocator>
-   AutoString8<Allocator = HeapAllocator>
-   ```
-
-   The default `HeapAllocator` preserves the current behaviour — every
-   existing user compiles unchanged. Request-lifetime code paths use
-   `<T, ArenaAllocator>` explicitly. Schema storage, prepared cache
-   entries, and other request-outliving state stay on the heap allocator
-   by default.
-
-**Deletes.** Every `AutoString8 + AutoString8` heap alloc chain on the
-request path. Result: malloc / free pairs per query drop from ~40 to < 5
-(schema-mutation paths keep their allocations because they persist).
-
-**Invariants.**
-- No `AutoString8<HeapAllocator>` is constructed inside the request-handler
-  body. Enforced by grep-lint in CI on files marked as request-scoped.
-- Arena scope is enforced by lifetime — the request handler owns the arena
-  and passes it as a parameter; escape is a compile error (borrow the
-  handle by reference; caller-outlives-arena is proven by lifetime).
-- Element allocations over 64 KB return `CqlError::ValueTooLarge` (matching
-  the Cassandra exception name); the write path never sees the value.
-
-**Verification.** Benchmark: prepared point-lookup allocates ≤ 1 heap
-block (the response frame body). Malloc counter in a Catch2 harness fails
-the test if the count exceeds a per-op budget. The over-64K xpass tests
-now expect the plexdb rejection message; three lines diff in the fixtures.
-
----
-
 ### R7 — Structured errors + Cassandra-source-extracted message strings
 
 **Problem shape.** §H1 (Cassandra format drift), §H4 (parser rule-name
@@ -495,14 +392,14 @@ is repurposed at 7 sites for "unknown function", "invalid CAST target", etc.
    idempotent; CI runs it and checks the tree is clean.
 
 **Error-path allocations.** Errors are cold; the formatter allocates
-freely on the heap or arena as convenient. Only the success path is
-budget-constrained (R6). Message quality is worth more than the
-allocation cost on a path that ships a client-visible exception.
+freely on the heap. Message quality is worth more than allocation cost on a
+path that ships a client-visible exception, so R7 has no dependency on the
+arena work.
 
 **Deletes.**
 - 23 `create_*_error` factories in `engine.cpp`.
 - `PlanError` enum (subsumed by `CqlError::Kind`).
-- All inline `AutoString8 + ...` message construction (also served by R6).
+- All inline `AutoString8 + ...` message construction.
 - §H4 rule-name leakage — the sink never sees the rule name in the output
   path.
 
@@ -636,33 +533,11 @@ same field.
 
 ```
 R3 (Type dispatch) ─┬─► R1 (Plan tree) ─┬─► R9 (Writetime)
-R2 (Value)         ─┤                   └─► R8 (SchemaMutation)
-R6 (Arena+alloc)   ─┴─► R7 (Errors)
-                                        R4 (Promise allocator) — depends only on R6
-                                        R5 (Native spec)      — independent
+R2 (Value)         ─┘                   └─► R8 (SchemaMutation)
+R7 (Errors)      ── depends on R3 for CqlError kinds; independent of R1
+R5 (Native spec) ── independent
 ```
 
-R2 + R3 + R6 are foundational. R1 is the biggest single win but requires
-R2 (typed walker stack) and R3 (per-node type-aware wire ops). R4 depends
-on R6 for the arena. R5 is independent and can land in parallel.
-
-## Non-goals
-
-- **One-level partition BTree.** The current two-level split
-  (partition BTree → per-partition clustering BTree + static page) is
-  correct for wide-row workloads. Point queries take two BTree walks; a
-  composite-key single-level design would speed them up by a constant
-  but slow full-partition scans, complicate static-cell storage, and
-  break the on-disk format. Not worth it.
-- **JIT compilation of the plan tree.** Discussed in R1. The plan tree is
-  designed so a future JIT (Umbra-style adaptive execution) can be added
-  without breaking the walker or the plan-tree shape. No design decision
-  in this document forecloses it, and none require it. The interpreter is
-  the target for the foreseeable term.
-
-## Out of scope — multi-node
-
-- **Standalone LWT** (`UPDATE … IF`, `DELETE … IF`, `INSERT … IF NOT EXISTS`) — requires Paxos across replicas. On a single replica the semantics collapse to "always applies", so there is nothing meaningful to test. Engine returns `Invalid` cleanly.
-- **Conditional BATCH** — same rationale.
-- **Multi-node schema propagation** — R8's `SchemaMutation` diff is the natural replicated object, but the transport (Raft/Paxos) is out of scope.
-- Tracked in `TODO.md` under "Conditional BATCH and standalone LWT".
+R2 and R3 are foundational. R1 is the biggest single win but requires R2
+(the value crossings) and R3 (`ast::Type` collapse, zero completeness
+asserts). R5 is independent and can land in parallel.
