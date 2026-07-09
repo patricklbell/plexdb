@@ -174,9 +174,13 @@ export namespace plexdb {
         arr.capacity = new_capacity;
     }
 
+    // @note does not guarantee capacity matches length
     template<typename T, typename Size>
     void resize(DynamicArray<T, Size>& arr, Size new_length) {
-        reserve(arr, new_length);
+        if (new_length > arr.capacity) {
+            Size grown_capacity = arr.capacity == 0 ? DYNAMIC_ARRAY_INITIAL_CAPACITY : arr.capacity * DYNAMIC_ARRAY_CAPACITY_GROWTH_RATE;
+            reserve(arr, max(grown_capacity, new_length));
+        }
 
         // de/construct elements
         if (new_length >= arr.length) {
