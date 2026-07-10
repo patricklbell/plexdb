@@ -94,35 +94,41 @@ namespace plexdb::wal {
         co_return true;
     }
 
-    coroutine::Task<U64> append_frame(Wal& wal, aio::FileIOContext& ctx, U64 page_idx, const U8* data) {
-        assert_true(!os::is_zero_handle(wal.file), "wal::append_frame requires valid file handle");
-        assert_true(wal.header.frame_count < MAX_U64, "wal::append_frame: frame_count would overflow");
+    coroutine::Task<> append_frames(Wal& wal, aio::FileIOContext& ctx, TArrayView<const PageWrite> page_writes) {
+        assert_true(!os::is_zero_handle(wal.file), "wal::append_frames requires valid file handle");
+        if (page_writes.length == 0) {
+            co_return;
+        }
+        assert_true(page_writes.length <= MAX_U64 - wal.header.frame_count, "wal::append_frames: frame_count would overflow");
 
-        U64   frame_idx = wal.header.frame_count;
-        U64   offset    = frame_offset(wal, frame_idx);
-        Frame frame{
-            .page_idx = page_idx,
-            .checksum = frame_checksum(wal.header.salt, page_idx, data),
-        };
+        U64 base_frame_idx = wal.header.frame_count;
 
-        U64 data_size = page_idx == HEADER_FRAME_IDX ? sizeof(Header) : wal.header.page_size;
-        os::file_resize_zero(wal.file, offset + sizeof(Frame) + data_size);
+        // @note this uses a uniform stride, not one matching each frame's actual length
+        U64 stride = sizeof(Frame) + wal.header.page_size;
+        os::file_resize_zero(wal.file, frame_offset(wal, base_frame_idx + page_writes.length));
 
-        co_await aio::file_write(
-            ctx,
-            wal.file,
-            Rng1U64{.start = offset, .end = offset + sizeof(Frame)},
-            &frame
-        );
-        co_await aio::file_write(
-            ctx,
-            wal.file,
-            Rng1U64{.start = offset + sizeof(Frame), .end = offset + sizeof(Frame) + data_size},
-            data
-        );
+        U64 wal_offset         = frame_offset(wal, base_frame_idx);
+        U64 frame_buffer_bytes = page_writes.length * stride;
 
-        wal.header.frame_count++;
-        co_return frame_idx;
+        threads::Scope sc           = threads::scratch();
+        U8*            frame_buffer = arena::push_array_no_zero<U8>(*sc.arena, frame_buffer_bytes);
+
+        for (U64 write_idx = 0; write_idx < page_writes.length; write_idx++) {
+            const auto& page_write    = page_writes[write_idx];
+            U64         buffer_offset = write_idx * stride;
+            U64         data_size     = page_write.page_idx == HEADER_FRAME_IDX ? sizeof(Header) : wal.header.page_size;
+
+            Frame frame{
+                .page_idx = page_write.page_idx,
+                .checksum = frame_checksum(wal.header.salt, page_write.page_idx, page_write.data),
+            };
+            os::memory_copy(frame_buffer + buffer_offset, &frame, sizeof(Frame));
+            os::memory_copy(frame_buffer + buffer_offset + sizeof(Frame), page_write.data, data_size);
+        }
+
+        co_await aio::file_write(ctx, wal.file, Rng1U64{.start = wal_offset, .end = wal_offset + frame_buffer_bytes}, frame_buffer);
+
+        wal.header.frame_count += page_writes.length;
     }
 
     coroutine::Task<> commit(Wal& wal, aio::FileIOContext& ctx) {

@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <coroutine>
+#include <stdexcept>
 
 import plexdb.base;
 import plexdb.coroutine;
@@ -283,4 +284,103 @@ TEST_CASE("Generator early destruction", "[coroutine]") {
         REQUIRE(val.value() == 1);
     }
     REQUIRE(destroyed);
+}
+
+// ============================================================================
+// when_all / parallel_for_each
+// ============================================================================
+
+TEST_CASE("when_all joins tasks resumed out of order", "[coroutine][combinators]") {
+    std::coroutine_handle<> handles[3]{};
+
+    // Each task suspends on a manually-controlled Awaitable so the test can
+    // drive completion order explicitly, instead of relying on incidental
+    // ordering from a real I/O backend.
+    auto make = [&](int idx, int value) -> Task<int> {
+        co_await Awaitable{
+            [&, idx](std::coroutine_handle<> h) { handles[idx] = h; },
+            []() {
+            }
+        };
+        co_return value;
+    };
+
+    Task<int>                     tasks[3] = {make(0, 0), make(1, 0), make(2, 0)};
+    alignas(Runner) unsigned char runner_storage[3 * sizeof(Runner)];
+    auto*                         runners = reinterpret_cast<Runner*>(runner_storage);
+
+    bool joined    = false;
+    auto joiner_fn = [&]() -> Task<> {
+        co_await when_all(TArrayView<Task<int>>{tasks, 3}, TArrayView<Runner>{runners, 3});
+        joined = true;
+    };
+    auto joiner = joiner_fn();
+    joiner.resume();
+
+    // Firing every runner (each suspends inside its own Awaitable) must not
+    // resolve the join early, and must not skip firing later tasks in the batch.
+    REQUIRE_FALSE(joined);
+    REQUIRE(handles[0]);
+    REQUIRE(handles[1]);
+    REQUIRE(handles[2]);
+
+    // Resume out of order: 2, 0, 1. No task should be resumed twice (would
+    // assert/crash in a debug build if when_all's join primitive were buggy),
+    // and the joiner must only complete once every task has.
+    handles[2].resume();
+    REQUIRE_FALSE(joined);
+    REQUIRE_FALSE(joiner.done());
+
+    handles[0].resume();
+    REQUIRE_FALSE(joined);
+    REQUIRE_FALSE(joiner.done());
+
+    handles[1].resume();
+    REQUIRE(joined);
+    REQUIRE(joiner.done());
+}
+
+TEST_CASE("when_all never suspends the joiner when every task completes synchronously", "[coroutine][combinators]") {
+    auto make = [](int value) -> Task<int> {
+        co_return value;
+    };
+    Task<int>                     tasks[3] = {make(1), make(2), make(3)};
+    alignas(Runner) unsigned char runner_storage[3 * sizeof(Runner)];
+    auto*                         runners = reinterpret_cast<Runner*>(runner_storage);
+
+    bool joined    = false;
+    auto joiner_fn = [&]() -> Task<> {
+        co_await when_all(TArrayView<Task<int>>{tasks, 3}, TArrayView<Runner>{runners, 3});
+        joined = true;
+    };
+    auto joiner = joiner_fn();
+    joiner.resume();
+
+    REQUIRE(joined);
+    REQUIRE(joiner.done());
+}
+
+TEST_CASE("when_all: a throwing task still lets the joiner complete", "[coroutine][combinators]") {
+    auto ok_fn = []() -> Task<int> {
+        co_return 1;
+    };
+    auto throwing_fn = []() -> Task<int> {
+        throw std::runtime_error("boom");
+        co_return 0; // unreachable; keeps this a well-formed coroutine
+    };
+
+    Task<int>                     tasks[2] = {ok_fn(), throwing_fn()};
+    alignas(Runner) unsigned char runner_storage[2 * sizeof(Runner)];
+    auto*                         runners = reinterpret_cast<Runner*>(runner_storage);
+
+    bool joined    = false;
+    auto joiner_fn = [&]() -> Task<> {
+        co_await when_all(TArrayView<Task<int>>{tasks, 2}, TArrayView<Runner>{runners, 2});
+        joined = true;
+    };
+    auto joiner = joiner_fn();
+    joiner.resume();
+
+    REQUIRE(joined);
+    REQUIRE(joiner.done());
 }

@@ -106,8 +106,11 @@ export namespace plexdb::coroutine::debug {
         const Frame* frame = g_current_frame;
         U64          depth = 0;
         while (frame) {
-            if (frame->function) {
+            // @note both file and function may not be provided
+            if (frame->function && frame->file) {
                 println("  #", to_str(depth), " ", frame->function, " (", frame->file, ":", to_str(frame->line), ")");
+            } else if (frame->function) {
+                println("  #", to_str(depth), " ", frame->function);
             } else {
                 println("  #", to_str(depth), " <unnamed coroutine>");
             }
@@ -126,8 +129,10 @@ extern "C" void plexdb_async_stack() {
     const plexdb::coroutine::debug::Frame* f = plexdb::coroutine::debug::g_current_frame;
     int                                    d = 0;
     while (f) {
-        if (f->function) {
+        if (f->function && f->file) {
             plexdb::println(plexdb::fmt("  #%d %s (%s:%llu)\n", d, f->function, f->file, static_cast<unsigned long long>(f->line)));
+        } else if (f->function) {
+            plexdb::println(plexdb::fmt("  #%d %s\n", d, f->function));
         } else {
             plexdb::println(plexdb::fmt("  #%d <unnamed coroutine>\n", d));
         }

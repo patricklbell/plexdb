@@ -48,6 +48,15 @@ namespace plexdb::coroutine {
         }
     };
 
+    struct EmptyManualResumeFlag {
+        EmptyManualResumeFlag& operator=(bool) noexcept {
+            return *this;
+        }
+        explicit operator bool() const noexcept {
+            return false;
+        }
+    };
+
 #ifdef PLEXDB_ENABLE_TRACY_PROFILER
     namespace {
         constexpr char k_hex_chars[] = "0123456789abcdef";
@@ -113,6 +122,9 @@ export namespace plexdb::coroutine {
             [[no_unique_address]]
             Conditional<tracy_enabled, TracyFiber, EmptyTracyFiber> tracy;
 
+            [[no_unique_address]]
+            Conditional<debug::enabled, bool, EmptyManualResumeFlag> _manually_resumed{};
+
             Task get_return_object() noexcept {
                 debug::capture_frame_from_stacktrace(debug_frame);
                 auto h = std::coroutine_handle<promise_type>::from_promise(*this);
@@ -177,6 +189,10 @@ export namespace plexdb::coroutine {
         }
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
+            if constexpr (debug::enabled) {
+                assert_true(!handle.promise()._manually_resumed, "Task::await_suspend: task was already manually resumed (double-resume)");
+            }
+
             debug::push_frame(handle.promise().debug_frame);
 
             if constexpr (tracy_enabled) {
@@ -200,11 +216,23 @@ export namespace plexdb::coroutine {
         // manual api
         // ====================================================================
         void resume() {
+            if constexpr (debug::enabled) {
+                handle.promise()._manually_resumed = true;
+            }
             if constexpr (tracy_enabled) {
                 g_current_tracy_fiber = handle.promise().tracy.name;
                 TracyFiberEnter(handle.promise().tracy.name);
             }
+            // @todo manual resume() is an async-stack root: await_suspend/
+            // final_suspend push/pop debug_frame in matched pairs for
+            // co_await chains, but nothing pairs with a direct .resume() call
+            Conditional<debug::enabled, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
+            debug::save_frame(_saved_frame);
+            if constexpr (debug::enabled) {
+                debug::g_current_frame = nullptr;
+            }
             handle.resume();
+            debug::restore_frame(_saved_frame);
         }
         bool done() const {
             return handle.done();
@@ -283,6 +311,9 @@ export namespace plexdb::coroutine {
             [[no_unique_address]]
             Conditional<tracy_enabled, TracyFiber, EmptyTracyFiber> tracy;
 
+            [[no_unique_address]]
+            Conditional<debug::enabled, bool, EmptyManualResumeFlag> _manually_resumed{};
+
             Task get_return_object() noexcept {
                 debug::capture_frame_from_stacktrace(debug_frame);
                 auto h = std::coroutine_handle<promise_type>::from_promise(*this);
@@ -349,6 +380,10 @@ export namespace plexdb::coroutine {
         }
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
+            if constexpr (debug::enabled) {
+                assert_true(!handle.promise()._manually_resumed, "Task::await_suspend: task was already manually resumed (double-resume)");
+            }
+
             debug::push_frame(handle.promise().debug_frame);
 
             if constexpr (tracy_enabled) {
@@ -371,12 +406,21 @@ export namespace plexdb::coroutine {
         // manual api
         // ====================================================================
         void resume() {
+            if constexpr (debug::enabled) {
+                handle.promise()._manually_resumed = true;
+            }
             if constexpr (tracy_enabled) {
                 g_current_tracy_fiber = handle.promise().tracy.name;
                 TracyFiberEnter(handle.promise().tracy.name);
             }
 
+            Conditional<debug::enabled, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
+            debug::save_frame(_saved_frame);
+            if constexpr (debug::enabled) {
+                debug::g_current_frame = nullptr;
+            }
             handle.resume();
+            debug::restore_frame(_saved_frame);
         }
         bool done() const {
             return handle.done();

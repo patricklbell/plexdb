@@ -62,31 +62,53 @@ namespace plexdb::pager {
         co_return header;
     }
 
-    // Flush dirty pages directly to the main file (no-WAL fallback used in destroy).
-    static coroutine::Task<> flush_direct(Pager& pager) {
+    // @warn only use when wal is disabled
+    static coroutine::Task<> commit_no_wal(Pager& pager) {
         aio::FileIOContext& ctx = *pager.file_io_ctx;
+
+        struct WriteOp {
+            U64 page_idx; // MAX_U64 = header entry
+        };
+
+        U64 dirty_count = 0;
         for (auto& pair : pager.page_cache) {
-            if (!pair.second.dirty) {
-                continue;
-            }
-            U64 idx = pair.first;
-            if (idx < pager.header.page_count) {
-                U64 offset = pager.base_offset + pager.header.page_size * idx;
-                co_await aio::file_write(
-                    ctx, pager.file,
-                    Rng1U64{.start = offset, .end = offset + pager.header.page_size},
-                    pair.second.data.ptr
-                );
+            if (pair.second.dirty && pair.first < pager.header.page_count) {
+                dirty_count++;
             }
         }
-        if (pager.header_in_write_set) {
-            co_await aio::file_write(
-                ctx, pager.file,
-                Rng1U64{.start = pager.base_offset, .end = pager.base_offset + sizeof(pager.header)},
-                &pager.header
-            );
-            pager.header_in_write_set = false;
+        U64 write_count = dirty_count + (pager.header_in_write_set ? 1 : 0);
+
+        if (write_count > 0) {
+            threads::Scope      sc            = threads::scratch();
+            WriteOp*            write_storage = arena::push_array_no_zero<WriteOp>(*sc.arena, write_count);
+            TArrayView<WriteOp> writes{write_storage, write_count}; // @todo capped array
+
+            U64 n = 0;
+            for (auto& pair : pager.page_cache) {
+                if (pair.second.dirty && pair.first < pager.header.page_count) {
+                    writes[n++] = WriteOp{.page_idx = pair.first};
+                }
+            }
+            if (pager.header_in_write_set) {
+                writes[n++]               = WriteOp{.page_idx = MAX_U64};
+                pager.header_in_write_set = false;
+            }
+            assert_true(n == write_count, "write count did not match op count, header or page became dirty inside flush");
+
+            auto write_one = [&ctx, &pager](const WriteOp& w) -> coroutine::Task<> {
+                if (w.page_idx == MAX_U64) {
+                    co_await aio::file_write(ctx, pager.file, Rng1U64{.start = pager.base_offset, .end = pager.base_offset + sizeof(pager.header)}, &pager.header);
+                    co_return;
+                }
+                auto* entry = find(pager.page_cache, w.page_idx);
+                assert_true(entry != nullptr, "commit_no_wal: dirty page missing from page_cache during write");
+                U64 offset = pager.base_offset + pager.header.page_size * w.page_idx;
+                co_await aio::file_write(ctx, pager.file, Rng1U64{.start = offset, .end = offset + pager.header.page_size}, entry->data.ptr);
+            };
+
+            co_await coroutine::when_all(writes, write_one);
         }
+
         os::file_resize_zero(pager.file, pager.base_offset + pager.header.page_count * pager.header.page_size);
         co_await aio::file_sync(ctx, pager.file);
         clear(pager.page_cache);
@@ -180,7 +202,7 @@ namespace plexdb::pager {
         if (p.transaction_active) {
             rollback_transaction(p);
         } else if (!p.wal) {
-            co_await flush_direct(p);
+            co_await commit_no_wal(p);
         }
         p.file_io_ctx = nullptr;
     }
@@ -267,7 +289,7 @@ namespace plexdb::pager {
         assert_true(pager.transaction_active, "no active transaction");
 
         if (!pager.wal) {
-            co_await flush_direct(pager);
+            co_await commit_no_wal(pager);
             finish_transaction(pager);
             plugin::stat(stat_tx_committed, 1);
             plugin::message(pager_producer, plugin::Level::Debug, fmt("pager: transaction committed, page_count=%" PRIu64, pager.header.page_count));
@@ -276,20 +298,38 @@ namespace plexdb::pager {
 
         aio::FileIOContext& ctx = *pager.file_io_ctx;
 
+        // @note gathering ops does not suspend so page state should not change
+        U64 dirty_count = 0;
         for (auto& pair : pager.page_cache) {
-            if (!pair.second.dirty) {
-                continue;
-            }
-            U64 idx = pair.first;
-            if (idx < pager.header.page_count) {
-                U64 frame_idx = co_await wal::append_frame(pager.wal, ctx, idx, pair.second.data.ptr);
-                insert(pager.wal.wal_index, idx, frame_idx);
+            if (pair.second.dirty && pair.first < pager.header.page_count) {
+                dirty_count++;
             }
         }
-        if (pager.header_in_write_set) {
-            U64 frame_idx = co_await wal::append_frame(pager.wal, ctx, MAX_U64, reinterpret_cast<U8*>(&pager.header));
-            insert(pager.wal.wal_index, MAX_U64, frame_idx);
-            pager.header_in_write_set = false;
+        U64 write_count = dirty_count + (pager.header_in_write_set ? 1 : 0);
+
+        if (write_count > 0) {
+            threads::Scope             sc            = threads::scratch();
+            wal::PageWrite*            write_storage = arena::push_array_no_zero<wal::PageWrite>(*sc.arena, write_count);
+            TArrayView<wal::PageWrite> writes{write_storage, write_count};
+
+            U64 n = 0;
+            for (auto& pair : pager.page_cache) {
+                if (pair.second.dirty && pair.first < pager.header.page_count) {
+                    writes[n++] = wal::PageWrite{.page_idx = pair.first, .data = pair.second.data.ptr};
+                }
+            }
+            if (pager.header_in_write_set) {
+                writes[n++]               = wal::PageWrite{.page_idx = MAX_U64, .data = reinterpret_cast<const U8*>(&pager.header)};
+                pager.header_in_write_set = false;
+            }
+            assert_true(n == write_count, "commit_transaction: dirty-page count changed between counting and gathering pass");
+
+            U64 base_frame_idx = pager.wal.header.frame_count;
+            co_await wal::append_frames(pager.wal, ctx, writes);
+
+            for (U64 write_idx = 0; write_idx < write_count; write_idx++) {
+                insert(pager.wal.wal_index, writes[write_idx].page_idx, base_frame_idx + write_idx);
+            }
         }
 
         if (pager.wal.header.frame_count > 0) {
@@ -382,39 +422,56 @@ namespace plexdb::pager {
         aio::FileIOContext& ctx       = *pager.file_io_ctx;
         U64                 page_size = pager.wal.header.page_size;
 
-        threads::Scope sc       = threads::scratch();
-        U64            buf_size = max(page_size, static_cast<U64>(sizeof(Header)));
-        U8*            buf      = arena::push_array_no_zero<U8>(*sc.arena, buf_size);
+        U64 entry_count = length(pager.wal.wal_index);
 
-        for (auto& pair : pager.wal.wal_index) {
-            U64 page_idx  = pair.first;
-            U64 frame_idx = pair.second;
-            if (page_idx == MAX_U64) {
-                co_await aio::file_write(
-                    ctx, pager.file,
-                    Rng1U64{pager.base_offset, pager.base_offset + sizeof(Header)},
-                    &pager.header
-                );
-            } else {
-                auto* entry = find(pager.page_cache, page_idx);
-                if (entry) {
-                    U64 db_start = pager.base_offset + page_size * page_idx;
-                    co_await aio::file_write(
-                        ctx, pager.file,
-                        Rng1U64{.start = db_start, .end = db_start + page_size},
-                        entry->data.ptr
-                    );
-                } else {
-                    wal::Frame frame{};
-                    co_await wal::read_frame(pager.wal, ctx, frame_idx, frame, buf);
-                    U64 db_start = pager.base_offset + page_size * page_idx;
-                    co_await aio::file_write(
-                        ctx, pager.file,
-                        Rng1U64{.start = db_start, .end = db_start + page_size},
-                        buf
-                    );
-                }
+        if (entry_count > 0) {
+            struct CheckpointWrite {
+                U64 page_idx; // MAX_U64 = header entry; index into wal_index/page_cache
+                U64 buf_idx;  // MAX_U64 = no wal read needed (page is cached, or this is the header entry)
+            };
+
+            U64 buf_size = max(page_size, static_cast<U64>(sizeof(Header)));
+
+            threads::Scope sc = threads::scratch();
+
+            CheckpointWrite*            write_storage = arena::push_array_no_zero<CheckpointWrite>(*sc.arena, entry_count);
+            TArrayView<CheckpointWrite> writes{write_storage, entry_count}; // @todo capped array
+
+            U64 n          = 0;
+            U64 buf_needed = 0;
+            for (auto& pair : pager.wal.wal_index) {
+                U64  page_idx  = pair.first;
+                bool need_read = page_idx != MAX_U64 && find(pager.page_cache, page_idx) == nullptr;
+                writes[n++]    = CheckpointWrite{
+                       .page_idx = page_idx,
+                       .buf_idx  = need_read ? buf_needed++ : MAX_U64,
+                };
             }
+            assert_true(n == entry_count, "wal index entry count changed between inside gathering pass");
+
+            U8* read_bufs = arena::push_array_no_zero<U8>(*sc.arena, buf_needed * buf_size);
+
+            auto write_one = [&ctx, &pager, page_size, read_bufs, buf_size](const CheckpointWrite& w) -> coroutine::Task<> {
+                if (w.page_idx == MAX_U64) {
+                    co_await aio::file_write(ctx, pager.file, Rng1U64{.start = pager.base_offset, .end = pager.base_offset + sizeof(Header)}, &pager.header);
+                    co_return;
+                }
+                U64 db_start = pager.base_offset + page_size * w.page_idx;
+                if (w.buf_idx == MAX_U64) {
+                    auto* entry = find(pager.page_cache, w.page_idx);
+                    assert_true(entry != nullptr, "checkpoint: page missing from page_cache during write");
+                    co_await aio::file_write(ctx, pager.file, Rng1U64{.start = db_start, .end = db_start + page_size}, entry->data.ptr);
+                    co_return;
+                }
+                U64* frame_idx = find(pager.wal.wal_index, w.page_idx);
+                assert_true(frame_idx != nullptr, "checkpoint: page missing from wal_index during write");
+                U8*        buf = read_bufs + w.buf_idx * buf_size;
+                wal::Frame frame{};
+                co_await wal::read_frame(pager.wal, ctx, *frame_idx, frame, buf);
+                co_await aio::file_write(ctx, pager.file, Rng1U64{.start = db_start, .end = db_start + page_size}, buf);
+            };
+
+            co_await coroutine::when_all(writes, write_one);
         }
 
         os::file_resize_zero(pager.file, pager.base_offset + pager.header.page_count * page_size);
@@ -653,7 +710,7 @@ namespace plexdb::pager {
             entry_idx = get_bitset_entry_count(pager) - 1;
         }
         PLEXDB_DEBUG_X(assert_true(h.page_count < old_page_count, "trimming actually trimmed"));
-        // file is truncated at checkpoint (WAL) or flush_direct (no-WAL) using the committed page_count
+        // @note file is actually truncated at checkpoint / commit
         pager.header_in_write_set = true;
     }
 }

@@ -184,23 +184,31 @@ namespace plexdb::os {
     }
 
     U32 aio_collect_completions(AIOContext& ctx, U64* out_tokens, U32 max_count) {
+        // @todo loops rather than a single bounded _io_getevents call because
+        // waiters were not getting wakeup and would hang forever.
         struct io_event events[64];
-        U32             to_collect = max_count < 64 ? max_count : 64;
-        struct timespec timeout    = {0, 0};
-        long            n          = _io_getevents(
-            reinterpret_cast<aio_context_t>(ctx.ctx_ptr),
-            0, static_cast<long>(to_collect), events, &timeout
-        );
-        if (n <= 0) {
-            return 0;
+        struct timespec timeout   = {0, 0};
+        U32             collected = 0;
+        while (collected < max_count) {
+            U32  to_collect = min(max_count - collected, U32(64));
+            long n          = _io_getevents(
+                reinterpret_cast<aio_context_t>(ctx.ctx_ptr),
+                0, static_cast<long>(to_collect), events, &timeout
+            );
+            if (n <= 0) {
+                break;
+            }
+            for (long i = 0; i < n; i++) {
+                U32 slot                       = static_cast<U32>(events[i].data);
+                ctx.in_use_ptr[slot]           = false;
+                out_tokens[collected + U32(i)] = static_cast<U64>(slot);
+            }
+            collected += U32(n);
+            if (U32(n) < to_collect) {
+                break;
+            }
         }
-
-        for (long i = 0; i < n; i++) {
-            U32 slot             = static_cast<U32>(events[i].data);
-            ctx.in_use_ptr[slot] = false;
-            out_tokens[i]        = static_cast<U64>(slot);
-        }
-        return static_cast<U32>(n);
+        return collected;
     }
 
 #else // @todo

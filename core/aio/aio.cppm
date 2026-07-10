@@ -32,22 +32,22 @@ export namespace plexdb::aio {
 
         threads::Scope                  scratch    = threads::scratch();
         os::PollEvent*                  ev_storage = arena::push_array<os::PollEvent>(*scratch.arena, total_max_events);
+        TArrayView<os::PollEvent>       events{ev_storage, 0};
         CappedTArrayView<os::PollEvent> events_view{ev_storage, total_max_events, 0};
 
         while (true) {
-            events_view.cap = 0;
-            os::block_until_poll_unblocks_wth_events(unblock, &events_view);
-            TArrayView<os::PollEvent> events{events_view.ptr, events_view.cap};
-
             bool stop     = false;
             auto dispatch = [&](auto& c) {
                 stop |= !c.on_unblock(events);
             };
             (dispatch(consumers), ...);
-
             if (stop) {
                 break;
             }
+
+            events_view.cap = 0;
+            os::block_until_poll_unblocks_wth_events(unblock, &events_view);
+            events = TArrayView<os::PollEvent>{events_view.ptr, events_view.cap};
         }
     }
 
@@ -83,15 +83,21 @@ export namespace plexdb::aio {
     // ========================================================================
     template<typename TaskT>
     void pump_task(TaskT& task, EventConsumer& consumer, os::Poll& poll) {
-        U64                             max        = consumer.max_events > 0 ? consumer.max_events : 1;
-        threads::Scope                  scratch    = threads::scratch();
-        os::PollEvent*                  ev_storage = arena::push_array<os::PollEvent>(*scratch.arena, max);
-        CappedTArrayView<os::PollEvent> events{ev_storage, max, 0};
+        U64                             max_event_count = consumer.max_events > 0 ? consumer.max_events : 1;
+        threads::Scope                  scratch         = threads::scratch();
+        os::PollEvent*                  ev_storage      = arena::push_array<os::PollEvent>(*scratch.arena, max_event_count);
+        TArrayView<os::PollEvent>       events{ev_storage, 0};
+        CappedTArrayView<os::PollEvent> events_view{ev_storage, max_event_count, 0};
+
         task.resume();
-        while (!task.done()) {
-            events.cap = 0;
-            os::block_until_poll_unblocks_wth_events(poll, &events);
-            (void)consumer.on_unblock(TArrayView<os::PollEvent>{events.ptr, events.cap});
+        while (true) {
+            (void)consumer.on_unblock(events);
+            if (task.done()) {
+                break;
+            }
+            events_view.cap = 0;
+            os::block_until_poll_unblocks_wth_events(poll, &events_view);
+            events = TArrayView<os::PollEvent>{events_view.ptr, events_view.cap};
         }
     }
 

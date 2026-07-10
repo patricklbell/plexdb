@@ -67,6 +67,11 @@ namespace plexdb::uring {
     constexpr U32 MIN_RING_QUEUE_DEPTH  = 8;
     constexpr U32 MAX_RING_QUEUE_DEPTH  = 256;
 
+    // @todo tune from real workload data (or compute dynamically); 8 pages
+    // is enough to coalesce several WAL frames (page + small frame header)
+    // per registered buffer without over-committing pinned memory per buffer.
+    constexpr U64 FILE_RING_BUFFER_PAGE_MULTIPLIER = 8;
+
     struct ClampedRingSize {
         U64  buffer_size;
         U32  buffer_count;
@@ -181,7 +186,7 @@ namespace plexdb::uring {
             return FileIOBudget{.queue_depth = 0, .buffer_size = 0, .buffer_count = 0};
         }
 
-        U64 wanted_buffer_size  = ring_override.buffer_size ? *ring_override.buffer_size : align_up(page_size, os::get_system_info()->page_size);
+        U64 wanted_buffer_size  = ring_override.buffer_size ? *ring_override.buffer_size : page_size * FILE_RING_BUFFER_PAGE_MULTIPLIER;
         U32 wanted_buffer_count = ring_override.buffer_count ? *ring_override.buffer_count : 64;
         U32 wanted_queue_depth  = ring_override.queue_depth ? *ring_override.queue_depth : os::get_system_info()->disk_queue_depth;
 

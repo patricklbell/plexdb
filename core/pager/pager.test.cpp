@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/benchmark/catch_benchmark.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_adapters.hpp>
 #include <catch2/generators/catch_generators_random.hpp>
@@ -13,6 +14,7 @@
 #include <cinttypes>
 
 import plexdb.base;
+import plexdb.aio;
 import plexdb.coroutine;
 import plexdb.os;
 import plexdb.pager;
@@ -390,7 +392,10 @@ PAGER_TEST_CASE("committed WAL replays after abrupt process exit", "[plexdb.page
         UniquePtr<U8> buf{os::allocate_zero(page_size)};
         os::file_read(child_db, Rng1U64{.start = page_size * pidx, .end = page_size * (pidx + 1)}, buf.ptr);
         os::memory_copy(buf.ptr, modified, sizeof(modified));
-        drive_test_pager(wal::append_frame(wal, g_test_sync_file_io_ctx, pidx, buf.ptr));
+        wal::PageWrite frame_write[1] = {
+            {.page_idx = pidx, .data = buf.ptr}
+        };
+        drive_test_pager(wal::append_frames(wal, g_test_sync_file_io_ctx, TArrayView<const wal::PageWrite>{frame_write, 1}));
         drive_test_pager(wal::commit(wal, g_test_sync_file_io_ctx));
 
         os::process_exit(0);
@@ -461,7 +466,10 @@ PAGER_TEST_CASE("uncommitted frames do not modify the database", "[plexdb.pager.
         UniquePtr<U8> buf{os::allocate_zero(page_size)};
         os::file_read(child_db, Rng1U64{.start = page_size * pidx, .end = page_size * (pidx + 1)}, buf.ptr);
         os::memory_copy(buf.ptr, modified, sizeof(modified));
-        drive_test_pager(wal::append_frame(wal, g_test_sync_file_io_ctx, pidx, buf.ptr));
+        wal::PageWrite frame_write[1] = {
+            {.page_idx = pidx, .data = buf.ptr}
+        };
+        drive_test_pager(wal::append_frames(wal, g_test_sync_file_io_ctx, TArrayView<const wal::PageWrite>{frame_write, 1}));
         // @note no wal::commit — frames are uncommitted
 
         os::process_exit(0);
@@ -534,7 +542,10 @@ PAGER_TEST_CASE("SIGKILL after commit triggers WAL recovery", "[plexdb.pager.wal
         UniquePtr<U8> buf{os::allocate_zero(page_size)};
         os::file_read(child_db, Rng1U64{.start = page_size * pidx, .end = page_size * (pidx + 1)}, buf.ptr);
         os::memory_copy(buf.ptr, modified, sizeof(modified));
-        drive_test_pager(wal::append_frame(wal, g_test_sync_file_io_ctx, pidx, buf.ptr));
+        wal::PageWrite frame_write[1] = {
+            {.page_idx = pidx, .data = buf.ptr}
+        };
+        drive_test_pager(wal::append_frames(wal, g_test_sync_file_io_ctx, TArrayView<const wal::PageWrite>{frame_write, 1}));
         drive_test_pager(wal::commit(wal, g_test_sync_file_io_ctx));
 
         os::signal_notify_safe(notifier);
@@ -901,6 +912,281 @@ PAGER_TEST_CASE("concurrent begin_transaction serializes second writer via queue
     REQUIRE(p2 > 0);
     REQUIRE(!pager.transaction_active);
     REQUIRE(pager.tx_waiters.length == 0);
+
+    destroy_test_pager(pager);
+    co_return;
+}
+
+// ============================================================================
+// WAL frame coalescing (append_frames)
+// ============================================================================
+
+PAGER_TEST_CASE("wal::append_frames coalesces a multi-page batch and round-trips through read_frame", "[plexdb.pager.wal]") {
+    os::File f{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(f));
+
+    U64 page_size = 64;
+    Wal wal       = create_test_wal(f, page_size);
+
+    aio::FileIOContext ctx = aio::create_sync_file_io_context();
+
+    U8 page_a[64];
+    U8 page_b[64];
+    U8 page_c[64];
+    U8 page_d[64];
+    os::memory_set(page_a, 0xAA, page_size);
+    os::memory_set(page_b, 0xBB, page_size);
+    os::memory_set(page_c, 0xCC, page_size);
+    os::memory_set(page_d, 0xDD, page_size);
+
+    pager::Header header{
+        .magic      = pager::HEADER_MAGIC,
+        .version    = pager::HEADER_CURRENT_VERSION,
+        .page_size  = page_size,
+        .page_count = 5,
+        .root_page  = 3,
+    };
+
+    // Header-sentinel frame in the middle of the batch (not last): its
+    // shorter-than-stride payload lands inside a merged chunk, not at the end.
+    wal::PageWrite writes[5] = {
+        {      .page_idx = 1,                               .data = page_a},
+        {      .page_idx = 2,                               .data = page_b},
+        {.page_idx = MAX_U64, .data = reinterpret_cast<const U8*>(&header)},
+        {      .page_idx = 3,                               .data = page_c},
+        {      .page_idx = 4,                               .data = page_d},
+    };
+
+    co_await wal::append_frames(wal, ctx, TArrayView<const wal::PageWrite>{writes, 5});
+
+    REQUIRE(wal.header.frame_count == 5);
+
+    // @note frame indices are positional: this WAL was fresh, so frame_idx == write_idx.
+    for (U64 write_idx = 0; write_idx < 5; write_idx++) {
+        wal::Frame frame{};
+        U8         buf[64] = {};
+        co_await wal::read_frame(wal, ctx, write_idx, frame, buf);
+        REQUIRE(frame.page_idx == writes[write_idx].page_idx);
+        U64 data_size = writes[write_idx].page_idx == MAX_U64 ? sizeof(pager::Header) : page_size;
+        REQUIRE(os::memory_compare(buf, writes[write_idx].data, data_size) == 0);
+    }
+}
+
+TEST_CASE("benchmark: wal::append_frames coalesced vs per-frame writes", "[plexdb.pager.wal][!benchmark]") {
+    constexpr U64 page_size = 4096;
+
+    for (U64 n : {1_u64, 5_u64, 20_u64, 100_u64}) {
+        DYNAMIC_SECTION("N=" << n) {
+            os::File f{os::file_tmp()};
+            REQUIRE(!os::is_zero_handle(f));
+            Wal                wal = create_test_wal(f, page_size);
+            aio::FileIOContext ctx = aio::create_sync_file_io_context();
+
+            std::vector<std::vector<U8>> page_storage(n, std::vector<U8>(page_size, 0xAB));
+            std::vector<wal::PageWrite>  writes(n);
+            for (U64 i = 0; i < n; i++) {
+                writes[i] = wal::PageWrite{.page_idx = i + 1, .data = page_storage[i].data()};
+            }
+
+            BENCHMARK_ADVANCED("N separate single-frame append_frames calls")(Catch::Benchmark::Chronometer meter) {
+                meter.measure([&](int) {
+                    for (U64 write_idx = 0; write_idx < n; write_idx++) {
+                        wal::PageWrite single[1] = {writes[write_idx]};
+                        drive_test_pager(wal::append_frames(wal, ctx, TArrayView<const wal::PageWrite>{single, 1}));
+                    }
+                });
+            };
+            BENCHMARK_ADVANCED("one coalesced append_frames(N) call")(Catch::Benchmark::Chronometer meter) {
+                meter.measure([&](int) {
+                    drive_test_pager(wal::append_frames(wal, ctx, TArrayView<const wal::PageWrite>{writes.data(), n}));
+                });
+            };
+        }
+    }
+}
+
+TEST_CASE("benchmark: checkpoint serial vs concurrent page writes", "[plexdb.pager.transaction][!benchmark]") {
+    constexpr U64 page_size = 4096;
+
+    for (U64 n : {1_u64, 5_u64, 20_u64, 100_u64}) {
+        DYNAMIC_SECTION("N=" << n) {
+            os::File db{os::file_tmp()};
+            os::File wal_f{os::file_tmp()};
+            REQUIRE(!os::is_zero_handle(db));
+            REQUIRE(!os::is_zero_handle(wal_f));
+
+            auto pager              = create_test_pager(db, wal_f, page_size);
+            pager.header.page_count = n + 1;
+
+            std::vector<std::vector<U8>> page_storage(n, std::vector<U8>(page_size, 0xCD));
+            std::vector<wal::PageWrite>  writes(n);
+            for (U64 i = 0; i < n; i++) {
+                writes[i] = wal::PageWrite{.page_idx = i + 1, .data = page_storage[i].data()};
+            }
+
+            auto reload_wal_index = [&]() {
+                clear(pager.wal.wal_index);
+                U64 base_frame_idx = pager.wal.header.frame_count;
+                drive_test_pager(wal::append_frames(pager.wal, g_test_sync_file_io_ctx, TArrayView<const wal::PageWrite>{writes.data(), n}));
+                for (U64 write_idx = 0; write_idx < n; write_idx++) {
+                    insert(pager.wal.wal_index, writes[write_idx].page_idx, base_frame_idx + write_idx);
+                }
+            };
+
+            // Sequential one-write-at-a-time checkpoint, for comparison against
+            // pager::checkpoint below — includes the same finalize steps
+            // (resize/sync/wal::reset) so the comparison isn't skewed by omitting
+            // an fsync.
+            auto checkpoint_serial = [&]() -> coroutine::Task<> {
+                aio::FileIOContext& ctx = *pager.file_io_ctx;
+                for (auto& pair : pager.wal.wal_index) {
+                    U64 db_start = pager.base_offset + page_size * pair.first;
+                    co_await aio::file_write(ctx, pager.file, Rng1U64{.start = db_start, .end = db_start + page_size}, writes[pair.first - 1].data);
+                }
+                os::file_resize_zero(pager.file, pager.base_offset + pager.header.page_count * page_size);
+                co_await aio::file_sync(ctx, pager.file);
+                co_await wal::reset(pager.wal, ctx);
+                clear(pager.wal.wal_index);
+            };
+
+            BENCHMARK_ADVANCED("serial one-write-at-a-time checkpoint")(Catch::Benchmark::Chronometer meter) {
+                meter.measure([&](int) {
+                    reload_wal_index();
+                    drive_test_pager(checkpoint_serial());
+                });
+            };
+            BENCHMARK_ADVANCED("pager::checkpoint (concurrent)")(Catch::Benchmark::Chronometer meter) {
+                meter.measure([&](int) {
+                    reload_wal_index();
+                    drive_test_pager(pager::checkpoint(pager));
+                });
+            };
+
+            destroy_test_pager(pager);
+        }
+    }
+}
+
+// ============================================================================
+// checkpoint concurrency
+// ============================================================================
+
+namespace {
+    // Every read/write suspends and records itself here instead of completing
+    // immediately, so a test can drive completions in a chosen order rather
+    // than the sync backend's incidental FIFO ordering.
+    struct ManualOp {
+        os::Handle              file{};
+        Rng1U64                 rng{};
+        void*                   read_dst  = nullptr;
+        const void*             write_src = nullptr;
+        std::coroutine_handle<> handle{};
+    };
+
+    struct ManualIOState {
+        ManualOp ops[32]{};
+        U64      op_count = 0;
+    };
+
+    aio::FileIOContext make_manual_io_context(ManualIOState* state) {
+        return aio::FileIOContext{
+            aio::FileReadFunctor{[state](os::Handle f, Rng1U64 rng, void* out) -> coroutine::Task<> {
+                assert_true(state->op_count < 32, "manual io: too many concurrent ops");
+                ManualOp* op = &state->ops[state->op_count++];
+                op->file     = f;
+                op->rng      = rng;
+                op->read_dst = out;
+                co_await coroutine::Awaitable{
+                    [op](std::coroutine_handle<> h) { op->handle = h; },
+                    [op]() {
+                        os::file_read(op->file, op->rng, op->read_dst);
+                    }
+                };
+            }},
+            aio::FileWriteFunctor{[state](os::Handle f, Rng1U64 rng, const void* in) -> coroutine::Task<> {
+                assert_true(state->op_count < 32, "manual io: too many concurrent ops");
+                ManualOp* op  = &state->ops[state->op_count++];
+                op->file      = f;
+                op->rng       = rng;
+                op->write_src = in;
+                co_await coroutine::Awaitable{
+                    [op](std::coroutine_handle<> h) { op->handle = h; },
+                    [op]() {
+                        os::file_write(op->file, op->rng, op->write_src);
+                    }
+                };
+            }},
+            aio::FileSyncFunctor{[](os::Handle f) -> coroutine::Task<> {
+                os::file_sync(f);
+                co_return;
+            }}
+        };
+    }
+}
+
+PAGER_TEST_CASE("checkpoint writes correct per-page content when completions arrive out of order", "[plexdb.pager.transaction]") {
+    os::File db{os::file_tmp()};
+    os::File wal_f{os::file_tmp()};
+    REQUIRE(!os::is_zero_handle(db));
+    REQUIRE(!os::is_zero_handle(wal_f));
+
+    U64  page_size          = 64;
+    auto pager              = create_test_pager(db, wal_f, page_size);
+    pager.header.page_count = 4; // pages 1..3 valid; bypasses new_page's bitmap bookkeeping
+
+    U8 page1[64];
+    U8 page2[64];
+    U8 page3[64];
+    os::memory_set(page1, 0x11, page_size);
+    os::memory_set(page2, 0x22, page_size);
+    os::memory_set(page3, 0x33, page_size);
+
+    wal::PageWrite writes[3] = {
+        {.page_idx = 1, .data = page1},
+        {.page_idx = 2, .data = page2},
+        {.page_idx = 3, .data = page3},
+    };
+    // @note fresh WAL, so frame_idx == write_idx.
+    co_await wal::append_frames(pager.wal, g_test_sync_file_io_ctx, TArrayView<const wal::PageWrite>{writes, 3});
+    for (U64 write_idx = 0; write_idx < 3; write_idx++) {
+        insert(pager.wal.wal_index, writes[write_idx].page_idx, write_idx);
+    }
+    // @note pager.page_cache stays empty, so all three entries are uncached and
+    // checkpoint must read them back from the WAL under concurrency.
+
+    ManualIOState      io_state{};
+    aio::FileIOContext manual_ctx = make_manual_io_context(&io_state);
+    pager.file_io_ctx             = &manual_ctx;
+
+    auto checkpoint_task = pager::checkpoint(pager);
+    checkpoint_task.resume();
+
+    while (!checkpoint_task.done()) {
+        U64 candidates[32];
+        U64 candidate_count = 0;
+        for (U64 i = 0; i < io_state.op_count; i++) {
+            if (io_state.ops[i].handle) {
+                candidates[candidate_count++] = i;
+            }
+        }
+        REQUIRE(candidate_count > 0);
+        // Pick from the middle of the pending set rather than FIFO/LIFO order,
+        // so different iterations' reads and writes genuinely interleave
+        // instead of one iteration draining to completion before the next starts.
+        U64  pick                 = candidates[candidate_count / 2];
+        auto h                    = io_state.ops[pick].handle;
+        io_state.ops[pick].handle = {};
+        h.resume();
+    }
+
+    pager.file_io_ctx = &g_test_sync_file_io_ctx;
+
+    for (U64 i = 0; i < 3; i++) {
+        U8  readback[64] = {};
+        U64 offset       = page_size * writes[i].page_idx;
+        os::file_read(db, Rng1U64{.start = offset, .end = offset + page_size}, readback);
+        REQUIRE(os::memory_compare(readback, writes[i].data, page_size) == 0);
+    }
 
     destroy_test_pager(pager);
     co_return;
