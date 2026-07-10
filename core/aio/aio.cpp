@@ -345,6 +345,8 @@ namespace plexdb::aio {
                     });
                 }
 
+                uring::sqe_submit_non_blocking(*state->ring);
+
                 return true;
             }}
         };
