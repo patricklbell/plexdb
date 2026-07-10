@@ -25,8 +25,8 @@ Ordering below is by leverage per line deleted, not by dependency order.
 | # | Redesign | LOC delta | Retires |
 |---|----------|----------:|---------|
 | R1 | AST → typed physical plan tree; walker replaces the 116-arm executor | −3 000 (est.) | §H2, §H4, §H14, 116 `SameAs<T,X>` arms + `SelectOp`/`FilterPlan`/`MutationPlan` variants |
-| R2 | Materialise `ColumnValue` only to operate (wire-format value storage); one traversal for the crossings; clearer names (partly landed) | alloc reduction | §H2 (empty-union asserts), §H12 |
-| R3 | Collapse the `ast::Type`/`type::Type` duplication; drive `assert_not_implemented` to 0 | −250 | §H8, §H10, 34 `assert_not_implemented` |
+| R2 | One serialization for wire/value/key (type-aware key comparator); materialise `ColumnValue` only to operate; one traversal for the crossings; clearer names (partly landed) | alloc reduction, −`key.cppm` codec | §H2 (empty-union asserts), §H12, 5 `key.cppm` asserts |
+| R3 | Collapse the `ast::Type`/`type::Type` duplication; drive `assert_not_implemented` to 0 | −250 | §H8, §H10, 29 `assert_not_implemented` (R2 takes the other 5) |
 | R5 | Native protocol as a declarative message spec, generated code committed | −1 400 | §H1 (partial), §H7 (structurally impossible), §H10 (declarative) |
 | R7 | Structured errors + Cassandra-source-extracted message strings | −600 | §H1, §H4 |
 | R8 | Schema mutation as `SchemaMutation` diff, precheck-then-commit | −300 | §H6, §H13 |
@@ -173,10 +173,45 @@ projection or exact-type writes is pure overhead (it also allocates
 
 1. **Store non-key column values in wire format** (or a form memcpy-able to
    it). Then a projected-but-unfiltered column is copied storage→result, and
-   an exact-type bound value is copied wire→storage — no `ColumnValue`.
-   Keys keep `key_encode`; on an operation or a type mismatch, decode to
-   `ColumnValue` as today. This makes materialisation lazy: pay it only where
-   the ledger says it is necessary.
+   an exact-type bound value is copied wire→storage — no `ColumnValue`. On an
+   operation or a type mismatch, decode to `ColumnValue` as today; this makes
+   materialisation lazy — pay it only where the ledger says it is necessary.
+
+   **Keys use the same serialization as column values, ordered to match
+   Cassandra.** Key order is a conformance contract — applications and the
+   test suite observe it — so the target is not "some consistent order" but
+   Cassandra's, which has two layers:
+   - *Partition:* `token ‖ partition-key bytes`, where `token =
+     Murmur3_x64_128(key, seed 0)[hi 64]`; partitions sort by token, then by
+     key bytes. plexdb already does this (`key.cppm:652` `append_token_prefix`),
+     and it stays `memcmp` — the token is a fixed 8-byte quantity and the
+     tiebreak is a byte compare, exactly Cassandra's `DecoratedKey` rule.
+   - *Clustering:* each column compared by its type's `AbstractType.compare`,
+     reversed per column for `DESC`. Several are **not** byte-lexicographic —
+     `timeuuid` (by embedded timestamp), `uuid`, `decimal`/`varint` (numeric),
+     `float`/`double` (sign-magnitude).
+
+   So keep the partition token layer as-is, and give the *clustering* BTree a
+   stateful, type-aware comparator — `VarlenKeyPolicy` already carries one
+   (`btree.policy.cppm:84,98`), which is exactly how Cassandra, SQLite, and
+   PostgreSQL compare (`AbstractType.compare`; `sqlite3VdbeRecordCompare`; PG
+   opclass cmp). This lets clustering keys be stored in wire form (unifying the
+   formats, making a projected key column a memcpy) and deletes `key.cppm`'s
+   order-preserving codec and its 5 asserts (R3).
+
+   Matching Cassandra's order is a second reason to prefer the comparator over
+   order-preserving bytes: the comparator *is* `AbstractType.compare`, whereas
+   the byte encoding must reproduce each comparator's order through `memcmp`
+   and today gets the non-lexicographic types wrong — `timeuuid` is stored as
+   raw bytes (`key.cppm:620`), so it orders by low timestamp bits instead of
+   time, diverging from Cassandra; `decimal`/`varint` hit the asserts.
+
+   The comparator gives up one thing memcmp keys retain: byte-level prefix
+   compression and separator suffix truncation (the prefix-B-tree fanout win).
+   plexdb realizes neither today (separators are full key copies,
+   `btree.types.cppm:24`), so it is latent, not lost. Keeping that option
+   open — a BTree API that avoids serializing full keys, and a hybrid
+   per-table comparator — is tracked in `TODO.md`, gated on benchmarks.
 2. **One traversal, three intents.** Validate, build a `ColumnValue`, and
    encode-to-bytes are currently three separate walks over `Evaluated × type`
    kept in agreement by a runtime assert (`engine.cpp:370`). Fold them into a
@@ -208,18 +243,20 @@ path (no byte round-trip). Schema epoch — `Schema.version` bumps on DDL,
 
 **Deletes.** `ColumnValue` materialisation on the projection and exact-type
 write paths; the three-walk agreement assert (`engine.cpp:370`) becomes
-structural.
+structural; `key.cppm`'s order-preserving encode/decode codec (replaced by a
+type-aware comparator policy) and its 5 asserts.
 
-**Migration.** Wire-format storage is a blob layout change — gate it behind a
-storage format version and read old native-LE blobs through the existing
-`decode_value` until rewritten, or migrate on read. This is the one part with
-on-disk cost; the rename and the single traversal do not touch storage.
+**Migration.** Storage format has not been released, no migration necessary.
 
 **Invariants.**
 - `ColumnValue{}` is `Null`; `visit(ColumnValue)` is total; no value accessor
   reaches `assert_not_implemented`.
+- Wire, value storage, and key storage use one serialization. Partitions sort
+  by `token ‖ key bytes` (`memcmp`, matching Cassandra's ring order);
+  clustering columns sort by a type-aware comparator reproducing
+  `AbstractType.compare` × ASC/DESC.
 - A value is decoded to `ColumnValue` only on an operation or a coercing
-  write; projection and exact-type writes copy bytes.
+  write; projection (including key columns) and exact-type writes copy bytes.
 - `can_coerce`, `coerce_to_value`, and `encode_evaluated` share one traversal.
 
 **Verification.** For every `Evaluated × column-type` fixture (scalars, each
@@ -237,9 +274,10 @@ traversal succeeds, and the bytes from `encode_evaluated` equal those from
 (handle vs textual name), with duplicated `operator==`/hash/`create_*`.
 Separately, 34 `assert_not_implemented` sites remain for type-completeness
 gaps — each a runtime crash on a collection/tuple/UDT shape (§H8, §H10;
-`key.cppm` collection-key encoders, `native.cppm` wire arms,
-`column_value.cppm` hash/eq). Dispatch already runs through
-`plexdb.tagged_union`'s `visit()`; these two are what is left.
+`native.cppm` wire arms, `column_value.cppm` hash/eq; the 5 `key.cppm` ones
+are retired by R2's type-aware comparator, which drops key serialization).
+Dispatch already runs through `plexdb.tagged_union`'s `visit()`; these two are
+what is left.
 
 **Redesign.**
 
@@ -250,10 +288,10 @@ gaps — each a runtime crash on a collection/tuple/UDT shape (§H8, §H10;
    the shared template is smaller and clearer than the two structs; measure
    `types.cppm` first.
 
-2. Drive the 34 `assert_not_implemented` sites to 0 by implementing each
-   case. The `key.cppm`/`column_value.cppm` collection recursion can land
-   now; a few depend on R2 finishing (`engine.cpp` value accessors) or R5
-   (native encoder arms).
+2. Drive the remaining 29 `assert_not_implemented` sites to 0 by implementing
+   each case (R2 retires the other 5 in `key.cppm`). The `column_value.cppm`
+   collection recursion can land now; a few depend on R2 finishing
+   (`engine.cpp` value accessors) or R5 (native encoder arms).
 
 Sites that legitimately handle only `type::Basic` (the wire type-code table)
 keep their `switch`, built with `-Werror=switch-enum` so a missing
@@ -262,7 +300,7 @@ case, not `assert_not_implemented`.
 
 **Deletes.**
 - `ast::Type` boilerplate, if item 1 is taken.
-- The 34 `assert_not_implemented` fallbacks, replaced by real
+- The remaining 29 `assert_not_implemented` fallbacks, replaced by real
   implementations.
 
 **Invariants.**

@@ -4,12 +4,47 @@
     - On slot collision with a pinned entry, spill to arena overflow instead of evicting
     - Pro: rpage valid without transaction; pointers released early reclaim cache slots; memory bounded in common case
     - Con: two-tier cache lookup (slot array + arena overflow), handle lifetime management at all call sites
+- BTree prefix optimization: extend the BTree API to avoid serializing the full key
+    - The CQL conformance plan (`docs/cql-conformance-plan.md`, R2) lands on keys using the
+      same serialization as column values, compared by a type-aware comparator policy on
+      `VarlenKeyPolicy` (`core/btree/btree.policy.cppm:84,98`). This deliberately gives up the
+      byte-lexicographic prefix optimizations, which plexdb does not implement today anyway
+      (separators are full key copies, `core/btree/btree.types.cppm:24`).
+    - Prefix compression (front-code shared leading bytes of adjacent leaf keys) and separator
+      suffix truncation (store only the shortest distinguishing prefix in internal-node
+      separators) both shrink internal nodes → higher fanout → shallower tree → fewer page
+      reads. Both need only the ability to compare/store a *partial* key, so the BTree API must
+      stop assuming a separator is a full serialized key.
+    - Byte-level (memcmp + order-preserving encoding, à la RocksDB/CockroachDB) truncates to the
+      exact distinguishing byte; column-level (type-aware comparator, à la PostgreSQL PG-12
+      attribute suffix truncation) can only drop whole trailing key columns. Byte-level packs
+      tighter when individual column values are long and share prefixes.
+    - Tradeoff to benchmark: memcmp-over-encoded-bytes comparison cost + order-preserving codec
+      complexity (the `key.cppm` surface) vs. type-aware comparator cost on the hot path +
+      weaker (column-granular) truncation. Need a key-comparison microbench and an
+      internal-node-fanout/tree-depth measurement on representative composite keys (long text
+      prefixes, wide clustering keys) before choosing.
+    - Conformance constraint on any memcmp path: the order-preserving encoding must reproduce
+      Cassandra's `AbstractType.compare` per clustering type, including the non-lexicographic
+      ones — `timeuuid` by embedded timestamp (not raw bytes), `decimal`/`varint` numerically,
+      `float`/`double` sign-magnitude. That codec is the cost R2's comparator avoids; a
+      prefix-optimized memcmp path must pay it back.
+- BTree hybrid comparator model: once the API no longer serializes full keys, allow the
+  comparator policy to be chosen per table/index (`VarlenKeyPolicy`'s comparator is already a
+  stateful template parameter). E.g. memcmp + order-preserving encoding for tables whose keys
+  are long and prefix-heavy (best fanout), type-aware wire-format keys elsewhere (format
+  unification, memcpy key projection). Also covers a PostgreSQL-style abbreviated-key fast path
+  (fixed-width proxy compared first, full comparator on tie). Gated on the same benchmarks as
+  the prefix-optimization item; only worth the two-path complexity if a workload shows one
+  policy is not uniformly best.
 - Proper prepared (and non-prepared) query caching
 - CQL native protocol: stream multiplexing/pipelining. `post_startup_loop` awaits each
   frame's `frame_handler` to completion before reading the next frame
   (`cql/native/native.cppm:600,636`); stream IDs are parsed and echoed back correctly
   (`native.cpp:960` etc.) but never used to dispatch concurrent in-flight requests on one
   connection.
+- Allow io_uring to submit multiple file io requests at once between connections. Currently only one connection
+  can have a file op in flight because the transaction lock blocks it.
 - Avoid storing pager pointer per btree/blob
 - Shard across cores
     - OS layer
