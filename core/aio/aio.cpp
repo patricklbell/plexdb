@@ -300,8 +300,6 @@ namespace plexdb::aio {
         EventConsumer consumer{
             .max_events = U64(buf_count) + MAX_SYNC_SLOTS,
             .on_unblock = OnUnblockFunctor{[state]([[maybe_unused]] const TArrayView<os::PollEvent>&) -> bool {
-                uring::sqe_submit_non_blocking(*state->ring);
-
                 bool has_new_events = uring::ring_drain_event_fd(*state->ring);
                 if (!has_new_events) {
                     return true;
@@ -345,9 +343,10 @@ namespace plexdb::aio {
                     });
                 }
 
-                uring::sqe_submit_non_blocking(*state->ring);
-
                 return true;
+            }},
+            .on_block   = OnBlockFunctor{[state]() {
+                uring::sqe_submit_non_blocking(*state->ring);
             }}
         };
 

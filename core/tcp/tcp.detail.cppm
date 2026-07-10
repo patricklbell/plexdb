@@ -224,11 +224,7 @@ export namespace plexdb::tcp {
                         return true;
                     };
 
-                    // @note a coroutine resumed via another ring's completion can push an SQE
-                    // here without this ring's eventfd firing; submit unconditionally, before
-                    // checking for new events, or that push never reaches the kernel.
                     bool has_new_events = uring::ring_drain_event_fd(in_s->ring);
-                    uring::sqe_submit_non_blocking(in_s->ring);
                     if (!has_new_events) {
                         return true;
                     }
@@ -302,10 +298,12 @@ export namespace plexdb::tcp {
                         });
                     }
 
-                    uring::sqe_submit_non_blocking(in_s->ring);
                     return true;
                 }
-            }
+            },
+            .on_block = aio::OnBlockFunctor{[in_s]() {
+                uring::sqe_submit_non_blocking(in_s->ring);
+            }}
         };
     }
 

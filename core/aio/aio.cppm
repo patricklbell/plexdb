@@ -18,9 +18,16 @@ export namespace plexdb::aio {
     // Event loop
     // ========================================================================
     using OnUnblockFunctor = AutoFunctor<bool(const TArrayView<os::PollEvent>&)>;
+    using OnBlockFunctor   = AutoFunctor<void()>;
     struct EventConsumer {
         U64              max_events;
         OnUnblockFunctor on_unblock;
+
+        // @optional
+        // @note runs for every consumer right before the loop blocks, so a coroutine
+        // resumed by one consumer that queues work on another consumer is guaranteed
+        // to be submitted before we wait on the poll
+        OnBlockFunctor on_block{};
     };
 
     template<typename... Cs>
@@ -30,24 +37,31 @@ export namespace plexdb::aio {
             total_max_events = 1;
         }
 
-        threads::Scope                  scratch    = threads::scratch();
-        os::PollEvent*                  ev_storage = arena::push_array<os::PollEvent>(*scratch.arena, total_max_events);
-        TArrayView<os::PollEvent>       events{ev_storage, 0};
-        CappedTArrayView<os::PollEvent> events_view{ev_storage, total_max_events, 0};
+        threads::Scope                  scratch        = threads::scratch();
+        os::PollEvent*                  events_storage = arena::push_array<os::PollEvent>(*scratch.arena, total_max_events);
+        CappedTArrayView<os::PollEvent> events_view{events_storage, total_max_events, 0};
 
         while (true) {
-            bool stop     = false;
-            auto dispatch = [&](auto& c) {
-                stop |= !c.on_unblock(events);
+            auto on_block = [&](auto& c) {
+                if (c.on_block) {
+                    c.on_block();
+                }
             };
-            (dispatch(consumers), ...);
-            if (stop) {
-                break;
-            }
+            (on_block(consumers), ...);
 
             events_view.cap = 0;
             os::block_until_poll_unblocks_wth_events(unblock, &events_view);
-            events = TArrayView<os::PollEvent>{events_view.ptr, events_view.cap};
+            TArrayView<os::PollEvent> events{events_view.ptr, events_view.cap};
+
+            bool stop       = false;
+            auto on_unblock = [&](auto& c) {
+                stop |= !c.on_unblock(events);
+            };
+            (on_unblock(consumers), ...);
+
+            if (stop) {
+                break;
+            }
         }
     }
 
@@ -85,19 +99,20 @@ export namespace plexdb::aio {
     void pump_task(TaskT& task, EventConsumer& consumer, os::Poll& poll) {
         U64                             max_event_count = consumer.max_events > 0 ? consumer.max_events : 1;
         threads::Scope                  scratch         = threads::scratch();
-        os::PollEvent*                  ev_storage      = arena::push_array<os::PollEvent>(*scratch.arena, max_event_count);
-        TArrayView<os::PollEvent>       events{ev_storage, 0};
-        CappedTArrayView<os::PollEvent> events_view{ev_storage, max_event_count, 0};
+        os::PollEvent*                  events_storage  = arena::push_array<os::PollEvent>(*scratch.arena, max_event_count);
+        CappedTArrayView<os::PollEvent> events_view{events_storage, max_event_count, 0};
 
         task.resume();
-        while (true) {
-            (void)consumer.on_unblock(events);
-            if (task.done()) {
-                break;
+        while (!task.done()) {
+            if (consumer.on_block) {
+                consumer.on_block();
             }
+
             events_view.cap = 0;
             os::block_until_poll_unblocks_wth_events(poll, &events_view);
-            events = TArrayView<os::PollEvent>{events_view.ptr, events_view.cap};
+            TArrayView<os::PollEvent> events{events_view.ptr, events_view.cap};
+
+            assert_true_always(consumer.on_unblock(events), "event consumer stopping in pumped task is not implemented");
         }
     }
 
