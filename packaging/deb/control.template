@@ -1,0 +1,9 @@
+Package: plexdb
+Version: __VERSION__
+Section: database
+Priority: optional
+Architecture: __ARCH__
+Maintainer: PlexDB release automation <noreply@plexdb>
+Recommends: libcap2-bin
+Description: PlexDB CQL and key-value database server
+ PlexDB CQL and key-value database server binaries.

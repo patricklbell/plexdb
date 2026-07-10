@@ -25,6 +25,12 @@ ninja -C build
 
 *Note that the configured compiler needs to support c++23 and modules*
 
+To enable io_uring as the I/O backend requires the `CAP_IPC_LOCK` capability or a `RLIMIT_MEMLOCK` large enough to cover the ring's buffers. RPM and DEB release packages set this capability automatically.
+
+```sh
+sudo setcap cap_ipc_lock+ep build/cql/plexdb_cql_server
+```
+
 ### Plugins
 
 See the README.md files under `plugins`.

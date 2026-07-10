@@ -1,0 +1,14 @@
+# Allows the local dev user to grant CAP_IPC_LOCK to the locally built
+# plexdb_cql_server binary, without a password, so io_uring can register
+# pinned buffers. Scoped to this exact absolute path and exact argument —
+# does not grant setcap (or sudo) for anything else.
+#
+# Install:
+#   sudo cp [[sudoers files]] /etc/sudoers.d/plexdb-setcap
+#   sudo chmod 0440 /etc/sudoers.d/plexdb-setcap
+#   sudo visudo -c
+#
+# Update the username and path.
+[[USER]] ALL=(root) NOPASSWD: /usr/bin/setcap cap_ipc_lock+ep [[path/to/plexdb_cql_server]]
+[[USER]] ALL=(root) NOPASSWD: /usr/bin/setcap cap_ipc_lock+ep [[path/to/core_tests]]
+...

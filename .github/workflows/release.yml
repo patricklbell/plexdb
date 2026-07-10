@@ -58,11 +58,91 @@ jobs:
           path: |
             plexdb-cql-linux-${{ matrix.arch }}
             plexdb-keyvalue-linux-${{ matrix.arch }}
-            plexdb-core-linux-${{ matrix.arch }}.tar.gz
             libplexdb_otel_plugin-linux-${{ matrix.arch }}.so
 
-  release:
+  package-rpm:
     needs: build
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            rpm_arch: x86_64
+          - arch: arm64
+            rpm_arch: aarch64
+    runs-on: ubuntu-24.04
+    container: fedora:40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rpmbuild
+        run: dnf install -y rpm-build libcap
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+
+      - name: Build RPM
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          topdir="$PWD/rpmbuild"
+          mkdir -p "$topdir/SOURCES" "$topdir/BUILD" "$topdir/RPMS" "$topdir/SPECS" "$topdir/BUILDROOT"
+          cp plexdb-cql-linux-${{ matrix.arch }}               "$topdir/SOURCES/plexdb_cql_server"
+          cp plexdb-keyvalue-linux-${{ matrix.arch }}          "$topdir/SOURCES/plexdb_keyvalue_server"
+          cp libplexdb_otel_plugin-linux-${{ matrix.arch }}.so "$topdir/SOURCES/libplexdb_otel_plugin.so"
+          rpmbuild -bb packaging/rpm/plexdb.spec \
+            --define "_topdir $topdir" \
+            --define "plexdb_version $version" \
+            --define "plexdb_arch ${{ matrix.rpm_arch }}"
+          find "$topdir/RPMS" -name '*.rpm' -exec cp {} "plexdb-${{ matrix.rpm_arch }}.rpm" \;
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.arch }}
+          path: plexdb-${{ matrix.rpm_arch }}.rpm
+
+  package-deb:
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            deb_arch: amd64
+          - arch: arm64
+            deb_arch: arm64
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+
+      - name: Build DEB
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          pkgroot="$PWD/pkgroot"
+          mkdir -p "$pkgroot/DEBIAN" "$pkgroot/usr/bin" "$pkgroot/usr/lib/plexdb/plugins"
+          install -m755 plexdb-cql-linux-${{ matrix.arch }}               "$pkgroot/usr/bin/plexdb_cql_server"
+          install -m755 plexdb-keyvalue-linux-${{ matrix.arch }}          "$pkgroot/usr/bin/plexdb_keyvalue_server"
+          install -m644 libplexdb_otel_plugin-linux-${{ matrix.arch }}.so "$pkgroot/usr/lib/plexdb/plugins/libplexdb_otel_plugin.so"
+          install -m755 packaging/deb/postinst "$pkgroot/DEBIAN/postinst"
+          sed -e "s/__VERSION__/$version/" -e "s/__ARCH__/${{ matrix.deb_arch }}/" \
+            packaging/deb/control.template > "$pkgroot/DEBIAN/control"
+          dpkg-deb --build --root-owner-group "$pkgroot" "plexdb-${{ matrix.deb_arch }}.deb"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: plexdb-${{ matrix.deb_arch }}.deb
+
+  release:
+    needs: [build, package-rpm, package-deb]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -78,6 +158,26 @@ jobs:
         with:
           name: linux-arm64
 
+      - name: Download rpm x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-x64
+
+      - name: Download rpm arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-arm64
+
+      - name: Download deb x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deb-x64
+
+      - name: Download deb arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deb-arm64
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -88,3 +188,7 @@ jobs:
             plexdb-cql-linux-arm64
             plexdb-keyvalue-linux-arm64
             libplexdb_otel_plugin-linux-arm64.so
+            plexdb-x86_64.rpm
+            plexdb-aarch64.rpm
+            plexdb-amd64.deb
+            plexdb-arm64.deb

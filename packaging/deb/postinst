@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+bin=/usr/bin/plexdb_cql_server
+
+if command -v setcap >/dev/null 2>&1; then
+    setcap cap_ipc_lock+ep "$bin" || \
+        echo "warning: failed to set cap_ipc_lock on $bin; io_uring will fall back to AIO/sync" >&2
+else
+    echo "warning: setcap not found (install libcap2-bin) to enable io_uring for $bin; falls back to AIO/sync otherwise" >&2
+fi
+
+exit 0

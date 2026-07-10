@@ -32,6 +32,10 @@ Non-obvious invariants:
 ## Git safety
 - Never run `git checkout --`, `git restore`, `git reset --hard`, `git clean`, or any other command that discards working-tree changes without first running `git status`/`git diff` and confirming with the user which files/hunks are safe to discard. Uncommitted edits may predate the current task and have no reflog entry or may be added while you are working.
 
+## Sudo
+- A narrowly-scoped `NOPASSWD` sudoers rule (`tools/setcap-sudoers`) may be installed on dev machines, permitting exactly one command: `setcap cap_ipc_lock+ep` on the locally built `plexdb_cql_server` binary (and or test binaries). This exists so io_uring can register pinned buffers without a full-privilege dev environment.
+- Agents may run that exact `sudo setcap cap_ipc_lock+ep <path>` command (matching the path in the installed rule) without asking for confirmation first — it is the standard post-build step for enabling io_uring locally, covered by the rule the user deliberately installed for this purpose.
+
 ## Testing
 - Tests use [Catch2](https://github.com/catchorg/Catch2/blob/devel/docs/). Create tests for your changes.
 - Additional test-file conventions (applied to `*.test.cpp`) are in `.github/instructions/tests.instructions.md`.
