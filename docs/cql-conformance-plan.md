@@ -182,8 +182,9 @@ projection or exact-type writes is pure overhead (it also allocates
    test suite observe it — so the target is not "some consistent order" but
    Cassandra's, which has two layers:
    - *Partition:* `token ‖ partition-key bytes`, where `token =
-     Murmur3_x64_128(key, seed 0)[hi 64]`; partitions sort by token, then by
-     key bytes. plexdb already does this (`key.cppm:652` `append_token_prefix`),
+     Murmur3_x64_128(key, seed 0)[hi 64]`; partitions sort by token.
+     plexdb already does this (`key.cppm:652` `append_token_prefix`) but includes the key bytes unnecessarily,
+     these key bytes should be stored in the static (static data should always be present, related code should be simplified)
      and it stays `memcmp` — the token is a fixed 8-byte quantity and the
      tiebreak is a byte compare, exactly Cassandra's `DecoratedKey` rule.
    - *Clustering:* each column compared by its type's `AbstractType.compare`,
@@ -225,8 +226,8 @@ projection or exact-type writes is pure overhead (it also allocates
    | `write_column_value` | `encode_value` | `ColumnValue` → storage bytes |
    | `resolve_evaluated` | `coerce_to_value` | `Evaluated` → `ColumnValue` (target type) |
    | `resolve_literal_scalar` | `coerce_scalar` | scalar `Literal` → `ColumnValue` |
-   | `cast_write_evaluated_as_column_value` | `encode_evaluated` | `Evaluated` → storage bytes, no intermediate |
-   | `can_cast_write_evaluated_as_column_value` | `can_coerce` | validate the crossing |
+   | `write_evaluated_as_column_value` (renamed from `cast_write_evaluated_as_column_value`) | `encode_evaluated` | `Evaluated` → storage bytes, no intermediate |
+   | `can_write_evaluated_as_column_value` (renamed from `can_cast_write_evaluated_as_column_value`) | `can_coerce` | validate the crossing |
    | `can_write_column_value` | `can_encode_value` | validate a `ColumnValue` fits |
    | `materialize_as_column_value` | *(drop)* | inline `coerce_to_value` |
 

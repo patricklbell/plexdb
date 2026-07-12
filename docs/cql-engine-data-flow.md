@@ -225,14 +225,14 @@ has_clustering_keys?
 ```
 
 `apply_updates_to_row` walks `MutationSpec::updates`, and for each one either
-clears the column (Null) or feeds the `Evaluated` through `io::cast_write_*`
+clears the column (Null) or feeds the `Evaluated` through `io::write_evaluated_*`
 + `io::read_column_value` to coerce into a `ColumnValue` of the column's
 declared `type::Type`. The cast is content-driven by `type::Basic`.
 
 INSERT (engine.cpp:1024+) is the path that bypasses the planner. It still
 relies on the same schema-derived facts (PK/CK indices, static indices,
 `has_clustering_keys`) and on the same `io::write_column_*` /
-`key::serialize_partition` / `serialize_clustering` primitives — it just
+`key::compute_partition_token_from_evals` / `encode_clustering` primitives — it just
 inlines them.
 
 ## 5. Lifecycle of an Evaluated
@@ -242,8 +242,8 @@ inlines them.
 
 ```
 Term  ──evaluate(term, ctx)──►  Evaluated  ──key::append_component──►  key bytes
-                                          └──io::cast_write_evaluated_as_column_value──►  blob bytes
-                                          └──io::can_cast_write_*──►  validation
+                                          └──io::write_evaluated_as_column_value──►  blob bytes
+                                          └──io::can_write_evaluated_*──►  validation
 
 ColumnValue (from a row read) ──wrapped into Evaluated by lookup_column_value──► used by evaluate_where
 ```
