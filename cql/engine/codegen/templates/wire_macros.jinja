@@ -109,30 +109,41 @@ U8 {{ var }}[{{ f.false_width }}] = {};
 {% endif %}
 {% endmacro %}
 
+{# ---- bounds-checks that *pos + nbytes fits within the buffer before advancing ---- #}
+{% macro bounds_check(nbytes_expr) %}assert_true(static_cast<U64>(*pos) + (static_cast<U64>({{ nbytes_expr }})) <= static_cast<U64>(len), "read_column_value_sync: field exceeds buffer bounds");
+{% endmacro %}
+
 {# ---- sync decode: pointer-advance counterpart to read_field, no coroutine ---- #}
 {% macro decode_field(f, base) %}
 {% if f.kind == 'raw_scalar' %}
+{{ bounds_check('sizeof(' ~ member_ref(base, f.member) ~ ')') }}
 os::memory_copy(&{{ member_ref(base, f.member) }}, src + *pos, sizeof({{ member_ref(base, f.member) }}));
 *pos += sizeof({{ member_ref(base, f.member) }});
 {% elif f.kind == 'flag' %}
+{{ bounds_check(1) }}
 {{ member_ref(base, f.member) }} = src[*pos] != 0;
 *pos += 1;
 {% elif f.kind == 'raw_bytes' %}
+{{ bounds_check(f.width) }}
 os::memory_copy(&{{ member_ref(base, f.member) }}[0], src + *pos, {{ f.width }});
 *pos += {{ f.width }};
 {% elif f.kind == 'length_prefixed_bytes' %}
 {% set len_var = f.local_name ~ '_length' %}
+{{ bounds_check('sizeof(U64)') }}
 U64 {{ len_var }};
 os::memory_copy(&{{ len_var }}, src + *pos, sizeof({{ len_var }}));
 *pos += sizeof({{ len_var }});
+{{ bounds_check(len_var) }}
 resize({{ member_ref(base, f.member) }}, {{ len_var }});
 os::memory_copy({{ member_ref(base, f.member) }}.ptr, src + *pos, {{ len_var }});
 *pos += static_cast<U16>({{ len_var }});
 {% elif f.kind == 'conditional_bytes' %}
 if ({{ member_ref(base, f.condition_member) }}) {
+    {{ bounds_check(f.true_width) }}
     os::memory_copy(&{{ member_ref(base, f.true_member) }}[0], src + *pos, {{ f.true_width }});
     *pos += {{ f.true_width }};
 } else {
+    {{ bounds_check(f.false_width) }}
     os::memory_copy(&{{ member_ref(base, f.false_member) }}[0], src + *pos, {{ f.false_width }});
     *pos += {{ f.false_width }};
 }
@@ -201,22 +212,27 @@ w(reinterpret_cast<const U8*>(&length), sizeof(length));
 
 {% macro decode_body(t) %}
 {% if t.shape == 'scalar' %}
+{{ bounds_check('sizeof(' ~ t.ctype ~ ')') }}
 {{ t.ctype }} value;
 os::memory_copy(&value, src + *pos, sizeof(value));
 *pos += sizeof(value);
 return ColumnValue{ value };
 {% elif t.shape == 'text' %}
+{{ bounds_check('sizeof(U64)') }}
 U64 length;
 os::memory_copy(&length, src + *pos, sizeof(length));
 *pos += sizeof(length);
+{{ bounds_check('length') }}
 AutoString8 value{static_cast<U64>(length)};
 os::memory_copy(value.c_str, src + *pos, length);
 *pos += static_cast<U16>(length);
 return ColumnValue{ move(value) };
 {% elif t.shape == 'blob' %}
+{{ bounds_check('sizeof(U64)') }}
 U64 length;
 os::memory_copy(&length, src + *pos, sizeof(length));
 *pos += sizeof(length);
+{{ bounds_check('length') }}
 Blob value;
 resize(value.value, length);
 os::memory_copy(value.value.ptr, src + *pos, length);

@@ -45,7 +45,6 @@ export namespace cql::planner {
         // @note needed for mutations since token doesn't encode PK
         DynamicArray<Evaluated> pk_evals;
 
-        bool reverse_partitions = false;
         bool reverse_clustering = false;
 
         // @note number of clustering positions, starting from 0, restricted by equality (or

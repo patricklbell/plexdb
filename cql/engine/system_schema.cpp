@@ -244,14 +244,21 @@ namespace cql::engine {
     };
 #undef BTBL
 
+    static DynamicArray<VirtualColumn> columns_from(const BuiltinCol* cols, U64 ncols) {
+        DynamicArray<VirtualColumn> out;
+        for (U64 i = 0; i < ncols; i++) {
+            emplace_back(out, VirtualColumn{cols[i].name, cols[i].type});
+        }
+        return out;
+    }
+#define BCOLS(arr) columns_from(arr, sizeof(arr) / sizeof((arr)[0]))
+
     VirtualRows create_schema_keyspaces(schema::Schema& schema) {
         VirtualRows vr;
         vr.keyspace = "system_schema";
         vr.table    = "keyspaces";
 
-        emplace_back(vr.columns, VirtualColumn{"keyspace_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"durable_writes", type::create_basic(type::Basic::boolean)});
-        emplace_back(vr.columns, VirtualColumn{"replication", create_map(type::Basic::text, type::Basic::text)});
+        vr.columns = BCOLS(ss_keyspaces_cols);
 
         const char* builtin_keyspaces[] = {"system", "system_schema"};
         for (auto ks_name : builtin_keyspaces) {
@@ -290,26 +297,7 @@ namespace cql::engine {
         vr.keyspace = "system_schema";
         vr.table    = "tables";
 
-        emplace_back(vr.columns, VirtualColumn{"keyspace_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"table_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"bloom_filter_fp_chance", type::create_basic(type::Basic::double_)});
-        emplace_back(vr.columns, VirtualColumn{"caching", type::create_map(type::Basic::text, type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"comment", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"compaction", type::create_map(type::Basic::text, type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"compression", type::create_map(type::Basic::text, type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"crc_check_chance", type::create_basic(type::Basic::double_)});
-        emplace_back(vr.columns, VirtualColumn{"dclocal_read_repair_chance", type::create_basic(type::Basic::double_)});
-        emplace_back(vr.columns, VirtualColumn{"default_time_to_live", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"flags", type::create_set(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"gc_grace_seconds", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"id", type::create_basic(type::Basic::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"max_index_interval", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"memtable_flush_period_in_ms", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"min_index_interval", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"read_repair", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"read_repair_chance", type::create_basic(type::Basic::double_)});
-        emplace_back(vr.columns, VirtualColumn{"speculative_retry", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"extensions", type::create_map(type::Basic::text, type::Basic::blob)});
+        vr.columns = BCOLS(ss_tables_cols);
 
         for (auto& tbl : builtin_tables) {
             VirtualRow row;
@@ -385,13 +373,7 @@ namespace cql::engine {
         vr.keyspace = "system_schema";
         vr.table    = "columns";
 
-        emplace_back(vr.columns, VirtualColumn{"keyspace_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"table_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"column_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"clustering_order", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"kind", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"position", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"type", type::create_basic(type::Basic::text)});
+        vr.columns = BCOLS(ss_columns_cols);
 
         for (auto& tbl : builtin_tables) {
             for (U64 ci = 0; ci < tbl.ncols; ci++) {
@@ -445,27 +427,7 @@ namespace cql::engine {
         vr.keyspace = "system_schema";
         vr.table    = "views";
 
-        emplace_back(vr.columns, VirtualColumn{"keyspace_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"view_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"base_table_id", type::create_basic(type::Basic::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"base_table_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"bloom_filter_fp_chance", type::create_basic(type::Basic::double_)});
-        emplace_back(vr.columns, VirtualColumn{"caching", type::create_map(type::Basic::text, type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"comment", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"compaction", type::create_map(type::Basic::text, type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"compression", type::create_map(type::Basic::text, type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"default_time_to_live", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"gc_grace_seconds", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"id", type::create_basic(type::Basic::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"include_all_columns", type::create_basic(type::Basic::boolean)});
-        emplace_back(vr.columns, VirtualColumn{"max_index_interval", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"memtable_flush_period_in_ms", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"min_index_interval", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"read_repair", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"read_repair_chance", type::create_basic(type::Basic::double_)});
-        emplace_back(vr.columns, VirtualColumn{"speculative_retry", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"where_clause", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"extensions", type::create_map(type::Basic::text, type::Basic::blob)});
+        vr.columns = BCOLS(ss_views_cols);
 
         // @todo support materialized views
         (void)schema;
@@ -477,12 +439,7 @@ namespace cql::engine {
         vr.keyspace = "system_schema";
         vr.table    = "indexes";
 
-        emplace_back(vr.columns, VirtualColumn{"keyspace_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"table_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"index_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"kind", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"options", type::create_map(type::Basic::text, type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"extensions", type::create_map(type::Basic::text, type::Basic::blob)});
+        vr.columns = BCOLS(ss_indexes_cols);
 
         for (auto& ks : schema.keyspaces) {
             if (ks.tombstone) {
@@ -519,10 +476,7 @@ namespace cql::engine {
         vr.keyspace = "system_schema";
         vr.table    = "triggers";
 
-        emplace_back(vr.columns, VirtualColumn{"keyspace_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"table_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"trigger_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"options", type::create_map(type::Basic::text, type::Basic::text)});
+        vr.columns = BCOLS(ss_triggers_cols);
 
         // @todo triggers
         (void)schema;
@@ -534,12 +488,7 @@ namespace cql::engine {
         vr.keyspace = "system_schema";
         vr.table    = "dropped_columns";
 
-        emplace_back(vr.columns, VirtualColumn{"keyspace_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"table_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"column_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"dropped_time", type::create_basic(type::Basic::timestamp)});
-        emplace_back(vr.columns, VirtualColumn{"kind", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"type", type::create_basic(type::Basic::text)});
+        vr.columns = BCOLS(ss_dropped_cols);
 
         // @todo track dropped columns
         (void)schema;
@@ -551,10 +500,7 @@ namespace cql::engine {
         vr.keyspace = "system_schema";
         vr.table    = "types";
 
-        emplace_back(vr.columns, VirtualColumn{"keyspace_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"type_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"field_names", type::create_list(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"field_types", type::create_list(type::Basic::text)});
+        vr.columns = BCOLS(ss_types_cols);
 
         for (auto& ks : schema.keyspaces) {
             if (ks.tombstone) {
@@ -593,14 +539,7 @@ namespace cql::engine {
         vr.keyspace = "system_schema";
         vr.table    = "functions";
 
-        emplace_back(vr.columns, VirtualColumn{"keyspace_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"function_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"argument_types", type::create_list(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"argument_names", type::create_list(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"body", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"called_on_null_input", type::create_basic(type::Basic::boolean)});
-        emplace_back(vr.columns, VirtualColumn{"language", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"return_type", type::create_basic(type::Basic::text)});
+        vr.columns = BCOLS(ss_functions_cols);
 
         // @todo support UDFs
         (void)schema;
@@ -612,14 +551,7 @@ namespace cql::engine {
         vr.keyspace = "system_schema";
         vr.table    = "aggregates";
 
-        emplace_back(vr.columns, VirtualColumn{"keyspace_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"aggregate_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"argument_types", type::create_list(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"final_func", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"initcond", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"return_type", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"state_func", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"state_type", type::create_basic(type::Basic::text)});
+        vr.columns = BCOLS(ss_aggregates_cols);
 
         // @todo support UDAs
         (void)schema;
@@ -682,25 +614,7 @@ namespace cql::engine {
         vr.keyspace = "system";
         vr.table    = "local";
 
-        emplace_back(vr.columns, VirtualColumn{"key", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"bootstrapped", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"broadcast_address", type::create_basic(type::Basic::inet)});
-        emplace_back(vr.columns, VirtualColumn{"broadcast_port", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"cluster_name", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"cql_version", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"data_center", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"host_id", type::create_basic(type::Basic::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"listen_address", type::create_basic(type::Basic::inet)});
-        emplace_back(vr.columns, VirtualColumn{"listen_port", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"native_protocol_version", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"partitioner", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"rack", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"release_version", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"rpc_address", type::create_basic(type::Basic::inet)});
-        emplace_back(vr.columns, VirtualColumn{"rpc_port", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"schema_version", type::create_basic(type::Basic::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"tokens", type::create_set(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"extensions", type::create_map(type::Basic::text, type::Basic::blob)});
+        vr.columns = BCOLS(sys_local_cols);
 
         auto create_loopback_ipv4 = []() {
             Blob b;
@@ -747,15 +661,7 @@ namespace cql::engine {
         vr.keyspace = "system";
         vr.table    = "peers";
 
-        emplace_back(vr.columns, VirtualColumn{"peer", type::create_basic(type::Basic::inet)});
-        emplace_back(vr.columns, VirtualColumn{"data_center", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"host_id", type::create_basic(type::Basic::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"preferred_ip", type::create_basic(type::Basic::inet)});
-        emplace_back(vr.columns, VirtualColumn{"rack", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"release_version", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"rpc_address", type::create_basic(type::Basic::inet)});
-        emplace_back(vr.columns, VirtualColumn{"schema_version", type::create_basic(type::Basic::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"tokens", type::create_set(type::Basic::text)});
+        vr.columns = BCOLS(sys_peers_cols);
 
         return vr;
     }
@@ -765,19 +671,9 @@ namespace cql::engine {
         vr.keyspace = "system";
         vr.table    = "peers_v2";
 
-        emplace_back(vr.columns, VirtualColumn{"peer", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"peer_port", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"data_center", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"host_id", type::create_basic(type::Basic::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"native_address", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"native_port", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"preferred_ip", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"preferred_port", type::create_basic(type::Basic::int_)});
-        emplace_back(vr.columns, VirtualColumn{"rack", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"release_version", type::create_basic(type::Basic::text)});
-        emplace_back(vr.columns, VirtualColumn{"schema_version", type::create_basic(type::Basic::uuid)});
-        emplace_back(vr.columns, VirtualColumn{"tokens", type::create_basic(type::Basic::text)});
+        vr.columns = BCOLS(sys_peers_v2_cols);
 
         return vr;
     }
+#undef BCOLS
 }

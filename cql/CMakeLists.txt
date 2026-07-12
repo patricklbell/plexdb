@@ -88,11 +88,14 @@ target_sources(plexbd_cql
         engine/generated/io_codec_sync.cpp
         engine/generated/token_wire.cpp
         engine/it.cpp
+        engine/key.cpp
         engine/planner.cpp
         engine/schema.cpp
         engine/schema.types.cpp
+        engine/statements.cpp
         engine/system_schema.cpp
         engine/token.cpp
+        engine/types.cpp
         log/log.cpp
         parsers/parsers.cpp
         native/native.cpp

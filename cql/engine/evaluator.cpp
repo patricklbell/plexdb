@@ -161,12 +161,8 @@ namespace cql {
         if (!ctx.table || !ctx.row_values) {
             return Evaluated{Literal{Null{}}};
         }
-        for (U64 ci = 0; ci < ctx.table->cols.length; ci++) {
-            if (ctx.table->cols[ci].name == String8(col_name.c_str, col_name.length)) {
-                return Evaluated{ctx.row_values[ci]};
-            }
-        }
-        return Evaluated{Literal{Null{}}};
+        Optional<U64> ci = schema::find_column(*ctx.table, col_name);
+        return ci ? Evaluated{ctx.row_values[*ci]} : Evaluated{Literal{Null{}}};
     }
 
     // ========================================================================
@@ -413,21 +409,6 @@ namespace cql {
     }
     Optional<type::Basic> outer_type_hint_basic(const TermWithIdentifiers& twi) {
         return outer_type_hint_basic_impl(twi);
-    }
-
-    bool type_compatible_for_assignment(type::Basic from, type::Basic to) {
-        if (from == to) {
-            return true;
-        }
-        // ascii widens to text / varchar (every ASCII byte is valid UTF-8).
-        if ((to == type::Basic::text || to == type::Basic::varchar) && from == type::Basic::ascii) {
-            return true;
-        }
-        // text and varchar are CQL synonyms.
-        if ((to == type::Basic::text && from == type::Basic::varchar) || (to == type::Basic::varchar && from == type::Basic::text)) {
-            return true;
-        }
-        return false;
     }
 
     // ========================================================================
@@ -821,7 +802,7 @@ namespace cql {
     }
 
     // @note CONTAINS scans element values; CONTAINS KEY scans only the key half of a map.
-    static bool evaluate_contains(const Evaluated& lhs, const Evaluated& rhs, bool match_keys, const EvalContext& ctx) {
+    static bool evaluate_contains(const Evaluated& lhs, const Evaluated& rhs, bool match_keys) {
         if (!type_matches_tag<ColumnValue>(lhs.value)) {
             return false;
         }
@@ -866,28 +847,11 @@ namespace cql {
                 return false; // CONTAINS on non-collection column type — caller already rejected at plan time.
             }
         });
-        (void)ctx;
-    }
-
-    // The column's declared dtype, when it's a scalar (type::Basic) column — collections/UDT
-    // fall back to the untyped path below.
-    static Optional<type::Basic> lookup_column_dtype(const AutoString8& col_name, const EvalContext& ctx) {
-        if (!ctx.table) {
-            return {};
-        }
-        for (U64 ci = 0; ci < ctx.table->cols.length; ci++) {
-            if (ctx.table->cols[ci].name == String8(col_name.c_str, col_name.length)) {
-                if (type_matches_tag<type::Basic>(ctx.table->cols[ci].type.value)) {
-                    return get<type::Basic>(ctx.table->cols[ci].type.value);
-                }
-                return {};
-            }
-        }
-        return {};
     }
 
     static bool evaluate_column_relation(const WhereClause::ColumnExpressionRelation& cer, const EvalContext& ctx) {
-        Evaluated lhs = lookup_column_value(cer.column.identifier, ctx);
+        Optional<U64> col_ci = ctx.table ? schema::find_column(*ctx.table, cer.column.identifier) : Optional<U64>{};
+        Evaluated     lhs    = (col_ci && ctx.row_values) ? Evaluated{ctx.row_values[*col_ci]} : Evaluated{Literal{Null{}}};
 
         if (cer.operator_ == Operator::contains || cer.operator_ == Operator::contains_key) {
             if (eval_is_null(lhs)) {
@@ -897,7 +861,7 @@ namespace cql {
             if (eval_is_null(rhs)) {
                 return false;
             }
-            return evaluate_contains(lhs, rhs, cer.operator_ == Operator::contains_key, ctx);
+            return evaluate_contains(lhs, rhs, cer.operator_ == Operator::contains_key);
         }
 
         if (cer.operator_ == Operator::in) {
@@ -934,18 +898,17 @@ namespace cql {
         // widening, cross-type literals, etc.) falls through unchanged.
         if (type_matches_tag<ColumnValue>(lhs.value)) {
             const ColumnValue& lhs_cv = get<ColumnValue>(lhs.value);
-            if (!type_matches_tag<Null>(lhs_cv)) {
-                if (Optional<type::Basic> dtype = lookup_column_dtype(cer.column.identifier, ctx)) {
-                    Optional<ColumnValue> rhs_cv;
-                    if (type_matches_tag<Literal>(rhs.value)) {
-                        rhs_cv = io::resolve_literal_scalar(get<Literal>(rhs.value), type::Type{*dtype});
-                    } else if (type_matches_tag<ColumnValue>(rhs.value)) {
-                        rhs_cv = get<ColumnValue>(rhs.value);
-                    }
-                    if (rhs_cv.has_value() && !type_matches_tag<Null>(*rhs_cv)) {
-                        S32 cmp = compare_column_value(lhs_cv, *rhs_cv, *dtype);
-                        return apply_operator(cmp, cer.operator_);
-                    }
+            if (!type_matches_tag<Null>(lhs_cv) && type_matches_tag<type::Basic>(ctx.table->cols[*col_ci].type.value)) {
+                type::Basic           dtype = get<type::Basic>(ctx.table->cols[*col_ci].type.value);
+                Optional<ColumnValue> rhs_cv;
+                if (type_matches_tag<Literal>(rhs.value)) {
+                    rhs_cv = io::resolve_literal_scalar(get<Literal>(rhs.value), type::Type{dtype});
+                } else if (type_matches_tag<ColumnValue>(rhs.value)) {
+                    rhs_cv = get<ColumnValue>(rhs.value);
+                }
+                if (rhs_cv.has_value() && !type_matches_tag<Null>(*rhs_cv)) {
+                    S32 cmp = compare_column_value(lhs_cv, *rhs_cv, dtype);
+                    return apply_operator(cmp, cer.operator_);
                 }
             }
         }
@@ -1130,110 +1093,5 @@ namespace cql {
             }
             // @todo Update, Delete, Select WHERE clause
         });
-    }
-}
-
-// ============================================================================
-// plexdb::to_str for Evaluated
-// ============================================================================
-namespace plexdb {
-    AutoString8 to_str(cql::Evaluated c, cql::type::Basic dtype) {
-        if (!type_matches_tag<cql::Literal>(c.value)) {
-            return "@todo"_as;
-        }
-        auto& con = get<cql::Literal>(c.value);
-
-        if (type_matches_tag<cql::Null>(con.value)) {
-            return "null"_as;
-        }
-        if (type_matches_tag<cql::Unset>(con.value)) {
-            return "unset"_as;
-        }
-
-        switch (dtype) {
-            case cql::type::Basic::text:
-            case cql::type::Basic::ascii:
-            case cql::type::Basic::varchar:
-                return get<AutoString8>(con.value);
-            case cql::type::Basic::smallint:
-                return to_str(static_cast<S64>(static_cast<S16>(get<S64>(con.value))));
-            case cql::type::Basic::int_:
-                return to_str(static_cast<S64>(static_cast<S32>(get<S64>(con.value))));
-            case cql::type::Basic::counter:
-            case cql::type::Basic::timestamp:
-            case cql::type::Basic::bigint:
-                return to_str(get<S64>(con.value));
-            case cql::type::Basic::boolean:
-                return get<bool>(con.value) ? "true"_as : "false"_as;
-            case cql::type::Basic::float_:
-                return to_str(static_cast<F32>(get<F64>(con.value)));
-            case cql::type::Basic::double_:
-                return to_str(get<F64>(con.value));
-            case cql::type::Basic::tinyint:
-            case cql::type::Basic::date:
-            case cql::type::Basic::time:
-                return to_str(get<S64>(con.value));
-            case cql::type::Basic::uuid:
-            case cql::type::Basic::timeuuid: {
-                auto&       uuid = get<cql::UUID>(con.value);
-                const char  hx[] = "0123456789abcdef";
-                AutoString8 result{36};
-                char*       o = result.c_str;
-                const U8*   b = &uuid.value[0];
-                for (int i = 0; i < 4; i++) {
-                    o[i * 2]     = hx[b[i] >> 4];
-                    o[i * 2 + 1] = hx[b[i] & 0xf];
-                }
-                o[8] = '-';
-                for (int i = 0; i < 2; i++) {
-                    o[9 + i * 2]  = hx[b[4 + i] >> 4];
-                    o[10 + i * 2] = hx[b[4 + i] & 0xf];
-                }
-                o[13] = '-';
-                for (int i = 0; i < 2; i++) {
-                    o[14 + i * 2] = hx[b[6 + i] >> 4];
-                    o[15 + i * 2] = hx[b[6 + i] & 0xf];
-                }
-                o[18] = '-';
-                for (int i = 0; i < 2; i++) {
-                    o[19 + i * 2] = hx[b[8 + i] >> 4];
-                    o[20 + i * 2] = hx[b[8 + i] & 0xf];
-                }
-                o[23] = '-';
-                for (int i = 0; i < 6; i++) {
-                    o[24 + i * 2] = hx[b[10 + i] >> 4];
-                    o[25 + i * 2] = hx[b[10 + i] & 0xf];
-                }
-                return result;
-            }
-            case cql::type::Basic::blob:
-            case cql::type::Basic::inet:
-            case cql::type::Basic::varint:
-            case cql::type::Basic::decimal:
-            case cql::type::Basic::duration: {
-                auto&       blob = get<cql::Blob>(con.value);
-                const char  hx[] = "0123456789abcdef";
-                AutoString8 hex{blob.value.length * 2};
-                for (U64 i = 0; i < blob.value.length; i++) {
-                    hex.c_str[i * 2]     = hx[blob.value.ptr[i] >> 4];
-                    hex.c_str[i * 2 + 1] = hx[blob.value.ptr[i] & 0xf];
-                }
-                return "0x"_as + hex;
-            }
-            case cql::type::Basic::hex: {
-                auto&       hex  = get<cql::Hex>(con.value);
-                const char  hx[] = "0123456789abcdef";
-                AutoString8 result{hex.value.length * 2};
-                for (U64 i = 0; i < hex.value.length; i++) {
-                    result.c_str[i * 2]     = hx[hex.value.ptr[i] >> 4];
-                    result.c_str[i * 2 + 1] = hx[hex.value.ptr[i] & 0xf];
-                }
-                return "0x"_as + result;
-            }
-            case cql::type::Basic::COUNT: {
-
-            } break;
-        }
-        return "unknown"_as;
     }
 }

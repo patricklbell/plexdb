@@ -12,7 +12,7 @@ using namespace plexdb;
 
 {% import "wire_macros.jinja" as wire %}
 namespace cql::io {
-    ColumnValue read_column_value_sync(const U8* src, U16, U16* pos, type::Basic dtype) {
+    ColumnValue read_column_value_sync(const U8* src, U16 len, U16* pos, type::Basic dtype) {
         switch (dtype) {
 {% for t in types %}
 {% for b in t.basic %}

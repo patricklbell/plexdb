@@ -3,9 +3,6 @@ module;
 
 export module cql.engine.io.codec;
 
-// .core is hand-written Reader/Writer plumbing; .wire is generated from wire_types.json
-// (write_typed_basic, can_write_typed_basic_as_column_value, narrow_s64_literal/
-// narrow_f64_literal). Both re-exported here for cql.engine.io.evaluator's use.
 export import cql.engine.io.types;
 export import cql.engine.io.codec.wire;
 
@@ -77,7 +74,6 @@ export namespace cql::io {
 
     coroutine::Task<ColumnValue> read_column_value(Reader r, type::Basic dtype);
     coroutine::Task<ColumnValue> read_column_value(Reader r, const type::Type& cdtype);
-    coroutine::Task<void>        read_column_mask(Reader r, ColumnActiveSetter mark_active);
     coroutine::Task<void>        skip_column_value(Reader r, type::Basic dtype);
     coroutine::Task<void>        skip_column_value(Reader r, const type::Type& col_type);
 

@@ -172,8 +172,4 @@ namespace cql::io {
         assert_true(cv.has_value(), "invalid evaluated value for write");
         write_column_value(w, *cv, cdtype);
     }
-
-    void write_evaluated_as_column_value(Writer w, const Evaluated& evaluated, const type::Type& cdtype) {
-        write_evaluated_as_column_value(w, evaluated, cdtype, EvalContext{});
-    }
 }

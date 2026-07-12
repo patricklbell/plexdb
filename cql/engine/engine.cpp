@@ -42,49 +42,60 @@ namespace cql::engine {
         return ks == "system" || ks == "system_schema" || ks == "system_virtual_schema" || ks == "system_auth" || ks == "system_distributed" || ks == "system_traces";
     }
 
+    // Rebuilds slot `idx` from build_fn only when the schema has changed since it was last
+    // cached; returns a copy so callers (which filter/project in place) can't corrupt the cache.
+    static VirtualRows cached_virtual_rows(Engine& engine, U64 idx, auto&& build_fn) {
+        VirtualTableCacheEntry& entry = engine.virtual_table_cache[idx];
+        if (entry.schema_version != engine.schema.version) {
+            entry.rows           = build_fn();
+            entry.schema_version = engine.schema.version;
+        }
+        return entry.rows;
+    }
+
     // @todo in cassandra the schema is stored in the database directly, this is probably a good idea in future
     Optional<VirtualRows> try_system_select(Engine& engine, String8 keyspace, String8 table) {
         if (keyspace == "system") {
             if (table == "local") {
-                return create_system_local(engine.port, engine.schema);
+                return cached_virtual_rows(engine, 0, [&] { return create_system_local(engine.port, engine.schema); });
             }
             if (table == "peers") {
-                return create_system_peers();
+                return cached_virtual_rows(engine, 1, [&] { return create_system_peers(); });
             }
             if (table == "peers_v2") {
-                return create_system_peers_v2();
+                return cached_virtual_rows(engine, 2, [&] { return create_system_peers_v2(); });
             }
         }
         if (keyspace == "system_schema") {
             if (table == "keyspaces") {
-                return create_schema_keyspaces(engine.schema);
+                return cached_virtual_rows(engine, 3, [&] { return create_schema_keyspaces(engine.schema); });
             }
             if (table == "tables") {
-                return create_schema_tables(engine.schema);
+                return cached_virtual_rows(engine, 4, [&] { return create_schema_tables(engine.schema); });
             }
             if (table == "columns") {
-                return create_schema_columns(engine.schema);
+                return cached_virtual_rows(engine, 5, [&] { return create_schema_columns(engine.schema); });
             }
             if (table == "views") {
-                return create_schema_views(engine.schema);
+                return cached_virtual_rows(engine, 6, [&] { return create_schema_views(engine.schema); });
             }
             if (table == "indexes") {
-                return create_schema_indexes(engine.schema);
+                return cached_virtual_rows(engine, 7, [&] { return create_schema_indexes(engine.schema); });
             }
             if (table == "triggers") {
-                return create_schema_triggers(engine.schema);
+                return cached_virtual_rows(engine, 8, [&] { return create_schema_triggers(engine.schema); });
             }
             if (table == "dropped_columns") {
-                return create_schema_dropped_columns(engine.schema);
+                return cached_virtual_rows(engine, 9, [&] { return create_schema_dropped_columns(engine.schema); });
             }
             if (table == "types") {
-                return create_schema_types(engine.schema);
+                return cached_virtual_rows(engine, 10, [&] { return create_schema_types(engine.schema); });
             }
             if (table == "functions") {
-                return create_schema_functions(engine.schema);
+                return cached_virtual_rows(engine, 11, [&] { return create_schema_functions(engine.schema); });
             }
             if (table == "aggregates") {
-                return create_schema_aggregates(engine.schema);
+                return cached_virtual_rows(engine, 12, [&] { return create_schema_aggregates(engine.schema); });
             }
         }
         return {};
@@ -256,6 +267,17 @@ namespace cql::engine {
             }
         }
         return {};
+    }
+
+    // @note assert_true requires a static-storage-duration message, so the caller passes its
+    // own literal text rather than this function formatting one dynamically.
+    static void warn_using_timestamp_single_node(Engine& engine, const DynamicArray<UpdateParameter>& params, const char* assert_msg, const char* log_msg) {
+        for (const auto& p : params) {
+            if (p.kind == UpdateParameter::Kind::TIMESTAMP) {
+                assert_true(engine.single_node, assert_msg);
+                log::native_info(log_msg);
+            }
+        }
     }
 
     static S64 resolve_using_timestamp_us(const DynamicArray<UpdateParameter>& params) {
@@ -770,9 +792,9 @@ namespace cql::engine {
             } else if (type_matches_tag<Literal>(eval.value) && type_matches_tag<Null>(get<Literal>(eval.value).value)) {
                 col_present[idx] = false;
                 touch_cell(idx);
-            } else if (io::can_write_evaluated_as_column_value(eval, tbl->cols[idx].type, ctx)) {
+            } else if (Optional<ColumnValue> resolved = io::resolve_evaluated(eval, tbl->cols[idx].type, ctx); resolved.has_value()) {
                 col_present[idx] = true;
-                col_values[idx]  = co_await materialize_as_column_value(eval, tbl->cols[idx].type, ctx);
+                col_values[idx]  = move(*resolved);
                 touch_cell(idx);
             }
         }
@@ -1261,6 +1283,13 @@ namespace cql::engine {
     static ExecutionResult create_server_error(const char* msg) {
         return {.status = ExecutionStatus::ServerError, .message = msg};
     }
+    static ExecutionResult create_invalid(AutoString8 msg) {
+        ExecutionResult r;
+        r.status          = ExecutionStatus::Invalid;
+        r.message_storage = move(msg);
+        r.message         = String8(r.message_storage);
+        return r;
+    }
     static ExecutionResult create_system_keyspace_invalid() {
         return {.status = ExecutionStatus::Invalid, .message = "system keyspaces cannot be modified"};
     }
@@ -1284,7 +1313,7 @@ namespace cql::engine {
         r.status          = ExecutionStatus::Invalid;
         r.keyspace        = AutoString8(keyspace_name);
         r.message_storage = "Keyspace '" + r.keyspace + "' does not exist";
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        r.message         = String8(r.message_storage);
         return r;
     }
     static ExecutionResult create_no_keyspace_specified() {
@@ -1307,9 +1336,36 @@ namespace cql::engine {
         r.keyspace        = AutoString8(keyspace_name);
         r.table           = AutoString8(table_name);
         r.message_storage = "Table '" + r.keyspace + "." + r.table + "' does not exist";
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        r.message         = String8(r.message_storage);
         return r;
     }
+    static String8 resolve_ks_name(const Optional<AutoString8>& stmt_ks_name, String8 current_keyspace) {
+        return stmt_ks_name ? String8(*stmt_ks_name) : current_keyspace;
+    }
+
+    struct KsResolution {
+        schema::Keyspace*         ks = nullptr;
+        Optional<ExecutionResult> error;
+        bool                      not_found = false; // true only when error is specifically "keyspace not found"
+    };
+
+    // Validates ks_name (non-empty, non-system) and looks it up; on failure `error` is set
+    // and `ks` is null. `not_found` distinguishes the IF EXISTS-suppressible case from the
+    // empty-name/system-keyspace validation errors, which are not suppressible.
+    static KsResolution resolve_ks(Engine& engine, String8 ks_name) {
+        if (ks_name.length == 0) {
+            return {nullptr, create_no_keyspace_specified(), false};
+        }
+        if (is_system_keyspace(ks_name)) {
+            return {nullptr, create_system_keyspace_invalid(), false};
+        }
+        auto ks = schema::read_keyspace(engine.schema, ks_name).value;
+        if (ks == nullptr) {
+            return {nullptr, create_keyspace_not_found(ks_name), true};
+        }
+        return {ks, {}, false};
+    }
+
     static ExecutionResult create_table_created(const String8& keyspace_name, const String8& table_name) {
         return {
             .status   = ExecutionStatus::Success,
@@ -1349,7 +1405,7 @@ namespace cql::engine {
         r.keyspace        = AutoString8(keyspace_name);
         r.table           = AutoString8(table_name);
         r.message_storage = "Undefined column name " + AutoString8(col_name);
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        r.message         = String8(r.message_storage);
         return r;
     }
     static ExecutionResult create_insert_duplicate_column(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
@@ -1358,7 +1414,7 @@ namespace cql::engine {
         r.keyspace        = AutoString8(keyspace_name);
         r.table           = AutoString8(table_name);
         r.message_storage = "Multiple definitions of identifier " + AutoString8(col_name);
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        r.message         = String8(r.message_storage);
         return r;
     }
     static ExecutionResult create_insert_incompatible_literal(const String8& keyspace_name, const String8& table_name) {
@@ -1375,7 +1431,7 @@ namespace cql::engine {
         r.keyspace        = AutoString8(keyspace_name);
         r.table           = AutoString8(table_name);
         r.message_storage = "Missing mandatory PRIMARY KEY part " + AutoString8(col_name);
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        r.message         = String8(r.message_storage);
         return r;
     }
     static ExecutionResult create_insert_missing_ck(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
@@ -1384,7 +1440,7 @@ namespace cql::engine {
         r.keyspace        = AutoString8(keyspace_name);
         r.table           = AutoString8(table_name);
         r.message_storage = "Missing mandatory PRIMARY KEY part " + AutoString8(col_name);
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        r.message         = String8(r.message_storage);
         return r;
     }
     static ExecutionResult create_unset_on_key_column(const String8& keyspace_name, const String8& table_name, const String8& col_name) {
@@ -1393,7 +1449,7 @@ namespace cql::engine {
         r.keyspace        = AutoString8(keyspace_name);
         r.table           = AutoString8(table_name);
         r.message_storage = "Invalid unset value for column " + AutoString8(col_name);
-        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+        r.message         = String8(r.message_storage);
         return r;
     }
     static Optional<ExecutionResult> create_error_if_plan_invalid(const planner::PlanResult& result) {
@@ -1407,25 +1463,13 @@ namespace cql::engine {
                 };
             case planner::PlanError::ClusteringRestrictedAfterNonEq:
             case planner::PlanError::ClusteringRestrictedWithoutPrefix: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = AutoString8(result.context);
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid(AutoString8(result.context));
             }
             case planner::PlanError::MissingPartitionKey: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Some partition key parts are missing: " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid("Some partition key parts are missing: " + result.context);
             }
             case planner::PlanError::MissingClusteringKey: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Some clustering keys are missing: " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid("Some clustering keys are missing: " + result.context);
             }
             case planner::PlanError::StaticOnlyUpdateWithCK:
                 return ExecutionResult{
@@ -1443,25 +1487,13 @@ namespace cql::engine {
                     .message = "Range deletions are not supported for specific columns",
                 };
             case planner::PlanError::OrderByOnNonClusteringColumn: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Order by is currently only supported on the clustered columns of the PRIMARY KEY, got " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid("Order by is currently only supported on the clustered columns of the PRIMARY KEY, got " + result.context);
             }
             case planner::PlanError::ColumnNotFound: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Undefined column name " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid("Undefined column name " + result.context);
             }
             case planner::PlanError::TypeMismatch: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = result.context.length > 0 ? AutoString8(result.context) : AutoString8("Type mismatch for key column");
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid(result.context.length > 0 ? AutoString8(result.context) : AutoString8("Type mismatch for key column"));
             }
             case planner::PlanError::TokenFunctionInMutation:
                 return ExecutionResult{
@@ -1469,18 +1501,10 @@ namespace cql::engine {
                     .message = "The token function cannot be used in WHERE clauses for UPDATE",
                 };
             case planner::PlanError::DuplicateColumnInMutation: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Column " + result.context + " is assigned twice in UPDATE";
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid("Column " + result.context + " is assigned twice in UPDATE");
             }
             case planner::PlanError::NonKeyColumnInMutationWhere: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Non PRIMARY KEY columns found in where clause: " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid("Non PRIMARY KEY columns found in where clause: " + result.context);
             }
             case planner::PlanError::NonEqInOnPartitionKeyMutation: {
                 ExecutionResult r;
@@ -1490,22 +1514,14 @@ namespace cql::engine {
                 } else {
                     r.message_storage = AutoString8("Only EQ and IN relation are supported on the partition key (unless you use the token() function)");
                 }
-                r.message = String8(r.message_storage.c_str, r.message_storage.length);
+                r.message = String8(r.message_storage);
                 return r;
             }
             case planner::PlanError::CounterOperationOnNonCounter: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Cannot apply counter operations on non-counter column " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid("Cannot apply counter operations on non-counter column " + result.context);
             }
             case planner::PlanError::CounterAssignmentNotIncrement: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = "Invalid operation for counter column " + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid("Invalid operation for counter column " + result.context);
             }
             case planner::PlanError::NullValueForCounter:
                 return ExecutionResult{
@@ -1518,25 +1534,13 @@ namespace cql::engine {
                     .message = "SELECT DISTINCT with WHERE clause only supports restriction by partition key and/or static columns.",
                 };
             case planner::PlanError::InvalidCollectionMutation: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid(result.context);
             }
             case planner::PlanError::InvalidSubscriptTarget: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid(result.context);
             }
             case planner::PlanError::UnsetSubscriptValue: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = AutoString8("Invalid unset value for argument in call to subscript on ") + result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid(AutoString8("Invalid unset value for argument in call to subscript on ") + result.context);
             }
             case planner::PlanError::UnsetValueInWhere:
                 return ExecutionResult{
@@ -1545,11 +1549,7 @@ namespace cql::engine {
                 };
             case planner::PlanError::InvalidTtlArgument:
             case planner::PlanError::InvalidWritetimeArgument: {
-                ExecutionResult r;
-                r.status          = ExecutionStatus::Invalid;
-                r.message_storage = result.context;
-                r.message         = String8(r.message_storage.c_str, r.message_storage.length);
-                return r;
+                return create_invalid(result.context);
             }
         }
         return {};
@@ -2256,6 +2256,26 @@ namespace cql::engine {
     // @note locator.pk.is_equality must be true. `new_cell_meta` is the per-cell metadata
     // template stamped on every cell touched by this mutation (TTL+writetime, or empty for
     // mutations without using-parameters); cells the spec doesn't touch keep their existing meta.
+    static coroutine::Task<void> read_old_row_for_reindex(
+        Engine& engine, schema::Table* tbl, U64 row_page, U64 static_page, bool have_indexes,
+        DynamicArray<ColumnValue>& old_cv, DynamicArray<bool>& old_present
+    ) {
+        if (have_indexes) {
+            co_await read_row_into(engine, tbl, row_page, static_page, old_cv, old_present);
+        }
+    }
+
+    static coroutine::Task<void> clear_indexes_for_deleted_row(
+        schema::Table* tbl, S64 pk_bytes, TArrayView<const U8, U16> ck_bytes, bool have_indexes,
+        const DynamicArray<ColumnValue>& old_cv, const DynamicArray<bool>& old_present
+    ) {
+        if (have_indexes) {
+            DynamicArray<ColumnValue> empty_cv;
+            DynamicArray<bool>        empty_present;
+            co_await update_indexes(tbl, pk_bytes, ck_bytes, schema::IndexEntry{0, 0}, old_cv, old_present, empty_cv, empty_present);
+        }
+    }
+
     static coroutine::Task<void> apply_mutation(
         Engine& engine, schema::Table* tbl,
         const planner::RowLocator&   locator,
@@ -2285,19 +2305,13 @@ namespace cql::engine {
                     if (row_page_opt) {
                         DynamicArray<ColumnValue> old_cv;
                         DynamicArray<bool>        old_present;
-                        if (have_indexes) {
-                            co_await read_row_into(engine, tbl, *row_page_opt, entry.static_page, old_cv, old_present);
-                        }
+                        co_await read_old_row_for_reindex(engine, tbl, *row_page_opt, entry.static_page, have_indexes, old_cv, old_present);
                         blob::BlobDynamicPaged row_blob;
                         co_await blob::load(row_blob, engine.pager, *row_page_opt);
                         co_await blob::remove(row_blob);
                         co_await btree::remove(ck_btree, ck_bytes);
-                        if (have_indexes) {
-                            DynamicArray<ColumnValue> empty_cv;
-                            DynamicArray<bool>        empty_present;
-                            auto                      ck_v = TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length));
-                            co_await update_indexes(tbl, pk_bytes, ck_v, schema::IndexEntry{0, 0}, old_cv, old_present, empty_cv, empty_present);
-                        }
+                        auto ck_v = TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length));
+                        co_await clear_indexes_for_deleted_row(tbl, pk_bytes, ck_v, have_indexes, old_cv, old_present);
                     }
                 } else {
                     // Range or full-partition delete: collect all matching (ck_key, page) pairs.
@@ -2356,19 +2370,13 @@ namespace cql::engine {
                     for (auto& e : to_delete) {
                         DynamicArray<ColumnValue> old_cv;
                         DynamicArray<bool>        old_present;
-                        if (have_indexes) {
-                            co_await read_row_into(engine, tbl, e.page, entry.static_page, old_cv, old_present);
-                        }
+                        co_await read_old_row_for_reindex(engine, tbl, e.page, entry.static_page, have_indexes, old_cv, old_present);
                         blob::BlobDynamicPaged row_blob;
                         co_await blob::load(row_blob, engine.pager, e.page);
                         co_await blob::remove(row_blob);
                         auto key_view = TArrayView<const U8, U16>(e.key.ptr, static_cast<U16>(e.key.length));
                         co_await btree::remove(ck_btree, key_view);
-                        if (have_indexes) {
-                            DynamicArray<ColumnValue> empty_cv;
-                            DynamicArray<bool>        empty_present;
-                            co_await update_indexes(tbl, pk_bytes, key_view, schema::IndexEntry{0, 0}, old_cv, old_present, empty_cv, empty_present);
-                        }
+                        co_await clear_indexes_for_deleted_row(tbl, pk_bytes, key_view, have_indexes, old_cv, old_present);
                     }
                 }
 
@@ -2490,20 +2498,14 @@ namespace cql::engine {
                 if (entry_opt) {
                     DynamicArray<ColumnValue> old_cv;
                     DynamicArray<bool>        old_present;
-                    if (have_indexes) {
-                        co_await read_row_into(engine, tbl, entry_opt->data_page, entry_opt->static_page, old_cv, old_present);
-                    }
+                    co_await read_old_row_for_reindex(engine, tbl, entry_opt->data_page, entry_opt->static_page, have_indexes, old_cv, old_present);
                     // @note no clustering key means no separate static page — the pk preamble
                     // lives in data_page's own blob (see write_row_blob), removed below with it.
                     blob::BlobDynamicPaged row_blob;
                     co_await blob::load(row_blob, engine.pager, entry_opt->data_page);
                     co_await blob::remove(row_blob);
                     co_await btree::remove(tbl->btree, pk_bytes);
-                    if (have_indexes) {
-                        DynamicArray<ColumnValue> empty_cv;
-                        DynamicArray<bool>        empty_present;
-                        co_await update_indexes(tbl, pk_bytes, NO_CK_BYTES, schema::IndexEntry{0, 0}, old_cv, old_present, empty_cv, empty_present);
-                    }
+                    co_await clear_indexes_for_deleted_row(tbl, pk_bytes, NO_CK_BYTES, have_indexes, old_cv, old_present);
                 }
             } else {
                 bool                   new_partition = !entry_opt;
@@ -2555,14 +2557,14 @@ namespace cql::engine {
                         ExecutionResult r;
                         r.status          = ExecutionStatus::SyntaxError;
                         r.message_storage = AutoString8(ks_res.message);
-                        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                        r.message         = String8(r.message_storage);
                         co_return r;
                     }
                     if (ks_res.error == schema::Error::InvalidOptions) {
                         ExecutionResult r;
                         r.status          = ExecutionStatus::ConfigError;
                         r.message_storage = AutoString8(ks_res.message);
-                        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                        r.message         = String8(r.message_storage);
                         co_return r;
                     }
                     co_return create_server_error("Failed to create keyspace");
@@ -2570,20 +2572,14 @@ namespace cql::engine {
 
                 co_return create_keyspace_created(stmt.name);
             } else if constexpr (SameAs<T, CreateTable>) {
-                String8 ks_name = static_cast<bool>(stmt.name.keyspace_name) ? String8(*stmt.name.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.name.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return move(*ksr.error);
                 }
-                if (is_system_keyspace(ks_name)) {
-                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "system keyspaces cannot be modified"};
-                }
+                auto ks = ksr.ks;
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return create_keyspace_not_found(ks_name);
-                }
-
-                if (auto existing = schema::read_table(engine.schema, *ks, stmt.name.table_name); existing.value != nullptr) {
+                if (auto existing = schema::read_table(*ks, stmt.name.table_name); existing.value != nullptr) {
                     co_return (stmt.if_not_exists) ? create_void_success() : create_table_already_exists(ks_name, stmt.name.table_name);
                 }
 
@@ -2593,7 +2589,7 @@ namespace cql::engine {
                             ExecutionResult r;
                             r.status          = ExecutionStatus::Invalid;
                             r.message_storage = AutoString8("Multiple definition of identifier ") + AutoString8(stmt.column_definitions[i].name.identifier);
-                            r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                            r.message         = String8(r.message_storage);
                             co_return r;
                         }
                     }
@@ -2605,7 +2601,7 @@ namespace cql::engine {
                         ExecutionResult r;
                         r.status          = ExecutionStatus::Invalid;
                         r.message_storage = AutoString8(tbl_res.message);
-                        r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                        r.message         = String8(r.message_storage);
                         co_return r;
                     }
                     if (tbl_res.error == schema::Error::MissingPrimaryKey) {
@@ -2645,7 +2641,7 @@ namespace cql::engine {
                     ExecutionResult r;
                     r.status          = (vr.error == schema::Error::SyntaxOptions) ? ExecutionStatus::SyntaxError : ExecutionStatus::ConfigError;
                     r.message_storage = AutoString8(vr.message);
-                    r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                    r.message         = String8(r.message_storage);
                     co_return r;
                 }
 
@@ -2707,18 +2703,12 @@ namespace cql::engine {
 
                 co_return create_schema_changed(stmt.keyspace);
             } else if constexpr (SameAs<T, DropTable>) {
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return (stmt.if_exists && ksr.not_found) ? create_void_success() : move(*ksr.error);
                 }
-                if (is_system_keyspace(ks_name)) {
-                    co_return create_system_keyspace_invalid();
-                }
-
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return (stmt.if_exists) ? create_void_success() : create_keyspace_not_found(ks_name);
-                }
+                auto ks = ksr.ks;
 
                 if ((co_await schema::delete_table(engine.schema, *ks, stmt.table.table_name)).error != schema::Error::None) {
                     if (stmt.if_exists) {
@@ -2729,20 +2719,14 @@ namespace cql::engine {
 
                 co_return create_schema_changed(ks_name, stmt.table.table_name);
             } else if constexpr (SameAs<T, TruncateTable>) {
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return move(*ksr.error);
                 }
-                if (is_system_keyspace(ks_name)) {
-                    co_return create_system_keyspace_invalid();
-                }
+                auto ks = ksr.ks;
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return create_keyspace_not_found(ks_name);
-                }
-
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+                auto tbl = schema::read_table(*ks, stmt.table.table_name).value;
                 if (tbl == nullptr) {
                     co_return create_table_not_found(ks_name, stmt.table.table_name);
                 }
@@ -2752,7 +2736,7 @@ namespace cql::engine {
                 co_return create_void_success();
             } else if constexpr (SameAs<T, Select>) {
                 ZoneScopedN("engine::select");
-                String8 ks_name = static_cast<bool>(stmt.from.keyspace_name) ? String8(*stmt.from.keyspace_name) : current_keyspace;
+                String8 ks_name = resolve_ks_name(stmt.from.keyspace_name, current_keyspace);
                 if (ks_name.length == 0) {
                     co_return create_no_keyspace_specified();
                 }
@@ -2820,7 +2804,7 @@ namespace cql::engine {
                     co_return create_keyspace_not_found(ks_name);
                 }
 
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.from.table_name).value;
+                auto tbl = schema::read_table(*ks, stmt.from.table_name).value;
                 if (tbl == nullptr) {
                     co_return create_table_not_found(ks_name, stmt.from.table_name);
                 }
@@ -2916,12 +2900,7 @@ namespace cql::engine {
                 };
             } else if constexpr (SameAs<T, Insert>) {
                 ZoneScopedN("engine::insert");
-                for (const auto& param : stmt.using_parameters) {
-                    if (param.kind == UpdateParameter::Kind::TIMESTAMP) {
-                        assert_true(engine.single_node, "INSERT USING TIMESTAMP not supported in non-single-node mode");
-                        log::native_info("ignoring INSERT USING TIMESTAMP (single-node no-op)");
-                    }
-                }
+                warn_using_timestamp_single_node(engine, stmt.using_parameters, "INSERT USING TIMESTAMP not supported in non-single-node mode", "ignoring INSERT USING TIMESTAMP (single-node no-op)");
                 if (auto bad_ttl = validate_using_ttl(stmt.using_parameters)) {
                     co_return move(*bad_ttl);
                 }
@@ -2930,20 +2909,14 @@ namespace cql::engine {
                 }
                 assert_true(static_cast<bool>(stmt.insert_clause), "missing insert clause, this should never happen");
 
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return move(*ksr.error);
                 }
-                if (is_system_keyspace(ks_name)) {
-                    co_return create_system_keyspace_invalid();
-                }
+                auto ks = ksr.ks;
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return create_keyspace_not_found(ks_name);
-                }
-
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+                auto tbl = schema::read_table(*ks, stmt.table.table_name).value;
                 if (tbl == nullptr) {
                     co_return create_table_not_found(ks_name, stmt.table.table_name);
                 }
@@ -3100,7 +3073,7 @@ namespace cql::engine {
                             if (row_is_active(ci)) {
                                 io::write_cell_metadata(write, insert_cell_meta);
                                 const auto& eval = evaluate(v.values[*try_get_names_idx(tbl->cols[ci].name)], ctx);
-                                io::write_evaluated_as_column_value(write, eval, tbl->cols[ci].type);
+                                io::write_evaluated_as_column_value(write, eval, tbl->cols[ci].type, ctx);
                             }
                         }
 
@@ -3302,12 +3275,7 @@ namespace cql::engine {
                 });
             } else if constexpr (SameAs<T, Update>) {
                 ZoneScopedN("engine::update");
-                for (const auto& param : stmt.using_parameters) {
-                    if (param.kind == UpdateParameter::Kind::TIMESTAMP) {
-                        assert_true(engine.single_node, "UPDATE USING TIMESTAMP not supported in non-single-node mode");
-                        log::native_info("ignoring UPDATE USING TIMESTAMP (single-node no-op)");
-                    }
-                }
+                warn_using_timestamp_single_node(engine, stmt.using_parameters, "UPDATE USING TIMESTAMP not supported in non-single-node mode", "ignoring UPDATE USING TIMESTAMP (single-node no-op)");
                 if (auto bad_ttl = validate_using_ttl(stmt.using_parameters)) {
                     co_return move(*bad_ttl);
                 }
@@ -3316,20 +3284,14 @@ namespace cql::engine {
                 }
                 assert_true_not_implemented(!stmt.if_, "UPDATE IF is not implemented");
 
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return move(*ksr.error);
                 }
-                if (is_system_keyspace(ks_name)) {
-                    co_return create_system_keyspace_invalid();
-                }
+                auto ks = ksr.ks;
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return create_keyspace_not_found(ks_name);
-                }
-
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+                auto tbl = schema::read_table(*ks, stmt.table.table_name).value;
                 if (tbl == nullptr) {
                     co_return create_table_not_found(ks_name, stmt.table.table_name);
                 }
@@ -3364,30 +3326,22 @@ namespace cql::engine {
                 co_return create_void_success();
             } else if constexpr (SameAs<T, Delete>) {
                 ZoneScopedN("engine::delete");
+                warn_using_timestamp_single_node(engine, stmt.using_parameters, "DELETE USING TIMESTAMP not supported in non-single-node mode", "ignoring DELETE USING TIMESTAMP (single-node no-op)");
                 for (const auto& param : stmt.using_parameters) {
-                    if (param.kind == UpdateParameter::Kind::TIMESTAMP) {
-                        assert_true(engine.single_node, "DELETE USING TIMESTAMP not supported in non-single-node mode");
-                        log::native_info("ignoring DELETE USING TIMESTAMP (single-node no-op)");
-                    } else if (param.kind == UpdateParameter::Kind::TTL) {
+                    if (param.kind == UpdateParameter::Kind::TTL) {
                         co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "DELETE USING TTL is not implemented"};
                     }
                 }
                 assert_true_not_implemented(!stmt.if_, "DELETE IF is not implemented");
 
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return move(*ksr.error);
                 }
-                if (is_system_keyspace(ks_name)) {
-                    co_return create_system_keyspace_invalid();
-                }
+                auto ks = ksr.ks;
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return create_keyspace_not_found(ks_name);
-                }
-
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+                auto tbl = schema::read_table(*ks, stmt.table.table_name).value;
                 if (tbl == nullptr) {
                     co_return create_table_not_found(ks_name, stmt.table.table_name);
                 }
@@ -3421,20 +3375,14 @@ namespace cql::engine {
                 // else: empty PK IN → no-op
                 co_return create_void_success();
             } else if constexpr (SameAs<T, AlterTable>) {
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return (stmt.if_exists && ksr.not_found) ? create_void_success() : move(*ksr.error);
                 }
-                if (is_system_keyspace(ks_name)) {
-                    co_return create_system_keyspace_invalid();
-                }
+                auto ks = ksr.ks;
 
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return (stmt.if_exists) ? create_void_success() : create_keyspace_not_found(ks_name);
-                }
-
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+                auto tbl = schema::read_table(*ks, stmt.table.table_name).value;
                 if (tbl == nullptr) {
                     co_return (stmt.if_exists) ? create_void_success() : create_table_not_found(ks_name, stmt.table.table_name);
                 }
@@ -3449,10 +3397,10 @@ namespace cql::engine {
                                 er.status          = ExecutionStatus::Invalid;
                                 er.keyspace        = AutoString8(ks_name);
                                 er.message_storage = AutoString8(resolved.message);
-                                er.message         = String8(er.message_storage.c_str, er.message_storage.length);
+                                er.message         = String8(er.message_storage);
                                 co_return er;
                             }
-                            auto existing = schema::read_column(engine.schema, *tbl, col_def.name.identifier);
+                            auto existing = schema::read_column(*tbl, col_def.name.identifier);
                             if (existing.error == schema::Error::None) {
                                 if (instr.if_not_exists) {
                                     continue;
@@ -3485,7 +3433,7 @@ namespace cql::engine {
                         co_return create_schema_changed(ks_name, stmt.table.table_name);
                     } else if constexpr (SameAs<I, AlterTable::DropColumnInstruction>) {
                         for (const auto& col_name : instr.columns) {
-                            auto col_res = schema::read_column(engine.schema, *tbl, col_name.identifier);
+                            auto col_res = schema::read_column(*tbl, col_name.identifier);
                             if (col_res.error != schema::Error::None) {
                                 if (instr.if_exists) {
                                     continue;
@@ -3512,7 +3460,7 @@ namespace cql::engine {
                             ExecutionResult r;
                             r.status          = ExecutionStatus::SyntaxError;
                             r.message_storage = AutoString8(popts.message);
-                            r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                            r.message         = String8(r.message_storage);
                             co_return r;
                         }
                         // Merge: start with current options, overwrite only those mentioned in WITH.
@@ -3539,30 +3487,22 @@ namespace cql::engine {
                     }
                 });
             } else if constexpr (SameAs<T, CreateIndex>) {
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return move(*ksr.error);
                 }
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return create_keyspace_not_found(ks_name);
-                }
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+                auto ks  = ksr.ks;
+                auto tbl = schema::read_table(*ks, stmt.table.table_name).value;
                 if (tbl == nullptr) {
                     co_return create_table_not_found(ks_name, stmt.table.table_name);
                 }
 
-                U64 col_idx = MAX_U64;
-                for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                    if (!tbl->cols[ci].tombstone && tbl->cols[ci].name == String8(stmt.column_name.c_str, stmt.column_name.length)) {
-                        col_idx = ci;
-                        break;
-                    }
-                }
-                if (col_idx == MAX_U64) {
+                Optional<U64> col_idx = schema::find_column(*tbl, stmt.column_name);
+                if (!col_idx) {
                     co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "column not found"};
                 }
-                const auto& col_type = tbl->cols[col_idx].type.value;
+                const auto& col_type = tbl->cols[*col_idx].type.value;
 
                 schema::IndexKind kind = schema::IndexKind::Values;
                 if (stmt.selector) {
@@ -3603,7 +3543,7 @@ namespace cql::engine {
                 } else {
                     co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Cannot create index on column of this type"};
                 }
-                if (tbl->cols[col_idx].key_kind == schema::KeyKind::PartitionKey && tbl->partition_key_col_indices.length == 1) {
+                if (tbl->cols[*col_idx].key_kind == schema::KeyKind::PartitionKey && tbl->partition_key_col_indices.length == 1) {
                     co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "cannot create secondary index on the only partition key column"};
                 }
 
@@ -3617,12 +3557,12 @@ namespace cql::engine {
                     append(index_name, "_idx");
                 }
 
-                if (schema::read_index(engine.schema, *tbl, index_name).error == schema::Error::None) {
+                if (schema::read_index(*tbl, index_name).error == schema::Error::None) {
                     co_return stmt.if_not_exists ? create_void_success()
                                                  : ExecutionResult{.status = ExecutionStatus::AlreadyExists, .message = "index already exists"};
                 }
 
-                auto res = co_await schema::create_index(engine.schema, *tbl, col_idx, index_name, kind);
+                auto res = co_await schema::create_index(engine.schema, *tbl, *col_idx, index_name, kind);
                 if (res.error != schema::Error::None) {
                     co_return create_server_error("failed to create index");
                 }
@@ -3630,21 +3570,19 @@ namespace cql::engine {
 
                 co_return create_schema_changed(ks_name, stmt.table.table_name);
             } else if constexpr (SameAs<T, DropIndex>) {
-                String8 ks_name = static_cast<bool>(stmt.index_name.keyspace_name) ? String8(*stmt.index_name.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.index_name.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return (stmt.if_exists && ksr.not_found) ? create_void_success() : move(*ksr.error);
                 }
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return (stmt.if_exists) ? create_void_success() : create_keyspace_not_found(ks_name);
-                }
+                auto ks = ksr.ks;
 
                 // @note DROP INDEX <name> doesn't say which table; scan every table in the keyspace.
                 String8        idx_name_str(stmt.index_name.table_name.c_str, stmt.index_name.table_name.length);
                 schema::Table* found_tbl = nullptr;
                 for (auto& tbl : ks->tbls) {
                     if (!tbl.tombstone) {
-                        if (schema::read_index(engine.schema, tbl, idx_name_str).error == schema::Error::None) {
+                        if (schema::read_index(tbl, idx_name_str).error == schema::Error::None) {
                             found_tbl = &tbl;
                             break;
                         }
@@ -3657,18 +3595,13 @@ namespace cql::engine {
                 co_await schema::delete_index(engine.schema, *found_tbl, idx_name_str);
                 co_return create_schema_changed(ks_name, found_tbl->name);
             } else if constexpr (SameAs<T, CreateType>) {
-                String8 ks_name = static_cast<bool>(stmt.name.keyspace_name) ? String8(*stmt.name.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.name.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return move(*ksr.error);
                 }
-                if (is_system_keyspace(ks_name)) {
-                    co_return create_system_keyspace_invalid();
-                }
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return create_keyspace_not_found(ks_name);
-                }
-                if (schema::read_udt(engine.schema, *ks, stmt.name.table_name).value != nullptr) {
+                auto ks = ksr.ks;
+                if (schema::read_udt(*ks, stmt.name.table_name).value != nullptr) {
                     if (stmt.if_not_exists) {
                         co_return create_void_success();
                     }
@@ -3676,7 +3609,7 @@ namespace cql::engine {
                     r.status          = ExecutionStatus::AlreadyExists;
                     r.keyspace        = AutoString8(ks_name);
                     r.message_storage = AutoString8("Type ") + AutoString8(ks_name) + "." + AutoString8(stmt.name.table_name) + " already exists";
-                    r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                    r.message         = String8(r.message_storage);
                     co_return r;
                 }
 
@@ -3689,7 +3622,7 @@ namespace cql::engine {
                         er.status          = ExecutionStatus::Invalid;
                         er.keyspace        = AutoString8(ks_name);
                         er.message_storage = AutoString8(resolved.message);
-                        er.message         = String8(er.message_storage.c_str, er.message_storage.length);
+                        er.message         = String8(er.message_storage);
                         co_return er;
                     }
                     push_back(field_names, AutoString8(fd.name.identifier));
@@ -3701,28 +3634,23 @@ namespace cql::engine {
                     er.status          = ExecutionStatus::Invalid;
                     er.keyspace        = AutoString8(ks_name);
                     er.message_storage = AutoString8(res.message);
-                    er.message         = String8(er.message_storage.c_str, er.message_storage.length);
+                    er.message         = String8(er.message_storage);
                     co_return er;
                 }
                 co_return create_schema_changed(ks_name);
             } else if constexpr (SameAs<T, AlterType>) {
-                String8 ks_name = static_cast<bool>(stmt.name.keyspace_name) ? String8(*stmt.name.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.name.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return move(*ksr.error);
                 }
-                if (is_system_keyspace(ks_name)) {
-                    co_return create_system_keyspace_invalid();
-                }
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return create_keyspace_not_found(ks_name);
-                }
-                if (schema::read_udt(engine.schema, *ks, stmt.name.table_name).value == nullptr) {
+                auto ks = ksr.ks;
+                if (schema::read_udt(*ks, stmt.name.table_name).value == nullptr) {
                     ExecutionResult r;
                     r.status          = ExecutionStatus::Invalid;
                     r.keyspace        = AutoString8(ks_name);
                     r.message_storage = AutoString8("Type ") + AutoString8(ks_name) + "." + AutoString8(stmt.name.table_name) + " does not exist";
-                    r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                    r.message         = String8(r.message_storage);
                     co_return r;
                 }
                 if (type_matches_tag<AlterType::AddFieldInstruction>(stmt.instruction)) {
@@ -3734,7 +3662,7 @@ namespace cql::engine {
                             er.status          = ExecutionStatus::Invalid;
                             er.keyspace        = AutoString8(ks_name);
                             er.message_storage = AutoString8(resolved.message);
-                            er.message         = String8(er.message_storage.c_str, er.message_storage.length);
+                            er.message         = String8(er.message_storage);
                             co_return er;
                         }
                         auto res = co_await schema::alter_udt_add_field(engine.schema, *ks, stmt.name.table_name, AutoString8(fd.name.identifier), move(resolved.value));
@@ -3743,7 +3671,7 @@ namespace cql::engine {
                             er.status          = ExecutionStatus::Invalid;
                             er.keyspace        = AutoString8(ks_name);
                             er.message_storage = AutoString8(res.message);
-                            er.message         = String8(er.message_storage.c_str, er.message_storage.length);
+                            er.message         = String8(er.message_storage);
                             co_return er;
                         }
                     }
@@ -3755,24 +3683,19 @@ namespace cql::engine {
                         er.status          = ExecutionStatus::Invalid;
                         er.keyspace        = AutoString8(ks_name);
                         er.message_storage = AutoString8(res.message);
-                        er.message         = String8(er.message_storage.c_str, er.message_storage.length);
+                        er.message         = String8(er.message_storage);
                         co_return er;
                     }
                 }
                 co_return create_schema_changed(ks_name);
             } else if constexpr (SameAs<T, DropType>) {
-                String8 ks_name = static_cast<bool>(stmt.name.keyspace_name) ? String8(*stmt.name.keyspace_name) : current_keyspace;
-                if (ks_name.length == 0) {
-                    co_return create_no_keyspace_specified();
+                String8 ks_name = resolve_ks_name(stmt.name.keyspace_name, current_keyspace);
+                auto    ksr     = resolve_ks(engine, ks_name);
+                if (ksr.error) {
+                    co_return (stmt.if_exists && ksr.not_found) ? create_void_success() : move(*ksr.error);
                 }
-                if (is_system_keyspace(ks_name)) {
-                    co_return create_system_keyspace_invalid();
-                }
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    co_return (stmt.if_exists) ? create_void_success() : create_keyspace_not_found(ks_name);
-                }
-                if (schema::read_udt(engine.schema, *ks, stmt.name.table_name).value == nullptr) {
+                auto ks = ksr.ks;
+                if (schema::read_udt(*ks, stmt.name.table_name).value == nullptr) {
                     if (stmt.if_exists) {
                         co_return create_void_success();
                     }
@@ -3780,7 +3703,7 @@ namespace cql::engine {
                     r.status          = ExecutionStatus::Invalid;
                     r.keyspace        = AutoString8(ks_name);
                     r.message_storage = AutoString8("Type ") + AutoString8(ks_name) + "." + AutoString8(stmt.name.table_name) + " does not exist";
-                    r.message         = String8(r.message_storage.c_str, r.message_storage.length);
+                    r.message         = String8(r.message_storage);
                     co_return r;
                 }
                 auto res = co_await schema::delete_udt(engine.schema, *ks, stmt.name.table_name);
@@ -3789,19 +3712,14 @@ namespace cql::engine {
                     er.status          = ExecutionStatus::Invalid;
                     er.keyspace        = AutoString8(ks_name);
                     er.message_storage = AutoString8(res.message);
-                    er.message         = String8(er.message_storage.c_str, er.message_storage.length);
+                    er.message         = String8(er.message_storage);
                     co_return er;
                 }
                 co_return create_schema_changed(ks_name);
             } else if constexpr (SameAs<T, Batch>) {
                 ZoneScopedN("engine::batch");
                 // @note batch-level USING TIMESTAMP/TTL falls through to children that don't supply their own.
-                for (const auto& param : stmt.using_parameters) {
-                    if (param.kind == UpdateParameter::Kind::TIMESTAMP) {
-                        assert_true(engine.single_node, "BATCH USING TIMESTAMP not supported in non-single-node mode");
-                        log::native_info("ignoring BATCH USING TIMESTAMP (single-node no-op)");
-                    }
-                }
+                warn_using_timestamp_single_node(engine, stmt.using_parameters, "BATCH USING TIMESTAMP not supported in non-single-node mode", "ignoring BATCH USING TIMESTAMP (single-node no-op)");
 
                 auto dispatch_child = [&engine, &ctx, &current_keyspace, &stmt](const auto& m) -> coroutine::Task<ExecutionResult> {
                     using M     = Decay<decltype(m)>;
@@ -3842,15 +3760,7 @@ namespace cql::engine {
     }
 
     coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement) {
-        pager::Transaction tx{engine.pager};
-        co_await tx.begin();
-        auto result = co_await execute_inside_transaction(engine, statement, EvalContext{}, engine.current_keyspace);
-        if (result.kind == ResultKind::Rows && result.status == ExecutionStatus::Success) {
-            result.deferred_tx = move(tx);
-        } else {
-            co_await tx.commit();
-        }
-        co_return result;
+        co_return co_await execute(engine, statement, engine.current_keyspace);
     }
 
     coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement, AutoString8& current_keyspace) {
@@ -3869,10 +3779,8 @@ namespace cql::engine {
     // bind variables
     // ========================================================================
     static type::Type col_type_in_table(const schema::Table& tbl, String8 col_name) {
-        for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-            if (tbl.cols[ci].name == col_name) {
-                return tbl.cols[ci].type;
-            }
+        if (Optional<U64> ci = schema::find_column(tbl, col_name); ci) {
+            return tbl.cols[*ci].type;
         }
         // Unknown column: use int as fallback so numeric test values serialize without driver error.
         // The query will fail server-side with ColumnNotFound regardless of the type reported here.
@@ -4063,12 +3971,12 @@ namespace cql::engine {
     }
 
     static void collect_bind_variables_insert(Engine& engine, const Insert& stmt, DynamicArray<BindVariableSpec>& out, String8 current_keyspace) {
-        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
+        String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
         auto    ks      = schema::read_keyspace(engine.schema, ks_name).value;
         if (ks == nullptr) {
             return;
         }
-        auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+        auto tbl = schema::read_table(*ks, stmt.table.table_name).value;
         if (tbl == nullptr) {
             return;
         }
@@ -4086,12 +3994,12 @@ namespace cql::engine {
     }
 
     static void collect_bind_variables_update(Engine& engine, const Update& stmt, DynamicArray<BindVariableSpec>& out, String8 current_keyspace) {
-        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
+        String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
         auto    ks      = schema::read_keyspace(engine.schema, ks_name).value;
         if (ks == nullptr) {
             return;
         }
-        auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+        auto tbl = schema::read_table(*ks, stmt.table.table_name).value;
         if (tbl == nullptr) {
             return;
         }
@@ -4111,12 +4019,12 @@ namespace cql::engine {
     }
 
     static void collect_bind_variables_delete(Engine& engine, const Delete& stmt, DynamicArray<BindVariableSpec>& out, String8 current_keyspace) {
-        String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
+        String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
         auto    ks      = schema::read_keyspace(engine.schema, ks_name).value;
         if (ks == nullptr) {
             return;
         }
-        auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+        auto tbl = schema::read_table(*ks, stmt.table.table_name).value;
         if (tbl == nullptr) {
             return;
         }
@@ -4133,12 +4041,12 @@ namespace cql::engine {
     }
 
     static void collect_bind_variables_select(Engine& engine, const Select& stmt, DynamicArray<BindVariableSpec>& out, String8 current_keyspace) {
-        String8 ks_name = static_cast<bool>(stmt.from.keyspace_name) ? String8(*stmt.from.keyspace_name) : current_keyspace;
+        String8 ks_name = resolve_ks_name(stmt.from.keyspace_name, current_keyspace);
         auto    ks      = schema::read_keyspace(engine.schema, ks_name).value;
         if (ks == nullptr) {
             return;
         }
-        auto tbl = schema::read_table(engine.schema, *ks, stmt.from.table_name).value;
+        auto tbl = schema::read_table(*ks, stmt.from.table_name).value;
         if (tbl == nullptr) {
             return;
         }
@@ -4443,7 +4351,7 @@ namespace cql::engine {
         visit(pr.statement->value, [&, current_keyspace](const auto& stmt) {
             using T = RemoveCVRef<decltype(stmt)>;
             if constexpr (SameAs<T, Insert>) {
-                String8 ks_name = static_cast<bool>(stmt.table.keyspace_name) ? String8(*stmt.table.keyspace_name) : current_keyspace;
+                String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
                 entry.keyspace  = AutoString8(ks_name);
                 entry.table     = AutoString8(stmt.table.table_name);
 
@@ -4451,7 +4359,7 @@ namespace cql::engine {
                 if (ks == nullptr) {
                     return;
                 }
-                auto tbl = schema::read_table(engine.schema, *ks, stmt.table.table_name).value;
+                auto tbl = schema::read_table(*ks, stmt.table.table_name).value;
                 if (tbl == nullptr) {
                     return;
                 }

@@ -807,7 +807,7 @@ namespace cql::native {
             case engine::ResultKind::Rows: {
                 auto ks = schema::read_keyspace(engine.schema, result.keyspace).value;
                 assert_true(ks != nullptr, "keyspace not found for rows result");
-                auto tbl = schema::read_table(engine.schema, *ks, result.table).value;
+                auto tbl = schema::read_table(*ks, result.table).value;
                 assert_true(tbl != nullptr, "table not found for rows result");
                 Frame frame{.body = {}, .req = req, .op = op_codes::RESULT, .stream = stream};
                 S32   row_count = co_await append_result_rows(frame, result, tbl);

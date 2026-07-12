@@ -1,6 +1,5 @@
 module;
 #include <coroutine>
-#include <cstring>
 #include <plexdb/support/tracy/tracy.hpp>
 
 module cql.engine.it;
@@ -234,7 +233,7 @@ namespace cql {
         if (key.length < static_cast<U16>(bound.length)) {
             return false;
         }
-        return bound.length == 0 || memcmp(key.ptr, bound.ptr, bound.length) == 0;
+        return bound.length == 0 || os::memory_compare(key.ptr, bound.ptr, bound.length) == 0;
     }
 
     static coroutine::Task<void> setup_clustering_for_partition(RowIterator& it, Pager* pager, const schema::PartitionEntry& entry) {

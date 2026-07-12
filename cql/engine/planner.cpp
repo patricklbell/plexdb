@@ -109,24 +109,22 @@ namespace cql::planner {
         }
     }
 
-    static Optional<U64> find_pk_position(const schema::Table& tbl, const AutoString8& col_name) {
+    static Optional<U64> find_key_position(const schema::Table& tbl, const DynamicArray<U64>& key_col_indices, const AutoString8& col_name) {
         String8 name(col_name.c_str, col_name.length);
-        for (U64 pos = 0; pos < tbl.partition_key_col_indices.length; pos++) {
-            if (tbl.cols[tbl.partition_key_col_indices[pos]].name == name) {
+        for (U64 pos = 0; pos < key_col_indices.length; pos++) {
+            if (tbl.cols[key_col_indices[pos]].name == name) {
                 return pos;
             }
         }
         return {};
     }
 
+    static Optional<U64> find_pk_position(const schema::Table& tbl, const AutoString8& col_name) {
+        return find_key_position(tbl, tbl.partition_key_col_indices, col_name);
+    }
+
     static Optional<U64> find_ck_position(const schema::Table& tbl, const AutoString8& col_name) {
-        String8 name(col_name.c_str, col_name.length);
-        for (U64 pos = 0; pos < tbl.clustering_key_col_indices.length; pos++) {
-            if (tbl.cols[tbl.clustering_key_col_indices[pos]].name == name) {
-                return pos;
-            }
-        }
-        return {};
+        return find_key_position(tbl, tbl.clustering_key_col_indices, col_name);
     }
 
     static bool is_null_eval(const Evaluated& eval) {
@@ -211,31 +209,6 @@ namespace cql::planner {
             return CompoundForm{bin.op, false, &bin.lhs};
         }
         return {};
-    }
-
-    // Cassandra allows counter writes only in the form `c = c + n` or `c = c - n`,
-    // where the LHS column reference matches the assignment target and the RHS contains
-    // no further column references (constants, bind markers, or arithmetic over those).
-    static bool is_counter_increment_form(const TermWithIdentifiers& twi, const String8& target_col) {
-        if (!type_matches_tag<TOIArithmeticOperation>(twi.value)) {
-            return false;
-        }
-        const auto& arith = get<TOIArithmeticOperation>(twi.value);
-        if (!type_matches_tag<TOIBinaryArithmetic>(arith.value)) {
-            return false;
-        }
-        const auto& bin = get<TOIBinaryArithmetic>(arith.value);
-        if (bin.op != ArithmeticOperator::plus && bin.op != ArithmeticOperator::minus) {
-            return false;
-        }
-        if (!type_matches_tag<AutoString8>(bin.lhs.value)) {
-            return false;
-        }
-        const auto& lhs_name = get<AutoString8>(bin.lhs.value);
-        if (String8(lhs_name.c_str, lhs_name.length) != target_col) {
-            return false;
-        }
-        return !twi_has_column_ref(bin.rhs);
     }
 
     static bool term_is_literal_null(const Term& t) {
@@ -600,22 +573,22 @@ namespace cql::planner {
                         } else if (n_pk == 1 && *pk_pos == 0) {
                             switch (r.operator_) {
                                 case Operator::lt:
-                                    locator.pk.end           = key::compute_partition_token_from_eval(tbl, eval);
+                                    locator.pk.end           = key::compute_partition_token_from_evals(tbl, {&eval, 1});
                                     locator.pk.has_end       = true;
                                     locator.pk.end_inclusive = false;
                                     break;
                                 case Operator::le:
-                                    locator.pk.end           = key::compute_partition_token_from_eval(tbl, eval);
+                                    locator.pk.end           = key::compute_partition_token_from_evals(tbl, {&eval, 1});
                                     locator.pk.has_end       = true;
                                     locator.pk.end_inclusive = true;
                                     break;
                                 case Operator::gt:
-                                    locator.pk.begin           = key::compute_partition_token_from_eval(tbl, eval);
+                                    locator.pk.begin           = key::compute_partition_token_from_evals(tbl, {&eval, 1});
                                     locator.pk.has_begin       = true;
                                     locator.pk.begin_inclusive = false;
                                     break;
                                 case Operator::ge:
-                                    locator.pk.begin           = key::compute_partition_token_from_eval(tbl, eval);
+                                    locator.pk.begin           = key::compute_partition_token_from_evals(tbl, {&eval, 1});
                                     locator.pk.has_begin       = true;
                                     locator.pk.begin_inclusive = true;
                                     break;
@@ -667,30 +640,20 @@ namespace cql::planner {
                     } else {
                         bool covered_by_index = false;
                         if (r.operator_ == Operator::eq) {
-                            String8 col_name(r.column.identifier.c_str, r.column.identifier.length);
-                            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                                if (tbl.cols[ci].name == col_name && !tbl.cols[ci].tombstone) {
-                                    if (col_is_indexed(ci)) {
-                                        Evaluated eval = evaluate(r.value, ctx);
-                                        if (!is_null_eval(eval)) {
-                                            try_capture_index(ci, eval);
-                                            covered_by_index = true;
-                                        }
-                                    }
-                                    break;
+                            if (Optional<U64> ci_opt = schema::find_column(tbl, r.column.identifier); ci_opt && col_is_indexed(*ci_opt)) {
+                                Evaluated eval = evaluate(r.value, ctx);
+                                if (!is_null_eval(eval)) {
+                                    try_capture_index(*ci_opt, eval);
+                                    covered_by_index = true;
                                 }
                             }
                         } else if (r.operator_ == Operator::contains || r.operator_ == Operator::contains_key) {
-                            String8 col_name(r.column.identifier.c_str, r.column.identifier.length);
-                            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                                if (tbl.cols[ci].name == col_name && !tbl.cols[ci].tombstone) {
-                                    Evaluated eval = evaluate(r.value, ctx);
-                                    if (!is_null_eval(eval)) {
-                                        covered_by_index = try_capture_collection_index(
-                                            locator, tbl, ci, r.operator_, eval
-                                        );
-                                    }
-                                    break;
+                            if (Optional<U64> ci_opt = schema::find_column(tbl, r.column.identifier); ci_opt) {
+                                Evaluated eval = evaluate(r.value, ctx);
+                                if (!is_null_eval(eval)) {
+                                    covered_by_index = try_capture_collection_index(
+                                        locator, tbl, *ci_opt, r.operator_, eval
+                                    );
                                 }
                             }
                         }
@@ -830,25 +793,20 @@ namespace cql::planner {
                 } else if constexpr (SameAs<T, WhereClause::SubscriptedRelation>) {
                     bool covered_by_index = false;
                     if (r.operator_ == Operator::eq) {
-                        String8 col_name(r.column.identifier.c_str, r.column.identifier.length);
-                        for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                            if (tbl.cols[ci].name == col_name && !tbl.cols[ci].tombstone) {
-                                if (type_matches_tag<type::Map>(tbl.cols[ci].type.value)) {
-                                    const auto& m        = get<type::Map>(tbl.cols[ci].type.value);
-                                    Evaluated   key_eval = evaluate(r.subscript, ctx);
-                                    Evaluated   val_eval = evaluate(r.value, ctx);
-                                    if (!is_null_eval(key_eval) && !is_null_eval(val_eval) && type_matches_tag<type::Basic>(m.key.value) && type_matches_tag<type::Basic>(m.value.value)) {
-                                        for (const auto& idx : tbl.indexes) {
-                                            if (!idx.tombstone && idx.col_idx == ci && idx.kind == schema::IndexKind::Entries && !locator.index_col_idx) {
-                                                locator.index_col_idx    = ci;
-                                                locator.index_key_prefix = key::encode_index_prefix_entries(key_eval, get<type::Basic>(m.key.value), val_eval, get<type::Basic>(m.value.value));
-                                                covered_by_index         = true;
-                                                break;
-                                            }
-                                        }
+                        if (Optional<U64> ci_opt = schema::find_column(tbl, r.column.identifier); ci_opt && type_matches_tag<type::Map>(tbl.cols[*ci_opt].type.value)) {
+                            U64         ci       = *ci_opt;
+                            const auto& m        = get<type::Map>(tbl.cols[ci].type.value);
+                            Evaluated   key_eval = evaluate(r.subscript, ctx);
+                            Evaluated   val_eval = evaluate(r.value, ctx);
+                            if (!is_null_eval(key_eval) && !is_null_eval(val_eval) && type_matches_tag<type::Basic>(m.key.value) && type_matches_tag<type::Basic>(m.value.value)) {
+                                for (const auto& idx : tbl.indexes) {
+                                    if (!idx.tombstone && idx.col_idx == ci && idx.kind == schema::IndexKind::Entries && !locator.index_col_idx) {
+                                        locator.index_col_idx    = ci;
+                                        locator.index_key_prefix = key::encode_index_prefix_entries(key_eval, get<type::Basic>(m.key.value), val_eval, get<type::Basic>(m.value.value));
+                                        covered_by_index         = true;
+                                        break;
                                     }
                                 }
-                                break;
                             }
                         }
                     }
@@ -897,14 +855,8 @@ namespace cql::planner {
                             return nullptr;
                         }
                     })) {
-                    String8 col_name(rel->column.identifier.c_str, rel->column.identifier.length);
-                    for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                        if (tbl.cols[ci].name == col_name && !tbl.cols[ci].tombstone) {
-                            if (col_is_indexed(ci)) {
-                                covered = true;
-                            }
-                            break;
-                        }
+                    if (Optional<U64> ci_opt = schema::find_column(tbl, rel->column.identifier); ci_opt && col_is_indexed(*ci_opt)) {
+                        covered = true;
                     }
                 }
                 if (!covered) {
@@ -1084,13 +1036,8 @@ namespace cql::planner {
                         if (find_pk_position(tbl, ident)) {
                             return true;
                         }
-                        String8 name(ident.c_str, ident.length);
-                        for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                            if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == name && tbl.cols[ci].is_static) {
-                                return true;
-                            }
-                        }
-                        return false;
+                        Optional<U64> ci = schema::find_column(tbl, ident);
+                        return ci && tbl.cols[*ci].is_static;
                     };
                     if constexpr (SameAs<T, WhereClause::ColumnExpressionRelation>) {
                         return check_col(r.column.identifier);
@@ -1182,40 +1129,34 @@ namespace cql::planner {
                 plan.result.context = AutoString8(fn_label) + AutoString8(" requires a single column argument");
                 return false;
             }
-            const auto& cn = get<ColumnName>(fn.arguments[0].value);
-            String8     name(cn.identifier.c_str, cn.identifier.length);
-            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                if (tbl.cols[ci].tombstone || tbl.cols[ci].name != name) {
-                    continue;
-                }
-                if (tbl.cols[ci].key_kind != schema::KeyKind::None) {
-                    plan.result.error   = shape_error;
-                    plan.result.context = AutoString8("Cannot use selection function ") + AutoString8(fn_label) + AutoString8(" on PRIMARY KEY part ") + AutoString8(cn.identifier);
-                    return false;
-                }
-                if (col_is_collection(tbl.cols[ci])) {
-                    plan.result.error   = shape_error;
-                    plan.result.context = AutoString8("Cannot use selection function ") + AutoString8(fn_label) + AutoString8(" on collection column ") + AutoString8(cn.identifier);
-                    return false;
-                }
-                push_back(plan.projection.ops, is_ttl ? SelectOp{SelectOp::TtlOf{ci}, {}} : SelectOp{SelectOp::WritetimeOf{ci}, {}});
-                return true;
+            const auto&   cn     = get<ColumnName>(fn.arguments[0].value);
+            Optional<U64> ci_opt = schema::find_column(tbl, cn.identifier);
+            if (!ci_opt) {
+                plan.result.error   = PlanError::ColumnNotFound;
+                plan.result.context = AutoString8(cn.identifier);
+                return false;
             }
-            plan.result.error   = PlanError::ColumnNotFound;
-            plan.result.context = AutoString8(cn.identifier);
-            return false;
+            U64 ci = *ci_opt;
+            if (tbl.cols[ci].key_kind != schema::KeyKind::None) {
+                plan.result.error   = shape_error;
+                plan.result.context = AutoString8("Cannot use selection function ") + AutoString8(fn_label) + AutoString8(" on PRIMARY KEY part ") + AutoString8(cn.identifier);
+                return false;
+            }
+            if (col_is_collection(tbl.cols[ci])) {
+                plan.result.error   = shape_error;
+                plan.result.context = AutoString8("Cannot use selection function ") + AutoString8(fn_label) + AutoString8(" on collection column ") + AutoString8(cn.identifier);
+                return false;
+            }
+            push_back(plan.projection.ops, is_ttl ? SelectOp{SelectOp::TtlOf{ci}, {}} : SelectOp{SelectOp::WritetimeOf{ci}, {}});
+            return true;
         };
 
         for (const auto& sc : stmt.select.clauses) {
             bool ok = visit(sc.column.value, [&](const auto& sel) -> bool {
                 using ST = RemoveCVRef<decltype(sel)>;
                 if constexpr (SameAs<ST, ColumnName>) {
-                    String8 name(sel.identifier.c_str, sel.identifier.length);
-                    for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                        if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == name) {
-                            push_back(plan.projection.ops, SelectOp{SelectOp::ColumnRef{ci}, {}});
-                            break;
-                        }
+                    if (Optional<U64> ci = schema::find_column(tbl, sel.identifier); ci) {
+                        push_back(plan.projection.ops, SelectOp{SelectOp::ColumnRef{*ci}, {}});
                     }
                     return true;
                 } else if constexpr (SameAs<ST, Select::Count>) {
@@ -1246,22 +1187,16 @@ namespace cql::planner {
                                 plan.result.context = AutoString8("Invalid arguments to function 'token': arguments must be partition key column references");
                                 return false;
                             }
-                            const auto& cn = get<ColumnName>(sel.arguments[ai].value);
-                            String8     name(cn.identifier.c_str, cn.identifier.length);
-                            U64         pk_ci       = tbl.partition_key_col_indices[ai];
-                            U64         resolved_ci = MAX_U64;
-                            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                                if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == name) {
-                                    resolved_ci = ci;
-                                    break;
-                                }
-                            }
-                            if (resolved_ci == MAX_U64) {
+                            const auto&   cn           = get<ColumnName>(sel.arguments[ai].value);
+                            U64           pk_ci        = tbl.partition_key_col_indices[ai];
+                            Optional<U64> resolved_opt = schema::find_column(tbl, cn.identifier);
+                            if (!resolved_opt) {
                                 plan.result.error   = PlanError::ColumnNotFound;
                                 plan.result.context = AutoString8("Invalid arguments to function 'token': name ")
                                                     + AutoString8(cn.identifier) + AutoString8(" doesn't exist");
                                 return false;
                             }
+                            U64 resolved_ci = *resolved_opt;
                             if (resolved_ci != pk_ci) {
                                 AutoString8 expected = type_matches_tag<type::Basic>(tbl.cols[pk_ci].type.value)
                                                          ? AutoString8(to_str(get<type::Basic>(tbl.cols[pk_ci].type.value)))
@@ -1293,29 +1228,27 @@ namespace cql::planner {
                             }
                             const Select::Selector& arg = inner_fn->arguments[0];
                             if (type_matches_tag<ColumnName>(arg.value)) {
-                                const auto& cn = get<ColumnName>(arg.value);
-                                String8     name(cn.identifier.c_str, cn.identifier.length);
-                                for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                                    if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == name) {
-                                        if (!type_matches_tag<type::Basic>(tbl.cols[ci].type.value)) {
-                                            plan.result.error   = PlanError::ColumnNotFound;
-                                            plan.result.context = AutoString8("Type conversion requires a basic-typed column");
-                                            return false;
-                                        }
-                                        if (get<type::Basic>(tbl.cols[ci].type.value) != cur_from) {
-                                            plan.result.error   = PlanError::ColumnNotFound;
-                                            plan.result.context = AutoString8("Type conversion argument type does not match column type");
-                                            return false;
-                                        }
-                                        SelectOp op{SelectOp::ColumnRef{ci}, {}};
-                                        reverse_conversions_into(op.conversions, conversions);
-                                        push_back(plan.projection.ops, move(op));
-                                        return true;
-                                    }
+                                const auto&   cn = get<ColumnName>(arg.value);
+                                Optional<U64> ci = schema::find_column(tbl, cn.identifier);
+                                if (!ci) {
+                                    plan.result.error   = PlanError::ColumnNotFound;
+                                    plan.result.context = AutoString8(cn.identifier);
+                                    return false;
                                 }
-                                plan.result.error   = PlanError::ColumnNotFound;
-                                plan.result.context = AutoString8(cn.identifier);
-                                return false;
+                                if (!type_matches_tag<type::Basic>(tbl.cols[*ci].type.value)) {
+                                    plan.result.error   = PlanError::ColumnNotFound;
+                                    plan.result.context = AutoString8("Type conversion requires a basic-typed column");
+                                    return false;
+                                }
+                                if (get<type::Basic>(tbl.cols[*ci].type.value) != cur_from) {
+                                    plan.result.error   = PlanError::ColumnNotFound;
+                                    plan.result.context = AutoString8("Type conversion argument type does not match column type");
+                                    return false;
+                                }
+                                SelectOp op{SelectOp::ColumnRef{*ci}, {}};
+                                reverse_conversions_into(op.conversions, conversions);
+                                push_back(plan.projection.ops, move(op));
+                                return true;
                             }
                             if (type_matches_tag<Select::Function>(arg.value)) {
                                 const auto& fc = get<Select::Function>(arg.value);
@@ -1373,12 +1306,9 @@ namespace cql::planner {
                         bool                  resolved = visit(arg.value, [&](const auto& av) -> bool {
                             using AT = RemoveCVRef<decltype(av)>;
                             if constexpr (SameAs<AT, ColumnName>) {
-                                String8 aname(av.identifier.c_str, av.identifier.length);
-                                for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                                    if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == aname) {
-                                        fca.value = ci;
-                                        return true;
-                                    }
+                                if (Optional<U64> ci = schema::find_column(tbl, av.identifier); ci) {
+                                    fca.value = *ci;
+                                    return true;
                                 }
                                 plan.result.error   = PlanError::ColumnNotFound;
                                 plan.result.context = AutoString8(av.identifier);
@@ -1420,25 +1350,22 @@ namespace cql::planner {
                         plan.result.context = AutoString8("CAST target must be a basic type");
                         return false;
                     }
-                    const auto& cn = get<ColumnName>(sel.column.value);
-                    String8     name(cn.identifier.c_str, cn.identifier.length);
-                    for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                        if (tbl.cols[ci].tombstone || tbl.cols[ci].name != name) {
-                            continue;
-                        }
-                        if (!type_matches_tag<type::Basic>(tbl.cols[ci].type.value)) {
-                            plan.result.error   = PlanError::ColumnNotFound;
-                            plan.result.context = AutoString8("CAST argument must be a basic-typed column");
-                            return false;
-                        }
-                        SelectOp op{SelectOp::ColumnRef{ci}, {}};
-                        push_back(op.conversions, SelectOp::Conversion{get<type::Basic>(tbl.cols[ci].type.value), get<type::Basic>(sel.to.value)});
-                        push_back(plan.projection.ops, move(op));
-                        return true;
+                    const auto&   cn = get<ColumnName>(sel.column.value);
+                    Optional<U64> ci = schema::find_column(tbl, cn.identifier);
+                    if (!ci) {
+                        plan.result.error   = PlanError::ColumnNotFound;
+                        plan.result.context = AutoString8(cn.identifier);
+                        return false;
                     }
-                    plan.result.error   = PlanError::ColumnNotFound;
-                    plan.result.context = AutoString8(cn.identifier);
-                    return false;
+                    if (!type_matches_tag<type::Basic>(tbl.cols[*ci].type.value)) {
+                        plan.result.error   = PlanError::ColumnNotFound;
+                        plan.result.context = AutoString8("CAST argument must be a basic-typed column");
+                        return false;
+                    }
+                    SelectOp op{SelectOp::ColumnRef{*ci}, {}};
+                    push_back(op.conversions, SelectOp::Conversion{get<type::Basic>(tbl.cols[*ci].type.value), get<type::Basic>(sel.to.value)});
+                    push_back(plan.projection.ops, move(op));
+                    return true;
                 } else {
                     static_assert(!SameAs<ST, ST>, "missing Select::Selector variant");
                     return false;
@@ -1467,12 +1394,8 @@ namespace cql::planner {
             }
         }
         auto add_needed_by_name = [&](const AutoString8& ident) {
-            String8 name(ident.c_str, ident.length);
-            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == name) {
-                    add_needed(ci);
-                    return;
-                }
+            if (Optional<U64> ci = schema::find_column(tbl, ident); ci) {
+                add_needed(*ci);
             }
         };
         for (const auto& rel : plan.filter.predicates) {
@@ -1502,14 +1425,7 @@ namespace cql::planner {
             auto        pk_pos = find_pk_position(tbl, cer.column.identifier);
             auto        ck_pos = find_ck_position(tbl, cer.column.identifier);
 
-            bool col_exists = false;
-            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == cer.column.identifier) {
-                    col_exists = true;
-                    break;
-                }
-            }
-            if (!col_exists) {
+            if (!schema::find_column(tbl, cer.column.identifier)) {
                 return {PlanError::ColumnNotFound, AutoString8(cer.column.identifier)};
             }
             if (!pk_pos && !ck_pos) {
@@ -1596,17 +1512,10 @@ namespace cql::planner {
         // Static-only updates don't need the clustering key.
         bool has_non_static_assignment = false;
         for (const auto& assign : stmt.assignments) {
-            Optional<U64> col_idx;
-            String8       col_name(assign.target.column.identifier.c_str, assign.target.column.identifier.length);
-            for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == col_name) {
-                    col_idx = ci;
-                    break;
-                }
-            }
+            Optional<U64> col_idx = schema::find_column(tbl, assign.target.column.identifier);
             if (!col_idx) {
                 plan.result.error   = PlanError::ColumnNotFound;
-                plan.result.context = AutoString8(col_name);
+                plan.result.context = AutoString8(assign.target.column.identifier);
                 return plan;
             }
 
@@ -1632,22 +1541,22 @@ namespace cql::planner {
             if (assign.target.access) {
                 if (!is_collection) {
                     plan.result.error   = PlanError::InvalidSubscriptTarget;
-                    plan.result.context = AutoString8("Element-based access is only supported on collection columns: ") + col_name;
+                    plan.result.context = AutoString8("Element-based access is only supported on collection columns: ") + col.name;
                     return plan;
                 }
                 if (type_matches_tag<type::Set>(col.type.value)) {
                     plan.result.error   = PlanError::InvalidSubscriptTarget;
-                    plan.result.context = AutoString8("Subscript-based assignment is not supported on sets: ") + col_name;
+                    plan.result.context = AutoString8("Subscript-based assignment is not supported on sets: ") + col.name;
                     return plan;
                 }
                 if (type_matches_tag<SimpleSelection::FieldAccess>(*assign.target.access)) {
                     plan.result.error   = PlanError::InvalidSubscriptTarget;
-                    plan.result.context = AutoString8("Field access on non-UDT column: ") + col_name;
+                    plan.result.context = AutoString8("Field access on non-UDT column: ") + col.name;
                     return plan;
                 }
                 if (twi_has_column_ref(assign.value)) {
                     plan.result.error   = PlanError::InvalidCollectionMutation;
-                    plan.result.context = AutoString8("Element-based assignment must not reference other columns: ") + col_name;
+                    plan.result.context = AutoString8("Element-based assignment must not reference other columns: ") + col.name;
                     return plan;
                 }
                 const auto&     sub_term = get<SimpleSelection::Subscript>(*assign.target.access);
@@ -1657,7 +1566,7 @@ namespace cql::planner {
                 patch.value = evaluate(assign.value, ctx);
                 if (type_matches_tag<Literal>(patch.key.value) && type_matches_tag<Unset>(get<Literal>(patch.key.value).value)) {
                     plan.result.error   = PlanError::UnsetSubscriptValue;
-                    plan.result.context = AutoString8(col_name);
+                    plan.result.context = AutoString8(col.name);
                     return plan;
                 }
                 if (type_matches_tag<Literal>(patch.value.value) && type_matches_tag<Unset>(get<Literal>(patch.value.value).value)) {
@@ -1670,10 +1579,11 @@ namespace cql::planner {
                 continue;
             }
 
-            if (auto cf = match_compound_form(assign.value, col_name); cf && !is_counter) {
+            auto cf = match_compound_form(assign.value, col.name);
+            if (cf && !is_counter) {
                 if (!is_collection) {
                     plan.result.error   = PlanError::CounterOperationOnNonCounter;
-                    plan.result.context = AutoString8(col_name);
+                    plan.result.context = AutoString8(col.name);
                     return plan;
                 }
                 bool            is_list = type_matches_tag<type::List>(col.type.value);
@@ -1689,13 +1599,13 @@ namespace cql::planner {
                 } else if (cf->op == ArithmeticOperator::minus) {
                     if (!cf->col_on_left) {
                         plan.result.error   = PlanError::InvalidCollectionMutation;
-                        plan.result.context = AutoString8("Subtraction with a collection on the right is not supported: ") + col_name;
+                        plan.result.context = AutoString8("Subtraction with a collection on the right is not supported: ") + col.name;
                         return plan;
                     }
                     patch.op = CollectionPatch::Op::Subtract;
                 } else {
                     plan.result.error   = PlanError::InvalidCollectionMutation;
-                    plan.result.context = AutoString8("Only + and - are valid compound operators on collections: ") + col_name;
+                    plan.result.context = AutoString8("Only + and - are valid compound operators on collections: ") + col.name;
                     return plan;
                 }
                 patch.value = evaluate(*cf->other, ctx);
@@ -1708,7 +1618,7 @@ namespace cql::planner {
                                 : io::can_write_evaluated_as_column_value(patch.value, col.type, ctx);
                 if (!rhs_ok) {
                     plan.result.error   = PlanError::InvalidCollectionMutation;
-                    plan.result.context = AutoString8("Incompatible right-hand side collection for ") + col_name;
+                    plan.result.context = AutoString8("Incompatible right-hand side collection for ") + col.name;
                     return plan;
                 }
                 if (!col.is_static) {
@@ -1721,12 +1631,13 @@ namespace cql::planner {
             bool has_col_ref = twi_has_column_ref(assign.value);
             if (has_col_ref && !is_counter) {
                 plan.result.error   = PlanError::CounterOperationOnNonCounter;
-                plan.result.context = AutoString8(col_name);
+                plan.result.context = AutoString8(col.name);
                 return plan;
             }
-            if (is_counter && !is_counter_increment_form(assign.value, col_name)) {
+            bool is_increment_form = cf && cf->col_on_left && (cf->op == ArithmeticOperator::plus || cf->op == ArithmeticOperator::minus);
+            if (is_counter && !is_increment_form) {
                 plan.result.error   = PlanError::CounterAssignmentNotIncrement;
-                plan.result.context = AutoString8(col_name);
+                plan.result.context = AutoString8(col.name);
                 return plan;
             }
             if (!col.is_static) {
@@ -1752,25 +1663,19 @@ namespace cql::planner {
             }
         }
 
-        // Include PK and CK equality values in the spec so apply_mutation can populate
-        // key columns when creating a new row (upsert behaviour).
+        // @note kept so an upsert can populate key columns on a new row.
         for (const auto& rel : stmt.where.relations) {
             visit(rel.value, [&](const auto& r) {
                 using R = RemoveCVRef<decltype(r)>;
                 if constexpr (SameAs<R, WhereClause::ColumnExpressionRelation>) {
                     if (r.operator_ == Operator::eq) {
-                        String8 col_name(r.column.identifier.c_str, r.column.identifier.length);
-                        for (U64 pk_ci : tbl.partition_key_col_indices) {
-                            if (!tbl.cols[pk_ci].tombstone && tbl.cols[pk_ci].name == col_name) {
-                                push_back(plan.spec.updates, ColumnUpdate{pk_ci, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(r.value, ctx)}});
-                                break;
-                            }
+                        if (auto pk_pos = find_pk_position(tbl, r.column.identifier)) {
+                            U64 pk_ci = tbl.partition_key_col_indices[*pk_pos];
+                            push_back(plan.spec.updates, ColumnUpdate{pk_ci, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(r.value, ctx)}});
                         }
-                        for (U64 ck_ci : tbl.clustering_key_col_indices) {
-                            if (!tbl.cols[ck_ci].tombstone && tbl.cols[ck_ci].name == col_name) {
-                                push_back(plan.spec.updates, ColumnUpdate{ck_ci, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(r.value, ctx)}});
-                                break;
-                            }
+                        if (auto ck_pos = find_ck_position(tbl, r.column.identifier)) {
+                            U64 ck_ci = tbl.clustering_key_col_indices[*ck_pos];
+                            push_back(plan.spec.updates, ColumnUpdate{ck_ci, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{evaluate(r.value, ctx)}});
                         }
                     }
                 }
@@ -1819,37 +1724,30 @@ namespace cql::planner {
         } else {
             bool is_static_only = true;
             for (const auto& sel : stmt.selections) {
-                Optional<U64> col_idx;
-                String8       col_name(sel.column.identifier.c_str, sel.column.identifier.length);
-                for (U64 ci = 0; ci < tbl.cols.length; ci++) {
-                    if (!tbl.cols[ci].tombstone && tbl.cols[ci].name == col_name) {
-                        col_idx = ci;
-                        if (!tbl.cols[ci].is_static) {
-                            is_static_only = false;
-                        }
-                        break;
-                    }
-                }
+                Optional<U64> col_idx = schema::find_column(tbl, sel.column.identifier);
                 if (!col_idx) {
                     plan.result.error   = PlanError::ColumnNotFound;
-                    plan.result.context = AutoString8(col_name);
-                    return plan;
-                }
-                if (tbl.cols[*col_idx].key_kind != schema::KeyKind::None) {
-                    plan.result.error   = PlanError::InvalidSubscriptTarget;
-                    plan.result.context = AutoString8("Invalid deletion of primary key part ") + AutoString8(col_name);
+                    plan.result.context = AutoString8(sel.column.identifier);
                     return plan;
                 }
                 const schema::Column& col = tbl.cols[*col_idx];
+                if (!col.is_static) {
+                    is_static_only = false;
+                }
+                if (col.key_kind != schema::KeyKind::None) {
+                    plan.result.error   = PlanError::InvalidSubscriptTarget;
+                    plan.result.context = AutoString8("Invalid deletion of primary key part ") + AutoString8(col.name);
+                    return plan;
+                }
                 if (sel.access) {
                     if (!col_is_collection(col)) {
                         plan.result.error   = PlanError::InvalidSubscriptTarget;
-                        plan.result.context = AutoString8("Element-based access is only supported on collection columns: ") + col_name;
+                        plan.result.context = AutoString8("Element-based access is only supported on collection columns: ") + col.name;
                         return plan;
                     }
                     if (type_matches_tag<SimpleSelection::FieldAccess>(*sel.access)) {
                         plan.result.error   = PlanError::InvalidSubscriptTarget;
-                        plan.result.context = AutoString8("Field access on non-UDT column: ") + col_name;
+                        plan.result.context = AutoString8("Field access on non-UDT column: ") + col.name;
                         return plan;
                     }
                     const auto&     sub_term = get<SimpleSelection::Subscript>(*sel.access);
@@ -1862,7 +1760,7 @@ namespace cql::planner {
                             continue;
                         }
                         plan.result.error   = PlanError::UnsetSubscriptValue;
-                        plan.result.context = AutoString8(col_name);
+                        plan.result.context = AutoString8(col.name);
                         return plan;
                     }
                     push_back(plan.spec.updates, ColumnUpdate{*col_idx, TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch>{move(patch)}});

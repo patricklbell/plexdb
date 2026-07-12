@@ -254,23 +254,6 @@ namespace cql::io {
         }
     }
 
-    coroutine::Task<void> read_column_mask(Reader r, ColumnActiveSetter mark_active) {
-        U64 column_count;
-        co_await r(reinterpret_cast<U8*>(&column_count), sizeof(column_count));
-        static_assert(sizeof(column_count) == COLUMN_COUNT_BYTE_COUNT);
-
-        for (U64 mask_idx = 0; mask_idx < ceil_div(column_count, MASK_BIT_COUNT); mask_idx++) {
-            U64 mask;
-            co_await r(reinterpret_cast<U8*>(&mask), sizeof(mask));
-
-            for (U64 bit_idx = 0; bit_idx < min(MASK_BIT_COUNT, column_count - mask_idx * MASK_BIT_COUNT); bit_idx++) {
-                if (mask & (1_u64 << bit_idx)) {
-                    mark_active(mask_idx * MASK_BIT_COUNT + bit_idx);
-                }
-            }
-        }
-    }
-
     // ========================================================================
     // skip
     // ========================================================================

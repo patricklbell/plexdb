@@ -37,9 +37,8 @@ TEST_CASE("murmur3 token honours MIN reservation", "[cql.token]") {
 }
 
 TEST_CASE("cassandra-flavoured tail sign-extension matches reference tokens", "[cql.token]") {
-    // Wire-encoded 4-byte BE ints. Tokens computed against Cassandra 4.x
-    // (Murmur3Partitioner) — see CASSANDRA-12345 commentary and any cluster
-    // experiment with CONSISTENCY ONE. Locks in the byte-tail sign extension.
+    // Wire-encoded 4-byte BE ints. Reference tokens from Cassandra 4.x's
+    // Murmur3Partitioner. Locks in the byte-tail sign extension.
     struct Case {
         S32 v;
         S64 expected_token;

@@ -21,8 +21,7 @@ export namespace cql::io {
         f(src, size);
     };
 
-    // Shared by to_setter and to_checker below — both just need a callable indexable by
-    // column; the setter/checker distinction is in the Functor's return type, not here.
+    // Constrains to_checker below to a callable indexable by column.
     template<typename F>
     concept ColumnIndexFn = requires(F f, U64 col_idx) {
         f(col_idx);
@@ -31,7 +30,6 @@ export namespace cql::io {
     // Type-erased concrete IO handles — 16 bytes, pass by value
     using Reader              = plexdb::Functor<coroutine::Task<void>, U8*, U64>;
     using Writer              = plexdb::Functor<void, const U8*, U64>;
-    using ColumnActiveSetter  = plexdb::Functor<void, U64>;
     using ColumnActiveChecker = plexdb::Functor<bool, U64>;
 
     // Bridge helpers: wrap a concept-satisfying callable into the concrete erased handle.
@@ -55,10 +53,6 @@ export namespace cql::io {
         };
     }
 
-    template<ColumnIndexFn F>
-    ColumnActiveSetter to_setter(F& f) {
-        return plexdb::to_functor<void, U64>(f);
-    }
     template<ColumnIndexFn F>
     ColumnActiveChecker to_checker(F& f) {
         return plexdb::to_functor<bool, U64>(f);

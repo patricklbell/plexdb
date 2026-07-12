@@ -48,6 +48,15 @@ export namespace cql::engine {
     constexpr U64 MAX_PREPARED_STATEMENTS = 1024;
 
     // ========================================================================
+    // virtual (system/system_schema) table cache — rebuilt only when schema.version changes
+    // ========================================================================
+    struct VirtualTableCacheEntry {
+        U64         schema_version = MAX_U64; // MAX_U64 means never populated
+        VirtualRows rows;
+    };
+    constexpr U64 VIRTUAL_TABLE_CACHE_SIZE = 13;
+
+    // ========================================================================
     // engine
     // ========================================================================
     struct Engine {
@@ -58,6 +67,7 @@ export namespace cql::engine {
         U16            port        = 9042;
 
         MapFixedSentinel<U64, PreparedEntry, MAX_PREPARED_STATEMENTS> prepared_cache;
+        VirtualTableCacheEntry                                        virtual_table_cache[VIRTUAL_TABLE_CACHE_SIZE];
     };
 
     coroutine::Task<>     init(Engine& engine, Pager* in_pager);

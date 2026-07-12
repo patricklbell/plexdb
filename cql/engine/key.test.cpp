@@ -381,11 +381,7 @@ TEST_CASE("date and time are usable as clustering key types", "[cql.key]") {
     }
 }
 
-// Regression coverage for a bug in the old per-arm partition-token encoder: tinyint,
-// float, text, uuid, blob, and hex all read the Evaluated via get<Literal>(...) directly,
-// which asserts (crashes) when handed a ColumnValue-arm Evaluated — the shape
-// evaluator.cpp's lookup_column_value produces for a `token(some_column)` reference.
-// compute_partition_token_from_evals must accept that shape for every partition-key type.
+// @note token() on a column evaluates to a ColumnValue-arm Evaluated, not a Literal.
 TEST_CASE("compute_partition_token_from_evals accepts a ColumnValue-arm Evaluated for every partition key type", "[cql.key]") {
     struct Case {
         type::Basic dtype;

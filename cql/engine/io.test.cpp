@@ -431,7 +431,7 @@ TEST_CASE("resolve_literal_scalar matches cast_write storage bytes", "[cql.engin
         Buffer b1;
         write_column_value(b1.writer(), *rv, t);
         Buffer b2;
-        write_evaluated_as_column_value(b2.writer(), Evaluated{lit}, t);
+        write_evaluated_as_column_value(b2.writer(), Evaluated{lit}, t, EvalContext{});
         REQUIRE(b1.data.length == b2.data.length);
         for (U64 i = 0; i < b1.data.length; i++) {
             CHECK(b1.data[i] == b2.data[i]);
@@ -475,9 +475,7 @@ TEST_CASE("resolve_literal_scalar matches cast_write storage bytes", "[cql.engin
                type::create_basic(B::duration));
 }
 
-// @note can_write_evaluated_as_column_value must recurse into collection-literal elements —
-// checking only the outer container tag let a mismatched element pass the gate and then hit
-// resolve_evaluated's failure assert downstream during the actual write.
+// @note element types must be checked recursively, not just the outer container tag.
 TEST_CASE("can_write_evaluated_as_column_value validates collection literal elements", "[cql.engine.io]") {
     EvalContext ctx{};
 

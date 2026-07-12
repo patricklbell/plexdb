@@ -369,28 +369,32 @@ namespace cql::schema {
         }
         return {&schema.keyspaces[*p]};
     }
-    Result<Table*> read_table([[maybe_unused]] Schema& schema, Keyspace& ks, String8 name) {
+    Result<Table*> read_table(Keyspace& ks, String8 name) {
         const U64* p = find(ks.tbls_by_name, name);
         if (p == nullptr) {
             return {nullptr, Error::MissingTable};
         }
         return {&ks.tbls[*p]};
     }
-    Result<Column*> read_column([[maybe_unused]] Schema& schema, Table& tbl, String8 name) {
+    Result<Column*> read_column(Table& tbl, String8 name) {
         const U64* p = find(tbl.cols_by_name, name);
         if (p == nullptr) {
             return {nullptr, Error::MissingColumn};
         }
         return {&tbl.cols[*p]};
     }
-    Result<Index*> read_index([[maybe_unused]] Schema& schema, Table& tbl, String8 name) {
+    Optional<U64> find_column(const Table& tbl, String8 name) {
+        const U64* p = find(tbl.cols_by_name, name);
+        return p == nullptr ? Optional<U64>{} : Optional<U64>{*p};
+    }
+    Result<Index*> read_index(Table& tbl, String8 name) {
         const U64* p = find(tbl.indexes_by_name, name);
         if (p == nullptr) {
             return {nullptr, Error::MissingIndex};
         }
         return {&tbl.indexes[*p]};
     }
-    Result<type::UDT*> read_udt([[maybe_unused]] Schema& schema, Keyspace& ks, String8 name) {
+    Result<type::UDT*> read_udt(Keyspace& ks, String8 name) {
         type::UDT* const* p = find(ks.udts_by_name, name);
         if (p == nullptr) {
             return {nullptr, Error::MissingType};
@@ -769,7 +773,7 @@ namespace cql::schema {
 
     coroutine::Task<Result<Table*>> create_table(Schema& schema, Keyspace& ks, const CreateTable& create) {
         bump_version(schema);
-        assert_true(read_table(schema, ks, create.name.table_name).error == Error::MissingTable, "table already exists");
+        assert_true(read_table(ks, create.name.table_name).error == Error::MissingTable, "table already exists");
 
         // sanity-check primary key declarations
         U64 inline_pk_count = 0;
@@ -911,7 +915,7 @@ namespace cql::schema {
         for (U64 ci = 0; ci < create.column_definitions.length; ci++) {
             const auto& col_def = create.column_definitions[ci];
 
-            if (read_column(schema, tbl_ref, col_def.name.identifier).error != Error::MissingColumn) {
+            if (read_column(tbl_ref, col_def.name.identifier).error != Error::MissingColumn) {
                 co_await delete_table(schema, ks, create.name.table_name);
                 co_return Result<Table*>{nullptr, Error::ColumnNameCollision};
             }
@@ -973,7 +977,7 @@ namespace cql::schema {
 
     coroutine::Task<Result<void>> delete_table(Schema& schema, Keyspace& ks, String8 name) {
         bump_version(schema);
-        auto tbl_res = read_table(schema, ks, name);
+        auto tbl_res = read_table(ks, name);
         if (tbl_res.error != Error::None) {
             co_return Result<void>{tbl_res.error, tbl_res.message};
         }
@@ -995,7 +999,7 @@ namespace cql::schema {
 namespace cql::schema {
     coroutine::Task<Result<Column*>> create_column(Schema& schema, Table& tbl, String8 name, type::Type type, bool is_static, KeyKind key_kind, U16 key_position, Sort clustering_order) {
         bump_version(schema);
-        assert_true(read_column(schema, tbl, name).error == Error::MissingColumn, "column already exists");
+        assert_true(read_column(tbl, name).error == Error::MissingColumn, "column already exists");
 
         U64           off = schema.columns_blob.size_bytes;
         ColumnStorage cs{};
@@ -1034,7 +1038,7 @@ namespace cql::schema {
 
     coroutine::Task<Result<void>> delete_column(Schema& schema, Table& tbl, String8 name) {
         bump_version(schema);
-        auto col_res = read_column(schema, tbl, name);
+        auto col_res = read_column(tbl, name);
         if (col_res.error != Error::None) {
             co_return Result<void>{col_res.error, col_res.message};
         }
@@ -1102,7 +1106,7 @@ namespace cql::schema {
 
     coroutine::Task<Result<void>> delete_index(Schema& schema, Table& tbl, String8 name) {
         bump_version(schema);
-        auto idx_res = read_index(schema, tbl, name);
+        auto idx_res = read_index(tbl, name);
         if (idx_res.error != Error::None) {
             co_return Result<void>{idx_res.error, idx_res.message};
         }
@@ -1122,9 +1126,8 @@ namespace cql::schema {
 // ============================================================================
 namespace cql::schema {
     // @note storage.udts is append-only, so the storage index equals the record index in udts_blob.
-    static U64 udt_record_idx_for(const Schema& schema, U64 udt_storage_idx) {
+    static void assert_valid_udt_storage_idx(const Schema& schema, U64 udt_storage_idx) {
         assert_true(udt_storage_idx < schema.storage.udts.length, "invalid udt storage idx");
-        return udt_storage_idx;
     }
 
     static U64 find_udt_storage_idx(const Schema& schema, String8 ks_name, String8 name) {
@@ -1188,7 +1191,7 @@ namespace cql::schema {
 
     coroutine::Task<Result<type::UDT*>> create_udt(Schema& schema, Keyspace& ks, String8 name, DynamicArray<AutoString8>&& field_names, DynamicArray<type::Type>&& field_types) {
         bump_version(schema);
-        if (read_udt(schema, ks, name).error == Error::None) {
+        if (read_udt(ks, name).error == Error::None) {
             co_return Result<type::UDT*>{nullptr, Error::InvalidOptions, "type already exists"};
         }
         if (field_names.length != field_types.length || field_names.length == 0) {
@@ -1216,7 +1219,8 @@ namespace cql::schema {
         insert(ks.udts_by_name, du->name, du);
 
         // append fields
-        U64 record_idx = udt_record_idx_for(schema, new_storage_idx);
+        assert_valid_udt_storage_idx(schema, new_storage_idx);
+        U64 record_idx = new_storage_idx;
         for (U64 i = 0; i < field_names.length; i++) {
             U64 field_off = co_await append_udt_field_record(schema, record_idx, String8{field_names[i].c_str, field_names[i].length}, field_types[i]);
             push_back(ref.field_record_offsets, field_off);
@@ -1227,9 +1231,11 @@ namespace cql::schema {
         co_return Result<type::UDT*>{du};
     }
 
+    static bool type_references_udt(const type::Type& t, type::UDT* target);
+
     coroutine::Task<Result<void>> alter_udt_add_field(Schema& schema, Keyspace& ks, String8 name, AutoString8 field_name, type::Type field_type) {
         bump_version(schema);
-        auto udt_res = read_udt(schema, ks, name);
+        auto udt_res = read_udt(ks, name);
         if (udt_res.error != Error::None) {
             co_return Result<void>{Error::MissingType, "user-defined type does not exist"};
         }
@@ -1243,37 +1249,7 @@ namespace cql::schema {
                 if (col.tombstone || col.key_kind == KeyKind::None) {
                     continue;
                 }
-                bool refs = false;
-                auto walk = [&](const auto& self, const type::Type& t) -> void {
-                    visit(t.value, [&](const auto& v) {
-                        using T = RemoveCVRef<decltype(v)>;
-                        if constexpr (SameAs<T, type::Basic>) {
-                            // skip
-                        } else if constexpr (SameAs<T, type::List> || SameAs<T, type::Vector>) {
-                            self(self, v.element);
-                        } else if constexpr (SameAs<T, type::Set>) {
-                            self(self, v.key);
-                        } else if constexpr (SameAs<T, type::Map>) {
-                            self(self, v.key);
-                            self(self, v.value);
-                        } else if constexpr (SameAs<T, type::Tuple>) {
-                            for (const auto& e : v.elements) {
-                                self(self, e);
-                            }
-                        } else {
-                            static_assert(SameAs<T, type::UDT*>, "unhandled Type variant in alter ADD UDT walk");
-                            if (v == udt_res.value) {
-                                refs = true;
-                            } else if (v != nullptr) {
-                                for (const auto& ft : v->field_types) {
-                                    self(self, ft);
-                                }
-                            }
-                        }
-                    });
-                };
-                walk(walk, col.type);
-                if (refs) {
+                if (type_references_udt(col.type, udt_res.value)) {
                     co_return Result<void>{Error::InvalidOptions, "Cannot add new field to a user type used in a primary key"};
                 }
             }
@@ -1281,8 +1257,9 @@ namespace cql::schema {
 
         U64 storage_idx = find_udt_storage_idx(schema, ks.name, name);
         assert_true(storage_idx != U64{} - 1, "alter ADD: UDT storage missing");
-        UdtStorage& ref     = schema.storage.udts[storage_idx];
-        U64         rec_idx = udt_record_idx_for(schema, storage_idx);
+        UdtStorage& ref = schema.storage.udts[storage_idx];
+        assert_valid_udt_storage_idx(schema, storage_idx);
+        U64 rec_idx = storage_idx;
 
         U64 field_off = co_await append_udt_field_record(schema, rec_idx, String8{field_name.c_str, field_name.length}, field_type);
         push_back(ref.field_record_offsets, field_off);
@@ -1294,7 +1271,7 @@ namespace cql::schema {
 
     coroutine::Task<Result<void>> alter_udt_rename_fields(Schema& schema, Keyspace& ks, String8 name, const DynamicArray<Pair<ColumnName, ColumnName>>& renames) {
         bump_version(schema);
-        auto udt_res = read_udt(schema, ks, name);
+        auto udt_res = read_udt(ks, name);
         if (udt_res.error != Error::None) {
             co_return Result<void>{Error::MissingType, "user-defined type does not exist"};
         }
@@ -1318,7 +1295,8 @@ namespace cql::schema {
             co_await tombstone_record(schema, fo);
         }
         clear(ref.field_record_offsets);
-        U64 rec_idx = udt_record_idx_for(schema, storage_idx);
+        assert_valid_udt_storage_idx(schema, storage_idx);
+        U64 rec_idx = storage_idx;
         for (U64 i = 0; i < ref.field_names.length; i++) {
             U64 new_off = co_await append_udt_field_record(schema, rec_idx, String8{ref.field_names[i].c_str, ref.field_names[i].length}, ref.field_types[i]);
             push_back(ref.field_record_offsets, new_off);
@@ -1329,7 +1307,7 @@ namespace cql::schema {
 
     coroutine::Task<Result<void>> delete_udt(Schema& schema, Keyspace& ks, String8 name) {
         bump_version(schema);
-        auto udt_res = read_udt(schema, ks, name);
+        auto udt_res = read_udt(ks, name);
         if (udt_res.error != Error::None) {
             co_return Result<void>{Error::MissingType, "user-defined type does not exist"};
         }

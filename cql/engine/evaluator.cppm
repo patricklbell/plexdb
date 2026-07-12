@@ -49,14 +49,5 @@ export namespace cql {
     Optional<type::Basic> outer_type_hint_basic(const Term& term);
     Optional<type::Basic> outer_type_hint_basic(const TermWithIdentifiers& twi);
 
-    // True when a value asserted as type `from` can be written to a column of
-    // type `to`. Cassandra rules: same type accepts; ascii widens to text /
-    // varchar; text and varchar interconvert; everything else strict.
-    bool type_compatible_for_assignment(type::Basic from, type::Basic to);
-
     void number_bind_markers(Statement& stmt);
-}
-
-export namespace plexdb {
-    AutoString8 to_str(cql::Evaluated c, cql::type::Basic dtype);
 }

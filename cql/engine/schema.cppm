@@ -457,10 +457,11 @@ export namespace cql::schema {
     // lookups (O(1) via *_by_name maps; tombstoned entries are excluded)
     // ========================================================================
     Result<Keyspace*>  read_keyspace(Schema& schema, String8 name);
-    Result<Table*>     read_table(Schema& schema, Keyspace& ks, String8 name);
-    Result<Column*>    read_column(Schema& schema, Table& tbl, String8 name);
-    Result<Index*>     read_index(Schema& schema, Table& tbl, String8 name);
-    Result<type::UDT*> read_udt(Schema& schema, Keyspace& ks, String8 name);
+    Result<Table*>     read_table(Keyspace& ks, String8 name);
+    Result<Column*>    read_column(Table& tbl, String8 name);
+    Optional<U64>      find_column(const Table& tbl, String8 name);
+    Result<Index*>     read_index(Table& tbl, String8 name);
+    Result<type::UDT*> read_udt(Keyspace& ks, String8 name);
 
     // ========================================================================
     // DDL

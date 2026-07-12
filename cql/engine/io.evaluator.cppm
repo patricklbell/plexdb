@@ -19,5 +19,4 @@ export namespace cql::io {
 
     bool can_write_evaluated_as_column_value(const Evaluated& evaluated, const type::Type& cdtype, const EvalContext& ctx);
     void write_evaluated_as_column_value(Writer w, const Evaluated& evaluated, const type::Type& cdtype, const EvalContext& ctx);
-    void write_evaluated_as_column_value(Writer w, const Evaluated& evaluated, const type::Type& cdtype);
 }
