@@ -967,6 +967,7 @@ namespace cql::schema {
     }
 
     coroutine::Task<Result<void>> set_table_options(Schema& schema, Table& tbl, const TableOptions& options) {
+        bump_version(schema);
         TableStorage& ts  = schema.storage.tables[tbl.idx];
         ts.header.options = options;
         tbl.options       = options;
