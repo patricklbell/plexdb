@@ -1,0 +1,67 @@
+{{ header }}
+module;
+#include <coroutine>
+
+module cql.engine.io.codec;
+import cql.engine.io.types;
+
+import plexdb.base;
+import plexdb.os;
+import plexdb.dynamic.containers;
+import plexdb.coroutine;
+
+import cql.engine.column_value;
+import cql.engine.types;
+
+using namespace plexdb;
+
+{% import "wire_macros.jinja" as wire %}
+namespace cql::io {
+    coroutine::Task<ColumnValue> read_column_value(Reader r, type::Basic dtype) {
+        switch (dtype) {
+{% for t in types %}
+{% for b in t.basic %}
+            case type::Basic::{{ b }}:
+{% endfor %}
+            {
+{{ wire.read_body(t) }}
+            } break;
+{% endfor %}
+            case type::Basic::COUNT: {
+            } break;
+        }
+        assert_true(false, "invalid basic type for read");
+        co_return {};
+    }
+
+    coroutine::Task<void> skip_column_value(Reader r, type::Basic dtype) {
+        switch (dtype) {
+{% for t in types %}
+{% for b in t.basic %}
+            case type::Basic::{{ b }}:
+{% endfor %}
+            {
+{{ wire.skip_body(t) }}
+            } break;
+{% endfor %}
+            case type::Basic::COUNT:
+                break;
+        }
+        assert_true(false, "invalid basic type in skip_column_value");
+    }
+
+    void write_default_column_value(Writer w, type::Basic dtype) {
+        switch (dtype) {
+{% for t in types %}
+{% for b in t.basic %}
+            case type::Basic::{{ b }}:
+{% endfor %}
+            {
+{{ wire.default_body(t) }}
+            } break;
+{% endfor %}
+            case type::Basic::COUNT:
+                break;
+        }
+    }
+}

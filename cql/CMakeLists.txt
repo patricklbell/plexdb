@@ -52,9 +52,15 @@ target_sources(plexbd_cql
         FILES
             crc/crc.cppm
             engine/engine.cppm
+            engine/clustering_compare.cppm
             engine/column_value.cppm
             engine/evaluator.cppm
             engine/io.cppm
+            engine/io.codec.cppm
+            engine/io.evaluator.cppm
+            engine/io.types.cppm
+            engine/generated/io_codec_wire.cppm
+            engine/generated/token_wire.cppm
             engine/it.cppm
             engine/key.cppm
             engine/planner.cppm
@@ -73,8 +79,14 @@ target_sources(plexbd_cql
 
     PRIVATE
         engine/engine.cpp
+        engine/clustering_compare.cpp
+        engine/column_value.cpp
         engine/evaluator.cpp
-        engine/io.cpp
+        engine/io.codec.cpp
+        engine/io.evaluator.cpp
+        engine/generated/io_codec_wire.cpp
+        engine/generated/io_codec_sync.cpp
+        engine/generated/token_wire.cpp
         engine/it.cpp
         engine/planner.cpp
         engine/schema.cpp

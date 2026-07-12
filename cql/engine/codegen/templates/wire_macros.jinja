@@ -1,0 +1,301 @@
+{# Shared per-field-kind and per-shape renderers for the wire codec templates.
+   `types` in the calling templates is a list of WireType (see generate.py). #}
+
+{% macro member_ref(base, member) %}{% if member %}{{ base }}.{{ member }}{% else %}{{ base }}{% endif %}{% endmacro %}
+
+{% macro local_name(member) %}{{ member.replace('.', '_') }}{% endmacro %}
+
+{% macro narrow_cast(ctype) %}{% if ctype == 'U8' %}static_cast<U8>(static_cast<S8>(v)){% else %}static_cast<{{ ctype }}>(v){% endif %}{% endmacro %}
+
+{# ---- coroutine read: decodes one field into `base` ---- #}
+{% macro read_field(f, base) %}
+{% if f.kind == 'raw_scalar' %}
+co_await r(reinterpret_cast<U8*>(&{{ member_ref(base, f.member) }}), sizeof({{ member_ref(base, f.member) }}));
+{% elif f.kind == 'flag' %}
+{% set tmp = f.local_name ~ '_raw' %}
+U8 {{ tmp }};
+co_await r(reinterpret_cast<U8*>(&{{ tmp }}), sizeof({{ tmp }}));
+{{ member_ref(base, f.member) }} = static_cast<bool>({{ tmp }});
+{% elif f.kind == 'raw_bytes' %}
+co_await r(&{{ member_ref(base, f.member) }}[0], {{ f.width }});
+{% elif f.kind == 'length_prefixed_bytes' %}
+{% set len_var = f.local_name ~ '_length' %}
+U64 {{ len_var }};
+co_await r(reinterpret_cast<U8*>(&{{ len_var }}), sizeof({{ len_var }}));
+resize({{ member_ref(base, f.member) }}, {{ len_var }});
+co_await r({{ member_ref(base, f.member) }}.ptr, {{ len_var }});
+{% elif f.kind == 'conditional_bytes' %}
+if ({{ member_ref(base, f.condition_member) }}) {
+    co_await r(&{{ member_ref(base, f.true_member) }}[0], {{ f.true_width }});
+} else {
+    co_await r(&{{ member_ref(base, f.false_member) }}[0], {{ f.false_width }});
+}
+{% endif %}
+{% endmacro %}
+
+{# ---- coroutine skip: discards a field's bytes, except a flag later needed as a
+   conditional_bytes condition (f.retained_for_skip), which is read into a plain local ---- #}
+{% macro skip_field(f) %}
+{% if f.kind == 'raw_scalar' %}
+co_await r(nullptr, sizeof({{ f.ctype }}));
+{% elif f.kind == 'flag' %}
+{% if f.retained_for_skip %}
+{% set tmp = f.local_name ~ '_raw' %}
+U8 {{ tmp }};
+co_await r(reinterpret_cast<U8*>(&{{ tmp }}), sizeof({{ tmp }}));
+bool {{ f.local_name }} = static_cast<bool>({{ tmp }});
+{% else %}
+co_await r(nullptr, 1);
+{% endif %}
+{% elif f.kind == 'raw_bytes' %}
+co_await r(nullptr, {{ f.width }});
+{% elif f.kind == 'length_prefixed_bytes' %}
+{% set len_var = f.local_name ~ '_length' %}
+U64 {{ len_var }};
+co_await r(reinterpret_cast<U8*>(&{{ len_var }}), sizeof({{ len_var }}));
+co_await r(nullptr, {{ len_var }});
+{% elif f.kind == 'conditional_bytes' %}
+if ({{ local_name(f.condition_member) }}) {
+    co_await r(nullptr, {{ f.true_width }});
+} else {
+    co_await r(nullptr, {{ f.false_width }});
+}
+{% endif %}
+{% endmacro %}
+
+{# ---- write: encodes one field from `base` via writer `w` ---- #}
+{% macro write_field(f, base, w='w') %}
+{% if f.kind == 'raw_scalar' %}
+{{ w }}(reinterpret_cast<const U8*>(&{{ member_ref(base, f.member) }}), sizeof({{ member_ref(base, f.member) }}));
+{% elif f.kind == 'flag' %}
+{% set tmp = f.local_name ~ '_raw' %}
+U8 {{ tmp }} = {{ member_ref(base, f.member) }} ? 1 : 0;
+{{ w }}(reinterpret_cast<const U8*>(&{{ tmp }}), sizeof({{ tmp }}));
+{% elif f.kind == 'raw_bytes' %}
+{{ w }}(&{{ member_ref(base, f.member) }}[0], {{ f.width }});
+{% elif f.kind == 'length_prefixed_bytes' %}
+{{ w }}(reinterpret_cast<const U8*>(&{{ member_ref(base, f.member) }}.length), sizeof({{ member_ref(base, f.member) }}.length));
+{{ w }}({{ member_ref(base, f.member) }}.ptr, {{ member_ref(base, f.member) }}.length);
+{% elif f.kind == 'conditional_bytes' %}
+if ({{ member_ref(base, f.condition_member) }}) {
+    {{ w }}(&{{ member_ref(base, f.true_member) }}[0], {{ f.true_width }});
+} else {
+    {{ w }}(&{{ member_ref(base, f.false_member) }}[0], {{ f.false_width }});
+}
+{% endif %}
+{% endmacro %}
+
+{# ---- default: writes a zero-valued field with no ColumnValue to read from ---- #}
+{% macro default_field(f, w='w') %}
+{% if f.kind == 'raw_scalar' %}
+{% set var = f.local_name if f.member else 'value' %}
+{{ f.ctype }} {{ var }} = {};
+{{ w }}(reinterpret_cast<const U8*>(&{{ var }}), sizeof({{ var }}));
+{% elif f.kind == 'flag' %}
+{% set var = f.local_name ~ '_raw' %}
+U8 {{ var }} = 0;
+{{ w }}(reinterpret_cast<const U8*>(&{{ var }}), sizeof({{ var }}));
+{% elif f.kind == 'raw_bytes' %}
+{% set var = f.member ~ '_zeros' %}
+U8 {{ var }}[{{ f.width }}] = {};
+{{ w }}({{ var }}, {{ f.width }});
+{% elif f.kind == 'length_prefixed_bytes' %}
+{ U64 length = 0_u64; {{ w }}(reinterpret_cast<const U8*>(&length), sizeof(length)); }
+{% elif f.kind == 'conditional_bytes' %}
+{# defaults to the false branch (e.g. inet's shorter v4 shape) #}
+{% set var = f.false_member ~ '_zeros' %}
+U8 {{ var }}[{{ f.false_width }}] = {};
+{{ w }}({{ var }}, {{ f.false_width }});
+{% endif %}
+{% endmacro %}
+
+{# ---- sync decode: pointer-advance counterpart to read_field, no coroutine ---- #}
+{% macro decode_field(f, base) %}
+{% if f.kind == 'raw_scalar' %}
+os::memory_copy(&{{ member_ref(base, f.member) }}, src + *pos, sizeof({{ member_ref(base, f.member) }}));
+*pos += sizeof({{ member_ref(base, f.member) }});
+{% elif f.kind == 'flag' %}
+{{ member_ref(base, f.member) }} = src[*pos] != 0;
+*pos += 1;
+{% elif f.kind == 'raw_bytes' %}
+os::memory_copy(&{{ member_ref(base, f.member) }}[0], src + *pos, {{ f.width }});
+*pos += {{ f.width }};
+{% elif f.kind == 'length_prefixed_bytes' %}
+{% set len_var = f.local_name ~ '_length' %}
+U64 {{ len_var }};
+os::memory_copy(&{{ len_var }}, src + *pos, sizeof({{ len_var }}));
+*pos += sizeof({{ len_var }});
+resize({{ member_ref(base, f.member) }}, {{ len_var }});
+os::memory_copy({{ member_ref(base, f.member) }}.ptr, src + *pos, {{ len_var }});
+*pos += static_cast<U16>({{ len_var }});
+{% elif f.kind == 'conditional_bytes' %}
+if ({{ member_ref(base, f.condition_member) }}) {
+    os::memory_copy(&{{ member_ref(base, f.true_member) }}[0], src + *pos, {{ f.true_width }});
+    *pos += {{ f.true_width }};
+} else {
+    os::memory_copy(&{{ member_ref(base, f.false_member) }}[0], src + *pos, {{ f.false_width }});
+    *pos += {{ f.false_width }};
+}
+{% endif %}
+{% endmacro %}
+
+{# ---- per-shape bodies, each dispatching to the field macros above for 'compound' ---- #}
+
+{% macro read_body(t) %}
+{% if t.shape == 'scalar' %}
+{{ t.ctype }} value;
+co_await r(reinterpret_cast<U8*>(&value), sizeof(value));
+co_return { move(value) };
+{% elif t.shape == 'text' %}
+U64 length;
+co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
+AutoString8 value{length};
+co_await r(reinterpret_cast<U8*>(value.c_str), length);
+co_return { move(value) };
+{% elif t.shape == 'blob' %}
+U64 length;
+co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
+Blob value;
+resize(value.value, length);
+co_await r(value.value.ptr, length);
+co_return { move(value) };
+{% elif t.shape == 'compound' %}
+{{ t.ctype }} value;
+{% for f in t.fields %}
+{{ read_field(f, 'value') }}
+{% endfor %}
+co_return { move(value) };
+{% endif %}
+{% endmacro %}
+
+{% macro skip_body(t) %}
+{% if t.shape == 'scalar' %}
+co_await r(nullptr, sizeof({{ t.ctype }}));
+co_return;
+{% elif t.shape in ['text', 'blob'] %}
+U64 length;
+co_await r(reinterpret_cast<U8*>(&length), sizeof(length));
+co_await r(nullptr, length);
+co_return;
+{% elif t.shape == 'compound' %}
+{% for f in t.fields %}
+{{ skip_field(f) }}
+{% endfor %}
+co_return;
+{% endif %}
+{% endmacro %}
+
+{% macro default_body(t) %}
+{% if t.shape == 'scalar' %}
+{{ t.ctype }} value = {};
+w(reinterpret_cast<const U8*>(&value), sizeof(value));
+{% elif t.shape in ['text', 'blob'] %}
+U64 length = 0_u64;
+w(reinterpret_cast<const U8*>(&length), sizeof(length));
+{% elif t.shape == 'compound' %}
+{% for f in t.fields %}
+{{ default_field(f) }}
+{% endfor %}
+{% endif %}
+{% endmacro %}
+
+{% macro decode_body(t) %}
+{% if t.shape == 'scalar' %}
+{{ t.ctype }} value;
+os::memory_copy(&value, src + *pos, sizeof(value));
+*pos += sizeof(value);
+return ColumnValue{ value };
+{% elif t.shape == 'text' %}
+U64 length;
+os::memory_copy(&length, src + *pos, sizeof(length));
+*pos += sizeof(length);
+AutoString8 value{static_cast<U64>(length)};
+os::memory_copy(value.c_str, src + *pos, length);
+*pos += static_cast<U16>(length);
+return ColumnValue{ move(value) };
+{% elif t.shape == 'blob' %}
+U64 length;
+os::memory_copy(&length, src + *pos, sizeof(length));
+*pos += sizeof(length);
+Blob value;
+resize(value.value, length);
+os::memory_copy(value.value.ptr, src + *pos, length);
+*pos += static_cast<U16>(length);
+return ColumnValue{ move(value) };
+{% elif t.shape == 'compound' %}
+{{ t.ctype }} value{};
+{% for f in t.fields %}
+{{ decode_field(f, 'value') }}
+{% endfor %}
+return ColumnValue{ move(value) };
+{% endif %}
+{% endmacro %}
+
+{# ---- Cassandra network-wire (big-endian) token component encoding, wrapped in the
+   caller's emit_prefix/emit_trailer (composite-key framing). Only scalar/text/blob/UUID
+   shapes are token-eligible (see wire_types.json's token_eligible); multi-byte scalars
+   need an explicit byte-order conversion since the local write_typed_basic path writes
+   host-native bytes, which isn't good enough for a value that must hash identically to
+   Cassandra's own partitioner regardless of host endianness. ---- #}
+{% macro token_be_emit(varexpr, nbytes) %}
+{
+    U64 bits_ = {{ varexpr }};
+    U8  buf[{{ nbytes }}];
+{% for i in range(nbytes) %}
+    buf[{{ i }}] = U8((bits_ >> {{ (nbytes - 1 - i) * 8 }}) & 0xFFu);
+{% endfor %}
+    w(buf, {{ nbytes }});
+}
+{% endmacro %}
+
+{% macro token_body(t) %}
+{% if t.shape == 'scalar' and t.ctype == 'U8' %}
+emit_prefix(1);
+w(&v, 1);
+emit_trailer();
+{% elif t.shape == 'scalar' and t.ctype in ['F32', 'F64'] %}
+{% set bits_ctype = 'U32' if t.ctype == 'F32' else 'U64' %}
+{% set width = 4 if t.ctype == 'F32' else 8 %}
+{
+    {{ bits_ctype }} bits;
+    os::memory_copy(&bits, &v, sizeof(bits));
+    emit_prefix({{ width }});
+    {{ token_be_emit('U64(bits)', width) }}
+    emit_trailer();
+}
+{% elif t.shape == 'scalar' %}
+{% set width = {'S16': 2, 'S32': 4, 'S64': 8}[t.ctype] %}
+emit_prefix({{ width }});
+{{ token_be_emit('static_cast<U64>(v)', width) }}
+emit_trailer();
+{% elif t.shape == 'text' %}
+emit_prefix(static_cast<U16>(v.length));
+w(reinterpret_cast<const U8*>(v.c_str), v.length);
+emit_trailer();
+{% elif t.shape == 'blob' %}
+emit_prefix(static_cast<U16>(v.value.length));
+w(v.value.ptr, v.value.length);
+emit_trailer();
+{% elif t.shape == 'compound' %}
+emit_prefix(static_cast<U16>({{ t.fields[0].width }}));
+w(&v.value[0], {{ t.fields[0].width }});
+emit_trailer();
+{% endif %}
+{% endmacro %}
+
+{% macro write_typed_basic_body(t) %}
+{% if t.shape == 'scalar' %}
+w(reinterpret_cast<const U8*>(&src), sizeof(src));
+{% elif t.shape == 'text' %}
+String8 s{ src };
+w(reinterpret_cast<const U8*>(&s.length), sizeof(s.length));
+w(reinterpret_cast<const U8*>(s.data), s.length);
+{% elif t.shape == 'blob' %}
+w(reinterpret_cast<const U8*>(&src.value.length), sizeof(src.value.length));
+w(src.value.ptr, src.value.length);
+{% elif t.shape == 'compound' %}
+{% for f in t.fields %}
+{{ write_field(f, 'src') }}
+{% endfor %}
+{% endif %}
+{% endmacro %}

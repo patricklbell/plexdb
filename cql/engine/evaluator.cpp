@@ -9,6 +9,8 @@ import plexdb.tagged_union;
 import plexdb.dynamic.containers;
 import plexdb.dynamic.tagged_union;
 
+import cql.engine.column_value;
+import cql.engine.io.evaluator;
 import cql.engine.key;
 import cql.engine.schema;
 import cql.engine.statements;
@@ -867,6 +869,23 @@ namespace cql {
         (void)ctx;
     }
 
+    // The column's declared dtype, when it's a scalar (type::Basic) column — collections/UDT
+    // fall back to the untyped path below.
+    static Optional<type::Basic> lookup_column_dtype(const AutoString8& col_name, const EvalContext& ctx) {
+        if (!ctx.table) {
+            return {};
+        }
+        for (U64 ci = 0; ci < ctx.table->cols.length; ci++) {
+            if (ctx.table->cols[ci].name == String8(col_name.c_str, col_name.length)) {
+                if (type_matches_tag<type::Basic>(ctx.table->cols[ci].type.value)) {
+                    return get<type::Basic>(ctx.table->cols[ci].type.value);
+                }
+                return {};
+            }
+        }
+        return {};
+    }
+
     static bool evaluate_column_relation(const WhereClause::ColumnExpressionRelation& cer, const EvalContext& ctx) {
         Evaluated lhs = lookup_column_value(cer.column.identifier, ctx);
 
@@ -906,8 +925,33 @@ namespace cql {
         }
 
         Evaluated rhs = evaluate_term(cer.value, ctx);
-        bool      comparable;
-        S64       cmp = compare_evaluated(lhs, rhs, comparable);
+
+        // Type-aware path: reuses compare_column_value (Cassandra's AbstractType.compare per
+        // dtype — the same rules clustering/index keys sort by) rather than re-implementing
+        // per-type comparison here. This gets uuid/timeuuid/varint/decimal ordering right,
+        // which the untyped fallback below cannot. Only engages when the rhs term resolves
+        // cleanly to the column's own dtype; anything it can't resolve (implicit numeric
+        // widening, cross-type literals, etc.) falls through unchanged.
+        if (type_matches_tag<ColumnValue>(lhs.value)) {
+            const ColumnValue& lhs_cv = get<ColumnValue>(lhs.value);
+            if (!type_matches_tag<Null>(lhs_cv)) {
+                if (Optional<type::Basic> dtype = lookup_column_dtype(cer.column.identifier, ctx)) {
+                    Optional<ColumnValue> rhs_cv;
+                    if (type_matches_tag<Literal>(rhs.value)) {
+                        rhs_cv = io::resolve_literal_scalar(get<Literal>(rhs.value), type::Type{*dtype});
+                    } else if (type_matches_tag<ColumnValue>(rhs.value)) {
+                        rhs_cv = get<ColumnValue>(rhs.value);
+                    }
+                    if (rhs_cv.has_value() && !type_matches_tag<Null>(*rhs_cv)) {
+                        S32 cmp = compare_column_value(lhs_cv, *rhs_cv, *dtype);
+                        return apply_operator(cmp, cer.operator_);
+                    }
+                }
+            }
+        }
+
+        bool comparable;
+        S64  cmp = compare_evaluated(lhs, rhs, comparable);
         if (!comparable) {
             return false;
         }

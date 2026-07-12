@@ -431,7 +431,7 @@ TEST_CASE("resolve_literal_scalar matches cast_write storage bytes", "[cql.engin
         Buffer b1;
         write_column_value(b1.writer(), *rv, t);
         Buffer b2;
-        cast_write_evaluated_as_column_value(b2.writer(), Evaluated{lit}, t);
+        write_evaluated_as_column_value(b2.writer(), Evaluated{lit}, t);
         REQUIRE(b1.data.length == b2.data.length);
         for (U64 i = 0; i < b1.data.length; i++) {
             CHECK(b1.data[i] == b2.data[i]);
@@ -475,10 +475,10 @@ TEST_CASE("resolve_literal_scalar matches cast_write storage bytes", "[cql.engin
                type::create_basic(B::duration));
 }
 
-// @note can_cast_write_evaluated_as_column_value must recurse into collection-literal elements —
+// @note can_write_evaluated_as_column_value must recurse into collection-literal elements —
 // checking only the outer container tag let a mismatched element pass the gate and then hit
 // resolve_evaluated's failure assert downstream during the actual write.
-TEST_CASE("can_cast_write_evaluated_as_column_value validates collection literal elements", "[cql.engine.io]") {
+TEST_CASE("can_write_evaluated_as_column_value validates collection literal elements", "[cql.engine.io]") {
     EvalContext ctx{};
 
     SECTION("list<int> literal with a mismatched element is rejected") {
@@ -487,7 +487,7 @@ TEST_CASE("can_cast_write_evaluated_as_column_value validates collection literal
         push_back(lit.elements, Term{Literal{AutoString8("two")}});
         push_back(lit.elements, Term{Literal{S64(3)}});
         Evaluated eval = evaluate(Term{move(lit)}, ctx);
-        REQUIRE_FALSE(can_cast_write_evaluated_as_column_value(eval, type::create_list(type::Basic::int_), ctx));
+        REQUIRE_FALSE(can_write_evaluated_as_column_value(eval, type::create_list(type::Basic::int_), ctx));
     }
 
     SECTION("well-typed list<int> literal is accepted") {
@@ -495,7 +495,7 @@ TEST_CASE("can_cast_write_evaluated_as_column_value validates collection literal
         push_back(lit.elements, Term{Literal{S64(1)}});
         push_back(lit.elements, Term{Literal{S64(2)}});
         Evaluated eval = evaluate(Term{move(lit)}, ctx);
-        REQUIRE(can_cast_write_evaluated_as_column_value(eval, type::create_list(type::Basic::int_), ctx));
+        REQUIRE(can_write_evaluated_as_column_value(eval, type::create_list(type::Basic::int_), ctx));
     }
 
     SECTION("set<int> literal with a mismatched key is rejected") {
@@ -503,26 +503,26 @@ TEST_CASE("can_cast_write_evaluated_as_column_value validates collection literal
         push_back(lit.keys, Term{Literal{S64(1)}});
         push_back(lit.keys, Term{Literal{true}});
         Evaluated eval = evaluate(Term{move(lit)}, ctx);
-        REQUIRE_FALSE(can_cast_write_evaluated_as_column_value(eval, type::create_set(type::Basic::int_), ctx));
+        REQUIRE_FALSE(can_write_evaluated_as_column_value(eval, type::create_set(type::Basic::int_), ctx));
     }
 
     SECTION("map<text,int> literal with a mismatched value is rejected") {
         MapLiteral lit{};
         push_back(lit.key_values, Pair<Term, Term>{Term{Literal{AutoString8("k")}}, Term{Literal{AutoString8("not an int")}}});
         Evaluated eval = evaluate(Term{move(lit)}, ctx);
-        REQUIRE_FALSE(can_cast_write_evaluated_as_column_value(eval, type::create_map(type::Basic::text, type::Basic::int_), ctx));
+        REQUIRE_FALSE(can_write_evaluated_as_column_value(eval, type::create_map(type::Basic::text, type::Basic::int_), ctx));
     }
 
     SECTION("well-typed map<text,int> literal is accepted") {
         MapLiteral lit{};
         push_back(lit.key_values, Pair<Term, Term>{Term{Literal{AutoString8("k")}}, Term{Literal{S64(42)}}});
         Evaluated eval = evaluate(Term{move(lit)}, ctx);
-        REQUIRE(can_cast_write_evaluated_as_column_value(eval, type::create_map(type::Basic::text, type::Basic::int_), ctx));
+        REQUIRE(can_write_evaluated_as_column_value(eval, type::create_map(type::Basic::text, type::Basic::int_), ctx));
     }
 }
 
-TEST_CASE("can_cast_write_evaluated_as_column_value accepts float literal narrowing to a float column", "[cql.engine.io]") {
+TEST_CASE("can_write_evaluated_as_column_value accepts float literal narrowing to a float column", "[cql.engine.io]") {
     EvalContext ctx{};
     Evaluated   eval = evaluate(Term{Literal{F64(1.5)}}, ctx);
-    REQUIRE(can_cast_write_evaluated_as_column_value(eval, type::create_basic(type::Basic::float_), ctx));
+    REQUIRE(can_write_evaluated_as_column_value(eval, type::create_basic(type::Basic::float_), ctx));
 }

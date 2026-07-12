@@ -1,0 +1,31 @@
+{{ header }}
+module cql.engine.io.codec;
+
+import plexdb.base;
+import plexdb.os;
+import plexdb.dynamic.containers;
+
+import cql.engine.column_value;
+import cql.engine.types;
+
+using namespace plexdb;
+
+{% import "wire_macros.jinja" as wire %}
+namespace cql::io {
+    ColumnValue read_column_value_sync(const U8* src, U16, U16* pos, type::Basic dtype) {
+        switch (dtype) {
+{% for t in types %}
+{% for b in t.basic %}
+            case type::Basic::{{ b }}:
+{% endfor %}
+            {
+{{ wire.decode_body(t) }}
+            }
+{% endfor %}
+            case type::Basic::COUNT:
+                break;
+        }
+        assert_true(false, "invalid basic type in read_column_value_sync");
+        return ColumnValue{ Null{} };
+    }
+}

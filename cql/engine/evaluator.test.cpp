@@ -244,7 +244,7 @@ IO_TEST_CASE("evaluator - nested expression evaluation in collection writes", "[
     Evaluated evaluated = evaluate(term, ctx);
 
     Buffer buf;
-    cast_write_evaluated_as_column_value(buf.writer(), evaluated, type::create_list(type::Basic::bigint), ctx);
+    write_evaluated_as_column_value(buf.writer(), evaluated, type::create_list(type::Basic::bigint), ctx);
 
     auto out = co_await read_column_value(buf.reader(), type::create_list(type::Basic::bigint));
     REQUIRE(type_matches_tag<DynamicArray<NestedColumnValue>>(out));

@@ -149,4 +149,11 @@ export namespace cql {
             }
         });
     }
+
+    S32 compare_column_value(const ColumnValue& a, const ColumnValue& b, type::Basic dtype);
+}
+
+export namespace plexdb {
+    AutoString8 to_str(const cql::ColumnValue& value, cql::type::Basic dtype);
+    AutoString8 to_str(const cql::ColumnValue& value, const cql::type::Type& cdtype);
 }

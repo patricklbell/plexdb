@@ -1,0 +1,71 @@
+{
+  "field_kinds": {
+    "raw_scalar": "Fixed sizeof(ctype) bytes, read/written directly as that C++ scalar type.",
+    "raw_bytes": "Fixed 'width' raw bytes copied into/from a byte-array member (e.g. UUID's 16-byte value).",
+    "flag": "A single raw U8 byte interpreted as bool (0/1) — shorthand for raw_scalar U8 read as bool.",
+    "length_prefixed_bytes": "A U64 length prefix followed by that many raw bytes, into/from a DynamicArray<U8> member."
+  },
+
+  "token_eligible": "Whether this type can appear as a partition-key column and therefore needs a Cassandra network-wire (big-endian) token encoding generated for it (cql.engine.token.wire). Absent/false means the type is not usable as a partition key today (inet/varint/decimal/duration) — token_wire.cpp.jinja falls through to an assert_not_implemented for these.",
+
+  "types": [
+    {"basic": ["smallint"], "shape": "scalar", "ctype": "S16", "literal_widen": "integer", "token_eligible": true},
+    {"basic": ["int_", "date"], "shape": "scalar", "ctype": "S32", "literal_widen": "integer", "token_eligible": true},
+    {"basic": ["bigint", "timestamp", "counter", "time"], "shape": "scalar", "ctype": "S64", "literal_widen": "integer", "token_eligible": true},
+    {"basic": ["tinyint"], "shape": "scalar", "ctype": "U8", "literal_widen": "integer", "token_eligible": true},
+    {"basic": ["boolean"], "shape": "scalar", "ctype": "U8", "token_eligible": true},
+    {"basic": ["float_"], "shape": "scalar", "ctype": "F32", "literal_widen": "float", "token_eligible": true},
+    {"basic": ["double_"], "shape": "scalar", "ctype": "F64", "literal_widen": "float", "token_eligible": true},
+
+    {"basic": ["text", "varchar", "ascii"], "shape": "text", "token_eligible": true},
+    {"basic": ["blob", "hex"], "shape": "blob", "token_eligible": true},
+
+    {
+      "basic": ["uuid", "timeuuid"],
+      "shape": "compound",
+      "ctype": "UUID",
+      "token_eligible": true,
+      "fields": [
+        {"kind": "raw_bytes", "member": "value", "width": 16}
+      ]
+    },
+    {
+      "basic": ["inet"],
+      "shape": "compound",
+      "ctype": "Inet",
+      "fields": [
+        {"kind": "flag", "member": "is_v6"},
+        {"kind": "conditional_bytes", "condition_member": "is_v6", "true_member": "v6", "true_width": 16, "false_member": "v4", "false_width": 4}
+      ]
+    },
+    {
+      "basic": ["varint"],
+      "shape": "compound",
+      "ctype": "VarInt",
+      "fields": [
+        {"kind": "flag", "member": "negative"},
+        {"kind": "length_prefixed_bytes", "member": "magnitude"}
+      ]
+    },
+    {
+      "basic": ["decimal"],
+      "shape": "compound",
+      "ctype": "Decimal",
+      "fields": [
+        {"kind": "raw_scalar", "ctype": "S32", "member": "scale"},
+        {"kind": "flag", "member": "unscaled.negative"},
+        {"kind": "length_prefixed_bytes", "member": "unscaled.magnitude"}
+      ]
+    },
+    {
+      "basic": ["duration"],
+      "shape": "compound",
+      "ctype": "Duration",
+      "fields": [
+        {"kind": "raw_scalar", "ctype": "S32", "member": "months"},
+        {"kind": "raw_scalar", "ctype": "S32", "member": "days"},
+        {"kind": "raw_scalar", "ctype": "S64", "member": "nanoseconds"}
+      ]
+    }
+  ]
+}
