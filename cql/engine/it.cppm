@@ -34,9 +34,7 @@ export namespace cql {
             return !(*this == other);
         }
 
-        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx);
-        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes);
-        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes, TArrayView<const U8, U16> ck_bytes);
+        friend coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> ck_bytes);
 
         // @note row-blob metadata loaded by load(); inspect after load to enforce TTL expiry.
         io::RowMetadata metadata{};
@@ -61,8 +59,9 @@ export namespace cql {
         DynamicArray<U64> cell_meta_mask;
         DynamicArray<U64> static_cell_meta_mask;
 
-        // @note PK/CK values are not stored in the row blob; the with-keys load() overloads
-        // decode them from the encoded key bytes and deref() returns them by key_position.
+        // @note PK/CK values are not stored in the row blob. load() always reads PK values
+        // from the static page's preamble, and decodes CK values from ck_bytes (a no-op
+        // when empty). deref() returns them by key_position.
         DynamicArray<ColumnValue> injected_pk_values;
         DynamicArray<ColumnValue> injected_ck_values;
 
@@ -93,9 +92,12 @@ export namespace cql {
         }
     };
 
-    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx = 0);
-    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes);
-    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx, TArrayView<const U8, U16> pk_bytes, TArrayView<const U8, U16> ck_bytes);
+    // Owns all blob-reading work: row cursor, and (if static_page_idx != 0) the static
+    // cursor's pk preamble plus its optional static-row-header section. ck_bytes is only
+    // meaningful for clustering tables reading a specific row (it decodes into
+    // injected_ck_values); pass {} to read just the static/pk-preamble portion, or for
+    // clustering-less tables where there's no clustering key to decode.
+    coroutine::Task<> load(ColumnIterator& it, Pager* pager, const schema::Table* table, U64 page_idx, U64 static_page_idx = 0, TArrayView<const U8, U16> ck_bytes = TArrayView<const U8, U16>(nullptr, 0));
 
     struct ColumnRange {
         ColumnIterator start;
@@ -197,11 +199,11 @@ export namespace cql {
     RowIterator create_table_end_it(Pager* pager, schema::Table* table);
 
     coroutine::Task<RowIterator> create_table_begin_it(Pager* pager, schema::Table* table);
-    coroutine::Task<RowIterator> create_table_eq_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key);
-    coroutine::Task<RowIterator> create_table_lt_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key);
-    coroutine::Task<RowIterator> create_table_le_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key);
-    coroutine::Task<RowIterator> create_table_gt_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key);
-    coroutine::Task<RowIterator> create_table_ge_it(Pager* pager, schema::Table* table, TArrayView<const U8, U16> pk_key);
+    coroutine::Task<RowIterator> create_table_eq_it(Pager* pager, schema::Table* table, S64 pk_key);
+    coroutine::Task<RowIterator> create_table_lt_it(Pager* pager, schema::Table* table, S64 pk_key);
+    coroutine::Task<RowIterator> create_table_le_it(Pager* pager, schema::Table* table, S64 pk_key);
+    coroutine::Task<RowIterator> create_table_gt_it(Pager* pager, schema::Table* table, S64 pk_key);
+    coroutine::Task<RowIterator> create_table_ge_it(Pager* pager, schema::Table* table, S64 pk_key);
 
     struct RowRange {
         RowIterator start;
