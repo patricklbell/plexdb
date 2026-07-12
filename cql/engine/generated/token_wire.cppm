@@ -10,6 +10,8 @@ import plexdb.base;
 
 import cql.engine.column_value;
 import cql.engine.types;
+import plexdb.tagged_union;
+import plexdb.dynamic.tagged_union;
 
 using namespace plexdb;
 

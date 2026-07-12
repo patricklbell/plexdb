@@ -6,6 +6,8 @@ import plexdb.coroutine;
 import plexdb.pager;
 import plexdb.blob;
 import plexdb.btree;
+import plexdb.tagged_union;
+import plexdb.dynamic.tagged_union;
 
 import cql.engine.statements;
 import cql.engine.types;
