@@ -57,6 +57,61 @@ TEST_CASE("cassandra-flavoured tail sign-extension matches reference tokens", "[
     }
 }
 
+TEST_CASE("Murmur3State incremental hashing matches the one-shot implementation", "[cql.token]") {
+    // Deterministic pseudo-random fill so the test is reproducible.
+    auto fill = [](DynamicArray<U8>& buf, U64 len, U32 seed) {
+        resize(buf, len);
+        U32 x = seed;
+        for (U64 i = 0; i < len; i++) {
+            x      = x * 1664525u + 1013904223u;
+            buf[i] = U8(x >> 24);
+        }
+    };
+
+    // Lengths chosen to straddle the 16-byte block boundary from every angle: empty,
+    // sub-block, exact multiples, and multiples plus/minus one.
+    constexpr U64 lengths[] = {0, 1, 4, 15, 16, 17, 31, 32, 33, 47, 63, 64, 100, 257};
+
+    for (U64 len : lengths) {
+        DynamicArray<U8> data;
+        fill(data, len, 0x9E3779B9u ^ U32(len));
+
+        S64 expected = cql::token::murmur3_token(data.ptr, data.length);
+
+        // Split 1: single update() call with the whole buffer.
+        {
+            cql::token::Murmur3State st{};
+            st.update(data.ptr, data.length);
+            INFO("len=" << len << " split=whole");
+            CHECK(st.finalize() == expected);
+        }
+        // Split 2: one byte at a time.
+        {
+            cql::token::Murmur3State st{};
+            for (U64 i = 0; i < data.length; i++) {
+                st.update(data.ptr + i, 1);
+            }
+            INFO("len=" << len << " split=byte-by-byte");
+            CHECK(st.finalize() == expected);
+        }
+        // Split 3: uneven chunks (7, then 5, then remainder) — exercises the carry
+        // buffer filling and draining across arbitrary, non-block-aligned boundaries.
+        {
+            cql::token::Murmur3State st{};
+            U64                      pos      = 0;
+            constexpr U64            chunks[] = {7, 5};
+            for (U64 c : chunks) {
+                U64 take = c < (data.length - pos) ? c : (data.length - pos);
+                st.update(data.ptr + pos, take);
+                pos += take;
+            }
+            st.update(data.ptr + pos, data.length - pos);
+            INFO("len=" << len << " split=uneven-chunks");
+            CHECK(st.finalize() == expected);
+        }
+    }
+}
+
 TEST_CASE("encode_token_be round trips and preserves signed order", "[cql.token]") {
     auto check = [](S64 a, S64 b) {
         U8 ea[8];

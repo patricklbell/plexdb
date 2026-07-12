@@ -15,27 +15,35 @@ import cql.engine.types;
 using namespace plexdb;
 
 export namespace cql::planner {
-    // Shared bound description for partition and clustering keys. `is_partial` is
-    // meaningful only for composite clustering keys where the bound covers a
-    // prefix shorter than the full CK column count.
-    struct KeyBounds {
-        DynamicArray<U8> begin{};
-        DynamicArray<U8> end{};
-        bool             has_begin        = false;
-        bool             has_end          = false;
-        bool             begin_inclusive  = true;
-        bool             end_inclusive    = true;
-        bool             is_equality      = false;
-        bool             begin_is_partial = false;
-        bool             end_is_partial   = false;
-        bool             has_in           = false;
+    // Shared bound description for partition and clustering keys, generic over the BTree's
+    // key representation: T = S64 (the Murmur3 token) for the partition BTree's
+    // FixedKeyPolicy<S64>, T = DynamicArray<U8> (composite-encoded bytes) for the clustering
+    // BTree's VarlenKeyPolicy. `is_partial` is meaningful only for composite clustering keys
+    // where the bound covers a prefix shorter than the full CK column count.
+    template<typename T>
+    struct BoundsT {
+        T    begin{};
+        T    end{};
+        bool has_begin        = false;
+        bool has_end          = false;
+        bool begin_inclusive  = true;
+        bool end_inclusive    = true;
+        bool is_equality      = false;
+        bool begin_is_partial = false;
+        bool end_is_partial   = false;
+        bool has_in           = false;
         // Non-empty when WHERE uses IN; each entry is a fully serialized key.
-        DynamicArray<DynamicArray<U8>> in_values{};
+        DynamicArray<T> in_values{};
     };
+    using TokenBounds = BoundsT<S64>;              // Murmur3 token
+    using KeyBounds   = BoundsT<DynamicArray<U8>>; // encoded bytes
 
     struct RowLocator {
-        KeyBounds pk;
-        KeyBounds ck;
+        TokenBounds pk;
+        KeyBounds   ck;
+
+        // @note needed for mutations since token doesn't encode PK
+        DynamicArray<Evaluated> pk_evals;
 
         bool reverse_partitions = false;
         bool reverse_clustering = false;
@@ -74,8 +82,7 @@ export namespace cql::planner {
         UnsetValueInWhere,
         InvalidTtlArgument,
         InvalidWritetimeArgument,
-        // @note for both ClusteringRestricted* the PlanResult.context already
-        // holds the fully-rendered Cassandra error message.
+        // @note these errors set context to the full message
         ClusteringRestrictedAfterNonEq,
         ClusteringRestrictedWithoutPrefix,
     };
@@ -83,9 +90,8 @@ export namespace cql::planner {
     struct FilterPlan {
         DynamicArray<WhereClause::Relation> predicates;
         bool                                needs_allow_filtering = false;
-        // @note populated when the CK restriction chain is broken in a way Cassandra
-        // rejects with a specific error. The PlanError variant indicates which rule
-        // was violated; the `chain_violation_message` carries the formatted text.
+
+        // @note populated when the CK restriction chain is broken in a way Cassandra rejects
         PlanError   chain_violation         = PlanError::None;
         AutoString8 chain_violation_message = {};
     };
@@ -95,21 +101,17 @@ export namespace cql::planner {
             U64 col_idx;
         };
         struct CountStar {};
-        // @note arg col_idx must be a non-key, non-static regular column.
+        // @note column must be a non-key, non-static regular column.
         struct TtlOf {
             U64 col_idx;
         };
         struct WritetimeOf {
             U64 col_idx;
         };
-        // @note pk_col_indices must match the table's partition_key_col_indices
-        // in order; the wire encoding fed to Murmur3 depends on that order.
         struct Token {
             DynamicArray<U64> pk_col_indices;
         };
-        // Generic registry-backed function call. Args are either a column
-        // reference (resolved per-row) or a pre-evaluated literal Literal.
-        // The evaluator's term registry supplies the implementation.
+        // @note value is a column index or a pre-evaluated literal
         struct FuncCallArg {
             TaggedUnion<U64, Literal> value;
         };
@@ -119,8 +121,6 @@ export namespace cql::planner {
             type::Basic               return_type;
         };
         struct Conversion {
-            // applied to the value produced by `value`, in order. `from` is the input type
-            // (matches the previous conversion's `to` or the base type for the first step).
             type::Basic from;
             type::Basic to;
         };
@@ -130,9 +130,7 @@ export namespace cql::planner {
 
     struct ProjectionPlan {
         DynamicArray<SelectOp> ops;
-        // @note de-duplicated set of columns the executor must materialize per row:
-        // projected columns plus any column referenced by WHERE filter predicates.
-        // Empty means no column data is needed (e.g. COUNT(*) with no filter).
+        // @note de-duplicated set of columns the executor must materialize per row
         DynamicArray<U64> needed_cols;
         bool              is_aggregate = false;
     };
@@ -152,8 +150,6 @@ export namespace cql::planner {
         Evaluated value{};
     };
 
-    // @note `TermWithIdentifiers` carries an RHS that reads the current row
-    // (counter expressions like `c = c + 1`); `Evaluated` is already resolved.
     struct ColumnUpdate {
         U64                                                          col_idx;
         TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch> new_value;

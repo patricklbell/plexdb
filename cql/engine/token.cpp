@@ -32,47 +32,41 @@ namespace cql::token {
         return v;
     }
 
-    static S64 cassandra_murmur3_x64_128_low(const U8* data, U64 length) {
-        const U64 nblocks = length / 16;
+    static constexpr U64 C1 = 0x87c37b91114253d5ULL;
+    static constexpr U64 C2 = 0x4cf5ad432745937fULL;
 
-        U64 h1 = 0;
-        U64 h2 = 0;
+    static void process_block(U64& h1, U64& h2, const U8* block) {
+        U64 k1 = load64_le(block + 0);
+        U64 k2 = load64_le(block + 8);
 
-        const U64 c1 = 0x87c37b91114253d5ULL;
-        const U64 c2 = 0x4cf5ad432745937fULL;
+        k1 *= C1;
+        k1 = rotl64(k1, 31);
+        k1 *= C2;
+        h1 ^= k1;
+        h1 = rotl64(h1, 27);
+        h1 += h2;
+        h1 = h1 * 5 + 0x52dce729ULL;
 
-        for (U64 i = 0; i < nblocks; i++) {
-            U64 k1 = load64_le(data + i * 16 + 0);
-            U64 k2 = load64_le(data + i * 16 + 8);
+        k2 *= C2;
+        k2 = rotl64(k2, 33);
+        k2 *= C1;
+        h2 ^= k2;
+        h2 = rotl64(h2, 31);
+        h2 += h1;
+        h2 = h2 * 5 + 0x38495ab5ULL;
+    }
 
-            k1 *= c1;
-            k1 = rotl64(k1, 31);
-            k1 *= c2;
-            h1 ^= k1;
-            h1 = rotl64(h1, 27);
-            h1 += h2;
-            h1 = h1 * 5 + 0x52dce729ULL;
+    // Sign-extend through int8 → int64 → uint64, matching Java's
+    // `((long) byte_val)` on Cassandra's partitioner.
+    static void process_tail(U64& h1, U64& h2, const U8* tail, U64 tail_len) {
+        U64 k1 = 0;
+        U64 k2 = 0;
 
-            k2 *= c2;
-            k2 = rotl64(k2, 33);
-            k2 *= c1;
-            h2 ^= k2;
-            h2 = rotl64(h2, 31);
-            h2 += h1;
-            h2 = h2 * 5 + 0x38495ab5ULL;
-        }
-
-        const U8* tail = data + nblocks * 16;
-        U64       k1   = 0;
-        U64       k2   = 0;
-
-        // Sign-extend through int8 → int64 → uint64, matching Java's
-        // `((long) byte_val)` on Cassandra's partitioner.
         auto sx = [](U8 b) -> U64 {
             return static_cast<U64>(static_cast<S64>(static_cast<S8>(b)));
         };
 
-        switch (length & 15) {
+        switch (tail_len) {
             case 15:
                 k2 ^= sx(tail[14]) << 48;
                 [[fallthrough]];
@@ -93,9 +87,9 @@ namespace cql::token {
                 [[fallthrough]];
             case 9:
                 k2 ^= sx(tail[8]);
-                k2 *= c2;
+                k2 *= C2;
                 k2 = rotl64(k2, 33);
-                k2 *= c1;
+                k2 *= C1;
                 h2 ^= k2;
                 [[fallthrough]];
             case 8:
@@ -121,17 +115,19 @@ namespace cql::token {
                 [[fallthrough]];
             case 1:
                 k1 ^= sx(tail[0]);
-                k1 *= c1;
+                k1 *= C1;
                 k1 = rotl64(k1, 31);
-                k1 *= c2;
+                k1 *= C2;
                 h1 ^= k1;
                 break;
             default:
                 break;
         }
+    }
 
-        h1 ^= length;
-        h2 ^= length;
+    static S64 finalize_hash(U64 h1, U64 h2, U64 total_len) {
+        h1 ^= total_len;
+        h2 ^= total_len;
 
         h1 += h2;
         h2 += h1;
@@ -145,8 +141,54 @@ namespace cql::token {
         return static_cast<S64>(h1);
     }
 
+    static S64 cassandra_murmur3_x64_128_low(const U8* data, U64 length) {
+        const U64 nblocks = length / 16;
+
+        U64 h1 = 0;
+        U64 h2 = 0;
+
+        for (U64 i = 0; i < nblocks; i++) {
+            process_block(h1, h2, data + i * 16);
+        }
+        process_tail(h1, h2, data + nblocks * 16, length & 15);
+
+        return finalize_hash(h1, h2, length);
+    }
+
     S64 murmur3_token(const U8* data, U64 length) {
         S64 tok = cassandra_murmur3_x64_128_low(data, length);
+        return tok == MIN_TOKEN ? MAX_TOKEN : tok;
+    }
+
+    void Murmur3State::update(const U8* data, U64 len) {
+        total_len += len;
+
+        if (carry_len > 0) {
+            U64 need = 16 - carry_len;
+            U64 take = len < need ? len : need;
+            memcpy(carry + carry_len, data, take);
+            carry_len += take;
+            data += take;
+            len -= take;
+            if (carry_len == 16) {
+                process_block(h1, h2, carry);
+                carry_len = 0;
+            }
+        }
+        while (len >= 16) {
+            process_block(h1, h2, data);
+            data += 16;
+            len -= 16;
+        }
+        if (len > 0) {
+            memcpy(carry + carry_len, data, len);
+            carry_len += len;
+        }
+    }
+
+    S64 Murmur3State::finalize() {
+        process_tail(h1, h2, carry, carry_len);
+        S64 tok = finalize_hash(h1, h2, total_len);
         return tok == MIN_TOKEN ? MAX_TOKEN : tok;
     }
 

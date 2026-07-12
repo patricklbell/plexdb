@@ -1,0 +1,49 @@
+{{ header }}
+module;
+#include <cstring>
+
+module cql.engine.token.wire;
+
+import cql.engine.io.codec;
+
+import plexdb.base;
+import plexdb.os;
+
+import cql.engine.column_value;
+import cql.engine.types;
+
+using namespace plexdb;
+
+{% import "wire_macros.jinja" as wire %}
+namespace cql::token {
+    void write_component(io::Writer w, const ColumnValue& cv, type::Basic dtype, bool is_composite) {
+        assert_true(io::can_write_column_value(cv, type::Type{dtype}), "partition key component does not match column type");
+        auto emit_prefix = [&](U16 len) {
+            if (is_composite) {
+                U8 buf[2] = {U8(len >> 8), U8(len & 0xFF)};
+                w(buf, 2);
+            }
+        };
+        auto emit_trailer = [&]() {
+            if (is_composite) {
+                U8 zero = 0;
+                w(&zero, 1);
+            }
+        };
+
+        visit(cv, [&](const auto& v) {
+            using T = Decay<decltype(v)>;
+{% for t in token_types %}
+{% if loop.first %}
+            if constexpr (SameAs<T, {{ t.column_value_ctype }}>) {
+{% else %}
+            } else if constexpr (SameAs<T, {{ t.column_value_ctype }}>) {
+{% endif %}
+{{ wire.token_body(t) }}
+{% endfor %}
+            } else {
+                assert_not_implemented("wire encoding for partition key type is not implemented");
+            }
+        });
+    }
+}

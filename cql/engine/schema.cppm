@@ -9,6 +9,7 @@ import plexdb.btree;
 
 import cql.engine.statements;
 import cql.engine.types;
+import cql.engine.clustering_compare;
 
 using namespace plexdb;
 
@@ -64,12 +65,29 @@ export namespace cql::schema {
     static_assert(sizeof(PartitionEntry) == 16);
 #pragma pack(pop)
 
-    // Outer partition BTree: pk_bytes → PartitionEntry
-    using PartitionBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<sizeof(PartitionEntry)>>;
+    // Outer partition BTree: Murmur3 token (S64) → PartitionEntry
+    using PartitionBTree = btree::BTreePaged<btree::FixedKeyPolicy<S64>, btree::FixedValuePolicy<sizeof(PartitionEntry)>>;
+
     // Inner clustering BTree: ck_bytes → row_page (U64)
-    using ClusteringBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<sizeof(U64)>>;
-    // Secondary index BTree: index_key → dummy (1 byte); all data is in the key
-    using IndexBTree = btree::BTreePaged<btree::VarlenKeyPolicy<>, btree::FixedValuePolicy<1>>;
+    using ClusteringKeyPolicy = btree::VarlenKeyPolicy<NumericLimits<U16>::max(), clustering_compare::ClusteringKeyComparator>;
+    using ClusteringBTree     = btree::BTreePaged<ClusteringKeyPolicy, btree::FixedValuePolicy<sizeof(U64)>>;
+
+#pragma pack(push, 1)
+    // static_page/row_page of the indexed row, captured at index-entry-write time so a hit
+    // jumps straight to the row without re-walking the partition/clustering BTrees. row_page
+    // is 0 for an entry keyed off a static column (no single row owns the value).
+    struct IndexEntry {
+        U64 static_page;
+        U64 row_page;
+    };
+    static_assert(sizeof(IndexEntry) == 16);
+#pragma pack(pop)
+
+    // Secondary index BTree: index_key → IndexEntry. Same key policy shape as
+    // ClusteringBTree — an index key is a longer sequence of typed components (indexed
+    // value, then partition token, then pk columns, then ck columns; see Index::key_specs)
+    // using the identical wire encoding and comparator.
+    using IndexBTree = btree::BTreePaged<ClusteringKeyPolicy, btree::FixedValuePolicy<sizeof(IndexEntry)>>;
 }
 
 export namespace cql::schema {
@@ -121,6 +139,13 @@ export namespace cql::schema {
         U64        col_idx; // which column in tbl.cols is indexed
         IndexKind  kind;
         IndexBTree btree;
+        // Flat component spec for this index's BTree key, computed once (see
+        // make_index_key_specs): [indexed value component(s) — 1, or 2 for Entries kind] ++
+        // [bigint: the embedded partition token] ++ [table's partition-key columns, ASC] ++
+        // [table's clustering-key columns, = tbl.clustering_key_specs]. Feeds
+        // make_index_key_policy the same way Table::clustering_key_specs feeds
+        // make_clustering_key_policy.
+        DynamicArray<clustering_compare::ClusteringColumnSpec> key_specs;
     };
 
     // @note packed POD; persisted byte-identical inside TableHeader.
@@ -142,8 +167,10 @@ export namespace cql::schema {
         DynamicArray<Column> cols;
         DynamicArray<U64>    partition_key_col_indices;  // sorted by key_position
         DynamicArray<U64>    clustering_key_col_indices; // sorted by key_position
-        DynamicArray<U64>    static_col_indices;         // sorted alphabetically by name
-        DynamicArray<U64>    regular_col_indices;        // sorted alphabetically by name
+        // One entry per clustering_key_col_indices entry, same order — feeds ClusteringKeyComparator.
+        DynamicArray<clustering_compare::ClusteringColumnSpec> clustering_key_specs;
+        DynamicArray<U64>                                      static_col_indices;  // sorted alphabetically by name
+        DynamicArray<U64>                                      regular_col_indices; // sorted alphabetically by name
         // Cassandra SELECT * ordering: partition, clustering, static (alphabetical), regular (alphabetical).
         DynamicArray<U64>        select_star_col_indices;
         DynamicArray<Index>      indexes;
@@ -155,6 +182,75 @@ export namespace cql::schema {
 
     bool has_clustering_keys(const Table& tbl) {
         return tbl.clustering_key_col_indices.length > 0;
+    }
+
+    ClusteringKeyPolicy make_clustering_key_policy(const Table& tbl) {
+        return ClusteringKeyPolicy{
+            clustering_compare::ClusteringKeyComparator{
+                TArrayView<const clustering_compare::ClusteringColumnSpec, U64>(tbl.clustering_key_specs.ptr, tbl.clustering_key_specs.length)
+            }
+        };
+    }
+
+    // Builds Index::key_specs: the flat component sequence an index-BTree key encodes.
+    // [indexed value component(s) — 1, or 2 for IndexKind::Entries (map key then map value)]
+    // ++ [bigint: the embedded partition token, see key::serialize_partition_index_bytes]
+    // ++ [table's partition-key columns, ASC — pk order never varies] ++ [table's
+    // clustering-key columns, verbatim]. Called once at index create/load time (schema.cpp),
+    // not per BTree construction — mirrors clustering_key_specs' lifetime.
+    DynamicArray<clustering_compare::ClusteringColumnSpec> make_index_key_specs(const Table& tbl, U64 col_idx, IndexKind kind) {
+        DynamicArray<clustering_compare::ClusteringColumnSpec> specs;
+        const type::Type&                                      col_type = tbl.cols[col_idx].type;
+        auto                                                   push     = [&](type::Basic b) {
+            push_back(specs, clustering_compare::ClusteringColumnSpec{b, Sort::ASC});
+        };
+
+        visit(col_type.value, [&](const auto& v) {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, type::Basic>) {
+                push(v);
+            } else if constexpr (SameAs<T, type::List> || SameAs<T, type::Vector>) {
+                push(get<type::Basic>(v.element.value));
+            } else if constexpr (SameAs<T, type::Set>) {
+                push(get<type::Basic>(v.key.value));
+            } else if constexpr (SameAs<T, type::Map>) {
+                switch (kind) {
+                    case IndexKind::Values:
+                        push(get<type::Basic>(v.value.value));
+                        break;
+                    case IndexKind::Keys:
+                        push(get<type::Basic>(v.key.value));
+                        break;
+                    case IndexKind::Entries:
+                        push(get<type::Basic>(v.key.value));
+                        push(get<type::Basic>(v.value.value));
+                        break;
+                    case IndexKind::Full:
+                        assert_not_implemented("Full map index lookup");
+                        break;
+                }
+            } else {
+                assert_not_implemented("index key spec for this column type");
+            }
+        });
+
+        push(type::Basic::bigint); // embedded partition token
+        for (U64 pk_ci : tbl.partition_key_col_indices) {
+            assert_true(type_matches_tag<type::Basic>(tbl.cols[pk_ci].type.value), "partition key must be a basic type");
+            push(get<type::Basic>(tbl.cols[pk_ci].type.value));
+        }
+        for (const auto& s : tbl.clustering_key_specs) {
+            push_back(specs, s);
+        }
+        return specs;
+    }
+
+    ClusteringKeyPolicy make_index_key_policy(const Index& idx) {
+        return ClusteringKeyPolicy{
+            clustering_compare::ClusteringKeyComparator{
+                TArrayView<const clustering_compare::ClusteringColumnSpec, U64>(idx.key_specs.ptr, idx.key_specs.length)
+            }
+        };
     }
 
     struct Keyspace {

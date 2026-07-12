@@ -451,8 +451,8 @@ namespace cql::planner {
         return out;
     }
 
-    template<typename Serialize>
-    static void build_cartesian_combos(const KeyConstraints& kc, U64 n, Serialize&& serialize, DynamicArray<DynamicArray<U8>>& out) {
+    template<typename Serialize, typename T>
+    static void build_cartesian_combos(const KeyConstraints& kc, U64 n, Serialize&& serialize, DynamicArray<T>& out) {
         DynamicArray<U64> sizes;
         resize(sizes, n);
         U64 total = 1;
@@ -518,7 +518,7 @@ namespace cql::planner {
             return false;
         }
         locator.index_col_idx    = ci;
-        locator.index_key_prefix = key::make_index_prefix(eval, *elem_basic);
+        locator.index_key_prefix = key::encode_index_prefix(eval, *elem_basic);
         return true;
     }
 
@@ -551,7 +551,7 @@ namespace cql::planner {
                 return;
             }
             locator.index_col_idx    = ci;
-            locator.index_key_prefix = key::make_index_prefix(
+            locator.index_key_prefix = key::encode_index_prefix(
                 eval, get<type::Basic>(tbl.cols[ci].type.value)
             );
         };
@@ -600,22 +600,22 @@ namespace cql::planner {
                         } else if (n_pk == 1 && *pk_pos == 0) {
                             switch (r.operator_) {
                                 case Operator::lt:
-                                    locator.pk.end           = key::serialize_partition_single(tbl, eval);
+                                    locator.pk.end           = key::compute_partition_token_from_eval(tbl, eval);
                                     locator.pk.has_end       = true;
                                     locator.pk.end_inclusive = false;
                                     break;
                                 case Operator::le:
-                                    locator.pk.end           = key::serialize_partition_single(tbl, eval);
+                                    locator.pk.end           = key::compute_partition_token_from_eval(tbl, eval);
                                     locator.pk.has_end       = true;
                                     locator.pk.end_inclusive = true;
                                     break;
                                 case Operator::gt:
-                                    locator.pk.begin           = key::serialize_partition_single(tbl, eval);
+                                    locator.pk.begin           = key::compute_partition_token_from_eval(tbl, eval);
                                     locator.pk.has_begin       = true;
                                     locator.pk.begin_inclusive = false;
                                     break;
                                 case Operator::ge:
-                                    locator.pk.begin           = key::serialize_partition_single(tbl, eval);
+                                    locator.pk.begin           = key::compute_partition_token_from_eval(tbl, eval);
                                     locator.pk.has_begin       = true;
                                     locator.pk.begin_inclusive = true;
                                     break;
@@ -652,7 +652,7 @@ namespace cql::planner {
                             push_back(filter.predicates, rel);
                         } else if (*ck_pos == 0) {
                             Sort dir = tbl.cols[tbl.clustering_key_col_indices[0]].clustering_order;
-                            apply_range_bound(locator.ck, r.operator_, dir, key::serialize_clustering_single(tbl, eval), n_ck > 1);
+                            apply_range_bound(locator.ck, r.operator_, dir, key::encode_clustering_single(tbl, eval), n_ck > 1);
                             ck.range_seen[0] = true;
                             // @note CK range also goes to filter for post-scan evaluation;
                             // does not set needs_allow_filtering — CK filtering is efficient.
@@ -786,7 +786,7 @@ namespace cql::planner {
                             if (ck_pos && *ck_pos == 0) {
                                 Evaluated eval = evaluate(r.values[0], ctx);
                                 Sort      dir  = tbl.cols[tbl.clustering_key_col_indices[0]].clustering_order;
-                                apply_range_bound(locator.ck, r.operator_, dir, key::serialize_clustering_single(tbl, eval), n_ck > 1);
+                                apply_range_bound(locator.ck, r.operator_, dir, key::encode_clustering_single(tbl, eval), n_ck > 1);
                                 ck.range_seen[0] = true;
                             }
                         } else if (is_inequality(r.operator_) && r.columns.length > 1 && tuple_rhs_is_compatible(r) && n_ck > 0) {
@@ -813,7 +813,7 @@ namespace cql::planner {
                                         push_back(evals, evaluate(tuple_value_at(r, i), ctx));
                                     }
                                     auto             prefix_view = TArrayView<const Evaluated, U64>{evals.ptr, evals.length};
-                                    DynamicArray<U8> bytes       = key::serialize_clustering_prefix(tbl, prefix_view);
+                                    DynamicArray<U8> bytes       = key::encode_clustering_prefix(tbl, prefix_view);
                                     bool             partial     = r.columns.length < n_ck;
                                     apply_range_bound(locator.ck, r.operator_, dir, move(bytes), partial);
                                     // @note tuple range is a single lex compare on the
@@ -841,7 +841,7 @@ namespace cql::planner {
                                         for (const auto& idx : tbl.indexes) {
                                             if (!idx.tombstone && idx.col_idx == ci && idx.kind == schema::IndexKind::Entries && !locator.index_col_idx) {
                                                 locator.index_col_idx    = ci;
-                                                locator.index_key_prefix = key::make_index_prefix_entries(key_eval, get<type::Basic>(m.key.value), val_eval, get<type::Basic>(m.value.value));
+                                                locator.index_key_prefix = key::encode_index_prefix_entries(key_eval, get<type::Basic>(m.key.value), val_eval, get<type::Basic>(m.value.value));
                                                 covered_by_index         = true;
                                                 break;
                                             }
@@ -863,10 +863,10 @@ namespace cql::planner {
         }
 
         auto serialize_pk = [&](const DynamicArray<Evaluated>& combo) {
-            return key::serialize_partition(tbl, combo);
+            return key::compute_partition_token_from_evals(tbl, combo);
         };
         auto serialize_ck = [&](const DynamicArray<Evaluated>& combo) {
-            return key::serialize_clustering(tbl, combo);
+            return key::encode_clustering(tbl, combo);
         };
 
         if (all_positions_eq(pk, n_pk)) {
@@ -875,6 +875,7 @@ namespace cql::planner {
             locator.pk.has_begin          = true;
             locator.pk.begin_inclusive    = true;
             locator.pk.is_equality        = true;
+            locator.pk_evals              = evals;
         } else if (all_positions_covered(pk, n_pk)) {
             locator.pk.has_in = true;
             build_cartesian_combos(pk, n_pk, serialize_pk, locator.pk.in_values);
@@ -945,7 +946,7 @@ namespace cql::planner {
                     }
                 }
                 if (all_covered) {
-                    push_back(locator.ck.in_values, key::serialize_clustering(tbl, full_combo));
+                    push_back(locator.ck.in_values, key::encode_clustering(tbl, full_combo));
                 }
             }
         }
@@ -963,13 +964,13 @@ namespace cql::planner {
             if (n_prefix > 0) {
                 DynamicArray<U8> prefix;
                 if (n_prefix == 1) {
-                    prefix = key::serialize_clustering_single(tbl, *ck.eq_vals[0]);
+                    prefix = key::encode_clustering_single(tbl, *ck.eq_vals[0]);
                 } else {
                     DynamicArray<Evaluated> prefix_evals;
                     for (U64 i = 0; i < n_prefix; i++) {
                         push_back(prefix_evals, *ck.eq_vals[i]);
                     }
-                    prefix = key::serialize_clustering_prefix(tbl, prefix_evals);
+                    prefix = key::encode_clustering_prefix(tbl, prefix_evals);
                 }
                 locator.ck.begin            = prefix;
                 locator.ck.has_begin        = true;
@@ -1703,8 +1704,8 @@ namespace cql::planner {
                 }
                 // @note `Map - X` expects `set<map.key>` on the RHS; all other compound forms take the column's own type.
                 bool rhs_ok = (is_map && patch.op == CollectionPatch::Op::Subtract)
-                                ? io::can_cast_write_evaluated_as_column_value(patch.value, type::create_set(get<type::Map>(col.type.value).key), ctx)
-                                : io::can_cast_write_evaluated_as_column_value(patch.value, col.type, ctx);
+                                ? io::can_write_evaluated_as_column_value(patch.value, type::create_set(get<type::Map>(col.type.value).key), ctx)
+                                : io::can_write_evaluated_as_column_value(patch.value, col.type, ctx);
                 if (!rhs_ok) {
                     plan.result.error   = PlanError::InvalidCollectionMutation;
                     plan.result.context = AutoString8("Incompatible right-hand side collection for ") + col_name;

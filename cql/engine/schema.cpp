@@ -12,6 +12,8 @@ import plexdb.os;
 import plexdb.support.sort;
 
 import cql.engine.schema.types;
+import cql.engine.types;
+import cql.engine.clustering_compare;
 import cql.log;
 
 using namespace plexdb;
@@ -71,6 +73,15 @@ namespace cql::schema {
         support::sort::small_sort<U64, U64>(tbl.clustering_key_col_indices, by_key_position);
         support::sort::small_sort<U64, U64>(tbl.static_col_indices, by_name);
         support::sort::sort<U64, U64>(tbl.regular_col_indices, by_name);
+
+        // @note non-Basic (frozen collection) CK types store a COUNT sentinel; the comparator
+        // asserts on use, not here, matching today's behavior for these still-unsupported types.
+        clear(tbl.clustering_key_specs);
+        for (U64 ci : tbl.clustering_key_col_indices) {
+            const Column& col   = tbl.cols[ci];
+            type::Basic   dtype = type_matches_tag<type::Basic>(col.type.value) ? get<type::Basic>(col.type.value) : type::Basic::COUNT;
+            push_back(tbl.clustering_key_specs, clustering_compare::ClusteringColumnSpec{dtype, col.clustering_order});
+        }
 
         reserve(tbl.select_star_col_indices, tbl.partition_key_col_indices.length + tbl.clustering_key_col_indices.length + tbl.static_col_indices.length + tbl.regular_col_indices.length);
         for (U64 ci : tbl.partition_key_col_indices) {
@@ -148,7 +159,7 @@ namespace cql::schema {
                 tbl.options   = tbl_storage.header.options;
                 tbl.btree     = PartitionBTree{
                     in_pager, tbl_storage.header.btree_page,
-                    btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
+                    btree::FixedKeyPolicy<S64>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
                 };
                 push_back(ks.tbls, move(tbl));
             }
@@ -312,9 +323,10 @@ namespace cql::schema {
                     idx.name      = String8{idx_storage.name.c_str, idx_storage.name.length};
                     idx.col_idx   = idx_storage.header.col_idx;
                     idx.kind      = idx_storage.header.kind;
+                    idx.key_specs = make_index_key_specs(tbl, idx.col_idx, idx.kind);
                     idx.btree     = IndexBTree{
                         in_pager, idx_storage.header.btree_page,
-                        btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}
+                        make_index_key_policy(idx), btree::FixedValuePolicy<sizeof(IndexEntry)>{}
                     };
                     if (!idx.tombstone) {
                         insert(tbl.indexes_by_name, idx.name, tbl.indexes.length);
@@ -863,7 +875,7 @@ namespace cql::schema {
 
         U64 btree_page = co_await btree::create_paged(
             *schema.tables_blob.pager,
-            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
+            btree::FixedKeyPolicy<S64>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
         );
 
         U64          off = schema.tables_blob.size_bytes;
@@ -890,7 +902,7 @@ namespace cql::schema {
         tbl.options   = popts.value.options;
         tbl.btree     = PartitionBTree{
             schema.tables_blob.pager, btree_page,
-            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
+            btree::FixedKeyPolicy<S64>{}, btree::FixedValuePolicy<sizeof(PartitionEntry)>{}
         };
         Table& tbl_ref = push_back(ks.tbls, move(tbl));
         insert(ks.tbls_by_name, tbl_ref.name, ks.tbls.length - 1);
@@ -1049,9 +1061,11 @@ namespace cql::schema {
 namespace cql::schema {
     coroutine::Task<Result<Index*>> create_index(Schema& schema, Table& tbl, U64 col_idx, String8 index_name, IndexKind kind) {
         bump_version(schema);
-        U64 btree_page = co_await btree::create_paged(
+        DynamicArray<clustering_compare::ClusteringColumnSpec> key_specs      = make_index_key_specs(tbl, col_idx, kind);
+        auto                                                   key_specs_view = TArrayView<const clustering_compare::ClusteringColumnSpec, U64>(key_specs.ptr, key_specs.length);
+        U64                                                    btree_page     = co_await btree::create_paged(
             *schema.indexes_blob.pager,
-            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}
+            ClusteringKeyPolicy{clustering_compare::ClusteringKeyComparator{key_specs_view}}, btree::FixedValuePolicy<sizeof(IndexEntry)>{}
         );
 
         U64          off = schema.indexes_blob.size_bytes;
@@ -1076,9 +1090,10 @@ namespace cql::schema {
         idx.name      = String8{is_ref.name.c_str, is_ref.name.length};
         idx.col_idx   = col_idx;
         idx.kind      = kind;
+        idx.key_specs = move(key_specs);
         idx.btree     = IndexBTree{
             schema.indexes_blob.pager, btree_page,
-            btree::VarlenKeyPolicy<>{}, btree::FixedValuePolicy<1>{}
+            make_index_key_policy(idx), btree::FixedValuePolicy<sizeof(IndexEntry)>{}
         };
         Index& idx_ref = push_back(tbl.indexes, move(idx));
         insert(tbl.indexes_by_name, idx_ref.name, tbl.indexes.length - 1);

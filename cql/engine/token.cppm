@@ -1,5 +1,9 @@
 export module cql.engine.token;
 
+// .wire is generated from wire_types.json (token::write_component) — re-exported here so
+// callers only need `import cql.engine.token;`.
+export import cql.engine.token.wire;
+
 import plexdb.base;
 
 using namespace plexdb;
@@ -22,4 +26,20 @@ export namespace cql::token {
 
     // Inverse of encode_token_be.
     S64 decode_token_be(const U8* src);
+
+    // Incremental counterpart to murmur3_token — lets a component encoder feed
+    // wire bytes straight into the hash via repeated update() calls instead of
+    // materializing them in an intermediate buffer first. Buffers only the
+    // trailing <16-byte carry between calls; finalize() applies the same tail
+    // handling as the one-shot implementation.
+    struct Murmur3State {
+        U64 h1        = 0;
+        U64 h2        = 0;
+        U64 total_len = 0;
+        U8  carry[16] = {};
+        U64 carry_len = 0;
+
+        void update(const U8* data, U64 len);
+        S64  finalize();
+    };
 }
