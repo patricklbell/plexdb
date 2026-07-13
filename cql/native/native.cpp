@@ -480,14 +480,14 @@ namespace cql::native {
                 append_be_u16(f, basic_type_to_type_code(v));
             } else if constexpr (SameAs<T, type::List>) {
                 append_be_u16(f, type_codes::List);
-                append_be_u16(f, basic_type_to_type_code(get<type::Basic>(v.element.value)));
+                append_type_codes_option(f, v.element);
             } else if constexpr (SameAs<T, type::Set>) {
                 append_be_u16(f, type_codes::Set);
-                append_be_u16(f, basic_type_to_type_code(get<type::Basic>(v.key.value)));
+                append_type_codes_option(f, v.key);
             } else if constexpr (SameAs<T, type::Map>) {
                 append_be_u16(f, type_codes::Map);
-                append_be_u16(f, basic_type_to_type_code(get<type::Basic>(v.key.value)));
-                append_be_u16(f, basic_type_to_type_code(get<type::Basic>(v.value.value)));
+                append_type_codes_option(f, v.key);
+                append_type_codes_option(f, v.value);
             } else if constexpr (SameAs<T, type::Tuple>) {
                 append_be_u16(f, type_codes::Tuple);
                 append_be_u16(f, U16(v.elements.length));

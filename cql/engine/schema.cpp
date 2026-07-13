@@ -575,7 +575,9 @@ namespace cql::schema {
                 } else if constexpr (SameAs<O, OptionPair>) {
                     String8 key = o.first;
                     if (is_obsolete_table_option(key)) {
-                        err = Result<TableOptionsParsed>{{}, Error::InvalidOptions, "Unknown property"};
+                        // @note Cassandra classifies obsolete Thrift-era property names as a
+                        // SyntaxException, not InvalidRequest — matched here for conformance.
+                        err = Result<TableOptionsParsed>{{}, Error::SyntaxOptions, "Unknown property"};
                     } else if (key == "default_time_to_live") {
                         if (auto vv = s64_seconds_from_option_value(o.second)) {
                             out.options.default_ttl_ms = (*vv) * 1000;
@@ -945,7 +947,10 @@ namespace cql::schema {
                     }
                 }
             }
-            assert_true_not_implemented(!col_def.mask, "column MASKED WITH is not implemented");
+            if (col_def.mask) {
+                co_await delete_table(schema, ks, create.name.table_name);
+                co_return Result<Table*>{nullptr, Error::InvalidOptions, "MASK is not supported"};
+            }
             if (col_def._static) {
                 if (tbl_ref.clustering_key_col_indices.length == 0 && pk_info.clustering_col_def_indices.length == 0) {
                     co_await delete_table(schema, ks, create.name.table_name);
@@ -1064,8 +1069,26 @@ namespace cql::schema {
 // index DDL
 // ============================================================================
 namespace cql::schema {
+    // Mirrors make_index_key_specs' per-type/kind coverage without asserting — FULL() on a
+    // map and indexing a tuple/UDT column aren't implemented (@todo).
+    static bool index_key_kind_supported(const type::Type& col_type, IndexKind kind) {
+        return visit(col_type.value, [&](const auto& v) -> bool {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, type::Basic> || SameAs<T, type::List> || SameAs<T, type::Vector> || SameAs<T, type::Set>) {
+                return true;
+            } else if constexpr (SameAs<T, type::Map>) {
+                return kind != IndexKind::Full;
+            } else {
+                return false;
+            }
+        });
+    }
+
     coroutine::Task<Result<Index*>> create_index(Schema& schema, Table& tbl, U64 col_idx, String8 index_name, IndexKind kind) {
         bump_version(schema);
+        if (!index_key_kind_supported(tbl.cols[col_idx].type, kind)) {
+            co_return Result<Index*>{nullptr, Error::InvalidOptions, "Indexing this column type is not supported"};
+        }
         DynamicArray<clustering_compare::ClusteringColumnSpec> key_specs      = make_index_key_specs(tbl, col_idx, kind);
         auto                                                   key_specs_view = TArrayView<const clustering_compare::ClusteringColumnSpec, U64>(key_specs.ptr, key_specs.length);
         U64                                                    btree_page     = co_await btree::create_paged(

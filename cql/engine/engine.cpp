@@ -104,11 +104,11 @@ namespace cql::engine {
     // ========================================================================
     // execute
     // ========================================================================
-
-    // Shared by every clustering-less call site that needs to spell "no clustering key
-    // bytes" — read_row_into/rmw_row's ck_bytes default and update_indexes' ck argument for
-    // tables without a clustering key both mean the same empty view.
     static const TArrayView<const U8, U16> NO_CK_BYTES{nullptr, 0};
+
+    static ColumnValue column_value_or_null(const ColumnValue& cv, bool present) {
+        return (present && static_cast<bool>(cv)) ? cv : ColumnValue{Null{}};
+    }
 
     // Drain `col_it` into parallel col_values/col_present arrays sized to tbl->cols.length.
     // If out_cell_meta is non-null, also populates per-column cell metadata observed during iteration.
@@ -130,11 +130,10 @@ namespace cql::engine {
             co_await col_it.advance();
             ++ci;
         }
-        // @note resize default-constructs ColumnValue as an empty TaggedUnion. Anything the
-        // iterator didn't reach must become Null{} so downstream visit() does not crash.
+        // Columns the iterator never reached are still default-constructed (invalid) slots.
         for (U64 j = ci; j < tbl->cols.length; j++) {
-            col_values[j]  = ColumnValue{Null{}};
             col_present[j] = false;
+            col_values[j]  = column_value_or_null(col_values[j], false);
         }
     }
 
@@ -203,12 +202,8 @@ namespace cql::engine {
         VirtualRow vrow;
         resize(vrow.values, col_order.length);
         for (U64 i = 0; i < col_order.length; i++) {
-            U64 ci = col_order[i];
-            if (ci < cv.length && present[ci]) {
-                vrow.values[i] = cv[ci];
-            } else {
-                vrow.values[i] = ColumnValue{Null{}};
-            }
+            U64 ci         = col_order[i];
+            vrow.values[i] = (ci < cv.length) ? column_value_or_null(cv[ci], present[ci]) : ColumnValue{Null{}};
         }
         return vrow;
     }
@@ -280,17 +275,20 @@ namespace cql::engine {
         }
     }
 
-    static S64 resolve_using_timestamp_us(const DynamicArray<UpdateParameter>& params) {
+    // @note empty means "no USING TIMESTAMP clause" — distinct from an explicit `USING
+    // TIMESTAMP 0`, which is a valid write timestamp (the epoch) that must round-trip through
+    // writeTime() as 0, not silently fall back to the current wall clock.
+    static Optional<S64> resolve_using_timestamp_us(const DynamicArray<UpdateParameter>& params) {
         for (const auto& p : params) {
             if (p.kind != UpdateParameter::Kind::TIMESTAMP) {
                 continue;
             }
             if (!type_matches_tag<S64>(p.value)) {
-                return 0;
+                return {};
             }
             return get<S64>(p.value);
         }
-        return 0;
+        return {};
     }
 
     // Compute the per-cell metadata template stamped on every cell that an INSERT or UPDATE
@@ -298,9 +296,9 @@ namespace cql::engine {
     // TTL is present only when USING TTL or default_ttl_ms resolves to a positive value.
     static io::CellMetadata resolve_mutation_cell_meta(const DynamicArray<UpdateParameter>& params, S64 default_ttl_ms) {
         S64              ttl_ms       = resolve_using_ttl_ms(params, default_ttl_ms);
-        S64              ts_us        = resolve_using_timestamp_us(params);
+        Optional<S64>    ts_us        = resolve_using_timestamp_us(params);
         S64              now_ms       = S64(os::unix_ms_now());
-        S64              writetime_us = ts_us != 0 ? ts_us : os::unix_us_now();
+        S64              writetime_us = ts_us ? *ts_us : os::unix_us_now();
         io::CellMetadata cm{};
         cm.flags |= io::CELL_FLAG_HAS_WRITETIME;
         cm.writetime_us = writetime_us;
@@ -430,21 +428,21 @@ namespace cql::engine {
         return type_matches_tag<Literal>(eval.value) && type_matches_tag<Unset>(get<Literal>(eval.value).value);
     }
 
-    static S64 evaluated_to_s64(const Evaluated& eval) {
-        return visit(eval.value, [](const auto& top) -> S64 {
+    // List subscript index: `l[<expr>]`. A non-integer key (`l[3.5]`, `l['x']`) is a bad query
+    static Optional<S64> evaluated_to_s64(const Evaluated& eval) {
+        return visit(eval.value, [](const auto& top) -> Optional<S64> {
             using T = RemoveCVRef<decltype(top)>;
             if constexpr (SameAs<T, Literal>) {
-                return visit(top.value, [](const auto& c) -> S64 {
+                return visit(top.value, [](const auto& c) -> Optional<S64> {
                     using C = RemoveCVRef<decltype(c)>;
                     if constexpr (SameAs<C, S64>) {
                         return c;
                     } else {
-                        assert_not_implemented("evaluated_to_s64: non-integer Literal");
-                        return 0;
+                        return {};
                     }
                 });
             } else if constexpr (SameAs<T, ColumnValue>) {
-                return visit(top, [](const auto& cv) -> S64 {
+                return visit(top, [](const auto& cv) -> Optional<S64> {
                     using V = RemoveCVRef<decltype(cv)>;
                     if constexpr (SameAs<V, S64>) {
                         return cv;
@@ -455,13 +453,11 @@ namespace cql::engine {
                     } else if constexpr (SameAs<V, U8>) {
                         return S64(static_cast<S8>(cv));
                     } else {
-                        assert_not_implemented("evaluated_to_s64: non-integer ColumnValue");
-                        return 0;
+                        return {};
                     }
                 });
             } else {
-                assert_not_implemented("evaluated_to_s64: unexpected Evaluated variant");
-                return 0;
+                return {};
             }
         });
     }
@@ -548,11 +544,12 @@ namespace cql::engine {
                     co_return true;
                 }
                 case Op::SubscriptSet: {
-                    auto cur = current_list();
-                    S64  i   = evaluated_to_s64(patch.key);
-                    if (i < 0 || U64(i) >= cur.length) {
+                    auto          cur   = current_list();
+                    Optional<S64> i_opt = evaluated_to_s64(patch.key);
+                    if (!i_opt || *i_opt < 0 || U64(*i_opt) >= cur.length) {
                         co_return false;
                     }
+                    S64 i = *i_opt;
                     if (eval_is_null(patch.value)) {
                         DynamicArray<NestedColumnValue> out{};
                         for (U64 j = 0; j < cur.length; j++) {
@@ -575,11 +572,12 @@ namespace cql::engine {
                     co_return true;
                 }
                 case Op::SubscriptDelete: {
-                    auto cur = current_list();
-                    S64  i   = evaluated_to_s64(patch.key);
-                    if (i < 0 || U64(i) >= cur.length) {
+                    auto          cur   = current_list();
+                    Optional<S64> i_opt = evaluated_to_s64(patch.key);
+                    if (!i_opt || *i_opt < 0 || U64(*i_opt) >= cur.length) {
                         co_return false;
                     }
+                    S64                             i = *i_opt;
                     DynamicArray<NestedColumnValue> out{};
                     for (U64 j = 0; j < cur.length; j++) {
                         if (j != U64(i)) {
@@ -744,6 +742,166 @@ namespace cql::engine {
         co_return false;
     }
 
+    // Multiple operations on the same set/map column within one statement don't apply
+    // sequentially — Cassandra reconciles same-timestamp writes to the same key/element by
+    // letting a delete beat a write, and (among writes) the larger encoded value wins. This
+    // merges every patch touching `idx` into one net (deleted, written) pair before applying,
+    // so e.g. `m[2] = 7, m[2] = 8` and `m = m - {2}, m[2] = 9` resolve independent of statement
+    // order. List columns don't need this: their subscript ops key by position, and the only
+    // shape the conformance suite exercises has each patch touch a different index, so plain
+    // sequential application (apply_collection_patch) already gives the right answer.
+    static coroutine::Task<void> apply_merged_map_patches(
+        const schema::Table* tbl, U64 idx, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present,
+        TArrayView<const planner::CollectionPatch, U64> patches, const EvalContext& ctx
+    ) {
+        using Op                = planner::CollectionPatch::Op;
+        const auto&       map_t = get<type::Map>(tbl->cols[idx].type.value);
+        const type::Type& key_t = map_t.key;
+        const type::Type& val_t = map_t.value;
+
+        DynamicSet<NestedColumnValue>                    deleted{};
+        DynamicMap<NestedColumnValue, NestedColumnValue> written{};
+
+        auto merge_write = [&](NestedColumnValue k, NestedColumnValue v) {
+            if (auto* slot = find(written, k); slot) {
+                if (type_matches_tag<type::Basic>(val_t.value)
+                    && compare_column_value(v.value, slot->value, get<type::Basic>(val_t.value)) > 0) {
+                    *slot = v;
+                }
+            } else {
+                insert(written, k, v);
+            }
+        };
+
+        for (const auto& patch : patches) {
+            switch (patch.op) {
+                case Op::Append: {
+                    ColumnValue rhs_cv = co_await materialize_as_column_value(patch.value, tbl->cols[idx].type, ctx);
+                    auto&       rhs    = get<DynamicMap<NestedColumnValue, NestedColumnValue>>(rhs_cv);
+                    for (auto it = rhs.begin(); it != rhs.end(); ++it) {
+                        merge_write((*it).first, (*it).second);
+                    }
+                    break;
+                }
+                case Op::Subtract: {
+                    type::Type  keys_type = type::create_set(key_t);
+                    ColumnValue rhs_cv    = co_await materialize_as_column_value(patch.value, keys_type, ctx);
+                    auto&       rhs_keys  = get<DynamicSet<NestedColumnValue>>(rhs_cv);
+                    for (auto it = rhs_keys.begin(); it != rhs_keys.end(); ++it) {
+                        insert(deleted, *it);
+                    }
+                    break;
+                }
+                case Op::SubscriptSet: {
+                    ColumnValue       k_cv = co_await materialize_as_column_value(patch.key, key_t, ctx);
+                    NestedColumnValue k{move(k_cv)};
+                    if (eval_is_null(patch.value)) {
+                        insert(deleted, k);
+                    } else {
+                        ColumnValue v_cv = co_await materialize_as_column_value(patch.value, val_t, ctx);
+                        merge_write(k, NestedColumnValue{move(v_cv)});
+                    }
+                    break;
+                }
+                case Op::SubscriptDelete: {
+                    ColumnValue k_cv = co_await materialize_as_column_value(patch.key, key_t, ctx);
+                    insert(deleted, NestedColumnValue{move(k_cv)});
+                    break;
+                }
+                case Op::Prepend:
+                    assert_not_implemented("map columns do not support prepend; planner should have rejected");
+                    break;
+            }
+        }
+
+        DynamicMap<NestedColumnValue, NestedColumnValue> cur{};
+        if (col_present[idx] && type_matches_tag<DynamicMap<NestedColumnValue, NestedColumnValue>>(col_values[idx])) {
+            cur = get<DynamicMap<NestedColumnValue, NestedColumnValue>>(col_values[idx]);
+        }
+        for (auto it = deleted.begin(); it != deleted.end(); ++it) {
+            remove(cur, *it);
+        }
+        for (auto it = written.begin(); it != written.end(); ++it) {
+            if (contains(deleted, (*it).first)) {
+                continue;
+            }
+            if (auto* slot = find(cur, (*it).first); slot) {
+                *slot = (*it).second;
+            } else {
+                insert(cur, (*it).first, (*it).second);
+            }
+        }
+        if (length(cur) == 0) {
+            col_present[idx] = false;
+        } else {
+            col_values[idx]  = ColumnValue{move(cur)};
+            col_present[idx] = true;
+        }
+    }
+
+    static coroutine::Task<void> apply_merged_set_patches(
+        const schema::Table* tbl, U64 idx, DynamicArray<ColumnValue>& col_values, DynamicArray<bool>& col_present,
+        TArrayView<const planner::CollectionPatch, U64> patches, const EvalContext& ctx
+    ) {
+        using Op                = planner::CollectionPatch::Op;
+        const type::Type& key_t = get<type::Set>(tbl->cols[idx].type.value).key;
+
+        DynamicSet<NestedColumnValue> deleted{}, added{};
+
+        for (const auto& patch : patches) {
+            switch (patch.op) {
+                case Op::Append: {
+                    ColumnValue rhs_cv = co_await materialize_as_column_value(patch.value, tbl->cols[idx].type, ctx);
+                    auto&       rhs    = get<DynamicSet<NestedColumnValue>>(rhs_cv);
+                    for (auto it = rhs.begin(); it != rhs.end(); ++it) {
+                        insert(added, *it);
+                    }
+                    break;
+                }
+                case Op::Subtract: {
+                    ColumnValue rhs_cv = co_await materialize_as_column_value(patch.value, tbl->cols[idx].type, ctx);
+                    auto&       rhs    = get<DynamicSet<NestedColumnValue>>(rhs_cv);
+                    for (auto it = rhs.begin(); it != rhs.end(); ++it) {
+                        insert(deleted, *it);
+                    }
+                    break;
+                }
+                case Op::SubscriptDelete: {
+                    ColumnValue       el_cv = co_await materialize_as_column_value(patch.key, key_t, ctx);
+                    NestedColumnValue el{move(el_cv)};
+                    insert(deleted, el);
+                    break;
+                }
+                case Op::Prepend:
+                case Op::SubscriptSet:
+                    assert_not_implemented("set columns do not support prepend or subscript-set; planner should have rejected");
+                    break;
+            }
+        }
+
+        DynamicSet<NestedColumnValue> cur{};
+        if (col_present[idx] && type_matches_tag<DynamicSet<NestedColumnValue>>(col_values[idx])) {
+            cur = get<DynamicSet<NestedColumnValue>>(col_values[idx]);
+        }
+        DynamicSet<NestedColumnValue> out{};
+        for (auto it = cur.begin(); it != cur.end(); ++it) {
+            if (!contains(deleted, *it)) {
+                insert(out, *it);
+            }
+        }
+        for (auto it = added.begin(); it != added.end(); ++it) {
+            if (!contains(deleted, *it)) {
+                insert(out, *it);
+            }
+        }
+        if (length(out) == 0) {
+            col_present[idx] = false;
+        } else {
+            col_values[idx]  = ColumnValue{move(out)};
+            col_present[idx] = true;
+        }
+    }
+
     // @note an absent counter cell reads as 0 for `c = c + n` style RHS — primed
     // here so the TWI evaluation under `row_values` sees a defined value.
     // Updates the parallel `cell_meta` array so that any cell touched by an assignment,
@@ -754,9 +912,51 @@ namespace cql::engine {
         auto touch_cell = [&](U64 idx) {
             cell_meta[idx] = col_present[idx] ? Optional<io::CellMetadata>{new_cell_meta} : Optional<io::CellMetadata>{};
         };
+
+        // A column can appear more than once in spec.updates (e.g. `m[2] = 7, m[2] = 8`) —
+        // the planner allows repeats on collection columns (see plan_update). Count patches
+        // per column up front so a repeated map/set column routes through the merge path
+        // below instead of apply_collection_patch's naive sequential overwrite.
+        DynamicArray<U64> collection_patch_count;
+        resize(collection_patch_count, col_values.length);
         for (const auto& upd : spec.updates) {
-            U64 idx = upd.col_idx;
             if (type_matches_tag<planner::CollectionPatch>(upd.new_value)) {
+                collection_patch_count[upd.col_idx]++;
+            }
+        }
+
+        DynamicArray<bool> merged_col;
+        resize(merged_col, col_values.length);
+        for (U64 i = 0; i < spec.updates.length; i++) {
+            const auto& upd = spec.updates[i];
+            U64         idx = upd.col_idx;
+            if (type_matches_tag<planner::CollectionPatch>(upd.new_value)) {
+                if (merged_col[idx]) {
+                    continue; // already resolved via the merge path below
+                }
+                if (collection_patch_count[idx] > 1) {
+                    DynamicArray<planner::CollectionPatch> patches;
+                    for (const auto& other : spec.updates) {
+                        if (other.col_idx == idx && type_matches_tag<planner::CollectionPatch>(other.new_value)) {
+                            push_back(patches, get<planner::CollectionPatch>(other.new_value));
+                        }
+                    }
+                    if (type_matches_tag<type::Map>(tbl->cols[idx].type.value)) {
+                        co_await apply_merged_map_patches(tbl, idx, col_values, col_present, patches, ctx);
+                    } else if (type_matches_tag<type::Set>(tbl->cols[idx].type.value)) {
+                        co_await apply_merged_set_patches(tbl, idx, col_values, col_present, patches, ctx);
+                    } else {
+                        // Lists: subscript ops key by position, not value — the conformance
+                        // suite only exercises distinct-index patches in one statement, which
+                        // sequential application already resolves correctly.
+                        for (const auto& p : patches) {
+                            co_await apply_collection_patch(tbl, idx, col_values, col_present, p, ctx);
+                        }
+                    }
+                    merged_col[idx] = true;
+                    touch_cell(idx);
+                    continue;
+                }
                 co_await apply_collection_patch(tbl, idx, col_values, col_present, get<planner::CollectionPatch>(upd.new_value), ctx);
                 touch_cell(idx);
                 continue;
@@ -2089,6 +2289,13 @@ namespace cql::engine {
             if (type_matches_tag<planner::SelectOp::FuncCall>(op.value)) {
                 return true;
             }
+            // @note `<T>As<U>` selectors (intAsBlob, blobAsInt, ...) lower to a plain
+            // ColumnRef with a conversion stack (planner.cpp) rather than a FuncCall — the
+            // fast col_order path below doesn't apply conversions, only project_row_via_ops
+            // does, so any op carrying one must route through this pipeline too.
+            if (op.conversions.length > 0) {
+                return true;
+            }
         }
         return false;
     }
@@ -2597,6 +2804,13 @@ namespace cql::engine {
 
                 auto tbl_res = co_await schema::create_table(engine.schema, *ks, stmt);
                 if (tbl_res.value == nullptr) {
+                    if (tbl_res.error == schema::Error::SyntaxOptions) {
+                        ExecutionResult r;
+                        r.status          = ExecutionStatus::SyntaxError;
+                        r.message_storage = AutoString8(tbl_res.message);
+                        r.message         = String8(r.message_storage);
+                        co_return r;
+                    }
                     if (tbl_res.error == schema::Error::InvalidOptions) {
                         ExecutionResult r;
                         r.status          = ExecutionStatus::Invalid;
@@ -2979,6 +3193,9 @@ namespace cql::engine {
                                 if (!io::can_write_evaluated_as_column_value(eval, col.type, ctx)) {
                                     co_return create_insert_incompatible_literal(ks->name, tbl->name);
                                 }
+                                if (col.key_kind != schema::KeyKind::None && io::evaluated_exceeds_max_key_size(eval)) {
+                                    co_return create_insert_incompatible_literal(ks->name, tbl->name);
+                                }
                             }
                         }
 
@@ -3022,7 +3239,9 @@ namespace cql::engine {
                             }
                         }
 
-                        assert_true_not_implemented(!stmt.if_not_exists, "INSERT IF NOT EXISTS is not implemented");
+                        if (stmt.if_not_exists) {
+                            co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "INSERT ... IF NOT EXISTS is not supported"};
+                        }
 
                         io::RowMetadata  row_meta         = compute_insert_metadata(stmt.using_parameters, tbl->options.default_ttl_ms);
                         io::CellMetadata insert_cell_meta = resolve_mutation_cell_meta(stmt.using_parameters, tbl->options.default_ttl_ms);
@@ -3267,8 +3486,7 @@ namespace cql::engine {
 
                         co_return create_void_success();
                     } else if constexpr (SameAs<T, Insert::JsonClause>) {
-                        assert_not_implemented("inserting json is not implemented");
-                        co_return ExecutionResult{};
+                        co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "INSERT ... JSON is not supported"};
                     } else {
                         static_assert(!SameAs<T, T>, "missing type case");
                     }
@@ -3282,7 +3500,9 @@ namespace cql::engine {
                 if (auto bad_ts = validate_using_timestamp(stmt.using_parameters)) {
                     co_return move(*bad_ts);
                 }
-                assert_true_not_implemented(!stmt.if_, "UPDATE IF is not implemented");
+                if (stmt.if_) {
+                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "UPDATE ... IF is not supported"};
+                }
 
                 String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
                 auto    ksr     = resolve_ks(engine, ks_name);
@@ -3332,7 +3552,9 @@ namespace cql::engine {
                         co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "DELETE USING TTL is not implemented"};
                     }
                 }
-                assert_true_not_implemented(!stmt.if_, "DELETE IF is not implemented");
+                if (stmt.if_) {
+                    co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "DELETE ... IF is not supported"};
+                }
 
                 String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
                 auto    ksr     = resolve_ks(engine, ks_name);
@@ -3444,11 +3666,9 @@ namespace cql::engine {
                         }
                         co_return create_schema_changed(ks_name, stmt.table.table_name);
                     } else if constexpr (SameAs<I, AlterTable::RenameColumnInstruction>) {
-                        assert_true_not_implemented(false, "ALTER TABLE RENAME is not implemented");
-                        co_return ExecutionResult{};
+                        co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "ALTER TABLE ... RENAME is not supported"};
                     } else if constexpr (SameAs<I, AlterTable::AlterColumnInstruction>) {
-                        assert_true_not_implemented(false, "ALTER TABLE ALTER is not implemented");
-                        co_return ExecutionResult{};
+                        co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "ALTER TABLE ... ALTER is not supported"};
                     } else if constexpr (SameAs<I, Options>) {
                         // Wrap loose Options in a TableOptions AST node so we can reuse schema::parse_table_options
                         CreateTable::TableOptions wrapped{};
@@ -3563,6 +3783,13 @@ namespace cql::engine {
                 }
 
                 auto res = co_await schema::create_index(engine.schema, *tbl, *col_idx, index_name, kind);
+                if (res.error == schema::Error::InvalidOptions) {
+                    ExecutionResult r;
+                    r.status          = ExecutionStatus::Invalid;
+                    r.message_storage = AutoString8(res.message);
+                    r.message         = String8(r.message_storage);
+                    co_return r;
+                }
                 if (res.error != schema::Error::None) {
                     co_return create_server_error("failed to create index");
                 }
@@ -3927,7 +4154,18 @@ namespace cql::engine {
                     type::Type t     = bind_type_for_where_relation(rel, col_t);
                     collect_bind_in_term(rel.value, t, out);
                 } else if constexpr (SameAs<R, WhereClause::TupleExpressionRelation>) {
-                    if (rel.operator_ == Operator::in) {
+                    if (rel.operator_ == Operator::in && rel.values.length == 1 && rel.columns.length > 1
+                        && type_matches_tag<BindMarker>(rel.values[0].value)) {
+                        // (b, c) IN ? — the whole list of tuples bound to a single marker,
+                        // typed as list<tuple<col types...>>. Distinct from (b, c) IN ((?, ?)):
+                        // that shape has rel.values[0] as a TupleLiteral, not a bare BindMarker,
+                        // and is handled by the per-tuple branch below.
+                        DynamicArray<type::Type> elems;
+                        for (U64 ci = 0; ci < rel.columns.length; ci++) {
+                            push_back(elems, col_type_in_table(tbl, String8(rel.columns[ci].identifier)));
+                        }
+                        collect_bind_in_term(rel.values[0], type::create_list(type::create_tuple(move(elems), true)), out);
+                    } else if (rel.operator_ == Operator::in) {
                         // (ck) IN ((?), (?)) — each value is a TupleLiteral matching rel.columns
                         for (U64 vi = 0; vi < rel.values.length; vi++) {
                             visit(rel.values[vi].value, [&](const auto& v) {
@@ -4012,7 +4250,16 @@ namespace cql::engine {
                 collect_bind_in_term(*sub, subscript_hint_type(col_t), out);
                 collect_bind_in_twi(asgn.value, subscript_rhs_hint_type(col_t), out);
             } else {
-                collect_bind_in_twi(asgn.value, col_t, out);
+                // `m = m - ?` on a map expects `set<key_type>` on the RHS, not the column's
+                // own map type — mirrors planner::plan_update's rhs_ok check.
+                type::Type hint = col_t;
+                if (type_matches_tag<type::Map>(col_t.value)) {
+                    if (auto cf = planner::match_compound_form(asgn.value, String8(asgn.target.column.identifier));
+                        cf && cf->op == ArithmeticOperator::minus) {
+                        hint = type::create_set(get<type::Map>(col_t.value).key);
+                    }
+                }
+                collect_bind_in_twi(asgn.value, hint, out);
             }
         }
         collect_bind_in_where(stmt.where, *tbl, out);

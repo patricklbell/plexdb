@@ -273,7 +273,7 @@ namespace cql::parsers {
             };
 
             static constexpr auto rule = [] {
-                auto has_dot_or_exp = dsl::lookahead(LEXY_LIT("."), dsl::literal_set(LEXY_LIT(";"), LEXY_LIT(")"), LEXY_LIT(","), LEXY_LIT(" "), LEXY_LIT("]"), LEXY_LIT("}"))) | dsl::lookahead(LEXY_LIT("e"), dsl::literal_set(LEXY_LIT(";"), LEXY_LIT(")"), LEXY_LIT(","), LEXY_LIT(" "), LEXY_LIT("]"), LEXY_LIT("}"))) | dsl::lookahead(LEXY_LIT("E"), dsl::literal_set(LEXY_LIT(";"), LEXY_LIT(")"), LEXY_LIT(","), LEXY_LIT(" "), LEXY_LIT("]"), LEXY_LIT("}")));
+                auto has_dot_or_exp = dsl::peek(dsl::sign + dsl::while_(dsl::digit<>) + (dsl::lit_c<'.'> | dsl::lit_c<'e'> | dsl::lit_c<'E'>));
                 return has_dot_or_exp >> dsl::p<integer> + dsl::opt(dsl::p<fraction>) + dsl::opt(dsl::p<exponent>);
             }();
 
@@ -1032,11 +1032,35 @@ namespace cql::parsers {
             static constexpr auto value = lexy::forward<Operator>;
         };
 
+        // `col IN (x)` must keep a single element as a one-element list to ensure
+        // `IN (x)` is distinguishable from `IN x`/`IN ?`
+        struct in_value_list {
+            static constexpr auto rule = [] {
+                auto elems = dsl::opt(dsl::peek_not(dsl::lit_c<')'>) >> dsl::p<term_args_list>);
+                return dsl::lit_c<'('> >> dsl::p<ws> + elems + dsl::p<ws> + dsl::lit_c<')'>;
+            }();
+            static constexpr auto value = lexy::callback<Term>(
+                [](lexy::nullopt) -> Term { return Term{.value = TupleLiteral{}}; },
+                [](DynamicArray<Term>&& elems) -> Term { return Term{.value = TupleLiteral{.elements = move(elems)}}; }
+            );
+        };
+        struct in_rhs_term {
+            static constexpr auto rule  = dsl::p<in_value_list> | dsl::else_ >> dsl::p<term_expr>;
+            static constexpr auto value = lexy::forward<Term>;
+        };
+
         struct column_expression_relation {
             static constexpr auto rule = [] {
-                return dsl::p<column_name> + dsl::p<ws> + dsl::p<comparison_op> + dsl::p<ws> + dsl::p<term_expr>;
+                auto in_form    = dsl::peek(dsl::p<column_name> + dsl::p<ws> + kw_in) >> dsl::p<column_name> + dsl::p<ws> + kw_in + dsl::p<ws> + dsl::p<in_rhs_term>;
+                auto other_form = dsl::p<column_name> + dsl::p<ws> + dsl::p<comparison_op> + dsl::p<ws> + dsl::p<term_expr>;
+                return in_form | dsl::else_ >> other_form;
             }();
             static constexpr auto value = lexy::callback<WhereClause::Relation>(
+                [](ColumnName&& col, Term&& val) -> WhereClause::Relation {
+                    return {
+                        .value = WhereClause::ColumnExpressionRelation{move(col), Operator::in, move(val)}
+                    };
+                },
                 [](ColumnName&& col, Operator op, Term&& val) -> WhereClause::Relation {
                     return {
                         .value = WhereClause::ColumnExpressionRelation{move(col), op, move(val)}
@@ -1834,8 +1858,15 @@ namespace cql::parsers {
             );
         };
         struct batch_modification {
-            static constexpr auto rule  = (dsl::p<insert_stmt> | dsl::p<update_stmt> | dsl::p<delete_stmt>)+dsl::p<ws> + dsl::lit_c<';'>;
-            static constexpr auto value = lexy::construct<Batch::ModificationStatement>;
+            static constexpr auto rule  = (dsl::p<insert_stmt> | dsl::p<update_stmt> | dsl::p<delete_stmt>)+dsl::p<ws> + dsl::opt(dsl::lit_c<';'>);
+            static constexpr auto value = lexy::callback<Batch::ModificationStatement>(
+                [](Insert&& s) -> Batch::ModificationStatement { return {.value = move(s)}; },
+                [](Insert&& s, lexy::nullopt) -> Batch::ModificationStatement { return {.value = move(s)}; },
+                [](Update&& s) -> Batch::ModificationStatement { return {.value = move(s)}; },
+                [](Update&& s, lexy::nullopt) -> Batch::ModificationStatement { return {.value = move(s)}; },
+                [](Delete&& s) -> Batch::ModificationStatement { return {.value = move(s)}; },
+                [](Delete&& s, lexy::nullopt) -> Batch::ModificationStatement { return {.value = move(s)}; }
+            );
         };
         struct batch_modifications_inner {
             static constexpr auto rule  = dsl::list(dsl::peek_not(dsl::p<ws> + kw_apply) >> dsl::p<ws> + dsl::p<batch_modification>);

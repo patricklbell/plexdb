@@ -16,6 +16,22 @@ using namespace cql;
 using namespace cql::io;
 
 namespace cql::io {
+    bool evaluated_exceeds_max_key_size(const Evaluated& eval) {
+        if (!type_matches_tag<Literal>(eval.value)) {
+            return false;
+        }
+        return visit(get<Literal>(eval.value).value, [](const auto& v) -> bool {
+            using T = Decay<decltype(v)>;
+            if constexpr (SameAs<T, AutoString8>) {
+                return v.length > MAX_CQL_KEY_VALUE_BYTES;
+            } else if constexpr (SameAs<T, Blob> || SameAs<T, Hex>) {
+                return v.value.length > MAX_CQL_KEY_VALUE_BYTES;
+            } else {
+                return false;
+            }
+        });
+    }
+
     Optional<ColumnValue> resolve_literal_scalar(const Literal& lit, const type::Type& cdtype) {
         if (!type_matches_tag<type::Basic>(cdtype.value)) {
             return {};

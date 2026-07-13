@@ -1,5 +1,5 @@
 # Mustpass list — tests that must pass to prevent regressions.
-# Generated: 2026-07-06
+# Generated: 2026-07-13
 # Regenerate: tools/cql_tests/run.sh -o tools/cql_tests/mustpass.txt
 #
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testAlterCollections
@@ -10,17 +10,23 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testFunctionsOnCollections
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testInRestrictionWithCollection
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testInvalidCollectionsMix
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testList
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testListWithElementsBiggerThan64K
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testListWithUnsetValues
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testMapBulkRemoval
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testMapWithLargePartition
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testMapWithTwoSStables
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testMapWithUnsetValues
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testMultiCollections
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testMultipleLists
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testMultipleOperationOnMapWithinTheSameQuery
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testMultipleOperationOnSetWithinTheSameQuery
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testNonPureFunctionCollection
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testRemovalThroughUpdate
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testSetWithTwoSStables
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testSetWithUnsetValues
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/collections_test.py::testUpdateStaticList
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_test.py::testCounterBatch
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_test.py::testCounterFiltering
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_test.py::testCounterFilteringWithNull
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/entities/counters_test.py::testCounterUpdatesWithUnset
@@ -71,6 +77,7 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/create_te
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/create_test.py::testMultiOrderingValidation
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/create_test.py::testObsoleteTableProperties
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/create_test.py::testSparseCompositeTable
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/create_test.py::testStaticTable
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/create_test.py::testTable
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testCrossMemSSTableMultiColumn[False-False]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testCrossMemSSTableMultiColumn[False-True]
@@ -120,15 +127,18 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_te
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/delete_test.py::testWithEmptyRange
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/drop_test.py::testDropTableWithDroppedColumns
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/drop_test.py::testNonExistingOnes
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testCKInsertWithValueOver64K
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testInsertWithAStaticColumn[False]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testInsertWithAStaticColumn[True]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testInsertWithTwoClusteringColumns[False]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testInsertWithTwoClusteringColumns[True]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testInsert[False]
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testInsert[True]
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/insert_test.py::testPKInsertWithValueOver64K
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_limit_test.py::testFilteringWithPartitionWithoutRows
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_limit_test.py::testLimitWithDeletedRowsAndStaticColumns
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_limit_test.py::testSparseTable
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testAllowSkippingEqualityAndSingleValueInRestrictedClusteringColumns
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testFunctionSelectionOrderMultipleClustering
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testFunctionSelectionOrderSingleClustering
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_order_by_test.py::testInOrderByWithTwoPartitionKeyColumns
@@ -165,6 +175,7 @@ tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_te
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testMixedTTLOnColumns
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testMixedTTLOnColumnsWide
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testMultipleClausesOnPrimaryKey
+tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testPKQueryWithValueOver64K
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testQueryMultipleIndexTypes
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testRangeQuery
 tools/cql_tests/scylla_cql_tests/cassandra_tests/validation/operations/select_test.py::testSelectCount

@@ -177,14 +177,7 @@ namespace cql::planner {
         return type_matches_tag<type::List>(tv) || type_matches_tag<type::Set>(tv) || type_matches_tag<type::Map>(tv);
     }
 
-    // @note matches `c OP X` or `X OP c` where `c` is the target column name
-    // and the other operand contains no further column references.
-    struct CompoundForm {
-        ArithmeticOperator         op;
-        bool                       col_on_left;
-        const TermWithIdentifiers* other;
-    };
-    static Optional<CompoundForm> match_compound_form(const TermWithIdentifiers& twi, const String8& target_col) {
+    Optional<CompoundForm> match_compound_form(const TermWithIdentifiers& twi, const String8& target_col) {
         if (!type_matches_tag<TOIArithmeticOperation>(twi.value)) {
             return {};
         }
@@ -373,6 +366,14 @@ namespace cql::planner {
         // @note set when this position carries a non-EQ inequality restriction
         // (>, <, >=, <=). Unused for partition keys.
         DynamicArray<bool> range_seen;
+        // @note set when the IN restriction was written as `col IN ?` — the whole list bound
+        // to a single marker, whose element count isn't known until execute binds it. Even
+        // though this re-plan-per-execute engine evaluates bind markers eagerly (so in_vals[i]
+        // may end up length 1 at plan time), Cassandra's "single-value IN counts as equality"
+        // allowance is a property of the CQL *text* (`IN (?)`/`IN (1)`, a syntactically
+        // one-element list) — not of how many values happen to be bound. Distinguishing this
+        // keeps that promotion from firing for `IN ?` bound to a one-element list.
+        DynamicArray<bool> in_from_bind_marker;
     };
 
     static void init_constraints(KeyConstraints& kc, U64 n) {
@@ -380,9 +381,11 @@ namespace cql::planner {
         resize(kc.in_vals, n);
         resize(kc.in_seen, n);
         resize(kc.range_seen, n);
+        resize(kc.in_from_bind_marker, n);
         for (U64 i = 0; i < n; i++) {
-            kc.in_seen[i]    = false;
-            kc.range_seen[i] = false;
+            kc.in_seen[i]             = false;
+            kc.range_seen[i]          = false;
+            kc.in_from_bind_marker[i] = false;
         }
     }
 
@@ -548,7 +551,15 @@ namespace cql::planner {
                     if (static_cast<bool>(pk_pos)) {
                         Evaluated eval = evaluate(r.value, ctx);
                         if (r.operator_ == Operator::eq) {
-                            if (!is_null_eval(eval)) {
+                            if (!is_null_eval(eval) && io::evaluated_exceeds_max_key_size(eval)) {
+                                // @note build_row_locator returns a bare RowLocator/FilterPlan
+                                // pair (no PlanResult at this layer), so reuse the chain_violation
+                                // slot every caller (plan_select/update/delete) already checks
+                                // to surface a clean Invalid, the same way an illegal CK
+                                // restriction chain does.
+                                filter.chain_violation         = PlanError::TypeMismatch;
+                                filter.chain_violation_message = AutoString8("Key value too large");
+                            } else if (!is_null_eval(eval)) {
                                 pk.eq_vals[*pk_pos] = eval;
                                 push_back(pk.eq_rels, rel);
                                 try_capture_index(tbl.partition_key_col_indices[*pk_pos], eval);
@@ -611,6 +622,16 @@ namespace cql::planner {
                             }
                         } else if (r.operator_ == Operator::in) {
                             ck.in_seen[*ck_pos] = true;
+                            // @note bind_values_to_statement substitutes bind markers into the
+                            // AST before planning runs, so `r.value` is never a bare BindMarker
+                            // here even for `col IN ?` — it's already replaced with the bound
+                            // Term. A whole-list bind (`IN ?`) substitutes to a ListOrVectorLiteral
+                            // (matching the list<T> bind-variable type); a parenthesized IN-list
+                            // (`IN (1, 2)`, or `IN (?)` after its one element is bound) is always
+                            // a TupleLiteral (parser.cpp's in_value_list). Only the latter shape
+                            // is known-cardinality at the CQL-text level, so only it may promote
+                            // a single value to the equality prefix below.
+                            ck.in_from_bind_marker[*ck_pos] = !type_matches_tag<TupleLiteral>(r.value.value);
                             visit(eval.value, [&](const auto& lv) {
                                 using LT = RemoveCVRef<decltype(lv)>;
                                 if constexpr (SameAs<LT, ListOrVectorLiteral> || SameAs<LT, TupleLiteral>) {
@@ -670,7 +691,24 @@ namespace cql::planner {
                         for (U64 i = 0; i < r.columns.length && all_ck_in; i++) {
                             all_ck_in = static_cast<bool>(find_ck_position(tbl, r.columns[i].identifier));
                         }
-                        if (all_ck_in) {
+                        if (all_ck_in && r.columns.length > 1 && r.values.length == 1) {
+                            // A single-value multi-column tuple IN is equality:
+                            // (b, c) IN ((1, 2)) === b = 1 AND c = 2. Feeding this through
+                            // in_seen/ck_tuple_in_combos like a real IN would leave ck.eq_vals
+                            // unset, which ORDER BY validation and the equality-prefix chain
+                            // check (both keyed on ck.eq_vals) don't recognize as a fixed prefix.
+                            visit(r.values[0].value, [&](const auto& v) {
+                                using VT = RemoveCVRef<decltype(v)>;
+                                if constexpr (SameAs<VT, TupleLiteral>) {
+                                    for (U64 i = 0; i < v.elements.length && i < r.columns.length; i++) {
+                                        auto ck_pos = find_ck_position(tbl, r.columns[i].identifier);
+                                        if (ck_pos) {
+                                            ck.eq_vals[*ck_pos] = evaluate(v.elements[i], ctx);
+                                        }
+                                    }
+                                }
+                            });
+                        } else if (all_ck_in) {
                             for (U64 ci = 0; ci < r.columns.length; ci++) {
                                 auto ck_pos = find_ck_position(tbl, r.columns[ci].identifier);
                                 if (ck_pos) {
@@ -993,11 +1031,15 @@ namespace cql::planner {
             locator.index_key_prefix = {};
         }
 
-        // Contiguous equality-restricted CK prefix. A single-value IN counts as equality.
+        // Contiguous equality-restricted CK prefix. A single-value IN counts as equality —
+        // but only when the CQL text itself names exactly one value (`IN (1)`/`IN (?)`); an
+        // `IN ?` bound to a one-element list looks identical once evaluated (this engine
+        // re-plans on every execute with bind values already resolved) but Cassandra's
+        // allowance is a property of the query text, not the bound value's cardinality.
         for (U64 i = 0; i < n_ck; i++) {
             if (static_cast<bool>(ck.eq_vals[i])) {
                 locator.ck_eq_prefix_len = i + 1;
-            } else if (ck.in_seen[i] && ck.in_vals[i].length == 1) {
+            } else if (ck.in_seen[i] && ck.in_vals[i].length == 1 && !ck.in_from_bind_marker[i]) {
                 locator.ck_eq_prefix_len = i + 1;
             } else {
                 break;
@@ -1485,14 +1527,23 @@ namespace cql::planner {
             return plan;
         }
 
-        // Check for duplicate column assignments.
+        // Check for duplicate column assignments. Cassandra allows a collection column to be
+        // targeted more than once in the same UPDATE (`m[2] = 7, m[2] = 8`, `s = s + {…}, s = s - {…}`)
+        // — the collection-apply path below merges same-timestamp writes/deletes to the same
+        // key/element instead of naively overwriting. Scalar and counter columns still reject
+        // a repeat: there's no collection merge semantics to fall back on.
         for (U64 i = 0; i < stmt.assignments.length; i++) {
             for (U64 j = 0; j < i; j++) {
-                if (stmt.assignments[i].target.column.identifier == stmt.assignments[j].target.column.identifier) {
-                    plan.result.error   = PlanError::DuplicateColumnInMutation;
-                    plan.result.context = AutoString8(stmt.assignments[i].target.column.identifier);
-                    return plan;
+                if (stmt.assignments[i].target.column.identifier != stmt.assignments[j].target.column.identifier) {
+                    continue;
                 }
+                Optional<U64> dup_col_idx = schema::find_column(tbl, stmt.assignments[i].target.column.identifier);
+                if (dup_col_idx && col_is_collection(tbl.cols[*dup_col_idx])) {
+                    continue;
+                }
+                plan.result.error   = PlanError::DuplicateColumnInMutation;
+                plan.result.context = AutoString8(stmt.assignments[i].target.column.identifier);
+                return plan;
             }
         }
 

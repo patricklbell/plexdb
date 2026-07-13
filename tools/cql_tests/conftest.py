@@ -49,6 +49,14 @@ def _load_skiplist(path):
     return entries
 
 
+# @note skip_bug is deliberately excluded — it marks tests ScyllaDB's own
+# implementation skips as flaky/buggy, which says nothing about whether this
+# engine (a different, synchronous implementation) reproduces that flakiness.
+# Honoring it blindly skipped testNowToUUIDCompatibility/testReversedTypeCompatibility
+# even though both pass reliably here.
+_UPSTREAM_SKIP_MARKERS = ("skip_not_implemented",)
+
+
 def pytest_collection_modifyitems(config, items):
     skiplist_path = config.getoption("--skiplist")
     skip_marks = [
@@ -60,6 +68,11 @@ def pytest_collection_modifyitems(config, items):
             if substr in item.nodeid:
                 item.add_marker(mark)
                 break
+        for marker_name in _UPSTREAM_SKIP_MARKERS:
+            marker = item.get_closest_marker(marker_name)
+            if marker is not None:
+                reason = marker.kwargs.get("reason", marker_name)
+                item.add_marker(pytest.mark.skip(reason=reason))
 
 
 # ── CLI options ───────────────────────────────────────────────────────────

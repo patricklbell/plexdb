@@ -154,6 +154,15 @@ export namespace cql::planner {
         TaggedUnion<Evaluated, TermWithIdentifiers, CollectionPatch> new_value;
     };
 
+    // @note matches `c OP X` or `X OP c` where `c` is the target column name
+    // and the other operand contains no further column references.
+    struct CompoundForm {
+        ArithmeticOperator         op;
+        bool                       col_on_left;
+        const TermWithIdentifiers* other;
+    };
+    Optional<CompoundForm> match_compound_form(const TermWithIdentifiers& twi, const String8& target_col);
+
     struct MutationSpec {
         DynamicArray<ColumnUpdate> updates;
         bool                       is_full_delete = false;
