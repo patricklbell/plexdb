@@ -9,6 +9,7 @@ import cql.engine.statements;
 import cql.engine.io.codec;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 export namespace cql::io {
     // Cassandra's cap on a single partition/clustering key value: 0xFFFF, the largest

@@ -6,10 +6,12 @@
 
 import plexdb.os;
 import plexdb.base;
+import cql.column_types;
 
 using namespace plexdb;
 using namespace plexdb::os;
 using namespace cql;
+using namespace cql::column_types;
 
 // Diagnostic for a read-path failure surfaced by cassandra-stress: write
 // completes cleanly, but the very first read fails "Data returned was not

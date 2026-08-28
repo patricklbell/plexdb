@@ -8,6 +8,7 @@ import cql.engine.types;
 import cql.engine.schema;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 // ============================================================================
 // inline type encoding

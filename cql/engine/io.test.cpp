@@ -16,6 +16,7 @@ import cql.engine.io;
 
 using namespace plexdb;
 using namespace cql;
+using namespace cql::column_types;
 using namespace cql::io;
 
 struct Buffer {

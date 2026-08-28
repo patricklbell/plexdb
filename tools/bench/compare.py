@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """compare.py — diff a benchmark result against a per-machine baseline.
 
-Mirrors the mustpass regression pattern in tools/cql_tests/run.sh, but for
+Mirrors the mustpass regression pattern in tools/cql/conformance_tests/run.sh, but for
 numeric performance metrics with a tolerance instead of exact pass/fail.
 
 Usage:

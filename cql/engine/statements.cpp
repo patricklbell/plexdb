@@ -10,6 +10,7 @@ import cql.engine.types;
 import cql.engine.column_value;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 namespace cql {
     bool is_inequality(Operator op) {

@@ -10,6 +10,7 @@ import cql.engine.types;
 import cql.engine.column_value;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 export namespace cql {
     // ========================================================================
@@ -28,7 +29,14 @@ export namespace cql {
     // ========================================================================
     // constants
     // ========================================================================
-    using LiteralTypes = TypeList<AutoString8, S64, bool, F64, Null, UUID, Hex, Blob, Duration, Unset>;
+    // @note VarInt and Duration are genuine CQL literal grammar forms (an unbounded-precision
+    // integer constant, and a duration literal like `2mo3d`). Decimal and Inet are NOT literal
+    // kinds — Cassandra has no literal syntax for them; a decimal column widens from an
+    // integer/float constant and an inet column widens from a string constant, both handled in
+    // resolve_literal_scalar. A bind parameter whose wire-decoded value is already exactly
+    // Decimal/Inet (dtype known from the protocol, no widening needed) becomes Term{ColumnValue}
+    // directly, not a Literal.
+    using LiteralTypes = TypeList<AutoString8, S64, bool, F64, Null, UUID, Hex, Blob, Duration, VarInt, Unset>;
     struct Literal {
         ExpandTaggedUnion<LiteralTypes> value;
     };

@@ -1,5 +1,12 @@
 export module cql.engine.column_value;
 
+// ColumnValue/NestedColumnValue and the type::Basic-keyed compare/to_str overloads now live in
+// cql.column_types (engine-independent — see that module for why). This module re-exports them
+// unchanged for existing `import cql.engine.column_value;` call sites, and adds only the
+// type::Type-aware to_str overload below, which genuinely needs the engine's schema type tree
+// (Tuple/UDT/Vector/List element recursion) that cql.column_types deliberately doesn't depend on.
+export import cql.column_types;
+
 import plexdb.base;
 import plexdb.tagged_union;
 import plexdb.dynamic.containers;
@@ -8,33 +15,8 @@ import plexdb.dynamic.tagged_union;
 import cql.engine.types;
 
 using namespace plexdb;
-
-export namespace cql {
-    struct NestedColumnValue; // @note forward declare for recursive collection types
-
-    // @todo support UDTs
-    using ColumnValueBasicTypes = TypeList<
-        AutoString8, S64, S32, S16, U8, F64, F32,
-        Blob, UUID, Inet, VarInt, Decimal, Duration>;
-    using ColumnValueTypes = Concat<
-        ColumnValueBasicTypes,
-        TypeList<
-            DynamicArray<NestedColumnValue>,
-            DynamicSet<NestedColumnValue>,
-            DynamicMap<NestedColumnValue, NestedColumnValue>>,
-        TypeList<Null>>;
-    using ColumnValue = ExpandTaggedUnion<ColumnValueTypes>;
-
-    struct NestedColumnValue {
-        ColumnValue value;
-    };
-
-    bool operator==(const NestedColumnValue& a, const NestedColumnValue& b);
-    U64  hash(const NestedColumnValue& ncv);
-    S32  compare_column_value(const ColumnValue& a, const ColumnValue& b, type::Basic dtype);
-}
+using namespace cql::column_types;
 
 export namespace plexdb {
-    AutoString8 to_str(const cql::ColumnValue& value, cql::type::Basic dtype);
-    AutoString8 to_str(const cql::ColumnValue& value, const cql::type::Type& cdtype);
+    AutoString8 to_str(const cql::column_types::ColumnValue& value, const cql::type::Type& cdtype);
 }

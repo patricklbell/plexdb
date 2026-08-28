@@ -31,8 +31,14 @@ fi
 
 bad=()
 while IFS= read -r f; do
-    if ! clang-format-19 --dry-run --Werror "$f" 2>/dev/null; then
-        bad+=("$f")
+    if $all_files; then
+        if ! clang-format-19 --dry-run --Werror "$f" 2>/dev/null; then
+            bad+=("$f")
+        fi
+    else
+        if ! git show ":$f" | clang-format-19 --dry-run --Werror --assume-filename="$f" - 2>/dev/null; then
+            bad+=("$f")
+        fi
     fi
 done <<< "$files"
 
@@ -45,6 +51,10 @@ if [[ ${#bad[@]} -gt 0 ]]; then
 
     printf '  %s\n' "${bad[@]}"
     echo ""
-    echo "  Run: clang-format-19 -i ${bad[*]}"
+    if $all_files; then
+        echo "  Run: clang-format-19 -i ${bad[*]}"
+    else
+        echo "  Run: clang-format-19 -i ${bad[*]} && git add ${bad[*]}"
+    fi
     exit 1
 fi

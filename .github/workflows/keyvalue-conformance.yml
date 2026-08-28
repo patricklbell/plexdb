@@ -54,11 +54,11 @@ jobs:
         run: |
           set -o pipefail
           ARGS="-b build/keyvalue/plexdb_keyvalue_server -r ${{ inputs.redis_py_ref || 'v4.6.0' }}"
-          ARGS="$ARGS -m tools/resp_tests/mustpass.txt"
+          ARGS="$ARGS -m tools/resp/conformance_tests/mustpass.txt"
           if [ -n "${{ inputs.test_filter }}" ]; then
             ARGS="$ARGS -t '${{ inputs.test_filter }}'"
           fi
-          bash tools/resp_tests/run.sh $ARGS 2>&1 | tee "$RUNNER_TEMP/keyvalue_test_output.txt"
+          bash tools/resp/conformance_tests/run.sh $ARGS 2>&1 | tee "$RUNNER_TEMP/keyvalue_test_output.txt"
 
       - name: Generate test summary
         if: always()

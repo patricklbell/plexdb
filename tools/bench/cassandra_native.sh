@@ -7,7 +7,7 @@
 # too rather than dockerized.
 #
 # Downloads/caches the same Cassandra release already pinned in
-# tools/cassandra_stress/Dockerfile, under ~/.cache/plexdb-bench/.
+# tools/cql/cassandra_stress/Dockerfile, under ~/.cache/plexdb-bench/.
 #
 # Usage:
 #   ./tools/bench/cassandra_native.sh start -d <datadir> [-C <cpulist>] [-H <heap>]

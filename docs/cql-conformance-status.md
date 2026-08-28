@@ -1,10 +1,10 @@
 ## CQL conformance gaps
 
 Baseline: **212 / 313 passing**, 48 failed, 13 skiplisted, 32 xfailed, 8 xpassed
-(scylladb ref: master; plexdb, 2026-07-13). Run: `bash tools/cql_tests/run.sh -b
+(scylladb ref: master; plexdb, 2026-07-13). Run: `bash tools/cql/conformance_tests/run.sh -b
 build-conformance/cql/plexdb_cql_server`.
 
-`tools/cql_tests/skiplist.txt` deselects 13 tests in two categories:
+`tools/cql/conformance_tests/skiplist.txt` deselects 13 tests in two categories:
 - **Permissive parser** (2): `testDoubleWith` × 2 — `WITH WITH` is silently accepted on `CREATE`/`ALTER KEYSPACE`. See §H4.
 - **Still-crashing paths** (6 skiplist.txt patterns covering 7 tests, plus 4 UDF-porting-shim skips — see below): `frozen<map<int,int>>` as a PK/CK column (§H6) and the UDT-column-type wire gap (§H8) still abort the server if run; skiplisted so one bad test doesn't destabilize the shared-server harness. `testCreatingUDFWithSameNameAsBuiltin_*` is also skipped here — not a plexdb bug, see the table below.
 

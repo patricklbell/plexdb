@@ -14,6 +14,7 @@ import cql.engine.schema;
 import cql.engine.statements;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 export namespace cql {
     // ColumnIterator streams column values one at a time from a BlobCursor.

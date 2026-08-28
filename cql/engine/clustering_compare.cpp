@@ -10,6 +10,7 @@ import cql.engine.statements;
 import cql.engine.io.codec;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 namespace cql::clustering_compare {
     Ordering ClusteringKeyComparator::operator()(TArrayView<const U8, U16> a, TArrayView<const U8, U16> b) const noexcept {

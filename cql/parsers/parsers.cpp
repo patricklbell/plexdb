@@ -246,6 +246,93 @@ namespace cql::parsers {
             );
         };
 
+        // Cassandra has no dedicated varint/decimal literal syntax — both reuse the generic
+        // integer constant (cassandra.apache.org/doc/4.1/cassandra/cql/types.html), and varint
+        // literals must support arbitrary precision (Cassandra's own grammar does). Unlike
+        // integer_literal above, this accumulates the digit lexeme into a big-endian magnitude
+        // first so it never silently wraps — but it still produces a plain S64 Literal whenever
+        // the value fits one (the overwhelming majority: LIMIT/TTL/TIMESTAMP, WHERE comparisons
+        // against int/bigint columns, etc. all pattern-match Literal's S64 alternative directly
+        // and know nothing about VarInt). Only a literal that doesn't fit in 64 bits produces
+        // Literal{VarInt} — which only varint/decimal columns can currently consume (see
+        // resolve_literal_scalar); assigning one to an int-family column still fails today,
+        // same as before this literal became precision-preserving.
+        struct exact_integer_literal {
+            static constexpr auto rule = [] {
+                auto plus_minus = dsl::lit_c<'-'> / dsl::lit_c<'+'>;
+                return dsl::peek(plus_minus / dsl::digit<>) >> dsl::capture(dsl::token(dsl::opt(plus_minus) + dsl::digits<>));
+            }();
+            static constexpr auto value = lexy::callback<Literal>(
+                [](auto lex) -> Literal {
+                    auto it  = lex.begin();
+                    auto end = lex.end();
+                    bool neg = false;
+                    if (it != end && (*it == '-' || *it == '+')) {
+                        neg = (*it == '-');
+                        ++it;
+                    }
+                    DynamicArray<U8> digits;
+                    for (; it != end; ++it) {
+                        U32 carry = U32(*it - '0');
+                        for (U64 i = digits.length; i-- > 0;) {
+                            U32 val       = U32(digits.ptr[i]) * 10 + carry;
+                            digits.ptr[i] = U8(val & 0xFF);
+                            carry         = val >> 8;
+                        }
+                        while (carry > 0) {
+                            DynamicArray<U8> grown;
+                            resize(grown, digits.length + 1);
+                            grown.ptr[0] = U8(carry & 0xFF);
+                            if (digits.length > 0) {
+                                os::memory_copy(grown.ptr + 1, digits.ptr, digits.length);
+                            }
+                            carry  = carry >> 8;
+                            digits = move(grown);
+                        }
+                    }
+                    U64 start = 0;
+                    while (start < digits.length && digits.ptr[start] == 0) {
+                        start++;
+                    }
+                    U64 mag_len = digits.length - start;
+
+                    // Fits in S64 iff <=7 bytes (<=56 bits), or exactly 8 bytes with the sign-
+                    // appropriate top-bit condition (2^63-1 max positive magnitude, 2^63 max
+                    // negative magnitude — matches integer_literal's own S64::min handling above).
+                    bool fits_s64 = mag_len <= 7;
+                    if (!fits_s64 && mag_len == 8) {
+                        if (digits.ptr[start] < 0x80) {
+                            fits_s64 = true;
+                        } else if (neg && digits.ptr[start] == 0x80) {
+                            fits_s64 = true;
+                            for (U64 i = 1; i < 8; i++) {
+                                if (digits.ptr[start + i] != 0) {
+                                    fits_s64 = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (fits_s64) {
+                        U64 mag = 0;
+                        for (U64 i = 0; i < mag_len; i++) {
+                            mag = (mag << 8) | U64(digits.ptr[start + i]);
+                        }
+                        S64 v = neg ? S64(0ull - mag) : S64(mag);
+                        return Literal{.value = v};
+                    }
+
+                    VarInt result{};
+                    result.negative = neg;
+                    resize(result.magnitude, mag_len);
+                    if (mag_len > 0) {
+                        os::memory_copy(result.magnitude.ptr, digits.ptr + start, mag_len);
+                    }
+                    return Literal{.value = move(result)};
+                }
+            );
+        };
+
         struct float_literal {
             struct integer : lexy::transparent_production {
                 static constexpr auto rule  = dsl::sign + dsl::integer<S64>;
@@ -486,7 +573,7 @@ namespace cql::parsers {
                 auto uuid     = dsl::p<uuid_literal>;
                 auto flt      = dsl::p<float_literal>;
                 auto duration = dsl::p<duration_literal>;
-                auto integer  = dsl::p<integer_literal>;
+                auto integer  = dsl::p<exact_integer_literal>;
                 return str | dollar | boolean | null | uuid | flt | duration | integer;
             }();
             static constexpr auto value = lexy::callback<Literal>(
@@ -494,7 +581,7 @@ namespace cql::parsers {
                 [](bool b) -> Literal { return {.value = b}; },
                 [](Null n) -> Literal { return {.value = n}; },
                 [](F64 f) -> Literal { return {.value = f}; },
-                [](S64 i) -> Literal { return {.value = i}; },
+                [](Literal&& i) -> Literal { return move(i); },
                 [](UUID&& u) -> Literal { return {.value = move(u)}; },
                 [](Duration&& d) -> Literal { return {.value = move(d)}; }
             );

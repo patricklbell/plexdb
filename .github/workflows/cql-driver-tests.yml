@@ -1,0 +1,132 @@
+name: CQL Driver Tests (python-driver)
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_filter:
+        description: "pytest -k expression to select tests (empty = all)"
+        required: false
+        default: ""
+      driver_ref:
+        description: "python-driver git ref (default: trunk)"
+        required: false
+        default: "trunk"
+  workflow_call:
+    inputs:
+      test_filter:
+        type: string
+        description: "pytest -k expression to select tests (empty = all)"
+        required: false
+        default: ""
+      driver_ref:
+        type: string
+        description: "python-driver git ref (default: trunk)"
+        required: false
+        default: "trunk"
+
+jobs:
+  cql-driver-tests:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build liburing-dev clang-19 clang-tools-19 build-essential
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_SCAN_FOR_MODULES=ON
+
+      - name: Build
+        run: |
+          ninja -C build plexdb_cql_server
+
+      - name: Install uv
+        run: |
+          curl -Ls https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Run python-driver integration tests
+        run: |
+          set -o pipefail
+          ARGS="-b build/cql/plexdb_cql_server -P 9042"
+          ARGS="$ARGS -r ${{ inputs.driver_ref || 'trunk' }}"
+          ARGS="$ARGS -m tools/cql/driver_tests/mustpass.txt"
+          ARGS="$ARGS -s tools/cql/driver_tests/skiplist.txt"
+          if [ -n "${{ inputs.test_filter }}" ]; then
+            ARGS="$ARGS -t '${{ inputs.test_filter }}'"
+          fi
+          bash tools/cql/driver_tests/run_python_driver.sh $ARGS 2>&1 | tee "$RUNNER_TEMP/driver_test_output.txt"
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          python3 - "$RUNNER_TEMP/driver_test_output.txt" << 'PYEOF'
+          import os, re, sys
+
+          text = open(sys.argv[1]).read() if len(sys.argv) > 1 else ""
+
+          summary_re = re.compile(r"^=+ (.*?) in \d+(?:\.\d+)?s.*=+$")
+          counts = {}
+          for line in reversed(text.splitlines()):
+              m = summary_re.match(line.strip())
+              if not m:
+                  continue
+              inner = m.group(1)
+              for pat, key in [
+                  (r"(\d+) passed",  "Passed"),
+                  (r"(\d+) failed",  "Failed"),
+                  (r"(\d+) error",   "Errors"),
+                  (r"(\d+) skipped", "Skipped"),
+                  (r"(\d+) warning", "Warnings"),
+              ]:
+                  mm = re.search(pat, inner)
+                  if mm:
+                      counts[key] = int(mm.group(1))
+              break
+
+          regressions = []
+          in_reg = False
+          for line in text.splitlines():
+              if "MUSTPASS REGRESSIONS" in line:
+                  in_reg = True
+                  continue
+              if in_reg:
+                  s = line.strip()
+                  if s.startswith(("FAILED:", "ERROR:")):
+                      regressions.append(s)
+                  elif s and not s.startswith(" "):
+                      break
+
+          total = sum(counts.values())
+          passed = counts.get("Passed", 0)
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("### CQL Driver Test Results (python-driver)\n\n")
+              f.write("Runs [datastax/python-driver](https://github.com/datastax/python-driver)'s ")
+              f.write("own `tests/integration/standard/` suite, unmodified, against `plexdb_cql_server`.\n\n")
+              if counts:
+                  f.write(f"**{passed} / {total} passed**\n\n")
+                  f.write("| Result | Count |\n|--------|-------|\n")
+                  for key in ("Passed", "Failed", "Errors", "Skipped", "Warnings"):
+                      if key in counts:
+                          f.write(f"| {key} | {counts[key]} |\n")
+              else:
+                  f.write("_No test results found — check the run log._\n")
+              f.write("\n")
+              if regressions:
+                  f.write(f"### Mustpass regressions ({len(regressions)})\n\n")
+                  for r in regressions:
+                      f.write(f"- `{r}`\n")
+                  f.write("\n")
+              f.write("Use `workflow_dispatch` to run with custom filters:\n")
+              f.write("- `test_filter`: pytest `-k` expression\n")
+              f.write("- `driver_ref`: python-driver git ref\n")
+          PYEOF

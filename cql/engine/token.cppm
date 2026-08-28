@@ -1,6 +1,6 @@
 export module cql.engine.token;
 
-// .wire is generated from wire_types.json (token::write_component) — re-exported here so
+// .wire is generated from types.json (token::write_component) — re-exported here so
 // callers only need `import cql.engine.token;`.
 export import cql.engine.token.wire;
 

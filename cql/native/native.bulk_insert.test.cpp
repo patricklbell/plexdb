@@ -5,10 +5,12 @@
 
 import plexdb.os;
 import plexdb.base;
+import cql.column_types;
 
 using namespace plexdb;
 using namespace plexdb::os;
 using namespace cql;
+using namespace cql::column_types;
 
 // Regression harness for a heap-buffer-overflow found via cassandra-stress:
 // once a single partition-key leaf page accumulates enough rows, node->key_count

@@ -1,5 +1,5 @@
 // GENERATED FILE — do not edit by hand.
-// Produced by cql/engine/codegen/generate.py from cql/engine/codegen/wire_types.json.
+// Produced by cql/codegen/generate.py from cql/codegen/types.json.
 // Re-run that script after editing the spec; do not hand-patch this file.
 
 module;
@@ -17,6 +17,7 @@ import cql.engine.column_value;
 import cql.engine.types;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 namespace cql::io {
     coroutine::Task<ColumnValue> read_column_value(Reader r, type::Basic dtype) {

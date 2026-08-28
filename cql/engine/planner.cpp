@@ -14,6 +14,7 @@ import cql.engine.statements;
 import cql.engine.types;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 namespace cql::planner {
     // @note parser lowercases identifiers (see unquoted_identifier), so all matches are lowercase-only.

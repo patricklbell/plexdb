@@ -22,6 +22,7 @@ import cql.engine;
 import cql.engine.column_value;
 import cql.engine.statements;
 import cql.engine.io;
+import cql.native.wire;
 import cql.log;
 import cql.lz4;
 
@@ -29,6 +30,7 @@ import xxhash;
 
 using namespace plexdb;
 using namespace cql;
+using namespace cql::column_types;
 
 namespace cql::native {
     // ========================================================================
@@ -188,66 +190,17 @@ namespace cql::native {
         return 0x0000;
     }
 
+    // Per-type wire shape lives in cql.native.wire (from types.json);
+    // this only narrows the return type to S32 for the collection body-length accumulators
+    // below, which is what the CQL native protocol's [int] length fields require.
     template<typename T>
     S32 basic_element_byte_size(const type::Basic& dtype, const T& value) {
         using TT = Decay<T>;
-
-        if constexpr (SameAs<TT, S64>) {
-            assert_true(dtype == type::Basic::bigint || dtype == type::Basic::counter || dtype == type::Basic::timestamp || dtype == type::Basic::time, "S64 does not match basic type");
-            return 8;
-        } else if constexpr (SameAs<TT, S32>) {
-            assert_true(dtype == type::Basic::int_ || dtype == type::Basic::date, "S32 does not match basic type");
-            return 4;
-        } else if constexpr (SameAs<TT, S16>) {
-            assert_true(dtype == type::Basic::smallint, "S16 does not match basic type");
-            return 2;
-        } else if constexpr (SameAs<TT, U8>) {
-            assert_true(dtype == type::Basic::boolean || dtype == type::Basic::tinyint, "U8 does not match basic type");
-            return 1;
-        } else if constexpr (SameAs<TT, F64>) {
-            assert_true(dtype == type::Basic::double_, "F64 does not match basic type");
-            return 8;
-        } else if constexpr (SameAs<TT, F32>) {
-            assert_true(dtype == type::Basic::float_, "F32 does not match basic type");
-            return 4;
-        } else if constexpr (SameAs<TT, AutoString8>) {
-            assert_true(
-                dtype == type::Basic::ascii || dtype == type::Basic::text || dtype == type::Basic::varchar,
-                "AutoString8 does not match basic type"
-            );
-            return value.length;
-        } else if constexpr (SameAs<TT, UUID>) {
-            assert_true(dtype == type::Basic::uuid || dtype == type::Basic::timeuuid, "UUID value does not match basic type");
-            return UUID::length;
-        } else if constexpr (SameAs<TT, Blob>) {
-            assert_true(
-                dtype == type::Basic::blob || dtype == type::Basic::inet || dtype == type::Basic::varint || dtype == type::Basic::decimal || dtype == type::Basic::duration || dtype == type::Basic::hex,
-                "Blob value does not match basic type"
-            );
-            return value.value.length;
-        } else if constexpr (SameAs<TT, Hex>) {
-            assert_true(dtype == type::Basic::hex, "Hex value does not match basic type");
-            return value.value.length;
-        } else if constexpr (SameAs<TT, Inet>) {
-            assert_true(dtype == type::Basic::inet, "Inet value does not match basic type");
-            return value.is_v6 ? 16 : 4;
-        } else if constexpr (SameAs<TT, VarInt>) {
-            assert_true(dtype == type::Basic::varint, "VarInt value does not match basic type");
-            assert_not_implemented("CQL native protocol encoding for varint is not implemented");
-            return 0;
-        } else if constexpr (SameAs<TT, Decimal>) {
-            assert_true(dtype == type::Basic::decimal, "Decimal value does not match basic type");
-            assert_not_implemented("CQL native protocol encoding for decimal is not implemented");
-            return 0;
-        } else if constexpr (SameAs<TT, Duration>) {
-            assert_true(dtype == type::Basic::duration, "Duration value does not match basic type");
-            assert_not_implemented("CQL native protocol encoding for duration is not implemented");
-            return 0;
-        } else if constexpr (IsDynamicArray<TT> || IsDynamicSet<TT> || IsDynamicMap<TT> || SameAs<TT, Null>) {
+        if constexpr (IsDynamicArray<TT> || IsDynamicSet<TT> || IsDynamicMap<TT> || SameAs<TT, Null>) {
             assert_not_implemented("CQL native protocol encoding for nested collection or null element is not implemented");
             return 0;
         } else {
-            static_assert(!SameAs<TT, TT>, "missing basic value type");
+            return S32(native::wire::native_basic_body_length(dtype, value));
         }
     }
 
@@ -275,8 +228,7 @@ namespace cql::native {
     // Read [short bytes]: [short] n + n bytes, returns length and sets out_data
     U16 read_cql_short_bytes(const U8*& p, const U8* end, const U8*& out_data);
 
-    Literal read_cql_value_as_constant(const U8*& p, const U8* end, type::Basic dtype);
-    Term    read_cql_value_as_term(const U8*& p, const U8* end, const type::Type& dtype);
+    Term read_cql_value_as_term(const U8*& p, const U8* end, const type::Type& dtype);
 
     // Acquire a TCP buffer, read data into it, append to buf, then release.
     coroutine::Task<bool> try_append_tcp_read(const tcp::Request& req, DynamicArray<U8>& buf);
@@ -305,97 +257,21 @@ namespace cql::native {
     void append_cql_bytes_raw(Frame& f, const U8* data, S32 n);
     void append_cql_value(Frame& f, const ColumnValue& value, type::Type cdtype);
 
+    // Per-type wire shape lives in cql.native.wire; this just frames it with
+    // the CQL [value] length prefix (Frame is native-protocol-specific, so the framing stays
+    // hand-written here rather than in the generated, Frame-agnostic codec).
     template<typename T>
     void append_cql_basic_element(Frame& f, const type::Basic& dtype, const T& v) {
         using TT = Decay<T>;
-
-        if constexpr (SameAs<TT, AutoString8>) {
-            assert_true(
-                dtype == type::Basic::ascii || dtype == type::Basic::text || dtype == type::Basic::varchar,
-                "AutoString8 value does not match type::Basic"
-            );
-
-            append_cql_bytes_raw(f, reinterpret_cast<const U8*>(v.c_str), S32(v.length));
-        } else if constexpr (SameAs<TT, UUID>) {
-            assert_true(dtype == type::Basic::uuid || dtype == type::Basic::timeuuid, "UUID value does not match type::Basic");
-
-            append_cql_bytes_raw(f, &v.value[0], v.length);
-        } else if constexpr (SameAs<TT, S64>) {
-            assert_true(
-                dtype == type::Basic::bigint || dtype == type::Basic::counter || dtype == type::Basic::timestamp || dtype == type::Basic::time,
-                "S64 value does not match type::Basic"
-            );
-
-            S64 vv = v;
-            U8  data[8];
-            for (int i = 7; i >= 0; i--) {
-                data[i] = U8(vv);
-                vv >>= 8;
-            }
-            append_cql_bytes_raw(f, data, 8);
-        } else if constexpr (SameAs<TT, S32>) {
-            assert_true(
-                dtype == type::Basic::int_ || dtype == type::Basic::date,
-                "S32 value does not match type::Basic"
-            );
-            U8 data[4] = {U8(U32(v) >> 24), U8(U32(v) >> 16), U8(U32(v) >> 8), U8(U32(v))};
-            append_cql_bytes_raw(f, data, 4);
-
-        } else if constexpr (SameAs<TT, S16>) {
-            assert_true(dtype == type::Basic::smallint, "S16 value does not match type::Basic");
-            U8 data[2] = {U8(U16(v) >> 8), U8(v)};
-            append_cql_bytes_raw(f, data, 2);
-
-        } else if constexpr (SameAs<TT, U8>) {
-            assert_true(
-                dtype == type::Basic::boolean || dtype == type::Basic::tinyint,
-                "U8 value does not match type::Basic"
-            );
-            append_cql_bytes_raw(f, &v, 1);
-
-        } else if constexpr (SameAs<TT, F32>) {
-            assert_true(dtype == type::Basic::float_, "F32 value does not match type::Basic");
-            U32 bits;
-            os::memory_copy(&bits, &v, sizeof(bits));
-            U8 data[4] = {U8(bits >> 24), U8(bits >> 16), U8(bits >> 8), U8(bits)};
-            append_cql_bytes_raw(f, data, 4);
-
-        } else if constexpr (SameAs<TT, F64>) {
-            assert_true(dtype == type::Basic::double_, "F64 value does not match type::Basic");
-            U64 bits;
-            os::memory_copy(&bits, &v, sizeof(bits));
-            U8 data[8];
-            for (int i = 7; i >= 0; i--) {
-                data[i] = U8(bits);
-                bits >>= 8;
-            }
-            append_cql_bytes_raw(f, data, 8);
-        } else if constexpr (SameAs<TT, Blob>) {
-            assert_true(
-                dtype == type::Basic::blob || dtype == type::Basic::inet || dtype == type::Basic::varint || dtype == type::Basic::decimal || dtype == type::Basic::duration || dtype == type::Basic::hex,
-                "Blob value does not match type::Basic"
-            );
-            append_cql_bytes_raw(f, v.value.ptr, S32(v.value.length));
-        } else if constexpr (SameAs<TT, Hex>) {
-            assert_true(dtype == type::Basic::hex, "Hex value does not match type::Basic");
-            append_cql_bytes_raw(f, v.value.ptr, S32(v.value.length));
-        } else if constexpr (SameAs<TT, Inet>) {
-            assert_true(dtype == type::Basic::inet, "Inet value does not match type::Basic");
-            if (v.is_v6) {
-                append_cql_bytes_raw(f, &v.v6[0], 16);
-            } else {
-                append_cql_bytes_raw(f, &v.v4[0], 4);
-            }
-        } else if constexpr (SameAs<TT, VarInt>) {
-            assert_not_implemented("CQL native protocol encoding for varint is not implemented");
-        } else if constexpr (SameAs<TT, Decimal>) {
-            assert_not_implemented("CQL native protocol encoding for decimal is not implemented");
-        } else if constexpr (SameAs<TT, Duration>) {
-            assert_not_implemented("CQL native protocol encoding for duration is not implemented");
-        } else if constexpr (IsDynamicArray<TT> || IsDynamicSet<TT> || IsDynamicMap<TT> || SameAs<TT, Null>) {
+        if constexpr (IsDynamicArray<TT> || IsDynamicSet<TT> || IsDynamicMap<TT> || SameAs<TT, Null>) {
             assert_not_implemented("CQL native protocol encoding for nested collection or null element is not implemented");
         } else {
-            static_assert(!SameAs<TT, TT>, "unsupported static type");
+            S32 len = S32(native::wire::native_basic_body_length(dtype, v));
+            append_be_s32(f, len);
+            auto sink = [&f](const U8* data, U64 n) {
+                append_bytes(f, data, n);
+            };
+            native::wire::write_native_basic_body(io::to_writer(sink), dtype, v);
         }
     }
 

@@ -18,6 +18,7 @@ import cql.engine;
 import cql.native;
 
 using namespace cql;
+using namespace cql::column_types;
 using namespace plexdb;
 
 os::Notifier                 g_signal_notifier{};

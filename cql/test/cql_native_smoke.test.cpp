@@ -1,10 +1,12 @@
 #include <cql/test_macros/test_macros.h>
 
 import plexdb.os;
+import cql.column_types;
 
 using namespace plexdb;
 using namespace plexdb::os;
 using namespace cql;
+using namespace cql::column_types;
 
 CQL_NATIVE_TEST_CASE("smoke: STARTUP returns READY", "[cql.native][smoke]") {
     test::run_native_server(fixture, [](Socket& client, Notifier& interrupt) {

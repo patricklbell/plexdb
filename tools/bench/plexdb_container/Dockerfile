@@ -3,7 +3,7 @@
 # because a binary built natively on a laptop's rolling-release distro can
 # be linked against a newer glibc than a runtime image provides. Building
 # inside the same base image it later runs in (matching the toolchain
-# tools/cassandra_stress and CI already pin: ubuntu-24.04 + clang-19) keeps
+# tools/cql/cassandra_stress and CI already pin: ubuntu-24.04 + clang-19) keeps
 # the plexdb build itself a controlled, reproducible variable across
 # machines, symmetric with how the Cassandra target is already just a
 # pinned image.

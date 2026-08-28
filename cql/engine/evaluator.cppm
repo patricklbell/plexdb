@@ -12,6 +12,7 @@ import cql.engine.statements;
 import cql.engine.types;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 export namespace cql {
     struct EvalContext {

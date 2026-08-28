@@ -1,0 +1,64 @@
+{{ header }}
+export module cql.native.wire;
+
+import cql.engine.io.types;
+import cql.column_types;
+import cql.column_types.twos_complement;
+import cql.column_types.vint;
+
+import plexdb.base;
+import plexdb.os;
+
+import cql.engine.statements;
+
+using namespace plexdb;
+using namespace cql::column_types;
+
+{% import "wire_macros.jinja" as wire %}
+export namespace cql::native::wire {
+    // CQL native protocol (client-facing) wire shape for one value's body — big-endian,
+    // no length prefix (the caller writes the [int] length itself, from
+    // native_basic_body_length, framing this). Distinct from cql::io::write_typed_basic
+    // (host-native storage layout) and cql::token::write_component (partition-key hashing
+    // input) — all three are generated from the same types.json but differ in byte
+    // order/shape where Cassandra's own formats differ. Depends only on cql.column_types (the
+    // value shapes) and cql.engine.statements (Term/Literal) — not on cql.engine as a whole.
+    template<typename T>
+    U64 native_basic_body_length([[maybe_unused]] Basic dtype, const T& v) {
+{% for t in write_arm_types %}
+{% if loop.first %}
+        if constexpr (SameAs<T, {{ t.column_value_ctype }}>) {
+{% else %}
+        } else if constexpr (SameAs<T, {{ t.column_value_ctype }}>) {
+{% endif %}
+            return {{ wire.native_body_length(t) }};
+{% endfor %}
+        } else if constexpr (SameAs<T, Hex>) {
+            return v.value.length;
+        } else {
+            static_assert(!SameAs<T, T>, "missing native wire length case");
+        }
+    }
+
+    template<typename T>
+    void write_native_basic_body(io::Writer w, [[maybe_unused]] Basic dtype, const T& v) {
+{% for t in write_arm_types %}
+{% if loop.first %}
+        if constexpr (SameAs<T, {{ t.column_value_ctype }}>) {
+{% else %}
+        } else if constexpr (SameAs<T, {{ t.column_value_ctype }}>) {
+{% endif %}
+{{ wire.native_body(t) }}
+{% endfor %}
+        } else if constexpr (SameAs<T, Hex>) {
+            w(v.value.ptr, v.value.length);
+        } else {
+            static_assert(!SameAs<T, T>, "missing native wire write case");
+        }
+    }
+
+    // Decodes one [value] (the [int] length prefix through the value body) into the most
+    // specific Term available: Literal for genuine CQL literal kinds, ColumnValue directly
+    // for Inet/Decimal (no literal syntax exists for either — see resolve_literal_scalar).
+    Term read_native_basic_value_as_term(const U8*& p, const U8* end, Basic dtype);
+}

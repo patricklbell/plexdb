@@ -9,14 +9,17 @@ import plexdb.tagged_union;
 import plexdb.dynamic.containers;
 import plexdb.dynamic.tagged_union;
 
+import cql.column_types;
 import cql.engine.column_value;
 import cql.engine.io.evaluator;
 import cql.engine.key;
+import cql.engine.literal_widen;
 import cql.engine.schema;
 import cql.engine.statements;
 import cql.engine.types;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 namespace cql {
     // ========================================================================
@@ -550,6 +553,19 @@ namespace cql {
                 return Evaluated{Literal{Null{}}};
             }
             return Evaluated{Literal{-v}};
+        }
+        // A VarInt operand happens whenever the unsigned literal overflowed S64 by exactly one
+        // magnitude bit (e.g. `-9223372036854775808` parses as unary-minus of the positive
+        // literal 9223372036854775808 = 2^63, one past S64::MAX) — negating can bring it back
+        // in range, so re-narrow rather than falling through to as_s64 (which doesn't know
+        // VarInt and would silently produce NULL).
+        if (const VarInt* vi = as_value<VarInt>(value)) {
+            VarInt negated   = *vi;
+            negated.negative = !vi->negative;
+            if (Optional<S64> narrowed = try_s64_from_varint(negated)) {
+                return Evaluated{Literal{*narrowed}};
+            }
+            return Evaluated{Literal{move(negated)}};
         }
         S64 v;
         if (!as_s64(value, v)) {

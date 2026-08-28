@@ -18,10 +18,6 @@ namespace {
 }
 
 namespace plexdb {
-    U64 hash(const cql::type::Basic& t) {
-        return hash(static_cast<U8>(t));
-    }
-
     U64 hash(const cql::type::List& t) {
         return mix(hash(t.element), static_cast<U64>(t.frozen));
     }
@@ -58,58 +54,6 @@ namespace plexdb {
         return visit(t.value, [&](const auto& v) {
             return hash(v);
         });
-    }
-
-    String8 to_str(cql::type::Basic dtype) {
-        switch (dtype) {
-            case cql::type::Basic::text:
-                return "text";
-            case cql::type::Basic::int_:
-                return "int";
-            case cql::type::Basic::bigint:
-                return "bigint";
-            case cql::type::Basic::smallint:
-                return "smallint";
-            case cql::type::Basic::counter:
-                return "counter";
-            case cql::type::Basic::timestamp:
-                return "timestamp";
-            case cql::type::Basic::boolean:
-                return "boolean";
-            case cql::type::Basic::float_:
-                return "float";
-            case cql::type::Basic::double_:
-                return "double";
-            case cql::type::Basic::uuid:
-                return "uuid";
-            case cql::type::Basic::ascii:
-                return "ascii";
-            case cql::type::Basic::blob:
-                return "blob";
-            case cql::type::Basic::date:
-                return "date";
-            case cql::type::Basic::decimal:
-                return "decimal";
-            case cql::type::Basic::duration:
-                return "duration";
-            case cql::type::Basic::inet:
-                return "inet";
-            case cql::type::Basic::time:
-                return "time";
-            case cql::type::Basic::timeuuid:
-                return "timeuuid";
-            case cql::type::Basic::tinyint:
-                return "tinyint";
-            case cql::type::Basic::varchar:
-                return "varchar";
-            case cql::type::Basic::varint:
-                return "varint";
-            case cql::type::Basic::hex:
-                return "hex";
-            case cql::type::Basic::COUNT:
-                break;
-        }
-        return "unknown";
     }
 
     AutoString8 to_str(cql::type::Type cdtype) {

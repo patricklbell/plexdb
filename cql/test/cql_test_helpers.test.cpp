@@ -19,6 +19,7 @@ import cql.crc;
 using namespace plexdb;
 using namespace plexdb::os;
 using namespace cql;
+using namespace cql::column_types;
 
 namespace {
     constexpr int    PORT_BASE  = 23000;

@@ -1,0 +1,7 @@
+# Skiplist for tools/cql/driver_tests/run_python_driver.sh.
+#
+# Entries are substrings matched against pytest -k (deselects any test whose
+# nodeid contains the substring). One per line; '#' starts a trailing
+# comment. Empty initially -- add entries here (with a reason) only for
+# tests that exercise something genuinely out of scope for a single-node
+# engine (e.g. multi-node topology changes), not to hide real gaps.

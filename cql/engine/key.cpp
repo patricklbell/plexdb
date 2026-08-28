@@ -16,6 +16,7 @@ import cql.engine.types;
 import cql.engine.statements;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 namespace cql::key {
     static void append_component(DynamicArray<U8>& out, const ColumnValue& cv, type::Basic dtype) {

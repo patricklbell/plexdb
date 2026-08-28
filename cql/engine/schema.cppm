@@ -14,6 +14,7 @@ import cql.engine.types;
 import cql.engine.clustering_compare;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 // ============================================================================
 // schema

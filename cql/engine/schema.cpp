@@ -17,6 +17,7 @@ import cql.engine.clustering_compare;
 import cql.log;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 // ============================================================================
 // small blob helpers
@@ -699,6 +700,14 @@ namespace cql::schema {
         return type_matches_tag<type::Basic>(t.value) && get<type::Basic>(t.value) == type::Basic::counter;
     }
 
+    // Cassandra: "Duration columns cannot be used in a table's PRIMARY KEY. This limitation is
+    // due to the fact that durations cannot be ordered" (cassandra.apache.org/doc/4.1/cassandra/
+    // cql/types.html) — applies to both partition and clustering columns. Without this check,
+    // duration would reach key.cpp's clustering-key encoder, which asserts rather than erroring.
+    static bool ast_type_is_duration(const type::ast::Type& t) {
+        return type_matches_tag<type::Basic>(t.value) && get<type::Basic>(t.value) == type::Basic::duration;
+    }
+
     static bool ast_type_contains_counter(const type::ast::Type& t) {
         return visit(t.value, [&](const auto& v) -> bool {
             using T = RemoveCVRef<decltype(v)>;
@@ -819,6 +828,19 @@ namespace cql::schema {
                 co_return Result<Table*>{nullptr, Error::InvalidOptions, "counter type is not supported for PRIMARY KEY"};
             }
         }
+
+        // duration constraints
+        for (U64 i : pk_info.partition_col_def_indices) {
+            if (ast_type_is_duration(create.column_definitions[i].type)) {
+                co_return Result<Table*>{nullptr, Error::InvalidOptions, "duration type is not supported for PRIMARY KEY"};
+            }
+        }
+        for (U64 i : pk_info.clustering_col_def_indices) {
+            if (ast_type_is_duration(create.column_definitions[i].type)) {
+                co_return Result<Table*>{nullptr, Error::InvalidOptions, "duration type is not supported for PRIMARY KEY"};
+            }
+        }
+
         for (const auto& col : create.column_definitions) {
             if (!ast_type_is_counter(col.type) && ast_type_contains_counter(col.type)) {
                 co_return Result<Table*>{nullptr, Error::InvalidOptions, "counter type is not allowed inside collections"};

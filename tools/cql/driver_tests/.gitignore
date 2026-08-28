@@ -1,0 +1,5 @@
+python-driver/
+.venv/
+__pycache__/
+*.pyc
+*.log

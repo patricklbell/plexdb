@@ -1,0 +1,63 @@
+{{ header }}
+module;
+#include <cstring>
+
+module cql.native.wire;
+
+import cql.column_types;
+import cql.column_types.twos_complement;
+import cql.column_types.vint;
+
+import plexdb.base;
+import plexdb.os;
+import plexdb.dynamic.containers;
+
+import cql.engine.statements;
+
+using namespace plexdb;
+using namespace cql::column_types;
+
+{% import "wire_macros.jinja" as wire %}
+namespace cql::native::wire {
+    Term read_native_basic_value_as_term(const U8*& p, const U8* end, Basic dtype) {
+        assert_true(p + 4 <= end, "truncated value length");
+        S32 len = S32((U32(p[0]) << 24) | (U32(p[1]) << 16) | (U32(p[2]) << 8) | U32(p[3]));
+        p += 4;
+        if (len == -2) {
+            return Term{.value = Literal{.value = Unset{}}};
+        }
+        if (len < 0) {
+            return Term{.value = Literal{.value = Null{}}};
+        }
+        assert_true(p + len <= end, "value body truncated");
+        const U8* val = p;
+        p += len;
+
+        switch (dtype) {
+{% for t in types if t.basic != ['blob', 'hex'] %}
+{% for b in t.basic %}
+            case Basic::{{ b }}:
+{% endfor %}
+            {
+{{ wire.decode_native_body(t) }}
+            } break;
+{% endfor %}
+            case Basic::blob: {
+                Blob b{};
+                resize(b.value, U64(len));
+                os::memory_copy(b.value.ptr, val, U64(len));
+                return Term{.value = Literal{.value = move(b)}};
+            } break;
+            case Basic::hex: {
+                Hex h{};
+                resize(h.value, U64(len));
+                os::memory_copy(h.value.ptr, val, U64(len));
+                return Term{.value = Literal{.value = move(h)}};
+            } break;
+            case Basic::COUNT:
+                break;
+        }
+        assert_true(false, "invalid basic type for native wire decode");
+        return Term{.value = Literal{.value = Null{}}};
+    }
+}

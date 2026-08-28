@@ -121,6 +121,11 @@ jobs:
     if: github.event_name == 'push'
     uses: ./.github/workflows/cql-conformance.yml
 
+  cql-driver-tests:
+    needs: test
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/cql-driver-tests.yml
+
   keyvalue-conformance:
     needs: test
     if: github.event_name == 'push'

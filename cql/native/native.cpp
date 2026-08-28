@@ -8,6 +8,8 @@ import plexdb.pager;
 
 import cql.engine.evaluator;
 
+using namespace cql::column_types;
+
 namespace cql::native {
     // ========================================================================
     // input
@@ -60,106 +62,11 @@ namespace cql::native {
         return len;
     }
 
-    Literal read_cql_value_as_constant(const U8*& p, const U8* end, type::Basic dtype) {
-        assert_true(p + 4 <= end, "truncated value length");
-        S32 len = read_be_s32(p);
-        p += 4;
-        if (len == -2) {
-            return Literal{.value = Unset{}};
-        }
-        if (len < 0) {
-            return Literal{.value = Null{}};
-        }
-        assert_true(p + len <= end, "value body truncated");
-        const U8* val = p;
-        p += len;
-
-        switch (dtype) {
-            case type::Basic::text:
-            case type::Basic::ascii:
-            case type::Basic::varchar:
-                return Literal{.value = AutoString8(val, U64(len))};
-            case type::Basic::int_: {
-                assert_true(len == 4, "int value must be 4 bytes");
-                S64 v = S64(S32((U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3])));
-                return Literal{.value = v};
-            }
-            case type::Basic::bigint:
-            case type::Basic::timestamp:
-            case type::Basic::counter:
-            case type::Basic::time: {
-                assert_true(len == 8, "bigint value must be 8 bytes");
-                S64 v = read_be_s64(val);
-                return Literal{.value = v};
-            }
-            case type::Basic::smallint: {
-                assert_true(len == 2, "smallint value must be 2 bytes");
-                S64 v = S64(S16((U16(val[0]) << 8) | U16(val[1])));
-                return Literal{.value = v};
-            }
-            case type::Basic::double_: {
-                assert_true(len == 8, "double value must be 8 bytes");
-                U64 bits = (U64(val[0]) << 56) | (U64(val[1]) << 48) | (U64(val[2]) << 40) | (U64(val[3]) << 32) | (U64(val[4]) << 24) | (U64(val[5]) << 16) | (U64(val[6]) << 8) | U64(val[7]);
-                F64 d;
-                os::memory_copy(&d, &bits, sizeof(d));
-                return Literal{.value = d};
-            }
-            case type::Basic::float_: {
-                assert_true(len == 4, "float value must be 4 bytes");
-                U32 bits = (U32(val[0]) << 24) | (U32(val[1]) << 16) | (U32(val[2]) << 8) | U32(val[3]);
-                F32 fv;
-                os::memory_copy(&fv, &bits, sizeof(fv));
-                return Literal{.value = F64(fv)};
-            }
-            case type::Basic::boolean: {
-                assert_true(len == 1, "boolean value must be 1 byte");
-                return Literal{.value = bool(val[0])};
-            }
-            case type::Basic::uuid: {
-                assert_true(len == 16, "uuid value must be 16 bytes");
-                UUID uuid{};
-                os::memory_copy(&uuid.value[0], val, 16);
-                return Literal{.value = uuid};
-            }
-            case type::Basic::timeuuid: {
-                assert_true(len == 16, "timeuuid value must be 16 bytes");
-                UUID uuid{};
-                os::memory_copy(&uuid.value[0], val, 16);
-                return Literal{.value = uuid};
-            }
-            case type::Basic::tinyint: {
-                S64 v = S64(S8(val[0]));
-                return Literal{.value = v};
-            }
-            case type::Basic::date: {
-                assert_true(len == 4, "date value must be 4 bytes");
-                S64 v = S64(read_be_s32(val));
-                return Literal{.value = v};
-            }
-            case type::Basic::blob: {
-                Blob b{};
-                resize(b.value, U64(len));
-                os::memory_copy(b.value.ptr, val, U64(len));
-                return Literal{.value = move(b)};
-            }
-            case type::Basic::decimal:
-            case type::Basic::duration:
-            case type::Basic::inet:
-            case type::Basic::varint:
-            case type::Basic::hex: {
-                return Literal{.value = AutoString8(val, U64(len))};
-            }
-            default:
-                assert_not_implemented("CQL value decoding for this basic type is not implemented");
-                return Literal{.value = Null{}};
-        }
-    }
-
     Term read_cql_value_as_term(const U8*& p, const U8* end, const type::Type& dtype) {
         return visit(dtype.value, [&](const auto& v) -> Term {
             using T = RemoveCVRef<decltype(v)>;
             if constexpr (SameAs<T, type::Basic>) {
-                return Term{.value = read_cql_value_as_constant(p, end, v)};
+                return native::wire::read_native_basic_value_as_term(p, end, v);
             } else if constexpr (SameAs<T, type::List>) {
                 assert_true(p + 4 <= end, "truncated list bind value length");
                 S32 outer_len = read_be_s32(p);

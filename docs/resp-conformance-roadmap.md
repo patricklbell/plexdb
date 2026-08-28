@@ -2,7 +2,7 @@
 
 ## Current State
 
-Running `tools/resp_tests/run.sh` against `plexdb_keyvalue_server` (as of 2026-06-15):
+Running `tools/resp/conformance_tests/run.sh` against `plexdb_keyvalue_server` (as of 2026-06-15):
 
 - **46 passed** / **353 failed** / **28 errors** / **8 skipped** (435 total)
 - Passing: PING, GET, SET (NX/XX only), DEL, EXISTS, MGET, MSET, KEYS, SCAN, DBSIZE,
@@ -16,7 +16,7 @@ Redis command set across all data types and connection-level features.
 Run conformance tests with the log plugin for crash diagnostics:
 ```bash
 ninja -C build/debug plexdb_keyvalue_server
-bash tools/resp_tests/run.sh \
+bash tools/resp/conformance_tests/run.sh \
   -b build/debug/keyvalue/plexdb_keyvalue_server \
   -L /tmp/resp_logs
 cat /tmp/resp_logs/server.log
@@ -524,24 +524,24 @@ bitmask. The same table drives ACL permission checks in the request dispatcher.
 
 After each phase:
 ```bash
-bash tools/resp_tests/run.sh \
+bash tools/resp/conformance_tests/run.sh \
   -b build/debug/keyvalue/plexdb_keyvalue_server \
-  -m tools/resp_tests/mustpass.txt \
+  -m tools/resp/conformance_tests/mustpass.txt \
   -L /tmp/resp_logs
 ```
 
 Regenerate mustpass after each phase:
 ```bash
-bash tools/resp_tests/run.sh \
+bash tools/resp/conformance_tests/run.sh \
   -b build/debug/keyvalue/plexdb_keyvalue_server \
-  -o tools/resp_tests/mustpass.txt
+  -o tools/resp/conformance_tests/mustpass.txt
 ```
 
 Enable the log plugin when diagnosing crashes:
 ```bash
 cmake -B build/debug -DPLEXDB_ENABLE_PLUGINS=ON
 ninja -C build/debug plexdb_keyvalue_server
-bash tools/resp_tests/run.sh \
+bash tools/resp/conformance_tests/run.sh \
   -b build/debug/keyvalue/plexdb_keyvalue_server \
   -p build/debug/plugins/log/libplexdb_log_plugin.so \
   -L /tmp/resp_logs

@@ -171,11 +171,11 @@ run_target() {
         echo "  [$target] rep $rep/$REPS"
         OUT="$WORK/${target}_rep${rep}.txt"
         # cassandra-stress itself can exit non-zero on a successful run (e.g.
-        # JMX stats collection failing, which cassandra_stress/run.sh always
+        # JMX stats collection failing, which cql/cassandra_stress/run.sh always
         # hits since no JMX server is exposed) — cql-bench.yml already
         # tolerates this with `|| true`. The real success signal is whether
         # parse_stress.py below can find a valid Results block.
-        bash "$SCRIPT_DIR/../cassandra_stress/run.sh" \
+        bash "$SCRIPT_DIR/../cql/cassandra_stress/run.sh" \
             -e -p "$PLEXDB_PORT" -C "$CPULIST" -n "$OPS" -t "$THREADS" > "$OUT" 2>&1 || true
 
         WRITE_OUT="$WORK/${target}_rep${rep}_write.txt"

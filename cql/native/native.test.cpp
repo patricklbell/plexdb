@@ -21,6 +21,7 @@ import cql.test_helpers;
 using namespace plexdb;
 using namespace plexdb::os;
 using namespace cql;
+using namespace cql::column_types;
 using namespace cql::test;
 
 CQL_NATIVE_TEST_CASE("Native protocol STARTUP handshake", "[cql.native]") {
@@ -81,6 +82,42 @@ CQL_NATIVE_TEST_CASE("Native protocol error responses", "[cql.native]") {
         CHECK(err.opcode == op::ERROR);
         CHECK(err.stream == 42);
 
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Native protocol inet/varint/decimal/duration columns round-trip", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (addr inet PRIMARY KEY, amount decimal, big varint, span duration, label text);").opcode == op::RESULT);
+        // amount/big exercise the generic integer/float constant widening (Cassandra has no
+        // dedicated decimal/varint literal syntax); big overflows S64 to check arbitrary-
+        // precision integer literal parsing; addr exercises string-to-inet widening.
+        CHECK(send_query(client, "INSERT INTO ks.t (addr, amount, big, span, label) VALUES ('127.0.0.1', 19.99, 123456789012345678901234567890, 2mo3d, 'marker-xyz');").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT * FROM ks.t;");
+        CHECK(sel.opcode == op::RESULT);
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "marker-xyz"));
+
+        Frame by_pk = send_query(client, "SELECT * FROM ks.t WHERE addr = '127.0.0.1';");
+        CHECK(result_kind(by_pk) == result::ROWS);
+        CHECK(body_contains(by_pk, "marker-xyz"));
+
+        Frame by_decimal = send_query(client, "SELECT * FROM ks.t WHERE addr = '127.0.0.1' AND amount = 19.99 ALLOW FILTERING;");
+        CHECK(result_kind(by_decimal) == result::ROWS);
+        CHECK(body_contains(by_decimal, "marker-xyz"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Native protocol duration rejected in PRIMARY KEY", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (id duration PRIMARY KEY);").opcode == op::ERROR);
         signal_notify_safe(interrupt);
     });
     co_return;

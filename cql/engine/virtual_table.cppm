@@ -10,6 +10,7 @@ import cql.engine.types;
 import cql.engine.statements;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 export namespace cql::engine {
     struct VirtualColumn {

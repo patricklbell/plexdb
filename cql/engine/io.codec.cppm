@@ -17,6 +17,7 @@ import cql.engine.column_value;
 import cql.engine.types;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 export namespace cql::io {
     constexpr U64 COLUMN_COUNT_BYTE_COUNT = sizeof(U64);

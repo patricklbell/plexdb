@@ -46,11 +46,11 @@ jobs:
       - name: Run CQL conformance under valgrind
         run: |
           set -o pipefail
-          bash tools/cql_tests/run.sh \
+          bash tools/cql/conformance_tests/run.sh \
             -b build/cql/plexdb_cql_server -P 9042 \
             -r "${{ inputs.scylla_ref || 'master' }}" \
-            -m tools/cql_tests/mustpass.txt \
-            -s tools/cql_tests/skiplist.txt \
+            -m tools/cql/conformance_tests/mustpass.txt \
+            -s tools/cql/conformance_tests/skiplist.txt \
             -V \
             ${{ inputs.test_filter && format('-t ''{0}''', inputs.test_filter) || '' }} \
             2>&1 | tee "$RUNNER_TEMP/cql_valgrind_output.txt"

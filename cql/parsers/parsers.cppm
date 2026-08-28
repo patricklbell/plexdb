@@ -8,6 +8,7 @@ import cql.engine.statements;
 import cql.log;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 export namespace cql::parsers {
     struct ParseResult {

@@ -15,6 +15,7 @@ import cql.engine.types;
 
 using namespace plexdb;
 using namespace cql;
+using namespace cql::column_types;
 using namespace cql::io;
 
 namespace {

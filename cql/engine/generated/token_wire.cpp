@@ -1,5 +1,5 @@
 // GENERATED FILE — do not edit by hand.
-// Produced by cql/engine/codegen/generate.py from cql/engine/codegen/wire_types.json.
+// Produced by cql/codegen/generate.py from cql/codegen/types.json.
 // Re-run that script after editing the spec; do not hand-patch this file.
 
 module;
@@ -8,14 +8,16 @@ module;
 module cql.engine.token.wire;
 
 import cql.engine.io.codec;
+import cql.column_types;
+import cql.column_types.twos_complement;
 
 import plexdb.base;
 import plexdb.os;
 
-import cql.engine.column_value;
 import cql.engine.types;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 namespace cql::token {
     void write_component(io::Writer w, const ColumnValue& cv, type::Basic dtype, bool is_composite) {
@@ -138,6 +140,38 @@ namespace cql::token {
                 emit_prefix(static_cast<U16>(16));
                 w(&v.value[0], 16);
                 emit_trailer();
+
+            } else if constexpr (SameAs<T, Inet>) {
+                emit_prefix(static_cast<U16>(v.is_v6 ? 16 : 4));
+                if (v.is_v6) {
+                    w(&v.v6[0], 16);
+                } else {
+                    w(&v.v4[0], 4);
+                }
+                emit_trailer();
+
+            } else if constexpr (SameAs<T, VarInt>) {
+                emit_prefix(static_cast<U16>(twos_complement::length(v.negative, v.magnitude.ptr, v.magnitude.length)));
+                twos_complement::write(w, v.negative, v.magnitude.ptr, v.magnitude.length);
+                emit_trailer();
+
+            } else if constexpr (SameAs<T, Decimal>) {
+                {
+                    U16 unscaled_len_ = static_cast<U16>(twos_complement::length(v.unscaled.negative, v.unscaled.magnitude.ptr, v.unscaled.magnitude.length));
+                    emit_prefix(static_cast<U16>(4 + unscaled_len_));
+                    {
+                        U64 bits_ = static_cast<U64>(static_cast<U32>(v.scale));
+                        U8  buf[4];
+                        buf[0] = U8((bits_ >> 24) & 0xFFu);
+                        buf[1] = U8((bits_ >> 16) & 0xFFu);
+                        buf[2] = U8((bits_ >> 8) & 0xFFu);
+                        buf[3] = U8((bits_ >> 0) & 0xFFu);
+                        w(buf, 4);
+                    }
+
+                    twos_complement::write(w, v.unscaled.negative, v.unscaled.magnitude.ptr, v.unscaled.magnitude.length);
+                    emit_trailer();
+                }
 
             } else {
                 assert_not_implemented("wire encoding for partition key type is not implemented");

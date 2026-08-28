@@ -16,6 +16,7 @@ import cql.engine.types;
 import cql.engine.statements;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 export namespace cql::key {
     // @note clustering-key bytes are not memcmp-orderable; always compare via this.

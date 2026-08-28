@@ -50,6 +50,9 @@ target_sources(plexbd_cql
         FILE_SET CXX_MODULES TYPE CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
+            column_types/column_types.cppm
+            column_types/twos_complement.cppm
+            column_types/vint.cppm
             crc/crc.cppm
             engine/engine.cppm
             engine/clustering_compare.cppm
@@ -59,6 +62,7 @@ target_sources(plexbd_cql
             engine/io.codec.cppm
             engine/io.evaluator.cppm
             engine/io.types.cppm
+            engine/literal_widen.cppm
             engine/generated/io_codec_wire.cppm
             engine/generated/token_wire.cppm
             engine/it.cppm
@@ -74,16 +78,21 @@ target_sources(plexbd_cql
             log/log.cppm
             parsers/parsers.cppm
             native/native.cppm
+            native/generated/native_wire.cppm
             third_party/lz4/lz4.cppm
             third_party/murmur3/murmur3.cppm
 
     PRIVATE
+        column_types/column_types.cpp
+        column_types/twos_complement.cpp
+        column_types/vint.cpp
         engine/engine.cpp
         engine/clustering_compare.cpp
         engine/column_value.cpp
         engine/evaluator.cpp
         engine/io.codec.cpp
         engine/io.evaluator.cpp
+        engine/literal_widen.cpp
         engine/generated/io_codec_wire.cpp
         engine/generated/io_codec_sync.cpp
         engine/generated/token_wire.cpp
@@ -98,6 +107,7 @@ target_sources(plexbd_cql
         engine/types.cpp
         log/log.cpp
         parsers/parsers.cpp
+        native/generated/native_wire.cpp
         native/native.cpp
         third_party/lz4/lz4.cpp
         third_party/murmur3/murmur3.c

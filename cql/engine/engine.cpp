@@ -18,6 +18,8 @@ import cql.engine.it;
 import cql.engine.key;
 import cql.engine.planner;
 
+using namespace cql::column_types;
+
 namespace cql::engine {
     coroutine::Task<> init(Engine& engine, Pager* in_pager) {
         engine.pager = in_pager;
@@ -4575,7 +4577,7 @@ namespace cql::engine {
         ZoneScopedN("engine::prepare");
         U64 query_hash = hash(query);
 
-        auto* existing = find(engine.prepared_cache, query_hash);
+        auto* existing = find(engine.query_hash_to_prepared_cache, query_hash);
         if (existing != nullptr && existing->schema_version == engine.schema.version) {
             return {.status = ExecutionStatus::Success, .id = query_hash, .entry = existing};
         }
@@ -4589,7 +4591,7 @@ namespace cql::engine {
         }
 
         // Fresh entry, or a stale one (schema changed since it was derived) refreshed in place.
-        auto& entry          = (existing != nullptr) ? *existing : insert(engine.prepared_cache, query_hash);
+        auto& entry          = (existing != nullptr) ? *existing : insert(engine.query_hash_to_prepared_cache, query_hash);
         entry.query_string   = AutoString8(query);
         entry.bind_variables = collect_bind_variables_with_keyspace(engine, *pr.statement, current_keyspace);
         entry.pk_index       = -1;
@@ -4623,11 +4625,11 @@ namespace cql::engine {
     }
 
     PreparedEntry* try_get_prepared(Engine& engine, U64 prepared_id) {
-        return find(engine.prepared_cache, prepared_id);
+        return find(engine.query_hash_to_prepared_cache, prepared_id);
     }
 
     coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values) {
-        auto* entry = find(engine.prepared_cache, prepared_id);
+        auto* entry = find(engine.query_hash_to_prepared_cache, prepared_id);
         if (entry == nullptr) {
             co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Prepared statement not found"};
         }
@@ -4641,7 +4643,7 @@ namespace cql::engine {
     }
 
     coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values, AutoString8& current_keyspace) {
-        auto* entry = find(engine.prepared_cache, prepared_id);
+        auto* entry = find(engine.query_hash_to_prepared_cache, prepared_id);
         if (entry == nullptr) {
             co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Prepared statement not found"};
         }

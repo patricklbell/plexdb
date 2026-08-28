@@ -25,6 +25,7 @@ import plexdb.btree;
 import plexdb.aio;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 export namespace cql::engine {
     // ========================================================================
@@ -66,7 +67,7 @@ export namespace cql::engine {
         bool           single_node = true;
         U16            port        = 9042;
 
-        MapFixedSentinel<U64, PreparedEntry, MAX_PREPARED_STATEMENTS> prepared_cache;
+        MapFixedSentinel<U64, PreparedEntry, MAX_PREPARED_STATEMENTS> query_hash_to_prepared_cache;
         VirtualTableCacheEntry                                        virtual_table_cache[VIRTUAL_TABLE_CACHE_SIZE];
     };
 

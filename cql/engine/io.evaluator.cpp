@@ -5,14 +5,17 @@ import plexdb.tagged_union;
 import plexdb.dynamic.containers;
 import plexdb.dynamic.tagged_union;
 
+import cql.column_types;
 import cql.engine.column_value;
 import cql.engine.evaluator;
 import cql.engine.io.codec;
+import cql.engine.literal_widen;
 import cql.engine.types;
 import cql.engine.statements;
 
 using namespace plexdb;
 using namespace cql;
+using namespace cql::column_types;
 using namespace cql::io;
 
 namespace cql::io {
@@ -39,6 +42,41 @@ namespace cql::io {
         type::Basic b = get<type::Basic>(cdtype.value);
         return visit(lit.value, [&](const auto& c) -> Optional<ColumnValue> {
             using T = Decay<decltype(c)>;
+
+            // Cassandra has no dedicated varint/decimal/inet literal syntax — the grammar
+            // reuses the generic integer/float/string constants and the target column's
+            // declared type decides how they widen (cassandra.apache.org/doc/4.1/cassandra/
+            // cql/types.html "Constants supported"). Handled here, ahead of the generic
+            // wire-shape compatibility gate below, which only knows exact storage shapes.
+            if constexpr (SameAs<T, VarInt>) {
+                if (b == type::Basic::varint) {
+                    return ColumnValue{c};
+                }
+                if (b == type::Basic::decimal) {
+                    return ColumnValue{
+                        Decimal{0, c}
+                    };
+                }
+                if (is_literal_integer_family(b)) {
+                    return narrow_s64_literal(s64_from_varint_truncating(c), b);
+                }
+                return {};
+            }
+            if constexpr (SameAs<T, F64>) {
+                if (b == type::Basic::decimal) {
+                    return ColumnValue{decimal_from_f64(c)};
+                }
+            }
+            if constexpr (SameAs<T, AutoString8>) {
+                if (b == type::Basic::inet) {
+                    Optional<Inet> parsed = inet_from_string(String8(c));
+                    if (!parsed.has_value()) {
+                        return {};
+                    }
+                    return ColumnValue{*parsed};
+                }
+            }
+
             // Single source of truth for compatibility — see can_write_typed_basic_as_column_value.
             // Everything below is pure construction: dtype is already known-valid for T.
             if (!can_write_typed_basic_as_column_value<T>(b)) {

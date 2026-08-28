@@ -18,6 +18,8 @@ import cql.engine.schema;
 import cql.engine.types;
 import cql.engine.statements;
 
+using namespace cql::column_types;
+
 namespace cql {
     // ========================================================================
     // column iterator

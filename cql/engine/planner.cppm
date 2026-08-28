@@ -13,6 +13,7 @@ import cql.engine.statements;
 import cql.engine.types;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 export namespace cql::planner {
     // Shared bound description for partition and clustering keys, generic over the BTree's

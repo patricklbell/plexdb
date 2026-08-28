@@ -16,6 +16,7 @@ import cql.engine.column_value;
 import cql.engine.types;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 namespace cql::io {
     // ========================================================================

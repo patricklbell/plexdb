@@ -6,7 +6,7 @@ import unittest
 from parse_stress import parse
 
 # Captured verbatim from a real `cassandra-stress read` run against plexdb
-# (tools/cassandra_stress/run.sh -n 500 -t 4), including the noise that
+# (tools/cql/cassandra_stress/run.sh -n 500 -t 4), including the noise that
 # precedes the Results block in real output.
 REAL_READ_OUTPUT = """
 Sleeping 2s...

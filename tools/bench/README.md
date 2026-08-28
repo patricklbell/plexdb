@@ -5,7 +5,7 @@ Cassandra, pinned and mode-matched for a fair comparison, records a full
 hardware/software fingerprint with every result, and can check a run
 against this machine's own history to catch performance regressions.
 
-Builds on `tools/cassandra_stress/`, which just fires `cassandra-stress` at
+Builds on `tools/cql/cassandra_stress/`, which just fires `cassandra-stress` at
 a single already-running server — this directory adds the orchestration,
 tuning, dual-target comparison, and regression tracking around it.
 
@@ -103,7 +103,7 @@ with no system-wide or sudo cost.
 
 ## Regression tracking
 
-Mirrors `tools/cql_tests/run.sh` + `mustpass.txt`: a baseline checked into
+Mirrors `tools/cql/conformance_tests/run.sh` + `mustpass.txt`: a baseline checked into
 git, a script that re-derives current numbers and diffs them against it,
 and a non-zero exit on regression — the same shape, just numeric-with-
 tolerance (default ±10%, see `compare.py --tolerance`) instead of
@@ -139,5 +139,5 @@ Not adopted as dependencies, but the reference points for the design:
   record a full hardware fingerprint per result and compare historically
   rather than against one fixed number, the same shape as `system_info.sh`
   + per-machine baselines here.
-- **This repo's own `tools/cql_tests/run.sh` + `mustpass.txt`** — the
+- **This repo's own `tools/cql/conformance_tests/run.sh` + `mustpass.txt`** — the
   direct template for `baseline/` + `compare.py`.

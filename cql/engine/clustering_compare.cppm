@@ -11,6 +11,7 @@ import cql.engine.column_value;
 import cql.engine.statements;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 // Clustering-key column ordering. Component encoding is the generic io.codec column-value
 // wire shape (used directly by callers, not re-exported here) — this module owns only the

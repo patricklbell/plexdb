@@ -7,6 +7,7 @@ import cql.engine.column_value;
 
 using namespace plexdb;
 using namespace cql;
+using namespace cql::column_types;
 
 // @note DynamicSet/DynamicMap (core/dynamic/containers.cppm) are hash-bucketed with
 // load-triggered rehashing, so two instances holding identical elements can have different

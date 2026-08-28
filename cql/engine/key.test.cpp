@@ -17,6 +17,7 @@ import cql.engine.types;
 
 using namespace plexdb;
 using namespace cql;
+using namespace cql::column_types;
 
 namespace {
     schema::Column make_ck_col(String8 name, type::Basic dtype, Sort order = Sort::ASC) {

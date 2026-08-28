@@ -14,6 +14,7 @@ import cql.engine.types;
 
 using namespace plexdb;
 using namespace cql;
+using namespace cql::column_types;
 using namespace cql::parsers;
 
 TEST_CASE("CQL CREATE KEYSPACE", "[cql.cql]") {

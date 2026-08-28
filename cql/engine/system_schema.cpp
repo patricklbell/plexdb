@@ -7,6 +7,7 @@ import cql.engine.evaluator;
 import cql.engine.statements;
 
 using namespace plexdb;
+using namespace cql::column_types;
 
 namespace cql::engine {
     // Deterministic per-table UUID: high 8 bytes = hash of keyspace name,
@@ -118,16 +119,16 @@ namespace cql::engine {
     static const BuiltinCol ss_keyspaces_cols[] = {
         {"keyspace_name", type::create_basic(type::Basic::text), "partition_key", 0},
         {"durable_writes", type::create_basic(type::Basic::boolean), "regular", -1},
-        {"replication", create_map(type::Basic::text, type::Basic::text), "regular", -1},
+        {"replication", type::create_map(type::Basic::text, type::Basic::text), "regular", -1},
     };
     static const BuiltinCol ss_tables_cols[] = {
         {"keyspace_name", type::create_basic(type::Basic::text), "partition_key", 0},
         {"table_name", type::create_basic(type::Basic::text), "clustering", 0},
         {"bloom_filter_fp_chance", type::create_basic(type::Basic::double_), "regular", -1},
-        {"caching", create_map(type::Basic::text, type::Basic::text), "regular", -1},
+        {"caching", type::create_map(type::Basic::text, type::Basic::text), "regular", -1},
         {"comment", type::create_basic(type::Basic::text), "regular", -1},
-        {"compaction", create_map(type::Basic::text, type::Basic::text), "regular", -1},
-        {"compression", create_map(type::Basic::text, type::Basic::text), "regular", -1},
+        {"compaction", type::create_map(type::Basic::text, type::Basic::text), "regular", -1},
+        {"compression", type::create_map(type::Basic::text, type::Basic::text), "regular", -1},
         {"crc_check_chance", type::create_basic(type::Basic::double_), "regular", -1},
         {"dclocal_read_repair_chance", type::create_basic(type::Basic::double_), "regular", -1},
         {"default_time_to_live", type::create_basic(type::Basic::int_), "regular", -1},
@@ -140,7 +141,7 @@ namespace cql::engine {
         {"read_repair", type::create_basic(type::Basic::text), "regular", -1},
         {"read_repair_chance", type::create_basic(type::Basic::double_), "regular", -1},
         {"speculative_retry", type::create_basic(type::Basic::text), "regular", -1},
-        {"extensions", create_map(type::Basic::text, type::Basic::blob), "regular", -1},
+        {"extensions", type::create_map(type::Basic::text, type::Basic::blob), "regular", -1},
     };
     static const BuiltinCol ss_columns_cols[] = {
         {   "keyspace_name", type::create_basic(type::Basic::text), "partition_key",  0},
@@ -157,10 +158,10 @@ namespace cql::engine {
         {"base_table_id", type::create_basic(type::Basic::uuid), "regular", -1},
         {"base_table_name", type::create_basic(type::Basic::text), "regular", -1},
         {"bloom_filter_fp_chance", type::create_basic(type::Basic::double_), "regular", -1},
-        {"caching", create_map(type::Basic::text, type::Basic::text), "regular", -1},
+        {"caching", type::create_map(type::Basic::text, type::Basic::text), "regular", -1},
         {"comment", type::create_basic(type::Basic::text), "regular", -1},
-        {"compaction", create_map(type::Basic::text, type::Basic::text), "regular", -1},
-        {"compression", create_map(type::Basic::text, type::Basic::text), "regular", -1},
+        {"compaction", type::create_map(type::Basic::text, type::Basic::text), "regular", -1},
+        {"compression", type::create_map(type::Basic::text, type::Basic::text), "regular", -1},
         {"default_time_to_live", type::create_basic(type::Basic::int_), "regular", -1},
         {"gc_grace_seconds", type::create_basic(type::Basic::int_), "regular", -1},
         {"id", type::create_basic(type::Basic::uuid), "regular", -1},
@@ -172,21 +173,21 @@ namespace cql::engine {
         {"read_repair_chance", type::create_basic(type::Basic::double_), "regular", -1},
         {"speculative_retry", type::create_basic(type::Basic::text), "regular", -1},
         {"where_clause", type::create_basic(type::Basic::text), "regular", -1},
-        {"extensions", create_map(type::Basic::text, type::Basic::blob), "regular", -1},
+        {"extensions", type::create_map(type::Basic::text, type::Basic::blob), "regular", -1},
     };
     static const BuiltinCol ss_indexes_cols[] = {
         {"keyspace_name", type::create_basic(type::Basic::text), "partition_key", 0},
         {"table_name", type::create_basic(type::Basic::text), "clustering", 0},
         {"index_name", type::create_basic(type::Basic::text), "clustering", 1},
         {"kind", type::create_basic(type::Basic::text), "regular", -1},
-        {"options", create_map(type::Basic::text, type::Basic::text), "regular", -1},
-        {"extensions", create_map(type::Basic::text, type::Basic::blob), "regular", -1},
+        {"options", type::create_map(type::Basic::text, type::Basic::text), "regular", -1},
+        {"extensions", type::create_map(type::Basic::text, type::Basic::blob), "regular", -1},
     };
     static const BuiltinCol ss_triggers_cols[] = {
         {"keyspace_name", type::create_basic(type::Basic::text), "partition_key", 0},
         {"table_name", type::create_basic(type::Basic::text), "clustering", 0},
         {"trigger_name", type::create_basic(type::Basic::text), "clustering", 1},
-        {"options", create_map(type::Basic::text, type::Basic::text), "regular", -1},
+        {"options", type::create_map(type::Basic::text, type::Basic::text), "regular", -1},
     };
     static const BuiltinCol ss_dropped_cols[] = {
         {"keyspace_name",      type::create_basic(type::Basic::text), "partition_key",  0},
@@ -199,14 +200,14 @@ namespace cql::engine {
     static const BuiltinCol ss_types_cols[] = {
         {"keyspace_name", type::create_basic(type::Basic::text), "partition_key",  0},
         {    "type_name", type::create_basic(type::Basic::text),    "clustering",  0},
-        {  "field_names",        create_list(type::Basic::text),       "regular", -1},
-        {  "field_types",        create_list(type::Basic::text),       "regular", -1},
+        {  "field_names",  type::create_list(type::Basic::text),       "regular", -1},
+        {  "field_types",  type::create_list(type::Basic::text),       "regular", -1},
     };
     static const BuiltinCol ss_functions_cols[] = {
         {       "keyspace_name",    type::create_basic(type::Basic::text), "partition_key",  0},
         {       "function_name",    type::create_basic(type::Basic::text),    "clustering",  0},
-        {      "argument_types",           create_list(type::Basic::text),    "clustering",  1},
-        {      "argument_names",           create_list(type::Basic::text),       "regular", -1},
+        {      "argument_types",     type::create_list(type::Basic::text),    "clustering",  1},
+        {      "argument_names",     type::create_list(type::Basic::text),       "regular", -1},
         {                "body",    type::create_basic(type::Basic::text),       "regular", -1},
         {"called_on_null_input", type::create_basic(type::Basic::boolean),       "regular", -1},
         {            "language",    type::create_basic(type::Basic::text),       "regular", -1},
@@ -215,7 +216,7 @@ namespace cql::engine {
     static const BuiltinCol ss_aggregates_cols[] = {
         { "keyspace_name", type::create_basic(type::Basic::text), "partition_key",  0},
         {"aggregate_name", type::create_basic(type::Basic::text),    "clustering",  0},
-        {"argument_types",        create_list(type::Basic::text),    "clustering",  1},
+        {"argument_types",  type::create_list(type::Basic::text),    "clustering",  1},
         {    "final_func", type::create_basic(type::Basic::text),       "regular", -1},
         {      "initcond", type::create_basic(type::Basic::text),       "regular", -1},
         {   "return_type", type::create_basic(type::Basic::text),       "regular", -1},

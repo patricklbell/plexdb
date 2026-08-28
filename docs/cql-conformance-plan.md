@@ -4,29 +4,39 @@ Companion to [`cql-conformance-status.md`](cql-conformance-status.md); that
 document enumerates the concrete failures and hacks (§H1–§H14). This one
 names the architectural redesigns that delete the hacks as a *class*.
 
-The `cql/engine` + `cql/native` tree is ~17,500 LOC (including generated
-code) serving 313 tests — down from 20,489 as R2's value/key unification and
-a general cleanup landed. Two cross-cutting structural problems remain and
-produce most of what's left in §H1–§H14:
+The `cql/engine` + `cql/native` tree is ~18,500 LOC (including generated
+code) serving 313 tests — up slightly from ~17,500 as this session's new
+`cql/column_types` module and generated native-protocol codec landed (the
+local Catch2 unit suite also grew, to 183 test cases, with this session's
+additions). `cql/column_types` is a new top-level module sibling to
+`engine`/`native`/`parsers`, holding the physical value shapes (`type::Basic`,
+`ColumnValue`, `VarInt`/`Decimal`/`Duration`/`Inet`/etc.) and their
+wire-primitive codecs (`twos_complement`, `vint`) independent of the engine —
+see R5 below for why the first attempt at this session's native-protocol work
+got the module boundary wrong and had to be corrected. Two cross-cutting
+structural problems remain and produce most of what's left in §H1–§H14:
 
 1. **The AST is the runtime representation.** `execute_inside_transaction` in `engine.cpp` is still one function dispatching on statement kind via `if constexpr (SameAs<T, X>)`. Prepared statements are not a runtime artefact — `PreparedEntry` stores the raw query string (`engine.cppm:38`), and every `EXECUTE` re-parses it (`engine.cpp:4647`, `engine.cpp:4661`, `native.cpp:1162`). Type dispatch via `type_matches_tag<...>` chains is down from ~205/~87 sites to **~96 in `engine.cpp` / ~47 in `planner.cpp`** (up slightly from a session of bugfixes adding call sites, not a regression in the pattern) — the shape is still unchanged. This is R1.
 2. **Values were materialised even when only copied — now mostly fixed.** Storage, wire, and key formats used to be three different byte layouts, forcing a `ColumnValue` round-trip for plain projection or exact-type writes. R2 (below) has landed the bulk of the fix: a generated per-type wire/storage codec and a type-aware clustering comparator that both operate on encoded bytes directly.
 
-Beyond these, 26 `assert_not_implemented` sites remain (down from 34) for
-type-completeness gaps — each a runtime crash on a collection/tuple/UDT
-shape or an unencodable native-protocol arm (§H8, §H10; `native.cppm`/`native.cpp`
-wire arms, `column_value.cpp:275`, `schema.cppm:229/233`, `evaluator.cpp:794`,
-`engine.cpp` ×8, `generated/token_wire.cpp:143`). This was a fair shortcut
+Beyond these, 16 `assert_not_implemented` sites remain (down from 34, then
+26 — see "Type-completeness sites" below) for type-completeness gaps — each
+a runtime crash on a collection/tuple/UDT shape or an unencodable
+native-protocol arm (§H8, §H10; `native.cppm`/`native.cpp` wire arms,
+`column_types/column_types.cpp:442`, `schema.cppm:229/233`, `evaluator.cpp:808`,
+`engine.cpp` ×6, `generated/token_wire.cpp:176`). This was a fair shortcut
 during initial bringup; the engine is now mature enough that a new one is a
-bug. R3 bans the pattern going forward and replaces it with compile-time
-exhaustiveness.
+bug. The remaining 16 are not one redesign's job — see "Type-completeness
+sites" below for why they're now attributed to whichever of R1/R5/R8/new
+secondary-index work actually owns each shape, instead of being a standalone
+backlog under R3.
 
 | # | Redesign | Status | Retires |
 |---|----------|--------|---------|
 | R2 | One serialization for wire/value/key; type-aware clustering comparator; generated per-type codec | **Landed** (see below) | §H2 (empty-union asserts), §H12 partial, 5 `key.cppm` asserts |
-| R1 | AST → typed physical plan tree; walker replaces the dispatch executor | Not started | §H2, §H4, §H14, `type_matches_tag` chains, prepared-statement reparse |
-| R3 | Collapse `ast::Type`/`type::Type` duplication; drive `assert_not_implemented` to 0 | Not started (26 sites remain) | §H8, §H10, 26 `assert_not_implemented` |
-| R5 | Native protocol as a declarative message spec, generated code committed | **Proved out, partial** — value/token wire codec is now generated (`cql/engine/codegen/`); message framing (`native.cpp`/`native.cppm`, opcodes/frames) is still hand-coded | §H1 (partial, done), §H10 (native message layer, open) |
+| R1 | AST → typed physical plan tree; walker replaces the dispatch executor | Not started | §H2, §H4, §H14, `type_matches_tag` chains, prepared-statement reparse, 6 `engine.cpp`/`evaluator.cpp` dispatch-invariant asserts (see below) |
+| R3 | Collapse `ast::Type`/`type::Type` duplication (narrowed — see below) | Not started; narrowed scope, no longer owns assert-elimination | Nothing on its own until a concrete pain point justifies it |
+| R5 | Native protocol as a declarative message spec, generated code committed | **Value layer landed and complete** (this session) — inet/varint/decimal/duration all move through the same generated codec as every other basic type; message framing still hand-coded | §H1 (partial, done), §H10 (value layer — done; native message layer — open) |
 | R7 | Structured errors + Cassandra-source-extracted message strings | Not started (~21 inline `create_*_error` factories remain) | §H1, remaining §H4 |
 | R8 | Frozen collections: real key-encodability instead of a crash | **Retargeted** — §H13, this redesign's other original motivator, is already fixed by reordering `create_table`; see "Frozen collections" below for the current scope (§H6 plus two related equality/validation gaps) | §H6, part of §H4, part of §H14 |
 | R9 | Cell-writetime, dropped-column, and row-liveness tracking | Not started; scope grew this session (row marker, range-tombstone reconciliation — see below) | §H9 |
@@ -48,7 +58,7 @@ bytes) — three different byte layouts for the same logical value, forcing a
 write.
 
 **What landed.**
-- `cql/engine/io.codec.cppm` + `cql/engine/generated/io_codec_wire.cpp{,m}` — a per-type wire/storage codec generated from `cql/engine/codegen/wire_types.json` via `cql/engine/codegen/generate.py` and Jinja templates (`codegen/templates/`). Adding a type is a JSON entry, not hand-written encode/decode arms.
+- `cql/engine/io.codec.cppm` + `cql/engine/generated/io_codec_wire.cpp{,m}` — a per-type wire/storage codec generated from `cql/codegen/types.json` via the generic `cql/codegen/generate.py` and Jinja templates (`cql/engine/templates/`, shared macros in `cql/codegen/`). Adding a type is a JSON entry, not hand-written encode/decode arms. See R5 below for the fuller codegen reorganization (per-consumer template directories, `cql/column_types` hoisted out from under the engine) this grew into.
 - `cql/engine/generated/token_wire.cpp{,m}` — same generation approach for the partition-token wire encoding.
 - `cql/engine/clustering_compare.cppm` — `clustering_compare::ClusteringKeyComparator`, a type-aware comparator (`Sort` direction × `type::Basic` per column) that reproduces Cassandra's `AbstractType.compare` instead of relying on order-preserving byte encoding. The clustering BTree (`schema.cppm:74-75`, `ClusteringKeyPolicy = VarlenKeyPolicy<..., ClusteringKeyComparator>`) uses it directly.
 - `cql/engine/key.cppm` was rewritten in terms of `io.codec` (self-delimiting component encoding) instead of a bespoke order-preserving codec — the 5 `key.cppm` `assert_not_implemented` sites from the old codec are gone.
@@ -126,47 +136,180 @@ is idempotent.
 
 ---
 
-### R3 — Collapse the `ast::Type`/`type::Type` duplication; drive `assert_not_implemented` to 0
+### R3 — Collapse the `ast::Type`/`type::Type` duplication (narrowed)
 
-**Status: not started.** `type::Type` (`types.cppm:243`) and `ast::Type`
-(`types.cppm:388`) remain parallel trees differing only in UDT reference
-(handle vs. textual name). 26 `assert_not_implemented` sites remain (down
-from 34 — R2 retired the 5 in the old `key.cppm` codec as predicted).
+**Status: not started; scope narrowed this session.** `type::Type`
+(`types.cppm:243`) and `ast::Type` (`types.cppm:388`) remain parallel trees
+differing only in UDT reference (handle vs. textual name). This redesign
+used to also own "drive `assert_not_implemented` to 0" as a second,
+unrelated goal — split out below, because auditing where those 26 (now 16)
+sites actually lived showed most of them aren't type-completeness debt this
+redesign should pay down at all; they're finishing work already committed
+to under R1/R5/R8, or new feature scope masquerading as a checklist item.
 
-**Redesign.**
-1. Optionally parameterise the type tree as `Type<UdtRep>` — `Type<UdtName>` from the parser, `Type<UdtHandle>` in the engine, `resolve(Type<UdtName>, Schema) -> Type<UdtHandle>` a `visit()` walk. Worth doing only if the shared template ends up smaller and clearer than the two structs.
-2. Drive the remaining 26 sites to 0 by implementing each case. Concentrated in `native.cpp`/`native.cppm` (10 sites — hex/varint/decimal/duration/nested-collection/vector-collection wire arms), `engine.cpp` (8), `schema.cppm` (2), plus one each in `column_value.cpp`, `evaluator.cpp`, `generated/token_wire.cpp`.
+**On the type-tree collapse itself: reconsidering, not recommending.**
+`ast::Type` touches exactly 6 files with one conversion boundary
+(`schema::resolve_type_ast`, 4 call sites, all at DDL time — the engine
+never sees `ast::Type` after that). That's a narrow, already-contained
+duplication, not one spread through the codebase. Templating a recursive
+tagged-union tree over two different UDT representations to save that
+mirroring is plausibly *more* module/instantiation complexity than the ~6
+files it removes, and AGENTS.md's own bias ("three similar lines is better
+than a premature abstraction") argues against it absent a concrete bug the
+duplication actually caused. Recommendation: leave it, and only revisit if
+a real pain point (not just the duplication's existence) shows up.
 
-Sites that legitimately handle only `type::Basic` (the wire type-code table)
-keep their `switch`, built with `-Werror=switch-enum`. New type-completeness
-gaps must implement the case, not `assert_not_implemented`.
+**Type-completeness sites — re-attributed, not owned by R3.** The 16
+remaining `assert_not_implemented` sites (down from 34, then 26 — this
+session's native-protocol work in R5 retired the 10 in `native.cpp`/
+`native.cppm` that were varint/decimal/duration/hex-decode wire arms; see
+R5 below) split into four groups, each belonging to work already described
+elsewhere in this document:
 
-**Invariants.** No `assert_not_implemented` for type completeness exists
-after R3 lands, and CI grep-gates against new ones.
+| Group | Sites | Owner | Why it's not a standalone R3 fix |
+|---|---|---|---|
+| Native-protocol type codes & nested collections | `native.cppm:181` (hex type code), `native.cpp:403` (vector type code), `native.cpp:156` (vector bind params), `native.cppm:199`/`:266` (nested-collection encode) | R5 | Same message-framing/value-layer gap R5 already tracks; hand-implementing these now duplicates what R5's generator will produce. |
+| Planner-dispatch invariants | `evaluator.cpp:808` (IN reaching `apply_operator`), `engine.cpp:652/736/812/877` (collection prepend/subscript on the wrong column shape), `engine.cpp:741` (`CollectionPatch` on non-collection), `engine.cpp:2198` (`CountStar` reaching row projection) | R1 | Every one of these comments literally says "planner should have rejected"/"should be dispatched earlier" — they're defensive backstops for a dispatch guarantee, not missing implementations. R1's typed plan tree makes the invariant structural (the shape that would trigger these becomes unrepresentable in the plan), which is a more direct fix than adding a runtime branch R1 will delete anyway. |
+| Frozen-collection completeness | `column_types/column_types.cpp:442` (`to_str` for collection `ColumnValue`s) | R8 | Needs the same canonical-serialization work R8 already scopes for frozen collections; one implementation, not two. |
+| New feature, not a gap | `schema.cppm:231` (full map index lookup), `schema.cppm:235` (index key spec for arbitrary column type) | *(untracked — real secondary-index-on-collections work)* | This is Cassandra's index-on-collection support, a feature-sized addition, not a type-completeness bug. Scoping it inside "drive asserts to 0" hid that. |
+| Unreachable via legitimate DDL | `generated/token_wire.cpp:176` (fallback for a non-token-eligible partition-key type) | *(closed for practical purposes)* | Only `duration` can still reach this (inet/varint/decimal became token-eligible this session — see R5). `duration` is now rejected in `PRIMARY KEY` at `CREATE TABLE` time (`schema.cpp`, matching Cassandra's own restriction), so the assert is unreachable through any valid schema; kept as a defensive invariant, not a pending implementation. |
 
-**Verification.** Property tests over `all_types()` — including every
-collection/tuple/UDT shape that currently asserts: `wire_encode ∘
-wire_decode` is identity; `key_encode`/comparator ordering matches
-Cassandra's; `wire_type_string` matches the driver's captured type name.
+**Invariant to keep going forward.** No *new* `assert_not_implemented` for
+type completeness — CI should grep-gate against new sites appearing outside
+sites already tracked above, but that's an invariant belonging to whichever
+redesign adds the type, not a deliverable of R3 itself.
 
 ---
 
-### R5 — Native protocol as a declarative message spec (proved out for value codecs; message framing still open)
+### R5 — Native protocol as a declarative message spec (value layer landed; message framing still open)
 
-**Status: partial.** The declarative-spec-plus-generated-code pattern this
-redesign proposed is now proven in production for the *value* layer:
-`cql/engine/codegen/wire_types.json` + `generate.py` + Jinja templates
-produce `generated/io_codec_wire.cpp{,m}` and `generated/token_wire.cpp{,m}`,
-committed to the repo. That work retired the old `io.cpp` monolith and its
-crash (`writing integer value to this dtype is not implemented`).
+**Status: value layer done, this session.** The declarative-spec-plus-generated-code
+pattern this redesign proposed is now proven in production for the *value*
+layer, and now covers every basic type including the four that used to
+assert.
 
-What has **not** moved to this pattern: `native.cpp` (1264 LOC) +
-`native.cppm` (705 LOC) still hand-code every CQL *message* shape (STARTUP,
-QUERY, RESULT, ERROR frames — opcodes and field layout) as imperative
-byte-appending, essentially unchanged in size from before R2. Encoder gaps
-still appear as `assert_not_implemented` at 10+ sites (§H10), and the
-duration arm (`native.cppm:394`) is no longer theoretical — it's the one
-crash the conformance suite hits today (`testFilteringOnDurationColumn`).
+**Module boundary, corrected mid-session.** The first pass at this put the
+generated native-protocol codec under `cql/engine/generated/`, reasoning that
+it needed the same `VarInt`/`Decimal`/`Duration`/`Inet` types the storage and
+token codecs use, which lived in `cql/engine`. That's backwards: native
+protocol encoding is a `cql/native` concern, not an engine one, and the
+actual fix wasn't to give native an exception to import engine internals — it
+was to notice that `type::Basic`/`ColumnValue`/`VarInt`/`Decimal`/`Duration`/
+`Inet` aren't engine logic at all, just physical value shapes, and hoisting
+them out from under `cql/engine` into their own module lets both `cql/engine`
+and `cql/native` depend on them as peers instead of native reaching up into
+engine. Landed shape:
+
+- **`cql/column_types`** (new, sibling to `engine`/`native`/`parsers`), in its
+  own `cql::column_types` namespace (not bare `cql::`) — `column_types.cppm`/
+  `.cpp`: `Basic`, `ColumnValue`/`NestedColumnValue`, `Null`/`Unset`/`UUID`/
+  `Hex`/`Blob`/`Inet`/`VarInt`/`Decimal`/`Duration`, and their `compare`/
+  `hash`/`to_str` (`Basic`-keyed only) — the physical shapes and nothing else.
+  `Basic` deliberately is *not* nested in its own `type` sub-namespace the way
+  `cql::type::Type` is — a second namespace also spelled `type` would collide
+  with `cql::type` (the schema tree, still in engine) the moment a file pulls
+  both in via `using namespace`, making every `type::X` reference ambiguous.
+  `cql.engine.types` re-exposes `Basic` as `cql::type::Basic` via a plain
+  using-declaration (not a using-directive, so it doesn't reintroduce the
+  collision) — existing `type::Basic::X` call sites across the codebase
+  needed no changes. Everywhere else that references `column_types` symbols
+  bare (VarInt, ColumnValue, …) adds `using namespace cql::column_types;`
+  alongside its existing `using namespace cql;` — mechanical but necessary,
+  since code nested under `namespace cql::engine { ... }` no longer finds a
+  *sibling* namespace's members through ordinary enclosing-scope lookup the
+  way it found `cql::`'s own members for free.
+  The literal-widening conversions (`varint_from_s64`, `decimal_from_f64`,
+  `try_s64_from_varint`, `inet_from_string`) are *not* here — they moved to
+  `cql/engine/literal_widen.cppm`/`.cpp`, since they're about how a CQL
+  constant coerces into a column (an `io.evaluator.cpp`/`evaluator.cpp`
+  concern), not a property of the types themselves. The engine-only
+  remainder — `type::Type` (the recursive schema type tree: `List`/`Set`/
+  `Map`/`Vector`/`Tuple`/`UDT`), `type::ast::Type` (the parser's
+  pre-resolution mirror), and the `type::Type`-recursive `to_str` overload —
+  stays in `cql.engine.types`/`cql.engine.column_value`, since those
+  genuinely need `Schema`/`UdtStorage`.
+- **`cql/column_types/twos_complement.cppm`/`.cpp`** and
+  **`cql/column_types/vint.cppm`/`.cpp`** — the actual bit-level codecs
+  (minimal-length two's complement for `varint`/`decimal`; Cassandra's
+  VIntCoding zigzag+variable-length scheme for `duration`), verified against
+  the native protocol spec's worked examples and the reference driver
+  (`cassandra-driver` JS, `VIntCoding`/`Integer.toBuffer`) rather than
+  reconstructed from memory. Deliberately plain C-style APIs (`bool` +
+  `const U8*` + `U64` in, `io::Writer` out) with **no dependency on
+  `VarInt`/`Decimal`/`Duration`** — callers destructure `.negative`/
+  `.magnitude.ptr`/`.magnitude.length` themselves. That's what actually
+  resolves the layering tension: a shared codec keyed to an engine-shaped
+  struct would force a dependency direction one way or the other, but a
+  codec keyed to primitive bytes doesn't care who's calling it. (An earlier,
+  wrongly-named `cassandra_wire` module tried to be the engine-typed version
+  of this and got scrapped along with the `cql/engine` placement — "Cassandra
+  wire" was also just the wrong name; the format is specifically the *native
+  protocol*, versions 3–5.)
+- **Codegen relocated to `cql/codegen/`** and made generic, rather than
+  living under (and being conceptually owned by) any one consumer:
+  `cql/codegen/types.json` (renamed from `wire_types.json`) + `generate.py` +
+  `wire_macros.jinja` (shared per-field-kind macros). `generate.py` has no
+  hardcoded knowledge of "engine" or "native" — it discovers templates by
+  walking for `cql/*/templates/*.jinja`, and for each one found renders it
+  and writes the output to the sibling `cql/*/generated/` directory (strip
+  `.jinja` from the filename), so adding a future consumer means dropping a
+  `templates/` folder next to its own code, not editing the generator. Only
+  the JSON spec and the small pure functions deriving per-template-shape data
+  from it (`dedup_by_ctype`, `token_wire_types`, …) stay coupled to the data
+  source — which template needs which derived view is looked up by the
+  template's own filename, a generic string key, not a reference to whoever
+  owns it. Concretely: `cql/engine/templates/*.jinja` → `cql/engine/generated/`
+  (`io_codec_wire`, `io_codec_sync`, `token_wire` — unchanged consumers) and
+  `cql/native/templates/*.jinja` → **`cql/native/generated/`** (`native_wire`,
+  module renamed `cql.engine.native.wire` → `cql.native.wire`). One JSON
+  source of truth for all three byte layouts of the same logical value
+  (storage, partition-key hash, client wire), each consumer's generated code
+  living where that consumer lives.
+- `inet`/`varint`/`decimal` are now `token_eligible` (legal Cassandra
+  partition-key types, previously excluded for no spec reason — confirmed
+  against cassandra.apache.org/doc/4.1/cassandra/cql/types.html, which
+  restricts only `counter` and `duration` from `PRIMARY KEY`). `duration`
+  stays excluded (Cassandra: "durations cannot be ordered") and is now
+  rejected with a clean DDL error at `CREATE TABLE` (`schema.cpp`) instead
+  of reaching the assert at runtime.
+- `native.cppm`'s `append_cql_basic_element`/`basic_element_byte_size` and
+  `native.cpp`'s bind-parameter value decode are now thin Frame-framing
+  wrappers around the generated `cql.native.wire` codec — the old ~250-line
+  hand-written per-type `if constexpr` chains are gone, along with the
+  `assert_not_implemented` for varint/decimal/duration encoding and the
+  decode-side default fallback. Both are still ordinary `switch`/`if constexpr`
+  dispatch (not hidden behind more indirection than needed) — `-Wswitch`
+  under `-Werror` (already project-wide) makes a missing `type::Basic` arm a
+  build error, so exhaustiveness is compiler-checked without needing a
+  runtime fallback to matter. The duration arm was the one crash the
+  conformance suite hit today (`testFilteringOnDurationColumn`) — closed.
+- Bind-parameter decode for `inet`/`decimal` produces `Term{ColumnValue{...}}`
+  directly rather than routing through `Literal` — both are types Cassandra
+  has no literal syntax for (see `resolve_literal_scalar`), so unlike
+  `varint`/`duration` (real literal-grammar forms) they were never a
+  `Literal` kind to begin with; an earlier draft of this work briefly added
+  them to `LiteralTypes` before that distinction was caught in review.
+- Grammar fallout the value-layer completion surfaced but isn't itself part
+  of R5: the parser's integer-constant production now preserves arbitrary
+  precision (accumulates the digit lexeme into a big-endian magnitude
+  instead of narrowing through `S64` immediately), producing `Literal{S64}`
+  whenever the value fits one (unchanged for every existing consumer —
+  LIMIT/TTL/TIMESTAMP/WHERE comparisons all still pattern-match `S64`
+  directly) and `Literal{VarInt}` only on genuine overflow. `resolve_literal_scalar`
+  widens `VarInt`/`F64`/`AutoString8` into `varint`/`decimal`/`inet` per
+  Cassandra's documented constant-widening rules (decimal accepts *both*
+  integer and float constants; varint integer only; inet string only — no
+  type has its own literal syntax).
+
+What has **not** moved to this pattern: `native.cpp`/`native.cppm` still
+hand-code every CQL *message* shape (STARTUP, QUERY, RESULT, ERROR frames —
+opcodes and field layout) as imperative byte-appending. Remaining
+`assert_not_implemented` in this file pair is narrower now: hex's and
+vector's native-protocol *type codes* (Cassandra has no wire type code for
+`hex` — it's a plexdb-only literal tag over `blob` — and vector collection
+type codes are simply unimplemented), vector bind-parameter decoding, and
+nested-collection value encoding (a list-of-lists, say) — none of these were
+in scope this session.
 
 **Remaining redesign.** Extend the same spec/generate pattern to message
 framing:
@@ -399,13 +542,17 @@ and after a flush, and check the result set is timestamp-order-independent.
 ## Ordering and dependency graph
 
 ```
-R3 (Type dispatch) ─┬─► R1 (Plan tree) ─┬─► R9 (Writetime/row-liveness)
-R2 (Value, landed) ─┘                   └─► R8 (Frozen collections, independent of R1/R3)
-R7 (Errors)      ── depends on R3 for CqlError kinds; independent of R1
-R5 (Native spec) ── value-codec half landed; message-framing half independent
+R2 (Value, landed)  ─────────────────────► R1 (Plan tree) ─► R9 (Writetime/row-liveness)
+R3 (Type-tree collapse, deprioritized) ── independent; no longer a blocker for R1
+R5 (Native spec) ── value layer landed; message-framing half independent
+R7 (Errors)      ── independent of R1
+R8 (Frozen collections) ── independent of R1/R3, can land any time
 ```
 
-R2 is done; R3 is now the foundational piece left before R1. R1 is the
-biggest remaining win. R8 (frozen collections) doesn't depend on any of the
+R2 is done. R1 no longer waits on R3 — R3's "drive `assert_not_implemented`
+to 0" half moved out (re-attributed to R1/R5/R8/new index work, see R3
+above), and its remaining half (the type-tree collapse) is a narrow,
+deprioritized cleanup with no dependents. R1 is the biggest remaining win
+and can start now. R8 (frozen collections) doesn't depend on any of the
 others and can land any time. R5's message-framing half and R7 can land in
 parallel with R1.
