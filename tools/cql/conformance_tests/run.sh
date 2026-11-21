@@ -19,6 +19,10 @@
 #     -m <file>    fail if a listed test regresses                   (default: none)
 #     -o <file>    write passing test IDs to <file> (gen mustpass)   (default: none)
 #     -s <file>    skiplist (deselect permissive-parser tests)       (default: tools/cql/conformance_tests/skiplist.txt)
+#     -A           attach to an already-running server at -P/host instead of
+#                  spawning/managing one (no auto-restart on crash); use to
+#                  debug a test against a server started under a debugger.
+#                  Incompatible with -b/-p/-L/-V.
 #     -h           show this help
 #
 # Environment:
@@ -44,10 +48,14 @@ OUTPUT_MUSTPASS=""
 SKIPLIST_FILE="$SCRIPT_DIR/skiplist.txt"
 
 VALGRIND=false
-while getopts "b:p:P:r:t:m:o:s:xlL:Vh" opt; do
+ATTACH=false
+BINARY_SET=false
+PLUGINS_SET=false
+LOG_DIR_SET=false
+while getopts "b:p:P:r:t:m:o:s:xlL:VAh" opt; do
     case "$opt" in
-        b) BINARY="$OPTARG" ;;
-        p) PLUGINS+=("$OPTARG") ;;
+        b) BINARY="$OPTARG"; BINARY_SET=true ;;
+        p) PLUGINS+=("$OPTARG"); PLUGINS_SET=true ;;
         P) PORT="$OPTARG" ;;
         r) SCYLLA_REF="$OPTARG" ;;
         t) PYTEST_K="$OPTARG" ;;
@@ -56,10 +64,11 @@ while getopts "b:p:P:r:t:m:o:s:xlL:Vh" opt; do
         s) SKIPLIST_FILE="$OPTARG" ;;
         x) PYTEST_EXTRA="$PYTEST_EXTRA -x" ;;
         l) LIST_ONLY=true ;;
-        L) LOG_DIR="$OPTARG" ;;
+        L) LOG_DIR="$OPTARG"; LOG_DIR_SET=true ;;
         V) VALGRIND=true ;;
+        A) ATTACH=true ;;
         h)
-            sed -n '2,27p' "$0" | sed 's/^# \?//'
+            sed -n '2,31p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         *) exit 1 ;;
@@ -68,6 +77,13 @@ done
 
 HOST="${CQL_TEST_HOST:-127.0.0.1}"
 PORT="${CQL_TEST_PORT:-$PORT}"
+
+if [ "$ATTACH" = true ]; then
+    if [ "$BINARY_SET" = true ] || [ "$PLUGINS_SET" = true ] || [ "$LOG_DIR_SET" = true ] || [ "$VALGRIND" = true ]; then
+        echo "error: -A (attach) is incompatible with -b/-p/-L/-V — those only apply to a server this script spawns" >&2
+        exit 1
+    fi
+fi
 
 # ── Valgrind (memcheck) ───────────────────────────────────────────────────
 # -V wraps the server in valgrind. The harness restarts the server on a detected
@@ -217,7 +233,9 @@ echo ""
 echo "════════════════════════════════════════════════════════════"
 echo "  CQL Conformance Tests (scylladb ref: ${SCYLLA_REF})"
 echo "  Server: ${HOST}:${PORT}"
-if [ -n "$LOG_DIR" ]; then
+if [ "$ATTACH" = true ]; then
+echo "  Mode:   attaching to an already-running server (no lifecycle management)"
+elif [ -n "$LOG_DIR" ]; then
 echo "  Logs:   ${LOG_DIR}/server.log"
 fi
 echo "════════════════════════════════════════════════════════════"
@@ -228,19 +246,38 @@ for p in "${PLUGINS[@]}"; do
     PLUGIN_ARGS+=(--plugin "$p")
 done
 
+SERVER_ARGS=(--binary "$BINARY" "${PLUGIN_ARGS[@]}" ${LOG_DIR:+--log-dir "$LOG_DIR"})
+if [ "$ATTACH" = true ]; then
+    SERVER_ARGS=()
+fi
+
 run_pytest() {
-    python3 -m pytest "$TESTS_DIR/cassandra_tests/" \
-        --host "$HOST" --port "$PORT" --binary "$BINARY" \
-        "${PLUGIN_ARGS[@]}" \
-        ${LOG_DIR:+--log-dir "$LOG_DIR"} \
-        --continue-on-collection-errors \
-        --override-ini="pythonpath=$PARENT_OF_TESTS" \
-        --rootdir="$TESTS_DIR" \
-        --confcutdir="$TESTS_DIR" \
-        -c "$SCRIPT_DIR/pytest.ini" \
-        -v --tb=short \
-        ${PYTEST_K:+-k "$PYTEST_K"} \
-        $PYTEST_EXTRA
+    local cmd=(
+        python3 -m pytest
+        "$TESTS_DIR/cassandra_tests/"
+        --host "$HOST"
+        --port "$PORT"
+        "${SERVER_ARGS[@]}"
+        --continue-on-collection-errors
+        "--override-ini=pythonpath=$PARENT_OF_TESTS"
+        "--rootdir=$TESTS_DIR"
+        "--confcutdir=$TESTS_DIR"
+        -c "$SCRIPT_DIR/pytest.ini"
+        -v
+        --tb=short
+    )
+    if [[ -n "$PYTEST_K" ]]; then
+        cmd+=(-k "$PYTEST_K")
+    fi
+    if [[ -n "$PYTEST_EXTRA" ]]; then
+        # shellcheck disable=SC2206
+        cmd+=($PYTEST_EXTRA)
+    fi
+
+    printf ' %q' "${cmd[@]}"
+    printf '\n'
+
+    "${cmd[@]}"
 }
 
 if [ -n "$MUSTPASS_FILE" ] || [ -n "$OUTPUT_MUSTPASS" ]; then
