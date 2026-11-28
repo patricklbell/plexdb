@@ -8,7 +8,11 @@ module;
 #include <sys/epoll.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <stdio.h>
+#include <string.h>
 #endif
+
+#include <stacktrace>
 
 module plexdb.os.signal;
 
@@ -77,6 +81,59 @@ namespace plexdb::os {
     void signal_register_stop(SignalHandler handler) {
         signal_register_linux(SIGSTOP, handler);
         signal_register_linux(SIGTSTP, handler);
+    }
+
+    void write_stacktrace_to_stderr(U64 skip_frames) {
+        auto trace = std::stacktrace::current(skip_frames + 1);
+        for (U64 i = 0; i < trace.size(); i++) {
+            const auto&       frame = trace[i];
+            const std::string desc  = frame.description();
+            const std::string file  = frame.source_file();
+            char              buf[1024];
+            int               n = snprintf(buf, sizeof(buf), "  #%llu %s at %s:%u\n", static_cast<unsigned long long>(i), desc.empty() ? "??" : desc.c_str(), file.empty() ? "??" : file.c_str(), frame.source_line());
+            if (n > 0) {
+                ::write(2, buf, min(static_cast<U64>(n), sizeof(buf) - 1));
+            }
+        }
+    }
+
+    static constexpr int k_fatal_signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
+
+    // @note Symbolizing allocates, which is not async-signal-safe: a fault inside the allocator
+    // can deadlock here. The alarm bounds that to a SIGALRM exit, and SA_RESETHAND makes a fault
+    // inside the handler itself take the default action.
+    static void fatal_signal_handler(int signal_number, siginfo_t* info, void*) {
+        ::alarm(5);
+        char buf[256];
+        int  n = snprintf(buf, sizeof(buf), "Fatal signal %d (%s) at address %p\n", signal_number, strsignal(signal_number), info->si_addr);
+        if (n > 0) {
+            ::write(2, buf, min(static_cast<U64>(n), sizeof(buf) - 1));
+        }
+        write_stacktrace_to_stderr(1);
+        ::signal(signal_number, SIG_DFL);
+        ::raise(signal_number);
+    }
+
+    void signal_register_fatal_report() {
+        // Alternate stack so a stack overflow can still be reported.
+        static U8 alt_stack[64 * 1024];
+        stack_t   ss{.ss_sp = alt_stack, .ss_flags = 0, .ss_size = sizeof(alt_stack)};
+        assert_true_always(::sigaltstack(&ss, nullptr) == 0, "sigaltstack failed");
+
+        for (int signal_number : k_fatal_signals) {
+            struct sigaction sa;
+            memory_zero(&sa, sizeof(sa));
+            sa.sa_sigaction = fatal_signal_handler;
+            ::sigemptyset(&sa.sa_mask);
+            sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+            assert_true_always(::sigaction(signal_number, &sa, nullptr) == 0, "sigaction failed");
+        }
+    }
+
+    void signal_reset_fatal_report() {
+        for (int signal_number : k_fatal_signals) {
+            ::signal(signal_number, SIG_DFL);
+        }
     }
 
     void signal_ignore_pipe() {

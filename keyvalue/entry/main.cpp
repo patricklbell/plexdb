@@ -4,6 +4,7 @@
 #include <signal.h>
 
 import plexdb.base;
+import plexdb.coroutine.debug;
 import plexdb.os;
 import plexdb.aio;
 import plexdb.argparse;
@@ -29,6 +30,7 @@ int main(int argc, char* argv[]) {
 
     set_assert_handler(assert_handler);
 
+    os::signal_register_fatal_report();
     os::signal_ignore_pipe();
     os::signal_ignore_reload();
     os::signal_register_kill(signal_handler);
@@ -89,7 +91,11 @@ int main(int argc, char* argv[]) {
 
 static void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
     println("Assert failed \"", msg, "\" at ", function_name, " in ", file_name, ":", to_str(line_number));
+    os::write_stacktrace_to_stderr(1);
+    println("async stack:");
+    coroutine::debug::print_async_stack();
 #if PLEXDB_DEBUG
+    os::signal_reset_fatal_report();
     PLEXDB_TRAP;
 #else
     os::process_exit(1);

@@ -32,6 +32,15 @@ export namespace plexdb::os {
     void signal_ignore_reload();
     void signal_send_kill(Handle process);
 
+    // Writes the calling thread's symbolized stack trace to stderr, skipping the innermost
+    // skip_frames frames (this function's own frame is always skipped).
+    void write_stacktrace_to_stderr(U64 skip_frames = 0);
+
+    // On SIGSEGV/SIGBUS/SIGILL/SIGFPE: write "Fatal signal ..." and a stack trace to stderr,
+    // then re-raise with the default action so the exit status still reports the signal.
+    void signal_register_fatal_report();
+    void signal_reset_fatal_report();
+
     struct Poll {
         Handle handle;
 

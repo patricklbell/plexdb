@@ -5,6 +5,7 @@
 
 import plexdb.base;
 import plexdb.coroutine;
+import plexdb.coroutine.debug;
 import plexdb.os;
 import plexdb.os.uring;
 import plexdb.tagged_union;
@@ -34,6 +35,7 @@ int main(int argc, char* argv[]) {
 
     set_assert_handler(assert_handler);
 
+    os::signal_register_fatal_report();
     os::signal_ignore_pipe();
     os::signal_ignore_reload();
     os::signal_register_kill(signal_handler);
@@ -185,8 +187,12 @@ static void assert_handler(const char* msg, const char* file_name, const char* f
     if (n > 0) {
         write(2, buf, static_cast<size_t>(n) < sizeof(buf) ? static_cast<size_t>(n) : sizeof(buf) - 1);
     }
+    os::write_stacktrace_to_stderr(1);
+    println("async stack:");
+    coroutine::debug::print_async_stack();
 
 #if PLEXDB_DEBUG
+    os::signal_reset_fatal_report();
     PLEXDB_TRAP;
 #else
     os::process_exit(1);
