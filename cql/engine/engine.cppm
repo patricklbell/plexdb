@@ -177,8 +177,9 @@ export namespace cql::engine {
     coroutine::Task<ExecutionResult> execute(Engine& engine, Statement& statement, DynamicArray<Term>&& bound_values);
     coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values);
 
-    // Substitute positional bind markers in `statement` with values from `bound_values`.
-    void bind_values_to_statement(Statement& statement, DynamicArray<Term>& bound_values);
+    // Substitutes `bound_values` into the statement's bind markers in query-text order. Returns
+    // an error message (empty on success) when the count or a value cannot be placed.
+    AutoString8 bind_values_to_statement(Statement& statement, DynamicArray<Term>& bound_values);
 
     // Per-connection-keyspace overloads: use when multiple connections share an engine
     coroutine::Task<ExecutionResult> execute(Engine& engine, const Statement& statement, AutoString8& current_keyspace);
@@ -188,8 +189,13 @@ export namespace cql::engine {
     // ========================================================================
     // bind variables
     // ========================================================================
-    DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement);
-    DynamicArray<BindVariableSpec> collect_bind_variables(Engine& engine, const Statement& statement, String8 current_keyspace);
+    struct BindCollection {
+        DynamicArray<BindVariableSpec> specs;
+        AutoString8                    error{""}; // set when a marker cannot be typed (unknown column, uninferable position)
+    };
+
+    // Specs for every bind marker in query-text order, typed from the schema.
+    BindCollection collect_bind_variables(Engine& engine, const Statement& statement, String8 current_keyspace);
 
     // ========================================================================
     // prepared statements

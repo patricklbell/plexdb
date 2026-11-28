@@ -50,5 +50,4 @@ export namespace cql {
     Optional<type::Basic> outer_type_hint_basic(const Term& term);
     Optional<type::Basic> outer_type_hint_basic(const TermWithIdentifiers& twi);
 
-    void number_bind_markers(Statement& stmt);
 }

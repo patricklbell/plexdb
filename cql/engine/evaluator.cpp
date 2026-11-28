@@ -588,6 +588,8 @@ namespace cql {
             if (const Literal* c = lookup_named_binding(v.identifier, ctx)) {
                 return {*c};
             }
+            // @note markers are substituted before execution; an unbound one would silently read as null
+            assert_true(false, "unbound bind marker reached evaluation");
             return Evaluated{Literal{Null{}}};
         } else if constexpr (SameAs<T, MapLiteral> || SameAs<T, SetLiteral> || SameAs<T, ListOrVectorLiteral> || SameAs<T, UdtLiteral> || SameAs<T, TupleLiteral>) {
             return {v};
@@ -1065,54 +1067,5 @@ namespace cql {
             }
         }
         return true;
-    }
-
-    // ========================================================================
-    // bind marker numbering
-    // ========================================================================
-    static U64 number_bind_markers_in_term(Term& term, U64 idx) {
-        visit(term.value, [&](auto& v) {
-            using T = Decay<decltype(v)>;
-            if constexpr (SameAs<T, BindMarker>) {
-                if (v.identifier.length == 0) {
-                    v.identifier = to_str(idx++);
-                }
-            } else if constexpr (SameAs<T, ArithmeticOperation>) {
-                visit(v.value, [&](auto& arith_v) {
-                    using AT = Decay<decltype(arith_v)>;
-                    if constexpr (SameAs<AT, BinaryArithmeticOperation>) {
-                        idx = number_bind_markers_in_term(arith_v.lhs, idx);
-                        idx = number_bind_markers_in_term(arith_v.rhs, idx);
-                    } else if constexpr (SameAs<AT, UnaryMinusArithmeticOperation>) {
-                        idx = number_bind_markers_in_term(arith_v.operand, idx);
-                    }
-                });
-            } else if constexpr (SameAs<T, FunctionCall>) {
-                for (U64 i = 0; i < v.arguments.length; i++) {
-                    idx = number_bind_markers_in_term(v.arguments[i], idx);
-                }
-            } else if constexpr (SameAs<T, TypeHint>) {
-                idx = number_bind_markers_in_term(v.operand, idx);
-            }
-        });
-        return idx;
-    }
-
-    void number_bind_markers(Statement& stmt) {
-        U64 idx = 0;
-        visit(stmt.value, [&](auto& s) {
-            using T = RemoveCVRef<decltype(s)>;
-            if constexpr (SameAs<T, Insert>) {
-                visit(s.insert_clause, [&](auto& clause) {
-                    using CT = RemoveCVRef<decltype(clause)>;
-                    if constexpr (SameAs<CT, Insert::NamesValues>) {
-                        for (U64 i = 0; i < clause.values.length; i++) {
-                            idx = number_bind_markers_in_term(clause.values[i], idx);
-                        }
-                    }
-                });
-            }
-            // @todo Update, Delete, Select WHERE clause
-        });
     }
 }

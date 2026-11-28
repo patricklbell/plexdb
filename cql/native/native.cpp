@@ -1681,8 +1681,12 @@ namespace cql::native {
         }
 
         String8 keyspace = raw.params.keyspace ? *raw.params.keyspace : String8(c.keyspace);
-        auto    specs    = engine::collect_bind_variables(engine, *pr.statement, keyspace);
-        co_await run_statement(c, stream, *pr.statement, r, raw, keyspace, specs);
+        auto    binds    = engine::collect_bind_variables(engine, *pr.statement, keyspace);
+        if (binds.error.length > 0) {
+            co_await send_status_error(c, stream, engine::ExecutionStatus::Invalid, String8(binds.error));
+            co_return;
+        }
+        co_await run_statement(c, stream, *pr.statement, r, raw, keyspace, binds.specs);
     }
 
     static coroutine::Task<> handle_prepare(ConnectionState& c, S16 stream, Reader& r) {
@@ -1819,7 +1823,12 @@ namespace cql::native {
                     co_await send_status_error(c, stream, engine::ExecutionStatus::SyntaxError, msg);
                     co_return;
                 }
-                specs = engine::collect_bind_variables(engine, *parsed.statement, keyspace);
+                auto binds = engine::collect_bind_variables(engine, *parsed.statement, keyspace);
+                if (binds.error.length > 0) {
+                    co_await send_status_error(c, stream, engine::ExecutionStatus::Invalid, String8(binds.error));
+                    co_return;
+                }
+                specs = move(binds.specs);
                 engine::qualify_statement(*parsed.statement, keyspace);
                 stmt = move(*parsed.statement);
             } else {
@@ -1848,7 +1857,10 @@ namespace cql::native {
                 co_await send_reader_error(c, stream, r);
                 co_return;
             }
-            engine::bind_values_to_statement(*stmt, values);
+            if (AutoString8 bind_error = engine::bind_values_to_statement(*stmt, values); bind_error.length > 0) {
+                co_await send_status_error(c, stream, engine::ExecutionStatus::Invalid, String8(bind_error));
+                co_return;
+            }
 
             Batch::ModificationStatement mod;
             bool                         is_mutation = visit(stmt->value, [&](auto& s) -> bool {
