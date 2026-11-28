@@ -1,5 +1,14 @@
 ## CQL conformance gaps
 
+> **2026-11-29 update.** Against the current upstream mirror (760 collected tests) the suite
+> passes 290 (was 286 on the previous build); `mustpass.txt` is updated accordingly. Fixed since
+> the baseline below: bind-marker numbering (§H2), row liveness / row markers and DROP COLUMN
+> liveness (§H9), typed filtering on collection/tuple/UDT columns, sorted set/map output, slice
+> rejection on types containing `duration`, non-positive `LIMIT`. `USING TIMESTAMP` is now
+> rejected instead of ignored (see "Single-node considerations"), which turns eight tests that
+> only passed because arrival order matched their timestamps into failures. The sections below
+> still describe the 2026-07-13 baseline except where marked.
+
 Baseline: **212 / 313 passing**, 48 failed, 13 skiplisted, 32 xfailed, 8 xpassed
 (scylladb ref: master; plexdb, 2026-07-13). Run: `bash tools/cql/conformance_tests/run.sh -b
 build-conformance/cql/plexdb_cql_server`.
@@ -71,7 +80,7 @@ was actually a parser bug — see §H5 — not a message issue).
 ### §H2 — Evaluator placeholder returns silently accept invalid queries
 
 - `evaluator.cpp:796-797` — `apply_operator` returns `false` for `Operator::contains`/`contains_key` unconditionally. Downstream: `testFilteringOnListContainingDurations`, `testFilteringOnMapContainingDurations` should raise a "Duration"-family error; plexdb silently returns empty instead.
-- `evaluator.cpp:1094` — `@todo Update, Delete, Select WHERE clause` on bind-marker numbering; only INSERT numbers markers correctly. Affects `testFieldSelectionOrderSingleClustering`.
+- ~~Bind-marker numbering~~ (fixed): one walker (`engine.cpp`, `BindWalker`) numbers, types and names every marker in query-text order for both PREPARE metadata and value substitution; markers it cannot type are rejected.
 
 ### §H3 — ~~Over-strict "column assigned twice in UPDATE"~~ (fixed)
 
@@ -136,6 +145,11 @@ a UDT-typed column still serializes an empty type string on the wire.
 Skiplisted alongside §H6.
 
 ### §H9 — Cell-writetime, dropped-column, and row-liveness tracking
+
+> **Update:** row markers are tracked (`ROW_FLAG_NO_MARKER` / `ROW_FLAG_MARKER_TTL`), rows with
+> neither marker nor regular cells are deleted, expired cells read as absent, and DROP COLUMN
+> rewrites rows so dropped cells no longer keep rows alive. Timestamp-based reconciliation and
+> tombstones remain unimplemented, so `USING TIMESTAMP` is rejected.
 
 Three related gaps, all rooted in the same missing concept — this engine
 doesn't track *why* a row/cell is or isn't visible beyond "does storage have
@@ -223,6 +237,7 @@ already-materialised row.
 - **LWT (`UPDATE ... IF`, `DELETE ... IF`, `INSERT ... IF NOT EXISTS`) — decided *not* to implement.** Single-replica semantics collapse to "always applies." Cleanly rejected (`"INSERT ... IF NOT EXISTS is not supported"` etc., `engine.cpp`) rather than crashing — standalone LWT used to hit an `assert_true_not_implemented` with nothing upstream of it to catch the case; fixed.
 - **Conditional BATCH — same rationale.** Rejected with `"Conditional statements (IF / IF NOT EXISTS) inside BATCH are not supported"`; five tests short-circuit on this before validating their own expected message (see the error-message table above).
 - **Consistency levels** — no-op on a single replica; not exercised by the harness (always `ONE`).
+- **Write timestamps** — writes apply in arrival order without timestamp reconciliation or tombstones, so explicit `USING TIMESTAMP` is rejected (it would only be honoured when it happens to agree with arrival order). The protocol-level default timestamp that drivers attach to every request is accepted and treated as arrival time when it is within 5 minutes of the server clock, and rejected otherwise.
 - **Partitioner ordering** — Murmur3, token-only partition BTree key (`schema.cppm`, `PartitionBTree = FixedKeyPolicy<S64>`); no partition-key bytes stored redundantly in the BTree.
 - **`ALLOW FILTERING` gate** — exists (`engine.cpp:1462`) but doesn't fire for several restriction shapes; planner-completeness gap, not a single-node choice. See §H4.
 - **64 KiB partition/clustering key value cap** — enforced (see §H4). Collection element size is deliberately not capped; see §H4's note.

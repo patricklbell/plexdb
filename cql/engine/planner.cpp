@@ -307,6 +307,35 @@ namespace cql::planner {
         return op == Operator::lt || op == Operator::le || op == Operator::gt || op == Operator::ge;
     }
 
+    static bool type_contains_duration(const type::Type& t) {
+        return visit(t.value, [](const auto& v) -> bool {
+            using T = RemoveCVRef<decltype(v)>;
+            if constexpr (SameAs<T, type::Basic>) {
+                return v == type::Basic::duration;
+            } else if constexpr (SameAs<T, type::List> || SameAs<T, type::Vector>) {
+                return type_contains_duration(v.element);
+            } else if constexpr (SameAs<T, type::Set>) {
+                return type_contains_duration(v.key);
+            } else if constexpr (SameAs<T, type::Map>) {
+                return type_contains_duration(v.key) || type_contains_duration(v.value);
+            } else if constexpr (SameAs<T, type::Tuple>) {
+                for (const auto& e : v.elements) {
+                    if (type_contains_duration(e)) {
+                        return true;
+                    }
+                }
+                return false;
+            } else {
+                for (const auto& f : v->field_types) {
+                    if (type_contains_duration(f)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        });
+    }
+
     static bool where_has_slice_on_duration(const WhereClause& where, const schema::Table& tbl) {
         for (const auto& rel : where.relations) {
             if (!type_matches_tag<WhereClause::ColumnExpressionRelation>(rel.value)) {
@@ -318,7 +347,8 @@ namespace cql::planner {
             }
             String8 cname(r.column.identifier.c_str, r.column.identifier.length);
             for (const auto& col : tbl.cols) {
-                if (!col.tombstone && col.name == cname && col.type == type::create_basic(type::Basic::duration)) {
+                // @note durations are unordered, including inside collections, tuples and UDTs
+                if (!col.tombstone && col.name == cname && type_contains_duration(col.type)) {
                     return true;
                 }
             }

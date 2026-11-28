@@ -38,6 +38,16 @@
   the prefix-optimization item; only worth the two-path complexity if a workload shows one
   policy is not uniformly best.
 - Proper prepared (and non-prepared) query caching
+- CQL native protocol: result paging. `result_page_size` is read but every result is returned in
+  one page and `paging_state` is rejected (`native.cpp` handle_query / handle_execute).
+- CQL native protocol: request tracing (envelope flag 0x02) is ignored; responses carry no tracing id.
+- CQL native protocol: v3/v4 responses are never LZ4-compressed (requests are decompressed).
+- `system.local` reports 127.0.0.1 for rpc/broadcast/listen addresses regardless of the bound interface.
+- Write timestamps: per-cell timestamp reconciliation and timestamped (range) tombstones, so
+  `USING TIMESTAMP` and client default timestamps can be honoured instead of rejected / treated
+  as arrival time.
+- Partition BTree is keyed by token only (`schema.cppm` PartitionBTree): key by (token, pk bytes)
+  so distinct partition keys with colliding tokens stay separate.
 - CQL native protocol: stream multiplexing/pipelining. `post_startup_loop` awaits each
   frame's `frame_handler` to completion before reading the next frame
   (`cql/native/native.cppm:600,636`); stream IDs are parsed and echoed back correctly

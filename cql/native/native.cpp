@@ -1129,17 +1129,18 @@ namespace cql::native {
             } else if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
                 append_cql_basic_body(f, get<type::Basic>(cdtype.value), v);
             } else if constexpr (IsDynamicMap<T>) {
+                // @note sets and maps are hash containers; Cassandra returns them in key order
                 const auto& m = get<type::Map>(cdtype.value);
                 append_be_s32(f, S32(length(v)));
-                for (auto& it : v) {
-                    append_cql_value(f, it.first.value, m.key);
-                    append_cql_value(f, it.second.value, m.value);
+                for (const auto* it : sorted_map_entries(v, m.key)) {
+                    append_cql_value(f, it->first.value, m.key);
+                    append_cql_value(f, it->second.value, m.value);
                 }
             } else if constexpr (IsDynamicSet<T>) {
                 const auto& key_type = get<type::Set>(cdtype.value).key;
                 append_be_s32(f, S32(length(v)));
-                for (auto& e : v) {
-                    append_cql_value(f, e.value, key_type);
+                for (const auto* e : sorted_set_elements(v, key_type)) {
+                    append_cql_value(f, e->value, key_type);
                 }
             } else if constexpr (IsDynamicArray<T>) {
                 if (type_matches_tag<type::List>(cdtype.value)) {
@@ -1649,6 +1650,22 @@ namespace cql::native {
         co_await send_frame(frame);
     }
 
+    // Drivers attach a client-generated "now" to every request by default. Writes are applied
+    // in arrival order (see engine USING TIMESTAMP handling), which matches such a timestamp up
+    // to clock skew, so it is accepted and otherwise unused; a timestamp far from the server
+    // clock was set deliberately and cannot be honoured.
+    // @todo honour client timestamps once writes reconcile by timestamp
+    constexpr S64     CLIENT_TIMESTAMP_TOLERANCE_US = 5_s64 * 60 * 1000 * 1000;
+    static const String8 CLIENT_TIMESTAMP_ERROR     = "Client-supplied write timestamps more than 5 minutes from server time are not supported: writes are ordered by arrival";
+
+    static bool client_timestamp_acceptable(const Optional<S64>& timestamp_us) {
+        if (!timestamp_us) {
+            return true;
+        }
+        S64 now = S64(os::unix_us_now());
+        return *timestamp_us >= now - CLIENT_TIMESTAMP_TOLERANCE_US && *timestamp_us <= now + CLIENT_TIMESTAMP_TOLERANCE_US;
+    }
+
     // Executes a statement whose bind values are still raw; the bind specs depend on the keyspace.
     static coroutine::Task<> run_statement(ConnectionState& c, S16 stream, Statement& stmt, Reader& r, const RawQueryParameters& raw, String8 keyspace, const DynamicArray<engine::BindVariableSpec>& specs) {
         DynamicArray<Term> values = decode_bound_values(r, raw, specs, c.version);
@@ -1670,6 +1687,10 @@ namespace cql::native {
         }
         if (raw.params.has_paging) {
             co_await send_status_error(c, stream, engine::ExecutionStatus::Invalid, "Paging state is not supported: this server never returns one");
+            co_return;
+        }
+        if (!client_timestamp_acceptable(raw.params.timestamp)) {
+            co_await send_status_error(c, stream, engine::ExecutionStatus::Invalid, CLIENT_TIMESTAMP_ERROR);
             co_return;
         }
 
@@ -1729,6 +1750,10 @@ namespace cql::native {
         }
         if (raw.params.has_paging) {
             co_await send_status_error(c, stream, engine::ExecutionStatus::Invalid, "Paging state is not supported: this server never returns one");
+            co_return;
+        }
+        if (!client_timestamp_acceptable(raw.params.timestamp)) {
+            co_await send_status_error(c, stream, engine::ExecutionStatus::Invalid, CLIENT_TIMESTAMP_ERROR);
             co_return;
         }
 
@@ -1791,8 +1816,9 @@ namespace cql::native {
         if (flags & query_flags::SERIAL_CONSISTENCY) {
             (void)read_u16(r);
         }
+        Optional<S64> batch_timestamp = {};
         if (flags & query_flags::DEFAULT_TIMESTAMP) {
-            (void)read_s64(r); // @note treated as arrival time, see engine USING TIMESTAMP handling
+            batch_timestamp = read_s64(r);
         }
         String8 keyspace = String8(c.keyspace);
         if (c.version >= 5) {
@@ -1805,6 +1831,10 @@ namespace cql::native {
         }
         if (!reader_ok(r)) {
             co_await send_reader_error(c, stream, r);
+            co_return;
+        }
+        if (!client_timestamp_acceptable(batch_timestamp)) {
+            co_await send_status_error(c, stream, engine::ExecutionStatus::Invalid, CLIENT_TIMESTAMP_ERROR);
             co_return;
         }
 

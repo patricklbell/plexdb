@@ -36,6 +36,15 @@ export namespace cql {
 
     bool evaluate_where(TArrayView<const WhereClause::Relation> predicates, const EvalContext& ctx);
 
+    // Cassandra's ordering for a value of `type`: scalars by their type's comparator,
+    // lists/vectors/tuples/UDTs field by field (null first), sets by sorted elements and maps by
+    // sorted (key, value) entries.
+    S32 compare_typed_values(const ColumnValue& a, const ColumnValue& b, const type::Type& type);
+
+    // Set elements / map entries in Cassandra's order (by element / key).
+    DynamicArray<const NestedColumnValue*>                                           sorted_set_elements(const DynamicSet<NestedColumnValue>& set, const type::Type& element_type);
+    DynamicArray<const Pair<NestedColumnValue, NestedColumnValue>*> sorted_map_entries(const DynamicMap<NestedColumnValue, NestedColumnValue>& map, const type::Type& key_type);
+
     // Invoke a built-in function by name (case-insensitive) with pre-evaluated
     // arguments. Returns Evaluated{Literal{Null{}}} when no registered function
     // matches `name`. The lookup is the same registry the term evaluator uses

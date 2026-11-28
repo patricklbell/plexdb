@@ -69,6 +69,8 @@ export namespace cql::schema {
 #pragma pack(pop)
 
     // Outer partition BTree: Murmur3 token (S64) → PartitionEntry
+    // @todo key by (token, partition key bytes): two distinct partition keys with the same
+    // 64-bit token currently share one partition (Cassandra orders by token, then key).
     using PartitionBTree = btree::BTreePaged<btree::FixedKeyPolicy<S64>, btree::FixedValuePolicy<sizeof(PartitionEntry)>>;
 
     // Inner clustering BTree: ck_bytes → row_page (U64)

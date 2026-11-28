@@ -250,46 +250,16 @@ namespace cql::engine {
         return {};
     }
 
-    static Optional<ExecutionResult> validate_using_timestamp(const DynamicArray<UpdateParameter>& params) {
-        for (const auto& p : params) {
-            if (p.kind != UpdateParameter::Kind::TIMESTAMP) {
-                continue;
-            }
-            if (!type_matches_tag<S64>(p.value)) {
-                continue;
-            }
-            S64 ts = get<S64>(p.value);
-            // Cassandra rejects Long.MIN_VALUE as a TIMESTAMP — it is reserved as a sentinel.
-            if (ts == MIN_S64) {
-                return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Out of range; TIMESTAMP must be greater than Long.MIN_VALUE"};
-            }
-        }
-        return {};
-    }
-
-    // @note assert_true requires a static-storage-duration message, so the caller passes its
-    // own literal text rather than this function formatting one dynamically.
-    static void warn_using_timestamp_single_node(Engine& engine, const DynamicArray<UpdateParameter>& params, const char* assert_msg, const char* log_msg) {
+    // Writes are applied in arrival order: a write never compares its timestamp against the
+    // cells it replaces, and deletions leave no timestamped tombstones. An explicit client
+    // timestamp would be silently honoured only when it happens to agree with arrival order, so
+    // it is rejected rather than ignored.
+    // @todo per-cell timestamp reconciliation and timestamped (range) tombstones
+    static Optional<ExecutionResult> reject_using_timestamp(const DynamicArray<UpdateParameter>& params) {
         for (const auto& p : params) {
             if (p.kind == UpdateParameter::Kind::TIMESTAMP) {
-                assert_true(engine.single_node, assert_msg);
-                log::native_info(log_msg);
+                return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "USING TIMESTAMP is not supported: writes are ordered by arrival"};
             }
-        }
-    }
-
-    // @note empty means "no USING TIMESTAMP clause" — distinct from an explicit `USING
-    // TIMESTAMP 0`, which is a valid write timestamp (the epoch) that must round-trip through
-    // writeTime() as 0, not silently fall back to the current wall clock.
-    static Optional<S64> resolve_using_timestamp_us(const DynamicArray<UpdateParameter>& params) {
-        for (const auto& p : params) {
-            if (p.kind != UpdateParameter::Kind::TIMESTAMP) {
-                continue;
-            }
-            if (!type_matches_tag<S64>(p.value)) {
-                return {};
-            }
-            return get<S64>(p.value);
         }
         return {};
     }
@@ -299,9 +269,8 @@ namespace cql::engine {
     // TTL is present only when USING TTL or default_ttl_ms resolves to a positive value.
     static io::CellMetadata resolve_mutation_cell_meta(const DynamicArray<UpdateParameter>& params, S64 default_ttl_ms) {
         S64              ttl_ms       = resolve_using_ttl_ms(params, default_ttl_ms);
-        Optional<S64>    ts_us        = resolve_using_timestamp_us(params);
         S64              now_ms       = S64(os::unix_ms_now());
-        S64              writetime_us = ts_us ? *ts_us : os::unix_us_now();
+        S64              writetime_us = os::unix_us_now();
         io::CellMetadata cm{};
         cm.flags |= io::CELL_FLAG_HAS_WRITETIME;
         cm.writetime_us = writetime_us;
@@ -3254,6 +3223,9 @@ namespace cql::engine {
 
                 U64 limit_count = MAX_U64;
                 if (type_matches_tag<S64>(stmt.limit.value)) {
+                    if (get<S64>(stmt.limit.value) <= 0) {
+                        co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "LIMIT must be strictly positive"};
+                    }
                     limit_count = U64(get<S64>(stmt.limit.value));
                 }
 
@@ -3333,12 +3305,11 @@ namespace cql::engine {
                 };
             } else if constexpr (SameAs<T, Insert>) {
                 ZoneScopedN("engine::insert");
-                warn_using_timestamp_single_node(engine, stmt.using_parameters, "INSERT USING TIMESTAMP not supported in non-single-node mode", "ignoring INSERT USING TIMESTAMP (single-node no-op)");
+                if (auto bad_ts = reject_using_timestamp(stmt.using_parameters)) {
+                    co_return move(*bad_ts);
+                }
                 if (auto bad_ttl = validate_using_ttl(stmt.using_parameters)) {
                     co_return move(*bad_ttl);
-                }
-                if (auto bad_ts = validate_using_timestamp(stmt.using_parameters)) {
-                    co_return move(*bad_ts);
                 }
                 assert_true(static_cast<bool>(stmt.insert_clause), "missing insert clause, this should never happen");
 
@@ -3708,12 +3679,11 @@ namespace cql::engine {
                 });
             } else if constexpr (SameAs<T, Update>) {
                 ZoneScopedN("engine::update");
-                warn_using_timestamp_single_node(engine, stmt.using_parameters, "UPDATE USING TIMESTAMP not supported in non-single-node mode", "ignoring UPDATE USING TIMESTAMP (single-node no-op)");
+                if (auto bad_ts = reject_using_timestamp(stmt.using_parameters)) {
+                    co_return move(*bad_ts);
+                }
                 if (auto bad_ttl = validate_using_ttl(stmt.using_parameters)) {
                     co_return move(*bad_ttl);
-                }
-                if (auto bad_ts = validate_using_timestamp(stmt.using_parameters)) {
-                    co_return move(*bad_ts);
                 }
                 if (stmt.if_) {
                     co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "UPDATE ... IF is not supported"};
@@ -3761,7 +3731,9 @@ namespace cql::engine {
                 co_return create_void_success();
             } else if constexpr (SameAs<T, Delete>) {
                 ZoneScopedN("engine::delete");
-                warn_using_timestamp_single_node(engine, stmt.using_parameters, "DELETE USING TIMESTAMP not supported in non-single-node mode", "ignoring DELETE USING TIMESTAMP (single-node no-op)");
+                if (auto bad_ts = reject_using_timestamp(stmt.using_parameters)) {
+                    co_return move(*bad_ts);
+                }
                 for (const auto& param : stmt.using_parameters) {
                     if (param.kind == UpdateParameter::Kind::TTL) {
                         co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "DELETE USING TTL is not implemented"};
@@ -4186,7 +4158,9 @@ namespace cql::engine {
             } else if constexpr (SameAs<T, Batch>) {
                 ZoneScopedN("engine::batch");
                 // @note batch-level USING TIMESTAMP/TTL falls through to children that don't supply their own.
-                warn_using_timestamp_single_node(engine, stmt.using_parameters, "BATCH USING TIMESTAMP not supported in non-single-node mode", "ignoring BATCH USING TIMESTAMP (single-node no-op)");
+                if (auto bad_ts = reject_using_timestamp(stmt.using_parameters)) {
+                    co_return move(*bad_ts);
+                }
 
                 auto dispatch_child = [&engine, &ctx, &current_keyspace, &stmt](const auto& m) -> coroutine::Task<ExecutionResult> {
                     using M     = Decay<decltype(m)>;

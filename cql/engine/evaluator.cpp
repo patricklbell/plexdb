@@ -17,6 +17,7 @@ import cql.engine.literal_widen;
 import cql.engine.schema;
 import cql.engine.statements;
 import cql.engine.types;
+import plexdb.support.sort;
 
 using namespace plexdb;
 using namespace cql::column_types;
@@ -867,6 +868,120 @@ namespace cql {
         });
     }
 
+    // ========================================================================
+    // typed comparison
+    // ========================================================================
+    // @note a non-template swap resolves the std::swap / plexdb::swap ambiguity cpp-sort hits
+    template<typename T>
+    struct SortRef {
+        const T* ptr;
+
+        friend void swap(SortRef& a, SortRef& b) noexcept {
+            const T* t = a.ptr;
+            a.ptr      = b.ptr;
+            b.ptr      = t;
+        }
+    };
+
+    template<typename T, typename Less>
+    static DynamicArray<const T*> sorted_refs(DynamicArray<SortRef<T>>& refs, Less less) {
+        support::sort::sort<SortRef<T>, U64>(TArrayView<SortRef<T>, U64>(refs.ptr, refs.length), [&](const SortRef<T>& a, const SortRef<T>& b) {
+            return less(*a.ptr, *b.ptr);
+        });
+        DynamicArray<const T*> out;
+        reserve(out, refs.length);
+        for (const auto& r : refs) {
+            push_back(out, r.ptr);
+        }
+        return out;
+    }
+
+    DynamicArray<const NestedColumnValue*> sorted_set_elements(const DynamicSet<NestedColumnValue>& set, const type::Type& element_type) {
+        DynamicArray<SortRef<NestedColumnValue>> refs;
+        for (const auto& e : set) {
+            push_back(refs, SortRef<NestedColumnValue>{&e});
+        }
+        return sorted_refs(refs, [&](const NestedColumnValue& a, const NestedColumnValue& b) {
+            return compare_typed_values(a.value, b.value, element_type) < 0;
+        });
+    }
+
+    DynamicArray<const Pair<NestedColumnValue, NestedColumnValue>*> sorted_map_entries(const DynamicMap<NestedColumnValue, NestedColumnValue>& map, const type::Type& key_type) {
+        using Entry = Pair<NestedColumnValue, NestedColumnValue>;
+        DynamicArray<SortRef<Entry>> refs;
+        for (const auto& kv : map) {
+            push_back(refs, SortRef<Entry>{&kv});
+        }
+        return sorted_refs(refs, [&](const Entry& a, const Entry& b) {
+            return compare_typed_values(a.first.value, b.first.value, key_type) < 0;
+        });
+    }
+
+    static S32 compare_sequences(const DynamicArray<NestedColumnValue>& a, const DynamicArray<NestedColumnValue>& b, auto&& type_at) {
+        U64 n = min(a.length, b.length);
+        for (U64 i = 0; i < n; i++) {
+            if (S32 c = compare_typed_values(a[i].value, b[i].value, type_at(i)); c != 0) {
+                return c;
+            }
+        }
+        return a.length < b.length ? -1 : (a.length > b.length ? 1 : 0);
+    }
+
+    S32 compare_typed_values(const ColumnValue& a, const ColumnValue& b, const type::Type& type) {
+        const bool a_null = type_matches_tag<Null>(a);
+        const bool b_null = type_matches_tag<Null>(b);
+        if (a_null || b_null) {
+            return a_null == b_null ? 0 : (a_null ? -1 : 1);
+        }
+        return visit(type.value, [&](const auto& t) -> S32 {
+            using T = RemoveCVRef<decltype(t)>;
+            if constexpr (SameAs<T, type::Basic>) {
+                return compare_column_value(a, b, t);
+            } else if constexpr (SameAs<T, type::List> || SameAs<T, type::Vector>) {
+                return compare_sequences(get<DynamicArray<NestedColumnValue>>(a), get<DynamicArray<NestedColumnValue>>(b), [&](U64) -> const type::Type& { return t.element; });
+            } else if constexpr (SameAs<T, type::Tuple>) {
+                return compare_sequences(get<DynamicArray<NestedColumnValue>>(a), get<DynamicArray<NestedColumnValue>>(b), [&](U64 i) -> const type::Type& { return t.elements[i]; });
+            } else if constexpr (SameAs<T, type::UDT*>) {
+                return compare_sequences(get<DynamicArray<NestedColumnValue>>(a), get<DynamicArray<NestedColumnValue>>(b), [&](U64 i) -> const type::Type& { return t->field_types[i]; });
+            } else if constexpr (SameAs<T, type::Set>) {
+                auto ea = sorted_set_elements(get<DynamicSet<NestedColumnValue>>(a), t.key);
+                auto eb = sorted_set_elements(get<DynamicSet<NestedColumnValue>>(b), t.key);
+                U64  n  = min(ea.length, eb.length);
+                for (U64 i = 0; i < n; i++) {
+                    if (S32 c = compare_typed_values(ea[i]->value, eb[i]->value, t.key); c != 0) {
+                        return c;
+                    }
+                }
+                return ea.length < eb.length ? -1 : (ea.length > eb.length ? 1 : 0);
+            } else if constexpr (SameAs<T, type::Map>) {
+                auto ea = sorted_map_entries(get<DynamicMap<NestedColumnValue, NestedColumnValue>>(a), t.key);
+                auto eb = sorted_map_entries(get<DynamicMap<NestedColumnValue, NestedColumnValue>>(b), t.key);
+                U64  n  = min(ea.length, eb.length);
+                for (U64 i = 0; i < n; i++) {
+                    if (S32 c = compare_typed_values(ea[i]->first.value, eb[i]->first.value, t.key); c != 0) {
+                        return c;
+                    }
+                    if (S32 c = compare_typed_values(ea[i]->second.value, eb[i]->second.value, t.value); c != 0) {
+                        return c;
+                    }
+                }
+                return ea.length < eb.length ? -1 : (ea.length > eb.length ? 1 : 0);
+            } else {
+                static_assert(!SameAs<T, T>, "missing typed comparison case");
+            }
+        });
+    }
+
+    // Composite (collection, tuple, UDT) columns: the right-hand side is materialized as the
+    // column's own type and compared with Cassandra's ordering.
+    static Optional<S32> compare_composite_relation(const ColumnValue& lhs, const Evaluated& rhs, const type::Type& col_type, const EvalContext& ctx) {
+        Optional<ColumnValue> rhs_cv = io::resolve_evaluated(rhs, col_type, ctx);
+        if (!rhs_cv || type_matches_tag<Null>(*rhs_cv)) {
+            return {};
+        }
+        return compare_typed_values(lhs, *rhs_cv, col_type);
+    }
+
     static bool evaluate_column_relation(const WhereClause::ColumnExpressionRelation& cer, const EvalContext& ctx) {
         Optional<U64> col_ci = ctx.table ? schema::find_column(*ctx.table, cer.column.identifier) : Optional<U64>{};
         Evaluated     lhs    = (col_ci && ctx.row_values) ? Evaluated{ctx.row_values[*col_ci]} : Evaluated{Literal{Null{}}};
@@ -882,6 +997,11 @@ namespace cql {
             return evaluate_contains(lhs, rhs, cer.operator_ == Operator::contains_key);
         }
 
+        const bool composite_col = col_ci && !type_matches_tag<type::Basic>(ctx.table->cols[*col_ci].type.value);
+        if (composite_col && type_matches_tag<ColumnValue>(lhs.value) && type_matches_tag<Null>(get<ColumnValue>(lhs.value))) {
+            return false;
+        }
+
         if (cer.operator_ == Operator::in) {
             // Check membership: rhs is a TupleLiteral or ListOrVectorLiteral.
             Evaluated rhs     = evaluate_term(cer.value, ctx);
@@ -890,8 +1010,15 @@ namespace cql {
                 if constexpr (SameAs<LT, TupleLiteral> || SameAs<LT, ListOrVectorLiteral>) {
                     for (const Term& elem : list.elements) {
                         Evaluated elem_val = evaluate_term(elem, ctx);
-                        bool      comparable;
-                        S64       cmp = compare_evaluated(lhs, elem_val, comparable);
+                        if (composite_col) {
+                            Optional<S32> c = compare_composite_relation(get<ColumnValue>(lhs.value), elem_val, ctx.table->cols[*col_ci].type, ctx);
+                            if (c && *c == 0) {
+                                return true;
+                            }
+                            continue;
+                        }
+                        bool comparable;
+                        S64  cmp = compare_evaluated(lhs, elem_val, comparable);
                         if (comparable && cmp == 0) {
                             return true;
                         }
@@ -907,6 +1034,11 @@ namespace cql {
         }
 
         Evaluated rhs = evaluate_term(cer.value, ctx);
+
+        if (composite_col && type_matches_tag<ColumnValue>(lhs.value)) {
+            Optional<S32> c = compare_composite_relation(get<ColumnValue>(lhs.value), rhs, ctx.table->cols[*col_ci].type, ctx);
+            return c.has_value() && apply_operator(*c, cer.operator_);
+        }
 
         // Type-aware path: reuses compare_column_value (Cassandra's AbstractType.compare per
         // dtype — the same rules clustering/index keys sort by) rather than re-implementing
