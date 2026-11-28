@@ -303,6 +303,29 @@ namespace cql::planner {
         return false;
     }
 
+    static bool is_slice_operator(Operator op) {
+        return op == Operator::lt || op == Operator::le || op == Operator::gt || op == Operator::ge;
+    }
+
+    static bool where_has_slice_on_duration(const WhereClause& where, const schema::Table& tbl) {
+        for (const auto& rel : where.relations) {
+            if (!type_matches_tag<WhereClause::ColumnExpressionRelation>(rel.value)) {
+                continue;
+            }
+            const auto& r = get<WhereClause::ColumnExpressionRelation>(rel.value);
+            if (!is_slice_operator(r.operator_)) {
+                continue;
+            }
+            String8 cname(r.column.identifier.c_str, r.column.identifier.length);
+            for (const auto& col : tbl.cols) {
+                if (!col.tombstone && col.name == cname && col.type == type::create_basic(type::Basic::duration)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     // Apply a single-column range bound to `bounds`. When `direction == DESC`,
     // logical </> map onto byte >/< since DESC values are encoded byte-inverted,
     // so the begin/end roles swap. `partial` marks bounds that cover a prefix
@@ -1060,6 +1083,11 @@ namespace cql::planner {
 
         if (stmt.where && where_has_null_counter_predicate(*stmt.where, tbl)) {
             plan.result.error = PlanError::NullValueForCounter;
+            return plan;
+        }
+
+        if (stmt.where && where_has_slice_on_duration(*stmt.where, tbl)) {
+            plan.result.error = PlanError::SliceOnDuration;
             return plan;
         }
 

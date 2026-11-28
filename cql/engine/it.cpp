@@ -378,6 +378,13 @@ namespace cql {
         }
     }
 
+    static coroutine::Task<void> create_clustering(RowIterator& it, Pager* pager, schema::Table* table) {
+        if (schema::has_clustering_keys(*table) && it.partition_it != btree::end<schema::PartitionEntry>(table->btree)) {
+            auto entry = *it.partition_it;
+            co_await setup_clustering_for_partition(it, pager, entry);
+        }
+    }
+
     coroutine::Task<void> RowIterator::advance_partition() {
         bool               own_tx = !this->pager->transaction_active;
         pager::Transaction tx{this->pager};
@@ -385,20 +392,9 @@ namespace cql {
             co_await tx.begin();
         }
         co_await this->partition_it.advance();
-        auto end_it = btree::end<schema::PartitionEntry>(table->btree);
-        if (partition_it != end_it) {
-            auto entry = *partition_it;
-            co_await setup_clustering_for_partition(*this, pager, entry);
-        }
+        co_await create_clustering(*this, pager, table);
         if (own_tx) {
             co_await tx.commit();
-        }
-    }
-
-    static coroutine::Task<void> create_clustering(RowIterator& it, Pager* pager, schema::Table* table) {
-        if (schema::has_clustering_keys(*table) && it.partition_it != btree::end<schema::PartitionEntry>(table->btree)) {
-            auto entry = *it.partition_it;
-            co_await setup_clustering_for_partition(it, pager, entry);
         }
     }
 

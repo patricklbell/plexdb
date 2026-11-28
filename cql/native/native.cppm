@@ -190,27 +190,6 @@ namespace cql::native {
         return 0x0000;
     }
 
-    // Per-type wire shape lives in cql.native.wire (from types.json);
-    // this only narrows the return type to S32 for the collection body-length accumulators
-    // below, which is what the CQL native protocol's [int] length fields require.
-    template<typename T>
-    S32 basic_element_byte_size(const type::Basic& dtype, const T& value) {
-        using TT = Decay<T>;
-        if constexpr (IsDynamicArray<TT> || IsDynamicSet<TT> || IsDynamicMap<TT> || SameAs<TT, Null>) {
-            assert_not_implemented("CQL native protocol encoding for nested collection or null element is not implemented");
-            return 0;
-        } else {
-            return S32(native::wire::native_basic_body_length(dtype, value));
-        }
-    }
-
-    template<typename T>
-    concept IsCqlDA = IsDynamicArray<T>;
-    template<typename T>
-    concept IsCqlDS = IsDynamicSet<T>;
-    template<typename T>
-    concept IsCqlDM = IsDynamicMap<T>;
-
     // ========================================================================
     // input
     // ========================================================================
@@ -256,24 +235,6 @@ namespace cql::native {
     void append_cql_short_bytes(Frame& f, const U8* data, U16 n);
     void append_cql_bytes_raw(Frame& f, const U8* data, S32 n);
     void append_cql_value(Frame& f, const ColumnValue& value, type::Type cdtype);
-
-    // Per-type wire shape lives in cql.native.wire; this just frames it with
-    // the CQL [value] length prefix (Frame is native-protocol-specific, so the framing stays
-    // hand-written here rather than in the generated, Frame-agnostic codec).
-    template<typename T>
-    void append_cql_basic_element(Frame& f, const type::Basic& dtype, const T& v) {
-        using TT = Decay<T>;
-        if constexpr (IsDynamicArray<TT> || IsDynamicSet<TT> || IsDynamicMap<TT> || SameAs<TT, Null>) {
-            assert_not_implemented("CQL native protocol encoding for nested collection or null element is not implemented");
-        } else {
-            S32 len = S32(native::wire::native_basic_body_length(dtype, v));
-            append_be_s32(f, len);
-            auto sink = [&f](const U8* data, U64 n) {
-                append_bytes(f, data, n);
-            };
-            native::wire::write_native_basic_body(io::to_writer(sink), dtype, v);
-        }
-    }
 
     void                 append_type_codes_option(Frame& f, type::Type cdtype);
     void                 append_error_body(Frame& f, engine::ExecutionStatus status, String8 message, String8 keyspace = "", String8 table = "");

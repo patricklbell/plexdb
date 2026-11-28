@@ -154,6 +154,25 @@ namespace cql::native {
                 }
                 p = tup_end;
                 return Term{.value = move(lit)};
+            } else if constexpr (SameAs<T, type::UDT*>) {
+                assert_true(p + 4 <= end, "truncated udt bind value length");
+                S32 outer_len = read_be_s32(p);
+                p += 4;
+                if (outer_len == -2) {
+                    return Term{.value = Literal{.value = Unset{}}};
+                }
+                if (outer_len < 0) {
+                    return Term{.value = Literal{.value = Null{}}};
+                }
+                const U8* udt_end = p + U64(outer_len);
+                assert_true(udt_end <= end, "udt bind value body truncated");
+                UdtLiteral lit{};
+                for (U64 i = 0; i < v->field_types.length && p < udt_end; i++) {
+                    Term field = read_cql_value_as_term(p, udt_end, v->field_types[i]);
+                    push_back(lit.identifier_values, Pair<AutoString8, Term>{AutoString8(v->field_names[i]), move(field)});
+                }
+                p = udt_end;
+                return Term{.value = move(lit)};
             } else {
                 assert_not_implemented("vector collection type bind parameters are not implemented");
                 return Term{.value = Literal{.value = Null{}}};
@@ -401,68 +420,109 @@ namespace cql::native {
                 for (U64 i = 0; i < v.elements.length; i++) {
                     append_type_codes_option(f, v.elements[i]);
                 }
+            } else if constexpr (SameAs<T, type::UDT*>) {
+                append_be_u16(f, type_codes::Udt);
+                append_cql_string(f, v->keyspace);
+                append_cql_string(f, v->name);
+                append_be_u16(f, U16(v->field_names.length));
+                for (U64 i = 0; i < v->field_names.length; i++) {
+                    append_cql_string(f, v->field_names[i]);
+                    append_type_codes_option(f, v->field_types[i]);
+                }
             } else if constexpr (SameAs<T, type::Vector>) {
                 assert_not_implemented("native protocol type code for vector collection type is not implemented");
+            } else {
+                static_assert(!SameAs<T, T>, "missing type option case");
             }
         });
     }
 
+    static void patch_be_s32(Frame& f, U64 offset, S32 v) {
+        f.body.ptr[offset + 0] = U8(U32(v) >> 24);
+        f.body.ptr[offset + 1] = U8(U32(v) >> 16);
+        f.body.ptr[offset + 2] = U8(U32(v) >> 8);
+        f.body.ptr[offset + 3] = U8(U32(v));
+    }
+
+    static void append_cql_value_body(Frame& f, const ColumnValue& value, const type::Type& cdtype);
+
+    // [bytes]: [int] n + n bytes, or [int] -1 for null. The length is back-patched once the
+    // body is written so nested values need no separate sizing pass.
     void append_cql_value(Frame& f, const ColumnValue& value, type::Type cdtype) {
+        if (type_matches_tag<Null>(value)) {
+            append_be_s32(f, -1);
+            return;
+        }
+        U64 length_offset = f.body.length;
+        append_be_s32(f, 0);
+        append_cql_value_body(f, value, cdtype);
+        patch_be_s32(f, length_offset, S32(f.body.length - length_offset - 4));
+    }
+
+    static void append_cql_basic_body(Frame& f, const type::Basic& dtype, const auto& v) {
+        auto sink = [&f](const U8* data, U64 n) {
+            append_bytes(f, data, n);
+        };
+        native::wire::write_native_basic_body(io::to_writer(sink), dtype, v);
+    }
+
+    // Vector elements carry no per-element [int] length: fixed-width elements are just
+    // concatenated bodies.
+    static void append_cql_vector_element(Frame& f, const ColumnValue& value, const type::Type& element_type) {
+        visit(value, [&](const auto& v) {
+            using T = Decay<decltype(v)>;
+            if constexpr (IsInTypeList<T, TypeList<S16, S32, S64, U8, F32, F64, UUID>>) {
+                append_cql_basic_body(f, get<type::Basic>(element_type.value), v);
+            } else {
+                assert_not_implemented("CQL native protocol encoding for variable-width or null vector elements is not implemented");
+            }
+        });
+    }
+
+    static void append_cql_value_body(Frame& f, const ColumnValue& value, const type::Type& cdtype) {
         visit(value, [&](const auto& v) {
             using T = Decay<decltype(v)>;
 
             if constexpr (SameAs<T, Null>) {
-                append_be_s32(f, -1);
+                assert_true(false, "null has no value body; append_cql_value writes it as a -1 length");
             } else if constexpr (IsInTypeList<T, ColumnValueBasicTypes>) {
-                assert_true(type_matches_tag<type::Basic>(cdtype.value), "static value type requires ctype basic, this should never happen");
-                append_cql_basic_element(f, get<type::Basic>(cdtype.value), v);
-            } else if constexpr (IsCqlDM<T>) {
-                assert_true(type_matches_tag<type::Map>(cdtype.value), "static value type requires ctype map, this should never happen");
-                const auto& m          = get<type::Map>(cdtype.value);
-                U64         pair_count = length(v);
-                S32         body       = 4;
+                append_cql_basic_body(f, get<type::Basic>(cdtype.value), v);
+            } else if constexpr (IsDynamicMap<T>) {
+                const auto& m = get<type::Map>(cdtype.value);
+                append_be_s32(f, S32(length(v)));
                 for (auto& it : v) {
-                    visit(it.first.value, [&](const auto& k) { body += 4 + basic_element_byte_size(get<type::Basic>(m.key.value), k); });
-                    visit(it.second.value, [&](const auto& val) { body += 4 + basic_element_byte_size(get<type::Basic>(m.value.value), val); });
+                    append_cql_value(f, it.first.value, m.key);
+                    append_cql_value(f, it.second.value, m.value);
                 }
-                append_be_s32(f, body);
-                append_be_s32(f, S32(pair_count));
-                for (auto& it : v) {
-                    visit(it.first.value, [&](const auto& k) { append_cql_basic_element(f, get<type::Basic>(m.key.value), k); });
-                    visit(it.second.value, [&](const auto& val) { append_cql_basic_element(f, get<type::Basic>(m.value.value), val); });
-                }
-            } else if constexpr (IsCqlDS<T>) {
-                assert_true(type_matches_tag<type::Set>(cdtype.value), "static value type requires ctype set, this should never happen");
-                const auto key_dtype  = get<type::Basic>(get<type::Set>(cdtype.value).key.value);
-                U64        elem_count = length(v);
-                S32        body       = 4;
+            } else if constexpr (IsDynamicSet<T>) {
+                const auto& key_type = get<type::Set>(cdtype.value).key;
+                append_be_s32(f, S32(length(v)));
                 for (auto& e : v) {
-                    visit(e.value, [&](const auto& el) { body += 4 + basic_element_byte_size(key_dtype, el); });
+                    append_cql_value(f, e.value, key_type);
                 }
-                append_be_s32(f, body);
-                append_be_s32(f, S32(elem_count));
-                for (auto& e : v) {
-                    visit(e.value, [&](const auto& el) { append_cql_basic_element(f, key_dtype, el); });
-                }
-            } else if constexpr (IsCqlDA<T>) {
-                bool is_vec = type_matches_tag<type::Vector>(cdtype.value);
-                assert_true(
-                    type_matches_tag<type::List>(cdtype.value) || is_vec,
-                    "static value type requires ctype list/vector, this should never happen"
-                );
-                U64        elem_count = is_vec ? get<type::Vector>(cdtype.value).count : v.length;
-                const auto elem_dtype = is_vec ? get<type::Basic>(get<type::Vector>(cdtype.value).element.value) : get<type::Basic>(get<type::List>(cdtype.value).element.value);
-                S32        body       = 4;
-                for (U64 i = 0; i < elem_count; ++i) {
-                    visit(v[i].value, [&](const auto& el) { body += 4 + basic_element_byte_size(elem_dtype, el); });
-                }
-                append_be_s32(f, body);
-                append_be_s32(f, S32(elem_count));
-                for (U64 i = 0; i < elem_count; ++i) {
-                    visit(v[i].value, [&](const auto& el) { append_cql_basic_element(f, elem_dtype, el); });
+            } else if constexpr (IsDynamicArray<T>) {
+                if (type_matches_tag<type::List>(cdtype.value)) {
+                    const auto& element_type = get<type::List>(cdtype.value).element;
+                    append_be_s32(f, S32(v.length));
+                    for (const auto& e : v) {
+                        append_cql_value(f, e.value, element_type);
+                    }
+                } else if (type_matches_tag<type::Vector>(cdtype.value)) {
+                    const auto& element_type = get<type::Vector>(cdtype.value).element;
+                    for (const auto& e : v) {
+                        append_cql_vector_element(f, e.value, element_type);
+                    }
+                } else {
+                    // Tuple / UDT: one [bytes] per field, no count. A UDT value may carry fewer
+                    // fields than its type after ALTER TYPE ADD; trailing fields are then omitted.
+                    const bool        is_tuple    = type_matches_tag<type::Tuple>(cdtype.value);
+                    const type::Type* field_types = is_tuple ? get<type::Tuple>(cdtype.value).elements.ptr : get<type::UDT*>(cdtype.value)->field_types.ptr;
+                    for (U64 i = 0; i < v.length; i++) {
+                        append_cql_value(f, v[i].value, field_types[i]);
+                    }
                 }
             } else {
-                static_assert(!SameAs<T, T>, "missing implementation for read value");
+                static_assert(!SameAs<T, T>, "missing implementation for column value type");
             }
         });
     }

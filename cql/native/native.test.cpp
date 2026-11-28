@@ -3,6 +3,8 @@
 #include <catch2/generators/catch_generators_adapters.hpp>
 #include <catch2/generators/catch_generators_random.hpp>
 
+#include <string>
+
 #include <plexdb/macros/macros.h>
 #include <plexdb/test_macros/test_macros.h>
 #include <cql/test_macros/test_macros.h>
@@ -2078,6 +2080,137 @@ CQL_NATIVE_TEST_CASE("BATCH opcode with inline and prepared children", "[cql.nat
             Frame fr = recv_frame(client);
             CHECK(fr.opcode == op::ERROR);
         }
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Native protocol nested collection, tuple and UDT serialization", "[cql.native][collection]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TYPE ks.p (x int, y text);").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (k int PRIMARY KEY, m map<int, frozen<list<int>>>, tp frozen<tuple<int, text>>, u frozen<p>);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, m, tp, u) VALUES (0, {1: [2]}, (1, null), {x: 1, y: 'a'});").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT m, tp, u FROM ks.t WHERE k = 0;");
+        CHECK(result_kind(sel) == result::ROWS);
+
+        const U8 map_option[] = {0x00, 0x21, 0x00, 0x09, 0x00, 0x20, 0x00, 0x09};
+        CHECK(body_contains(sel, map_option, sizeof(map_option)));
+        const U8 tuple_option[] = {0x00, 0x31, 0x00, 0x02, 0x00, 0x09, 0x00, 0x0D};
+        CHECK(body_contains(sel, tuple_option, sizeof(tuple_option)));
+        const U8 udt_option[] = {0x00, 0x30, 0x00, 0x02, 'k', 's', 0x00, 0x01, 'p', 0x00, 0x02, 0x00, 0x01, 'x', 0x00, 0x09, 0x00, 0x01, 'y', 0x00, 0x0D};
+        CHECK(body_contains(sel, udt_option, sizeof(udt_option)));
+
+        const U8 map_value[] = {
+            0x00, 0x00, 0x00, 0x1C, 0x00, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x02
+        };
+        CHECK(body_contains(sel, map_value, sizeof(map_value)));
+        const U8 tuple_value[] = {0x00, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF};
+        CHECK(body_contains(sel, tuple_value, sizeof(tuple_value)));
+        const U8 udt_value[] = {0x00, 0x00, 0x00, 0x0D, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 'a'};
+        CHECK(body_contains(sel, udt_value, sizeof(udt_value)));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("SELECT DISTINCT on a table without clustering key", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (k text PRIMARY KEY, v int);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, v) VALUES ('alpha', 1);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, v) VALUES ('bravo', 2);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, v) VALUES ('charlie', 3);").opcode == op::RESULT);
+        CHECK(send_query(client, "DELETE FROM ks.t WHERE k = 'bravo';").opcode == op::RESULT);
+
+        Frame sel = send_query(client, "SELECT DISTINCT k FROM ks.t;");
+        CHECK(result_kind(sel) == result::ROWS);
+        CHECK(body_contains(sel, "alpha"));
+        CHECK(body_contains(sel, "charlie"));
+        CHECK(!body_contains(sel, "bravo"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("CREATE INDEX: index on a clustering column is cleared by row and partition deletes", "[cql.native][index]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (a int, b text, s int static, d int, PRIMARY KEY (a, b));").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE INDEX ON ks.t (b);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (a, b, s, d) VALUES (0, 'partition-row', 0, 0);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (a, b, s, d) VALUES (1, 'single-row', 1, 1);").opcode == op::RESULT);
+
+        CHECK(send_query(client, "DELETE FROM ks.t WHERE a = 0;").opcode == op::RESULT);
+        CHECK(send_query(client, "DELETE FROM ks.t WHERE a = 1 AND b = 'single-row';").opcode == op::RESULT);
+
+        Frame by_partition = send_query(client, "SELECT * FROM ks.t WHERE b = 'partition-row';");
+        CHECK(result_kind(by_partition) == result::ROWS);
+        CHECK(!body_contains(by_partition, "partition-row"));
+
+        Frame by_row = send_query(client, "SELECT * FROM ks.t WHERE b = 'single-row';");
+        CHECK(result_kind(by_row) == result::ROWS);
+        CHECK(!body_contains(by_row, "single-row"));
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("Filtering on a duration column allows equality and rejects slices", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (k text PRIMARY KEY, d duration);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, d) VALUES ('one-second', 1s);").opcode == op::RESULT);
+        CHECK(send_query(client, "INSERT INTO ks.t (k, d) VALUES ('two-seconds', 2s);").opcode == op::RESULT);
+
+        Frame eq = send_query(client, "SELECT * FROM ks.t WHERE d = 1s ALLOW FILTERING;");
+        CHECK(result_kind(eq) == result::ROWS);
+        CHECK(body_contains(eq, "one-second"));
+        CHECK(!body_contains(eq, "two-seconds"));
+
+        for (String8 q : {String8("SELECT * FROM ks.t WHERE d > 1s ALLOW FILTERING;"), String8("SELECT * FROM ks.t WHERE d <= 1s ALLOW FILTERING;")}) {
+            Frame slice = send_query(client, q);
+            CHECK(slice.opcode == op::ERROR);
+            CHECK(body_contains(slice, "duration"));
+        }
+
+        signal_notify_safe(interrupt);
+    });
+    co_return;
+}
+
+CQL_NATIVE_TEST_CASE("INSERT rejects a composite clustering key longer than 64 KiB", "[cql.native]") {
+    run_native_server_with_handshake(fixture, [](Socket& client, Notifier& interrupt) {
+        CHECK(send_query(client, "CREATE KEYSPACE ks;").opcode == op::RESULT);
+        CHECK(send_query(client, "CREATE TABLE ks.t (a blob, b blob, c blob, PRIMARY KEY (a, b, c));").opcode == op::RESULT);
+
+        // Each component fits under the per-value cap; together they exceed the key cap.
+        std::string      component(40000, char(0xAA));
+        DynamicArray<U8> b;
+        append_cql_long_string(b, "INSERT INTO ks.t (a, b, c) VALUES (?, ?, ?)");
+        append_be_u16(b, 0x0001);
+        append_u8(b, 0x01);
+        append_be_u16(b, 3);
+        append_cql_bind_str(b, "a");
+        append_cql_bind_str(b, String8{component.data(), component.size()});
+        append_cql_bind_str(b, String8{component.data(), component.size()});
+        prepend_v4_header(b, op::QUERY, 1);
+        send_frame(client, b);
+        Frame ins = recv_frame(client);
+        CHECK(ins.opcode == op::ERROR);
+        CHECK(body_contains(ins, "Key length of"));
+
+        Frame sel = send_query(client, "SELECT * FROM ks.t;");
+        CHECK(result_kind(sel) == result::ROWS);
+        const U8 component_bytes[] = {0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA};
+        CHECK(!body_contains(sel, component_bytes, sizeof(component_bytes)));
 
         signal_notify_safe(interrupt);
     });

@@ -39,13 +39,13 @@ endif()
 # =============================================================================
 # Library
 # =============================================================================
-add_library(plexbd_cql)
-add_library(plexdb::cql ALIAS plexbd_cql)
+add_library(plexdb_cql)
+add_library(plexdb::cql ALIAS plexdb_cql)
 
-target_compile_features(plexbd_cql PUBLIC cxx_std_23)
-set_target_properties(plexbd_cql PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(plexdb_cql PUBLIC cxx_std_23)
+set_target_properties(plexdb_cql PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_sources(plexbd_cql
+target_sources(plexdb_cql
     PUBLIC
         FILE_SET CXX_MODULES TYPE CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
@@ -120,7 +120,7 @@ set_source_files_properties(third_party/murmur3/murmur3.c PROPERTIES
     COMPILE_OPTIONS "-Wno-implicit-fallthrough;-Wno-unused-variable;-Wno-unused-but-set-variable"
 )
 
-target_link_libraries(plexbd_cql
+target_link_libraries(plexdb_cql
     PUBLIC
         plexdb::core
     PRIVATE

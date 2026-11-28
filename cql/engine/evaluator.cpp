@@ -923,6 +923,11 @@ namespace cql {
                     rhs_cv = get<ColumnValue>(rhs.value);
                 }
                 if (rhs_cv.has_value() && !type_matches_tag<Null>(*rhs_cv)) {
+                    // @note duration is unordered; the planner rejects slices on it, leaving = / !=
+                    if (dtype == type::Basic::duration) {
+                        bool equal = get<Duration>(lhs_cv) == get<Duration>(*rhs_cv);
+                        return cer.operator_ == Operator::eq ? equal : !equal;
+                    }
                     S32 cmp = compare_column_value(lhs_cv, *rhs_cv, dtype);
                     return apply_operator(cmp, cer.operator_);
                 }

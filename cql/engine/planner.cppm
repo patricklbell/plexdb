@@ -75,6 +75,7 @@ export namespace cql::planner {
         CounterOperationOnNonCounter,
         CounterAssignmentNotIncrement,
         NullValueForCounter,
+        SliceOnDuration,
         DistinctRestrictionInvalid,
         InvalidCollectionMutation,
         InvalidSubscriptTarget,

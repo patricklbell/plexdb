@@ -118,7 +118,7 @@ you commit by hand when you want it tracked.
 
 No daemon, no registration step. `remote_run.sh <user@host>` just needs the
 target reachable over ssh with docker and the build toolchain already
-installed, and a checkout of this repo (default `~/plexbd`, override with
+installed, and a checkout of this repo (default `~/plexdb`, override with
 `-p`). It syncs the local commit (or, if the working tree has uncommitted
 changes, rsyncs it instead), runs `run.sh` remotely, and pulls
 `results/*.json` back — already named with that machine's hostname, so
