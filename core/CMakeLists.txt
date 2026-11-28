@@ -80,6 +80,7 @@ target_sources(plexdb_core
             coroutine/coroutine.cppm
             coroutine/debug.cppm
             coroutine/extra.cppm
+            debug/debug.cppm
             dynamic/containers.cppm
             dynamic/function.cppm
             dynamic/tagged_union.cppm
@@ -114,6 +115,7 @@ target_sources(plexdb_core
         base/types.cpp
         blob/implementations/blob.paged.cpp
         blob/implementations/blob.paged.detail.cpp
+        debug/debug.cpp
         os/aio.cpp
         os/core.cpp
         os/signal.cpp

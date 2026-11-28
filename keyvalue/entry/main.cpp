@@ -4,7 +4,7 @@
 #include <signal.h>
 
 import plexdb.base;
-import plexdb.coroutine.debug;
+import plexdb.debug;
 import plexdb.os;
 import plexdb.aio;
 import plexdb.argparse;
@@ -21,16 +21,13 @@ using namespace keyvalue;
 os::Notifier                 g_signal_notifier{};
 static volatile sig_atomic_t g_signal_count = 0;
 
-static void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
 static void signal_handler(int);
 
 int main(int argc, char* argv[]) {
     threads::Context main_thread_ctx{.arenas = {}, .is_main = true};
     threads::equip(&main_thread_ctx);
 
-    set_assert_handler(assert_handler);
-
-    os::signal_register_fatal_report();
+    debug::install_crash_report();
     os::signal_ignore_pipe();
     os::signal_ignore_reload();
     os::signal_register_kill(signal_handler);
@@ -87,19 +84,6 @@ int main(int argc, char* argv[]) {
 
     println("shutting down");
     return 0;
-}
-
-static void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-    println("Assert failed \"", msg, "\" at ", function_name, " in ", file_name, ":", to_str(line_number));
-    os::write_stacktrace_to_stderr(1);
-    println("async stack:");
-    coroutine::debug::print_async_stack();
-#if PLEXDB_DEBUG
-    os::signal_reset_fatal_report();
-    PLEXDB_TRAP;
-#else
-    os::process_exit(1);
-#endif
 }
 
 static void signal_handler(int) {

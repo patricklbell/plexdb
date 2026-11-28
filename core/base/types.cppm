@@ -294,11 +294,7 @@ export namespace plexdb {
 // ========================================================================
 // asserts
 // ========================================================================
-#if PLEXDB_DEBUG
-    constexpr bool k_assert_enabled = true;
-#else
-    constexpr bool k_assert_enabled = false;
-#endif
+    inline constexpr bool k_debug = PLEXDB_DEBUG;
 
     using AssertHandler                   = void (*)(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
     inline AssertHandler g_assert_handler = nullptr;
@@ -318,7 +314,7 @@ export namespace plexdb {
         }
     }
     constexpr inline void assert_true(bool expr, const char* msg, std::source_location loc = std::source_location::current()) {
-        if constexpr (!k_assert_enabled) {
+        if constexpr (!k_debug) {
             if consteval {
             } else {
                 return;

@@ -5,7 +5,7 @@
 
 import plexdb.base;
 import plexdb.coroutine;
-import plexdb.coroutine.debug;
+import plexdb.debug;
 import plexdb.os;
 import plexdb.os.uring;
 import plexdb.tagged_union;
@@ -25,7 +25,6 @@ using namespace plexdb;
 os::Notifier                 g_signal_notifier{};
 static volatile sig_atomic_t g_signal_count = 0;
 
-static void                                         assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
 static void                                         signal_handler(int);
 static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll, uring::IOBudgetOverride file_budget_override = {});
 
@@ -33,9 +32,7 @@ int main(int argc, char* argv[]) {
     plexdb::threads::Context main_thread_ctx{.arenas = {}, .is_main = true};
     plexdb::threads::equip(&main_thread_ctx);
 
-    set_assert_handler(assert_handler);
-
-    os::signal_register_fatal_report();
+    debug::install_crash_report();
     os::signal_ignore_pipe();
     os::signal_ignore_reload();
     os::signal_register_kill(signal_handler);
@@ -171,32 +168,6 @@ int main(int argc, char* argv[]) {
 
     os::file_delete(pid_file_path);
     return 0;
-}
-
-// @todo
-#if PLEXDB_OS_LINUX
-#include <stdio.h>
-#include <unistd.h>
-#endif
-
-static void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-    // Write to stderr (unbuffered) so the message is visible even when the
-    // process is about to crash via PLEXDB_TRAP.
-    char buf[512];
-    int  n = snprintf(buf, sizeof(buf), "Assert failed \"%s\" at %s in %s:%u\n", msg, function_name, file_name, line_number);
-    if (n > 0) {
-        write(2, buf, static_cast<size_t>(n) < sizeof(buf) ? static_cast<size_t>(n) : sizeof(buf) - 1);
-    }
-    os::write_stacktrace_to_stderr(1);
-    println("async stack:");
-    coroutine::debug::print_async_stack();
-
-#if PLEXDB_DEBUG
-    os::signal_reset_fatal_report();
-    PLEXDB_TRAP;
-#else
-    os::process_exit(1);
-#endif
 }
 
 static void signal_handler(int) {
