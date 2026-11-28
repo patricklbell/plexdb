@@ -25,12 +25,18 @@ namespace cql::io {
     void write_row_metadata(Writer w, const RowMetadata& m) {
         w(reinterpret_cast<const U8*>(&m.flags), sizeof(m.flags));
         w(reinterpret_cast<const U8*>(&m.expiry_unix_ms), sizeof(m.expiry_unix_ms));
+        if ((m.flags & ROW_FLAG_MARKER_TTL) != 0) {
+            w(reinterpret_cast<const U8*>(&m.marker_expiry_unix_ms), sizeof(m.marker_expiry_unix_ms));
+        }
     }
 
     coroutine::Task<RowMetadata> read_row_metadata(Reader r) {
         RowMetadata m;
         co_await r(reinterpret_cast<U8*>(&m.flags), sizeof(m.flags));
         co_await r(reinterpret_cast<U8*>(&m.expiry_unix_ms), sizeof(m.expiry_unix_ms));
+        if ((m.flags & ROW_FLAG_MARKER_TTL) != 0) {
+            co_await r(reinterpret_cast<U8*>(&m.marker_expiry_unix_ms), sizeof(m.marker_expiry_unix_ms));
+        }
         co_return m;
     }
 

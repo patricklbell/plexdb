@@ -25,14 +25,26 @@ export namespace cql::io {
     constexpr U64 MASK_BIT_COUNT          = MASK_BYTE_COUNT * 8_u64;
 
     // @note prepended to every row/static blob so the layout is uniform.
-    // Bit 0 = HAS_TTL; when set, expiry_unix_ms is the absolute expiry time.
-    constexpr U8  ROW_FLAG_HAS_TTL   = 0x01_u8;
+    // HAS_TTL: the whole row (marker and every regular cell) is dead from expiry_unix_ms on.
+    constexpr U8 ROW_FLAG_HAS_TTL = 0x01_u8;
+    // The row has no primary-key liveness marker (it was only ever written by UPDATE), so it
+    // is live only through its regular cells.
+    // @note inverted so rows written before markers were tracked read as having one.
+    constexpr U8 ROW_FLAG_NO_MARKER = 0x02_u8;
+    // The marker expires at marker_expiry_unix_ms, which follows expiry_unix_ms on disk.
+    constexpr U8 ROW_FLAG_MARKER_TTL = 0x04_u8;
+    // Fixed prefix (flags + expiry); see row_metadata_byte_count for the full size.
     constexpr U64 ROW_METADATA_BYTES = sizeof(U8) + sizeof(S64);
 
     struct RowMetadata {
-        U8  flags          = 0;
-        S64 expiry_unix_ms = 0;
+        U8  flags                 = 0;
+        S64 expiry_unix_ms        = 0;
+        S64 marker_expiry_unix_ms = 0;
     };
+
+    inline U64 row_metadata_byte_count(U8 flags) {
+        return ROW_METADATA_BYTES + ((flags & ROW_FLAG_MARKER_TTL) != 0 ? sizeof(S64) : 0);
+    }
 
     inline bool row_has_ttl(const RowMetadata& m) {
         return (m.flags & ROW_FLAG_HAS_TTL) != 0;

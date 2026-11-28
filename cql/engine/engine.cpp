@@ -312,35 +312,75 @@ namespace cql::engine {
         return cm;
     }
 
-    static io::RowMetadata compute_insert_metadata(const DynamicArray<UpdateParameter>& params, S64 default_ttl_ms) {
-        S64 ttl_ms = resolve_using_ttl_ms(params, default_ttl_ms);
-        if (ttl_ms <= 0) {
+    // Primary-key liveness of a row: written by INSERT (with the statement's TTL), carried
+    // unchanged by UPDATE and column deletes, absent on rows only ever written by UPDATE.
+    struct RowMarker {
+        bool          present        = false;
+        Optional<S64> expiry_unix_ms = {};
+    };
+
+    static RowMarker existing_marker(const io::RowMetadata& m, bool row_exists) {
+        if (!row_exists || (m.flags & io::ROW_FLAG_NO_MARKER) != 0) {
             return {};
         }
-        return io::RowMetadata{.flags = io::ROW_FLAG_HAS_TTL, .expiry_unix_ms = S64(os::unix_ms_now()) + ttl_ms};
+        if ((m.flags & io::ROW_FLAG_MARKER_TTL) != 0) {
+            return {.present = true, .expiry_unix_ms = m.marker_expiry_unix_ms};
+        }
+        // @note rows written before markers were tracked carry an INSERT TTL only as the row TTL
+        if (io::row_has_ttl(m)) {
+            return {.present = true, .expiry_unix_ms = m.expiry_unix_ms};
+        }
+        return {.present = true};
     }
 
-    // Recompute row-level TTL from per-cell metadata so row_is_expired stays a conservative
-    // optimization (only fires when every present non-key cell is expired).
-    static io::RowMetadata recompute_row_metadata(const schema::Table* tbl, const DynamicArray<bool>& col_present, const DynamicArray<Optional<io::CellMetadata>>& cell_meta) {
-        bool any_cell     = false;
-        bool all_have_ttl = true;
-        S64  max_expiry   = 0;
+    static bool is_regular_column(const schema::Table* tbl, U64 ci) {
+        const schema::Column& c = tbl->cols[ci];
+        return !c.is_static && !c.tombstone && c.key_kind == schema::KeyKind::None;
+    }
+
+    // A row is live while its marker or any regular cell is live (Cassandra row liveness), so
+    // it is dead from the latest expiry among them unless one of them never expires. Returns
+    // empty when the row has neither a marker nor a regular cell: it must not be stored.
+    static Optional<io::RowMetadata> recompute_row_metadata(const schema::Table* tbl, const DynamicArray<bool>& col_present, const DynamicArray<Optional<io::CellMetadata>>& cell_meta, const RowMarker& marker) {
+        bool any_cell   = false;
+        bool forever    = marker.present && !marker.expiry_unix_ms;
+        S64  max_expiry = marker.present && marker.expiry_unix_ms ? *marker.expiry_unix_ms : MIN_S64;
         for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-            if (tbl->cols[ci].is_static || tbl->cols[ci].key_kind != schema::KeyKind::None || !col_present[ci]) {
+            if (!is_regular_column(tbl, ci) || ci >= col_present.length || !col_present[ci]) {
                 continue;
             }
             any_cell = true;
-            if (cell_meta[ci] && io::cell_has_ttl(*cell_meta[ci])) {
+            if (ci < cell_meta.length && cell_meta[ci] && io::cell_has_ttl(*cell_meta[ci])) {
                 max_expiry = max(max_expiry, cell_meta[ci]->expiry_unix_ms);
             } else {
-                all_have_ttl = false;
+                forever = true;
             }
         }
-        if (!any_cell || !all_have_ttl) {
+        if (!marker.present && !any_cell) {
             return {};
         }
-        return io::RowMetadata{.flags = io::ROW_FLAG_HAS_TTL, .expiry_unix_ms = max_expiry};
+        io::RowMetadata m{};
+        if (!marker.present) {
+            m.flags |= io::ROW_FLAG_NO_MARKER;
+        }
+        if (marker.present && marker.expiry_unix_ms) {
+            m.flags |= io::ROW_FLAG_MARKER_TTL;
+            m.marker_expiry_unix_ms = *marker.expiry_unix_ms;
+        }
+        if (!forever) {
+            m.flags |= io::ROW_FLAG_HAS_TTL;
+            m.expiry_unix_ms = max_expiry;
+        }
+        return m;
+    }
+
+    static bool any_static_cell(const schema::Table* tbl, const DynamicArray<bool>& col_present) {
+        for (U64 si : tbl->static_col_indices) {
+            if (!tbl->cols[si].tombstone && si < col_present.length && col_present[si]) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // Writes `data` into `existing_page` in place (resize + overwrite from offset 0) if
@@ -388,7 +428,7 @@ namespace cql::engine {
             write_pk_preamble(write, tbl, col_values, col_present);
         }
         auto is_active = [&](U64 idx) {
-            return idx < col_present.length && col_present[idx] && !tbl->cols[idx].is_static && tbl->cols[idx].key_kind == schema::KeyKind::None;
+            return idx < col_present.length && col_present[idx] && is_regular_column(tbl, idx);
         };
         auto has_cell_meta = [&](U64 idx) {
             return is_active(idx) && idx < cell_meta.length && cell_meta[idx].has_value();
@@ -1087,6 +1127,8 @@ namespace cql::engine {
         DynamicArray<ColumnValue>                old_cv, col_values;
         DynamicArray<bool>                       old_present, col_present;
         DynamicArray<Optional<io::CellMetadata>> cell_meta;
+        io::RowMetadata                          old_meta    = {};
+        bool                                     row_existed = false;
     };
 
     static coroutine::Task<RmwRowState> rmw_row(
@@ -1097,7 +1139,8 @@ namespace cql::engine {
         bool have_indexes, const EvalContext& ctx
     ) {
         RmwRowState st;
-        co_await read_row_into(engine, tbl, existing_row_page, static_page, st.col_values, st.col_present, nullptr, &st.cell_meta, ck_bytes);
+        st.row_existed = existing_row_page != 0;
+        co_await read_row_into(engine, tbl, existing_row_page, static_page, st.col_values, st.col_present, &st.old_meta, &st.cell_meta, ck_bytes);
         if (pk_inject_locator != nullptr) {
             co_await inject_pk_values(tbl, *pk_inject_locator, ctx, st.col_values, st.col_present);
         }
@@ -2505,6 +2548,117 @@ namespace cql::engine {
         }
     }
 
+    // Removes a clustering table's partition once it has neither clustering rows nor live
+    // static cells.
+    static coroutine::Task<void> remove_partition_if_empty(Engine& engine, schema::Table* tbl, S64 pk_bytes, const schema::PartitionEntry& entry) {
+        schema::ClusteringBTree ck_btree{
+            engine.pager, entry.data_page,
+            schema::make_clustering_key_policy(*tbl), btree::FixedValuePolicy<sizeof(U64)>{}
+        };
+        auto ck_begin_it = co_await btree::begin<U64>(ck_btree);
+        if (ck_begin_it != btree::end<U64>(ck_btree)) {
+            co_return;
+        }
+        if (entry.static_page != 0) {
+            DynamicArray<ColumnValue> sc_vals;
+            DynamicArray<bool>        sc_present;
+            co_await read_row_into(engine, tbl, 0, entry.static_page, sc_vals, sc_present);
+            if (any_static_cell(tbl, sc_present)) {
+                co_return;
+            }
+            blob::BlobDynamicPaged static_blob;
+            co_await blob::load(static_blob, engine.pager, entry.static_page);
+            co_await blob::remove(static_blob);
+        }
+        co_await btree::remove(tbl->btree, pk_bytes);
+    }
+
+    // After a regular column is dropped, rewrites every row without its cells. A row that was
+    // only alive through dropped cells (no marker, no other regular cell) is deleted.
+    static coroutine::Task<void> compact_after_column_drop(Engine& engine, schema::Table* tbl) {
+        const bool have_indexes = tbl->indexes.length > 0;
+
+        struct PartitionRef {
+            S64                    token;
+            schema::PartitionEntry entry;
+        };
+        DynamicArray<PartitionRef> partitions;
+        {
+            auto it  = co_await btree::begin<schema::PartitionEntry>(tbl->btree);
+            auto end = btree::end<schema::PartitionEntry>(tbl->btree);
+            while (it != end) {
+                push_back(partitions, PartitionRef{it.key(), *it});
+                co_await it.advance();
+            }
+        }
+
+        for (const PartitionRef& part : partitions) {
+            if (!schema::has_clustering_keys(*tbl)) {
+                DynamicArray<ColumnValue>                cv;
+                DynamicArray<bool>                       present;
+                DynamicArray<Optional<io::CellMetadata>> cell_meta;
+                io::RowMetadata                          meta{};
+                co_await read_row_into(engine, tbl, part.entry.data_page, part.entry.static_page, cv, present, &meta, &cell_meta);
+                Optional<io::RowMetadata> new_meta = recompute_row_metadata(tbl, present, cell_meta, existing_marker(meta, true));
+                if (new_meta) {
+                    co_await write_row_blob(engine, tbl, cv, present, cell_meta, *new_meta, part.entry.data_page);
+                    continue;
+                }
+                blob::BlobDynamicPaged row_blob;
+                co_await blob::load(row_blob, engine.pager, part.entry.data_page);
+                co_await blob::remove(row_blob);
+                co_await btree::remove(tbl->btree, part.token);
+                co_await clear_indexes_for_deleted_row(tbl, part.token, NO_CK_BYTES, have_indexes, cv, present);
+                continue;
+            }
+
+            schema::ClusteringBTree ck_btree{
+                engine.pager, part.entry.data_page,
+                schema::make_clustering_key_policy(*tbl), btree::FixedValuePolicy<sizeof(U64)>{}
+            };
+            struct RowRef {
+                DynamicArray<U8> key;
+                U64              page;
+            };
+            DynamicArray<RowRef> rows;
+            {
+                auto it  = co_await btree::begin<U64>(ck_btree);
+                auto end = btree::end<U64>(ck_btree);
+                while (it != end) {
+                    auto   key = it.key();
+                    RowRef ref{.key = {}, .page = *it};
+                    resize(ref.key, U64(key.length));
+                    os::memory_copy(ref.key.ptr, key.ptr, key.length);
+                    push_back(rows, move(ref));
+                    co_await it.advance();
+                }
+            }
+            bool removed_any = false;
+            for (const RowRef& row : rows) {
+                auto                                     ck_v = TArrayView<const U8, U16>(row.key.ptr, static_cast<U16>(row.key.length));
+                DynamicArray<ColumnValue>                cv;
+                DynamicArray<bool>                       present;
+                DynamicArray<Optional<io::CellMetadata>> cell_meta;
+                io::RowMetadata                          meta{};
+                co_await read_row_into(engine, tbl, row.page, part.entry.static_page, cv, present, &meta, &cell_meta, ck_v);
+                Optional<io::RowMetadata> new_meta = recompute_row_metadata(tbl, present, cell_meta, existing_marker(meta, true));
+                if (new_meta) {
+                    co_await write_row_blob(engine, tbl, cv, present, cell_meta, *new_meta, row.page);
+                    continue;
+                }
+                blob::BlobDynamicPaged row_blob;
+                co_await blob::load(row_blob, engine.pager, row.page);
+                co_await blob::remove(row_blob);
+                co_await btree::remove(ck_btree, ck_v);
+                co_await clear_indexes_for_deleted_row(tbl, part.token, ck_v, have_indexes, cv, present);
+                removed_any = true;
+            }
+            if (removed_any) {
+                co_await remove_partition_if_empty(engine, tbl, part.token, part.entry);
+            }
+        }
+    }
+
     static coroutine::Task<void> apply_mutation(
         Engine& engine, schema::Table* tbl,
         const planner::RowLocator&   locator,
@@ -2609,15 +2763,21 @@ namespace cql::engine {
                     }
                 }
 
-                // Remove the partition entry if clustering tree is now empty.
-                auto ck_begin_it = co_await btree::begin<U64>(ck_btree);
-                if (ck_begin_it == btree::end<U64>(ck_btree)) {
-                    if (entry.static_page != 0) {
-                        blob::BlobDynamicPaged static_blob;
-                        co_await blob::load(static_blob, engine.pager, entry.static_page);
-                        co_await blob::remove(static_blob);
+                // A partition delete drops its static row too; a row or range delete leaves the
+                // partition (and its static cells) in place unless nothing remains.
+                const bool partition_delete = !locator.ck.is_equality && !locator.ck.has_begin && !locator.ck.has_end;
+                if (partition_delete) {
+                    auto ck_begin_it = co_await btree::begin<U64>(ck_btree);
+                    if (ck_begin_it == btree::end<U64>(ck_btree)) {
+                        if (entry.static_page != 0) {
+                            blob::BlobDynamicPaged static_blob;
+                            co_await blob::load(static_blob, engine.pager, entry.static_page);
+                            co_await blob::remove(static_blob);
+                        }
+                        co_await btree::remove(tbl->btree, pk_bytes);
                     }
-                    co_await btree::remove(tbl->btree, pk_bytes);
+                } else {
+                    co_await remove_partition_if_empty(engine, tbl, pk_bytes, entry);
                 }
             } else if (!locator.ck.is_equality) {
                 // Static-only UPDATE: all SET columns are static; no CK provided or required.
@@ -2664,23 +2824,18 @@ namespace cql::engine {
             } else {
                 // Read-modify-write: shared path for UPDATE and column-level DELETE.
                 bool                   new_partition = !entry_opt;
-                schema::PartitionEntry entry;
-                if (entry_opt) {
-                    entry = *entry_opt;
-                } else {
-                    entry.data_page = co_await btree::create_paged(
-                        *engine.pager,
-                        schema::make_clustering_key_policy(*tbl), btree::FixedValuePolicy<sizeof(U64)>{}
-                    );
-                    entry.static_page = 0;
-                }
+                schema::PartitionEntry entry         = entry_opt ? *entry_opt : schema::PartitionEntry{0, 0};
 
-                schema::ClusteringBTree ck_btree{
-                    engine.pager, entry.data_page,
-                    schema::make_clustering_key_policy(*tbl), btree::FixedValuePolicy<sizeof(U64)>{}
-                };
-                auto row_page_opt  = co_await btree::tfind<U64>(ck_btree, ck_bytes);
-                U64  existing_page = row_page_opt ? *row_page_opt : 0;
+                Optional<U64> row_page_opt  = {};
+                U64           existing_page = 0;
+                if (!new_partition) {
+                    schema::ClusteringBTree existing_ck{
+                        engine.pager, entry.data_page,
+                        schema::make_clustering_key_policy(*tbl), btree::FixedValuePolicy<sizeof(U64)>{}
+                    };
+                    row_page_opt  = co_await btree::tfind<U64>(existing_ck, ck_bytes);
+                    existing_page = row_page_opt ? *row_page_opt : 0;
+                }
 
                 auto ck_v = TArrayView<const U8, U16>(ck_bytes.ptr, static_cast<U16>(ck_bytes.length));
                 // new_partition: the static page doesn't have the pk preamble yet (rewrite_static
@@ -2696,13 +2851,38 @@ namespace cql::engine {
                     }
                 }
 
-                io::RowMetadata row_meta     = recompute_row_metadata(tbl, st.col_present, st.cell_meta);
-                U64             new_row_page = co_await write_row_blob(engine, tbl, st.col_values, st.col_present, st.cell_meta, row_meta, existing_page);
-                if (!row_page_opt) {
-                    co_await btree::tinsert(ck_btree, ck_bytes, new_row_page);
+                Optional<io::RowMetadata> row_meta    = recompute_row_metadata(tbl, st.col_present, st.cell_meta, existing_marker(st.old_meta, st.row_existed));
+                const bool                has_statics = any_static_cell(tbl, st.col_present);
+                if (new_partition && !row_meta && !has_statics) {
+                    // e.g. UPDATE ... SET v = null on a row that never existed: nothing to store.
+                    co_return;
                 }
-                // row_page_opt case: write_row_blob reused existing_page in place, so
-                // new_row_page == existing_page and ck_btree already maps to it — no change.
+                if (new_partition) {
+                    entry.data_page = co_await btree::create_paged(
+                        *engine.pager,
+                        schema::make_clustering_key_policy(*tbl), btree::FixedValuePolicy<sizeof(U64)>{}
+                    );
+                }
+                schema::ClusteringBTree ck_btree{
+                    engine.pager, entry.data_page,
+                    schema::make_clustering_key_policy(*tbl), btree::FixedValuePolicy<sizeof(U64)>{}
+                };
+
+                U64 new_row_page = 0;
+                if (row_meta) {
+                    new_row_page = co_await write_row_blob(engine, tbl, st.col_values, st.col_present, st.cell_meta, *row_meta, existing_page);
+                    if (!row_page_opt) {
+                        co_await btree::tinsert(ck_btree, ck_bytes, new_row_page);
+                    }
+                    // row_page_opt case: write_row_blob reused existing_page in place, so
+                    // new_row_page == existing_page and ck_btree already maps to it — no change.
+                } else if (row_page_opt) {
+                    // The row lost its last regular cell and has no marker: it no longer exists.
+                    blob::BlobDynamicPaged row_blob;
+                    co_await blob::load(row_blob, engine.pager, *row_page_opt);
+                    co_await blob::remove(row_blob);
+                    co_await btree::remove(ck_btree, ck_bytes);
+                }
 
                 // @note a brand-new partition always needs its static page written (at least
                 // the pk preamble), regardless of whether this particular mutation touches a
@@ -2712,11 +2892,17 @@ namespace cql::engine {
                 }
                 if (new_partition) {
                     co_await btree::tinsert(tbl->btree, pk_bytes, entry);
+                } else if (!row_meta && !has_statics) {
+                    co_await remove_partition_if_empty(engine, tbl, pk_bytes, entry);
                 }
                 // !new_partition: entry.data_page/static_page unchanged in place, nothing to persist.
 
                 if (have_indexes) {
-                    co_await update_indexes(tbl, pk_bytes, ck_v, schema::IndexEntry{entry.static_page, new_row_page}, st.old_cv, st.old_present, st.col_values, st.col_present);
+                    if (row_meta) {
+                        co_await update_indexes(tbl, pk_bytes, ck_v, schema::IndexEntry{entry.static_page, new_row_page}, st.old_cv, st.old_present, st.col_values, st.col_present);
+                    } else if (st.row_existed) {
+                        co_await clear_indexes_for_deleted_row(tbl, pk_bytes, ck_v, have_indexes, st.old_cv, st.old_present);
+                    }
                 }
             }
         } else {
@@ -2744,8 +2930,19 @@ namespace cql::engine {
                 // written by write_row_blob directly into the row blob below, not a static page.
                 RmwRowState st = co_await rmw_row(engine, tbl, entry.data_page, entry.static_page, NO_CK_BYTES, new_partition ? &locator : nullptr, spec, new_cell_meta, have_indexes, ctx);
 
-                io::RowMetadata row_meta     = recompute_row_metadata(tbl, st.col_present, st.cell_meta);
-                U64             new_row_page = co_await write_row_blob(engine, tbl, st.col_values, st.col_present, st.cell_meta, row_meta, entry.data_page);
+                Optional<io::RowMetadata> row_meta = recompute_row_metadata(tbl, st.col_present, st.cell_meta, existing_marker(st.old_meta, st.row_existed));
+                if (!row_meta) {
+                    // The row has no marker and no regular cell left: it no longer exists.
+                    if (!new_partition) {
+                        blob::BlobDynamicPaged row_blob;
+                        co_await blob::load(row_blob, engine.pager, entry.data_page);
+                        co_await blob::remove(row_blob);
+                        co_await btree::remove(tbl->btree, pk_bytes);
+                        co_await clear_indexes_for_deleted_row(tbl, pk_bytes, NO_CK_BYTES, have_indexes, st.old_cv, st.old_present);
+                    }
+                    co_return;
+                }
+                U64 new_row_page = co_await write_row_blob(engine, tbl, st.col_values, st.col_present, st.cell_meta, *row_meta, entry.data_page);
                 if (new_partition) {
                     co_await btree::tinsert(tbl->btree, pk_bytes, schema::PartitionEntry{new_row_page, entry.static_page});
                 }
@@ -3275,8 +3472,10 @@ namespace cql::engine {
                             co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "INSERT ... IF NOT EXISTS is not supported"};
                         }
 
-                        io::RowMetadata  row_meta         = compute_insert_metadata(stmt.using_parameters, tbl->options.default_ttl_ms);
                         io::CellMetadata insert_cell_meta = resolve_mutation_cell_meta(stmt.using_parameters, tbl->options.default_ttl_ms);
+                        // @note every cell an INSERT writes shares the statement's TTL, as does its marker
+                        const RowMarker marker   = io::cell_has_ttl(insert_cell_meta) ? RowMarker{.present = true, .expiry_unix_ms = insert_cell_meta.expiry_unix_ms} : RowMarker{.present = true};
+                        io::RowMetadata row_meta = *recompute_row_metadata(tbl, {}, {}, marker);
 
                         // collect regular (non-key, non-static) row bytes into buffer (sync)
                         DynamicArray<U8> row_buffer;
@@ -3450,19 +3649,8 @@ namespace cql::engine {
                                 // before needs_clustering_row runs.
                                 RmwRowState st = co_await rmw_row(engine, tbl, existing_page, entry.static_page, ck_v, nullptr, spec, insert_cell_meta, have_indexes, ctx);
 
-                                // recompute_row_metadata derives the row's TTL from touched
-                                // regular cells, but a key-only INSERT (no regular columns
-                                // given, e.g. INSERT INTO t (k, c) VALUES (...) USING TTL n)
-                                // has none to derive from — its liveness is carried by the
-                                // statement's own row-marker TTL (row_meta) instead.
-                                bool any_regular_cell = false;
-                                for (U64 ci = 0; ci < tbl->cols.length; ci++) {
-                                    if (!tbl->cols[ci].is_static && tbl->cols[ci].key_kind == schema::KeyKind::None && st.col_present[ci]) {
-                                        any_regular_cell = true;
-                                        break;
-                                    }
-                                }
-                                io::RowMetadata new_row_meta = any_regular_cell ? recompute_row_metadata(tbl, st.col_present, st.cell_meta) : row_meta;
+                                // @note INSERT always writes a marker, so the row is never empty
+                                io::RowMetadata new_row_meta = *recompute_row_metadata(tbl, st.col_present, st.cell_meta, marker);
                                 U64             row_page     = co_await write_row_blob(engine, tbl, st.col_values, st.col_present, st.cell_meta, new_row_meta, existing_page);
                                 if (!row_page_opt) {
                                     co_await btree::tinsert(clustering_btree, ck_bytes, row_page);
@@ -3503,7 +3691,7 @@ namespace cql::engine {
                                 }
                                 RmwRowState st = co_await rmw_row(engine, tbl, entry_opt->data_page, entry_opt->static_page, NO_CK_BYTES, nullptr, spec, insert_cell_meta, have_indexes, ctx);
 
-                                io::RowMetadata new_row_meta = recompute_row_metadata(tbl, st.col_present, st.cell_meta);
+                                io::RowMetadata new_row_meta = *recompute_row_metadata(tbl, st.col_present, st.cell_meta, marker);
                                 U64             new_row_page = co_await write_row_blob(engine, tbl, st.col_values, st.col_present, st.cell_meta, new_row_meta, entry_opt->data_page);
                                 if (have_indexes) {
                                     co_await update_indexes(tbl, pk_bytes, NO_CK_BYTES, schema::IndexEntry{entry_opt->static_page, new_row_page}, st.old_cv, st.old_present, st.col_values, st.col_present);
@@ -3681,6 +3869,7 @@ namespace cql::engine {
                         }
                         co_return create_schema_changed(ks_name, stmt.table.table_name);
                     } else if constexpr (SameAs<I, AlterTable::DropColumnInstruction>) {
+                        // Validate every column before dropping any, so a rejected statement changes nothing.
                         for (const auto& col_name : instr.columns) {
                             auto col_res = schema::read_column(*tbl, col_name.identifier);
                             if (col_res.error != schema::Error::None) {
@@ -3689,7 +3878,31 @@ namespace cql::engine {
                                 }
                                 co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Column does not exist"};
                             }
+                            ExecutionResult rejected{.status = ExecutionStatus::Invalid};
+                            if (col_res.value->key_kind != schema::KeyKind::None) {
+                                rejected.message_storage = AutoString8("Cannot drop PRIMARY KEY part ") + String8(col_name.identifier);
+                            }
+                            for (const auto& idx : tbl->indexes) {
+                                if (!idx.tombstone && String8(tbl->cols[idx.col_idx].name) == String8(col_name.identifier)) {
+                                    rejected.message_storage = AutoString8("Cannot drop column ") + String8(col_name.identifier) + " because it has dependent secondary indexes (" + idx.name + ")";
+                                }
+                            }
+                            if (rejected.message_storage.length > 0) {
+                                rejected.message = String8(rejected.message_storage);
+                                co_return rejected;
+                            }
+                        }
+                        bool dropped_regular = false;
+                        for (const auto& col_name : instr.columns) {
+                            auto col_res = schema::read_column(*tbl, col_name.identifier);
+                            if (col_res.error != schema::Error::None) {
+                                continue;
+                            }
+                            dropped_regular = dropped_regular || !col_res.value->is_static;
                             co_await schema::delete_column(engine.schema, *tbl, col_name.identifier);
+                        }
+                        if (dropped_regular) {
+                            co_await compact_after_column_drop(engine, tbl);
                         }
                         co_return create_schema_changed(ks_name, stmt.table.table_name);
                     } else if constexpr (SameAs<I, AlterTable::RenameColumnInstruction>) {

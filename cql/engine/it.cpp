@@ -33,11 +33,16 @@ namespace cql {
     ) {
         co_await blob::get(b, reinterpret_cast<U8*>(&out_meta.flags), sizeof(out_meta.flags), base_offset);
         co_await blob::get(b, reinterpret_cast<U8*>(&out_meta.expiry_unix_ms), sizeof(out_meta.expiry_unix_ms), base_offset + sizeof(out_meta.flags));
-        co_await blob::get(b, reinterpret_cast<U8*>(&out_col_count), io::COLUMN_COUNT_BYTE_COUNT, base_offset + io::ROW_METADATA_BYTES);
+        out_meta.marker_expiry_unix_ms = 0;
+        if ((out_meta.flags & io::ROW_FLAG_MARKER_TTL) != 0) {
+            co_await blob::get(b, reinterpret_cast<U8*>(&out_meta.marker_expiry_unix_ms), sizeof(out_meta.marker_expiry_unix_ms), base_offset + io::ROW_METADATA_BYTES);
+        }
+        U64 meta_bytes = io::row_metadata_byte_count(out_meta.flags);
+        co_await blob::get(b, reinterpret_cast<U8*>(&out_col_count), io::COLUMN_COUNT_BYTE_COUNT, base_offset + meta_bytes);
         U64 mask_words = ceil_div(out_col_count, io::MASK_BIT_COUNT);
         resize(out_masks, mask_words);
         resize(out_cell_meta_mask, mask_words);
-        U64 off = base_offset + io::ROW_METADATA_BYTES + io::COLUMN_COUNT_BYTE_COUNT;
+        U64 off = base_offset + meta_bytes + io::COLUMN_COUNT_BYTE_COUNT;
         if (mask_words > 0) {
             co_await blob::get(b, reinterpret_cast<U8*>(out_masks.ptr), mask_words * io::MASK_BYTE_COUNT, off);
             off += mask_words * io::MASK_BYTE_COUNT;
@@ -172,6 +177,11 @@ namespace cql {
         }
         ColumnValue result           = co_await io::read_column_value(io::to_reader(r_fn), this->table->cols[this->current_column_idx].type);
         this->current_value_consumed = true;
+        // An expired cell no longer exists; it reads as absent (and is dropped on rewrite).
+        if (io::cell_has_ttl(this->current_cell_metadata) && this->current_cell_metadata.expiry_unix_ms <= S64(os::unix_ms_now())) {
+            this->current_cell_metadata = {};
+            co_return ColumnValue{Null{}};
+        }
         co_return result;
     }
 
