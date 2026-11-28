@@ -44,7 +44,7 @@ CQL_NATIVE_TEST_CASE("Native protocol OPTIONS returns SUPPORTED", "[cql.native]"
         CHECK(supported.opcode == op::SUPPORTED);
         CHECK(supported.body_len > 0);
         CHECK(body_contains(supported, "CQL_VERSION"));
-        CHECK(body_contains(supported, "3.0.0"));
+        CHECK(body_contains(supported, "3.4.7"));
         CHECK(body_contains(supported, "COMPRESSION"));
         signal_notify_safe(interrupt);
     });

@@ -46,13 +46,8 @@ export namespace plexdb::tcp {
             if (ring) {
                 for (auto& it : client_to_connection) {
                     Connection& conn = it.second;
-                    if (conn.waiting_rwc) {
-                        conn.count_rwc            = 0;
-                        conn.error_rwc            = Error::ConnectionClosed;
-                        std::coroutine_handle<> h = conn.waiting_rwc;
-                        conn.waiting_rwc          = std::coroutine_handle<>{};
-                        h.resume();
-                    }
+                    resume_waiter(conn.read_waiter, Error::ConnectionClosed);
+                    resume_waiter(conn.write_waiter, Error::ConnectionClosed);
                     conn.task.reset();
                     uring::sqe_push_close(ring, it.second.client);
                 }
@@ -79,7 +74,7 @@ export namespace plexdb::tcp {
         Stats                                                                        stats;
         os::Poll*                                                                    poll;
         MapFixedSentinel<os::Handle, Connection, 2_u64 * MAX_CONCURRENT_CONNECTIONS> client_to_connection;
-        MapFixedSentinel<os::Handle, Op, 2_u64 * MAX_CONCURRENT_CONNECTIONS>         waiting_op;
+        MapFixedSentinel<os::Handle, U8, 2_u64 * MAX_CONCURRENT_CONNECTIONS>         waiting_op; // bitmask of Op
         DynamicArray<BufferInfo>                                                     buffer_infos;
         uring::BufferPool<MAX_CONCURRENT_CONNECTIONS>                                buffer_pool;
         UniquePtr<U8>                                                                socket_buffers{};
@@ -119,12 +114,8 @@ export namespace plexdb::tcp {
                     os::socket_close(conn.client);
                     conn.client = os::zero_handle();
                 }
-                if (conn.waiting_rwc) {
-                    conn.error_rwc            = Error::ConnectionClosed;
-                    std::coroutine_handle<> h = conn.waiting_rwc;
-                    conn.waiting_rwc          = std::coroutine_handle<>{};
-                    h.resume();
-                }
+                resume_waiter(conn.read_waiter, Error::ConnectionClosed);
+                resume_waiter(conn.write_waiter, Error::ConnectionClosed);
                 conn.task.reset();
             }
         }
@@ -156,7 +147,7 @@ export namespace plexdb::tcp {
 
         in_s->read_fn = ReadToBufferFunctor{[in_s](Connection* connection, RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(connection->client), "invalid read on closed connection");
-            assert_true(!connection->waiting_rwc, "connection already has coroutine pending");
+            assert_true(!connection->read_waiter.handle, "connection already has a read pending");
             assert_true(in_s->buffer_infos[buffer->idx].client == connection->client, "buffer not acquired for this connection");
 
             U32 byte_offset    = bounds_checked_cast<U32>(buffer->view.ptr - (in_s->ring.buffers + buffer->idx * in_s->ring.buffer_size));
@@ -164,35 +155,33 @@ export namespace plexdb::tcp {
 
             co_return co_await coroutine::Awaitable{
                 [in_s, connection, buffer, byte_offset, max_byte_count](std::coroutine_handle<> h) {
-                    connection->waiting_rwc = h;
-                    bool pushed             = uring::sqe_push_read(in_s->ring, connection->client, bounds_checked_cast<U32>(buffer->idx), byte_offset, max_byte_count);
+                    connection->read_waiter.handle = h;
+                    bool pushed                    = uring::sqe_push_read(in_s->ring, connection->client, bounds_checked_cast<U32>(buffer->idx), byte_offset, max_byte_count);
                     assert_true_always(pushed, "failed to submit io_uring read SQE");
                 },
                 [connection, buffer]() -> Error {
-                    buffer->view.length     = connection->count_rwc;
-                    connection->waiting_rwc = std::coroutine_handle<>{};
-                    return connection->error_rwc;
+                    buffer->view.length = connection->read_waiter.count;
+                    return connection->read_waiter.error;
                 }
             };
         }};
 
         in_s->write_fn = WriteFromBufferFunctor{[in_s](Connection* connection, const RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(connection->client), "invalid write on closed connection");
-            assert_true(!connection->waiting_rwc, "connection already has coroutine pending");
+            assert_true(!connection->write_waiter.handle, "connection already has a write pending");
 
             U32 byte_offset       = bounds_checked_cast<U32>(buffer->view.ptr - (in_s->ring.buffers + buffer->idx * in_s->ring.buffer_size));
             U32 target_byte_count = bounds_checked_cast<U32>(buffer->view.length);
 
             co_return co_await coroutine::Awaitable{
                 [in_s, connection, buffer, byte_offset, target_byte_count](std::coroutine_handle<> h) {
-                    connection->waiting_rwc = h;
-                    bool pushed             = uring::sqe_push_write(in_s->ring, connection->client, bounds_checked_cast<U32>(buffer->idx), byte_offset, target_byte_count);
+                    connection->write_waiter.handle = h;
+                    bool pushed                     = uring::sqe_push_write(in_s->ring, connection->client, bounds_checked_cast<U32>(buffer->idx), byte_offset, target_byte_count);
                     assert_true_always(pushed, "failed to submit io_uring write SQE");
                 },
                 [connection, target_byte_count]() -> Error {
-                    connection->waiting_rwc = std::coroutine_handle<>{};
-                    assert_true(connection->error_rwc != Error::None || connection->count_rwc == target_byte_count, "unexpected partial write resumption");
-                    return connection->error_rwc;
+                    assert_true(connection->write_waiter.error != Error::None || connection->write_waiter.count == target_byte_count, "unexpected partial write resumption");
+                    return connection->write_waiter.error;
                 }
             };
         }};
@@ -246,11 +235,13 @@ export namespace plexdb::tcp {
                                 }
                                 assert_true(conn != nullptr, "connection dropped before read completion");
                                 in_s->stats.total_bytes_read += ev.bytes_read;
-                                conn->error_rwc = ev.error != uring::Error::None ? Error::Other
-                                                : ev.bytes_read == 0             ? Error::ConnectionClosed
-                                                                                 : Error::None;
-                                conn->count_rwc = ev.bytes_read;
-                                conn->waiting_rwc.resume();
+                                resume_waiter(
+                                    conn->read_waiter,
+                                    ev.error != uring::Error::None ? Error::Other
+                                    : ev.bytes_read == 0           ? Error::ConnectionClosed
+                                                                   : Error::None,
+                                    ev.bytes_read
+                                );
                                 if (static_cast<bool>(conn->task) && conn->task->done()) {
                                     close_and_cleanup(conn->client, /*is_in_close_handler=*/false);
                                 }
@@ -263,9 +254,7 @@ export namespace plexdb::tcp {
                                 }
                                 assert_true(conn != nullptr, "connection dropped before write completion");
                                 in_s->stats.total_bytes_written += ev.bytes_written;
-                                conn->error_rwc = ev.error != uring::Error::None ? Error::Other : Error::None;
-                                conn->count_rwc = ev.bytes_written;
-                                conn->waiting_rwc.resume();
+                                resume_waiter(conn->write_waiter, ev.error != uring::Error::None ? Error::Other : Error::None, ev.bytes_written);
                                 if (static_cast<bool>(conn->task) && conn->task->done()) {
                                     close_and_cleanup(conn->client, /*is_in_close_handler=*/false);
                                 }
@@ -334,7 +323,7 @@ export namespace plexdb::tcp {
 
         in_s->read_fn = ReadToBufferFunctor{[in_s](Connection* conn, RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(conn->client), "invalid read on closed connection");
-            assert_true(!conn->waiting_rwc, "connection already has coroutine pending");
+            assert_true(!conn->read_waiter.handle, "connection already has a read pending");
 
             const U32 max_byte_count = bounds_checked_cast<U32>(buffer->length);
             while (true) {
@@ -352,8 +341,9 @@ export namespace plexdb::tcp {
                     case os::SocketError::WouldBlock: {
                         bool ready = co_await coroutine::Awaitable{
                             [in_s, conn](std::coroutine_handle<> h) {
-                                conn->waiting_rwc                              = h;
-                                find_or_insert(in_s->waiting_op, conn->client) = SocketListenerState::WaitRead;
+                                conn->read_waiter.handle = h;
+                                U8& op                   = find_or_insert(in_s->waiting_op, conn->client);
+                                op                       = U8(op | SocketListenerState::WaitRead);
                             },
                             [conn]() -> bool {
                                 return !os::is_zero_handle(conn->client);
@@ -379,7 +369,7 @@ export namespace plexdb::tcp {
 
         in_s->write_fn = WriteFromBufferFunctor{[in_s](Connection* conn, const RWBuffer* buffer) -> coroutine::Task<Error> {
             assert_true(!os::is_zero_handle(conn->client), "invalid write on closed connection");
-            assert_true(!conn->waiting_rwc, "connection already has coroutine pending");
+            assert_true(!conn->write_waiter.handle, "connection already has a write pending");
 
             U64 current_byte_count = 0;
             U64 target_byte_count  = buffer->view.length;
@@ -398,8 +388,9 @@ export namespace plexdb::tcp {
                     case os::SocketError::WouldBlock: {
                         bool ready = co_await coroutine::Awaitable{
                             [in_s, conn](std::coroutine_handle<> h) {
-                                conn->waiting_rwc                              = h;
-                                find_or_insert(in_s->waiting_op, conn->client) = SocketListenerState::Op::WaitWrite;
+                                conn->write_waiter.handle = h;
+                                U8& op                    = find_or_insert(in_s->waiting_op, conn->client);
+                                op                        = U8(op | SocketListenerState::WaitWrite);
                                 os::poll_update_mask(*in_s->poll, conn->client, SocketListenerState::WRITE_EVENTS);
                             },
                             [in_s, conn]() -> bool {
@@ -459,11 +450,8 @@ export namespace plexdb::tcp {
                             remove_it(in_s->waiting_op, w_it);
                         }
 
-                        if (conn.waiting_rwc) {
-                            std::coroutine_handle<> h = conn.waiting_rwc;
-                            conn.waiting_rwc          = std::coroutine_handle<>{};
-                            h.resume();
-                        }
+                        resume_waiter(conn.read_waiter, Error::ConnectionClosed);
+                        resume_waiter(conn.write_waiter, Error::ConnectionClosed);
 
                         conn.task.reset();
                         remove_it(in_s->client_to_connection, it);
@@ -523,23 +511,32 @@ export namespace plexdb::tcp {
                             continue;
                         }
 
-                        if (!static_cast<bool>(conn->waiting_rwc)) {
+                        auto waiting_it = find_it(in_s->waiting_op, event.handle);
+                        if (waiting_it == in_s->waiting_op.end()) {
                             continue;
                         }
-
-                        auto waiting_it = find_it(in_s->waiting_op, event.handle);
-                        if (waiting_it != in_s->waiting_op.end()) {
-                            bool ready =
-                                (waiting_it->second == SocketListenerState::Op::WaitRead && has_read) || (waiting_it->second == SocketListenerState::Op::WaitWrite && has_write);
-                            if (ready) {
-                                std::coroutine_handle<> h = conn->waiting_rwc;
-                                conn->waiting_rwc         = std::coroutine_handle<>{};
-                                remove_it(in_s->waiting_op, waiting_it);
-                                h.resume();
-                                if (static_cast<bool>(conn->task) && conn->task->done()) {
-                                    close_and_cleanup(event.handle);
-                                }
-                            }
+                        U8   op         = waiting_it->second;
+                        bool wake_read  = (op & SocketListenerState::WaitRead) && has_read && conn->read_waiter.handle;
+                        bool wake_write = (op & SocketListenerState::WaitWrite) && has_write && conn->write_waiter.handle;
+                        op              = U8(op & ~((wake_read ? SocketListenerState::WaitRead : 0) | (wake_write ? SocketListenerState::WaitWrite : 0)));
+                        if (op == SocketListenerState::None) {
+                            remove_it(in_s->waiting_op, waiting_it);
+                        } else {
+                            waiting_it->second = op;
+                        }
+                        // @note resuming a waiter may close the connection, so the write
+                        // waiter is re-looked-up after the read waiter runs.
+                        os::Handle client = event.handle;
+                        if (wake_read) {
+                            resume_waiter(conn->read_waiter, Error::None);
+                        }
+                        conn = find(in_s->client_to_connection, client);
+                        if (wake_write && conn != nullptr) {
+                            resume_waiter(conn->write_waiter, Error::None);
+                        }
+                        conn = find(in_s->client_to_connection, client);
+                        if (conn != nullptr && static_cast<bool>(conn->task) && conn->task->done()) {
+                            close_and_cleanup(client);
                         }
                     }
                     return true;

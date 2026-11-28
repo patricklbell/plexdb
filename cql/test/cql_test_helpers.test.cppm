@@ -112,6 +112,12 @@ export namespace cql::test {
     void  send_frame(Socket& socket, const DynamicArray<U8>& frame);
     Frame recv_frame(Socket& socket);
 
+    // Unwrapped bytes / v4-style envelopes regardless of the negotiated version.
+    void  send_raw(Socket& socket, const DynamicArray<U8>& bytes);
+    Frame recv_raw(Socket& socket);
+    // Selects the framing send_frame/recv_frame use on this thread (handshake() sets it).
+    void set_connection_version(U8 version);
+
     // Send-then-recv convenience
     Frame send_startup(Socket& socket, S16 stream = 0, U8 version = 4);
     Frame send_options(Socket& socket, S16 stream = 0);
@@ -168,6 +174,13 @@ export namespace cql::test {
         run_server_test("cql-test-client", [&](Notifier& interrupt) {
                 Socket client = client_connect(f.port);
                 client_fn(client, interrupt); }, [&](auto on_ready, auto& signal_consumer, auto& poll) { native::run(f.port, f.engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll); });
+    }
+
+    // Fixture variant with a server configuration (e.g. authentication). The client lambda
+    // receives the port so it can open extra connections.
+    template<typename ClientFn>
+    void run_native_server_with_config(ServerFixture& f, const native::ServerConfig& config, ClientFn&& client_fn) {
+        run_server_test("cql-test-client", [&](Notifier& interrupt) { client_fn(f.port, interrupt); }, [&](auto on_ready, auto& signal_consumer, auto& poll) { native::run(f.port, f.engine, on_ready, false, g_test_sync_consumer, signal_consumer, poll, {}, config); });
     }
 
     // Engine+port variant for multi-session / WAL / crash tests where the

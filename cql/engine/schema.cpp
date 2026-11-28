@@ -467,7 +467,8 @@ namespace cql::schema {
                 } else {
                     return {Error::InvalidOptions, "unknown replication class"};
                 }
-            } else if (key == "replication_factor") {
+            } else if (key == "replication_factor" || key == "datacenter1") {
+                // @note single node: the only datacenter is datacenter1, so its NetworkTopologyStrategy factor is the keyspace factor
                 if (!type_matches_tag<Literal>(value_term.value)) {
                     return {Error::InvalidOptions, "replication factor should be an integer"};
                 }

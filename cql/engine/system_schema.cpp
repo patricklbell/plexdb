@@ -283,8 +283,14 @@ namespace cql::engine {
             emplace_back(row.values, U8(1));
             {
                 DynamicMap<NestedColumnValue, NestedColumnValue> rep{};
-                insert(rep, ncv("class"_as), ncv("SimpleStrategy"_as));
-                insert(rep, ncv("replication_factor"_as), ncv("1"_as));
+                AutoString8                                      factor = to_str(max(ks.replication_factor, U64(1)));
+                if (ks.replication_class == schema::ReplicationClass::NetworkTopologyStrategy) {
+                    insert(rep, ncv("class"_as), ncv("org.apache.cassandra.locator.NetworkTopologyStrategy"_as));
+                    insert(rep, ncv("datacenter1"_as), ncv(move(factor)));
+                } else {
+                    insert(rep, ncv("class"_as), ncv("org.apache.cassandra.locator.SimpleStrategy"_as));
+                    insert(rep, ncv("replication_factor"_as), ncv(move(factor)));
+                }
                 emplace_back(row.values, move(rep));
             }
             emplace_back(vr.rows, move(row));

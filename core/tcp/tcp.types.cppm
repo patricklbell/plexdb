@@ -43,15 +43,34 @@ export namespace plexdb::tcp {
         WriteFromBufferFunctor* write;
     };
 
+    // @note reads and writes have independent waiters so one coroutine may write to a
+    // connection while another is suspended reading from it.
+    struct IOWaiter {
+        U32                     count = 0;
+        Error                   error = Error::None;
+        std::coroutine_handle<> handle{};
+    };
+
     struct Connection {
         os::Handle                                               client;
         Optional<coroutine::Task<void, coroutine::Start::Eager>> task;
         Request                                                  req;
 
-        U32                     count_rwc;
-        Error                   error_rwc;
-        std::coroutine_handle<> waiting_rwc;
+        IOWaiter read_waiter;
+        IOWaiter write_waiter;
     };
+
+    // Resumes and clears a pending waiter with the given result.
+    inline void resume_waiter(IOWaiter& w, Error error, U32 count = 0) {
+        if (!w.handle) {
+            return;
+        }
+        w.error                   = error;
+        w.count                   = count;
+        std::coroutine_handle<> h = w.handle;
+        w.handle                  = std::coroutine_handle<>{};
+        h.resume();
+    }
 
     inline coroutine::Task<RWBuffer> acquire(const Request& req) {
         co_return co_await (*req.acquire)(req.connection);

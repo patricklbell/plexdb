@@ -11,6 +11,7 @@ import plexdb.dynamic.tagged_union;
 import plexdb.support.sort;
 
 import cql.parsers;
+import xxhash;
 import cql.log;
 import cql.engine.column_value;
 import cql.engine.evaluator;
@@ -1572,24 +1573,39 @@ namespace cql::engine {
         return {
             .status   = ExecutionStatus::Success,
             .kind     = ResultKind::SchemaChange,
-            .message  = "CREATED",
-            .keyspace = AutoString8(keyspace_name),
-            .table    = AutoString8(table_name),
+            .message       = "CREATED",
+            .keyspace      = AutoString8(keyspace_name),
+            .table         = AutoString8(table_name),
+            .schema_target = SchemaChangeTarget::Table,
         };
     }
     static ExecutionResult create_schema_changed(const String8& keyspace_name) {
         return {
-            .status   = ExecutionStatus::Success,
-            .kind     = ResultKind::SchemaChange,
-            .keyspace = AutoString8(keyspace_name),
+            .status        = ExecutionStatus::Success,
+            .kind          = ResultKind::SchemaChange,
+            .message       = "UPDATED",
+            .keyspace      = AutoString8(keyspace_name),
+            .schema_target = SchemaChangeTarget::Keyspace,
         };
     }
     static ExecutionResult create_schema_changed(const String8& keyspace_name, const String8& table_name) {
         return {
-            .status   = ExecutionStatus::Success,
-            .kind     = ResultKind::SchemaChange,
-            .keyspace = AutoString8(keyspace_name),
-            .table    = AutoString8(table_name),
+            .status        = ExecutionStatus::Success,
+            .kind          = ResultKind::SchemaChange,
+            .message       = "UPDATED",
+            .keyspace      = AutoString8(keyspace_name),
+            .table         = AutoString8(table_name),
+            .schema_target = SchemaChangeTarget::Table,
+        };
+    }
+    static ExecutionResult create_schema_change(String8 change, SchemaChangeTarget target, const String8& keyspace_name, const String8& name) {
+        return {
+            .status        = ExecutionStatus::Success,
+            .kind          = ResultKind::SchemaChange,
+            .message       = change,
+            .keyspace      = AutoString8(keyspace_name),
+            .table         = AutoString8(name),
+            .schema_target = target,
         };
     }
     static ExecutionResult create_insert_column_does_not_match_value_count(const String8& keyspace_name, const String8& table_name) {
@@ -2921,7 +2937,7 @@ namespace cql::engine {
 
                 co_await schema::delete_keyspace(engine.schema, stmt.keyspace);
 
-                co_return create_schema_changed(stmt.keyspace);
+                co_return create_schema_change("DROPPED", SchemaChangeTarget::Keyspace, stmt.keyspace, "");
             } else if constexpr (SameAs<T, DropTable>) {
                 String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
                 auto    ksr     = resolve_ks(engine, ks_name);
@@ -2937,7 +2953,7 @@ namespace cql::engine {
                     co_return create_table_not_found(ks_name, stmt.table.table_name);
                 }
 
-                co_return create_schema_changed(ks_name, stmt.table.table_name);
+                co_return create_schema_change("DROPPED", SchemaChangeTarget::Table, ks_name, stmt.table.table_name);
             } else if constexpr (SameAs<T, TruncateTable>) {
                 String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
                 auto    ksr     = resolve_ks(engine, ks_name);
@@ -3875,7 +3891,7 @@ namespace cql::engine {
                     er.message         = String8(er.message_storage);
                     co_return er;
                 }
-                co_return create_schema_changed(ks_name);
+                co_return create_schema_change("CREATED", SchemaChangeTarget::Type, ks_name, stmt.name.table_name);
             } else if constexpr (SameAs<T, AlterType>) {
                 String8 ks_name = resolve_ks_name(stmt.name.keyspace_name, current_keyspace);
                 auto    ksr     = resolve_ks(engine, ks_name);
@@ -3925,7 +3941,7 @@ namespace cql::engine {
                         co_return er;
                     }
                 }
-                co_return create_schema_changed(ks_name);
+                co_return create_schema_change("UPDATED", SchemaChangeTarget::Type, ks_name, stmt.name.table_name);
             } else if constexpr (SameAs<T, DropType>) {
                 String8 ks_name = resolve_ks_name(stmt.name.keyspace_name, current_keyspace);
                 auto    ksr     = resolve_ks(engine, ks_name);
@@ -3953,7 +3969,7 @@ namespace cql::engine {
                     er.message         = String8(er.message_storage);
                     co_return er;
                 }
-                co_return create_schema_changed(ks_name);
+                co_return create_schema_change("DROPPED", SchemaChangeTarget::Type, ks_name, stmt.name.table_name);
             } else if constexpr (SameAs<T, Batch>) {
                 ZoneScopedN("engine::batch");
                 // @note batch-level USING TIMESTAMP/TTL falls through to children that don't supply their own.
@@ -4582,77 +4598,151 @@ namespace cql::engine {
     // ========================================================================
     // prepared statements
     // ========================================================================
+    static void qualify_table_name(TableName& name, String8 keyspace) {
+        if (!name.keyspace_name && keyspace.length > 0) {
+            name.keyspace_name = AutoString8(keyspace);
+        }
+    }
+
+    void qualify_statement(Statement& statement, String8 keyspace) {
+        visit(statement.value, [&](auto& stmt) {
+            using T = RemoveCVRef<decltype(stmt)>;
+            if constexpr (SameAs<T, Insert> || SameAs<T, Update> || SameAs<T, Delete>) {
+                qualify_table_name(stmt.table, keyspace);
+            } else if constexpr (SameAs<T, Select>) {
+                qualify_table_name(stmt.from, keyspace);
+            } else if constexpr (SameAs<T, Batch>) {
+                for (auto& mod : stmt.statements) {
+                    visit(mod.value, [&](auto& m) { qualify_table_name(m.table, keyspace); });
+                }
+            }
+        });
+    }
+
+    static U64 prepared_id_for(String8 query, String8 keyspace) {
+        XXHash64 h(0x9E3779B97F4A7C15_u64);
+        h.add(keyspace.data, keyspace.length);
+        U8 sep = 0;
+        h.add(&sep, 1);
+        h.add(query.data, query.length);
+        // @note 0 is the map sentinel
+        return max(h.hash(), U64(1));
+    }
+
+    static void evict_one_prepared(Engine& engine) {
+        auto it = engine.query_hash_to_prepared_cache.begin();
+        if (it != engine.query_hash_to_prepared_cache.end()) {
+            remove_it(engine.query_hash_to_prepared_cache, it);
+            engine.prepared_count--;
+        }
+    }
+
+    static DynamicArray<U16> partition_key_bind_indices(const schema::Table& tbl, const DynamicArray<BindVariableSpec>& binds) {
+        DynamicArray<U16> out;
+        for (U64 pk : tbl.partition_key_col_indices) {
+            String8 pk_name = tbl.cols[pk].name;
+            U64     found   = MAX_U64;
+            for (U64 i = 0; i < binds.length; i++) {
+                if (binds[i].name == pk_name) {
+                    if (found != MAX_U64) {
+                        return {};
+                    }
+                    found = i;
+                }
+            }
+            if (found == MAX_U64 || found > MAX_U16) {
+                return {};
+            }
+            push_back(out, U16(found));
+        }
+        return out;
+    }
+
     PrepareResult prepare(Engine& engine, String8 query, String8 current_keyspace) {
         ZoneScopedN("engine::prepare");
-        U64 query_hash = hash(query);
+        U64 id = prepared_id_for(query, current_keyspace);
 
-        auto* existing = find(engine.query_hash_to_prepared_cache, query_hash);
+        auto* existing = find(engine.query_hash_to_prepared_cache, id);
+        if (existing != nullptr && (existing->query_string != query || existing->prepare_keyspace != current_keyspace)) {
+            return {.status = ExecutionStatus::ServerError, .message = "Prepared statement id collision"};
+        }
         if (existing != nullptr && existing->schema_version == engine.schema.version) {
-            return {.status = ExecutionStatus::Success, .id = query_hash, .entry = existing};
+            return {.status = ExecutionStatus::Success, .id = id, .entry = existing};
         }
 
         auto pr = parsers::parse(query);
         if (!pr.statement) {
             PrepareResult r{.status = ExecutionStatus::SyntaxError};
             r.message_storage = move(pr.err);
-            r.message         = (pr.err.length > 0) ? String8(r.message_storage.c_str, r.message_storage.length) : String8("Failed to parse CQL");
+            r.message         = (r.message_storage.length > 0) ? String8(r.message_storage.c_str, r.message_storage.length) : String8("Failed to parse CQL");
             return r;
         }
 
+        if (existing == nullptr && engine.prepared_count >= MAX_LIVE_PREPARED_STATEMENTS) {
+            evict_one_prepared(engine);
+        }
+        if (existing == nullptr) {
+            engine.prepared_count++;
+        }
+
         // Fresh entry, or a stale one (schema changed since it was derived) refreshed in place.
-        auto& entry          = (existing != nullptr) ? *existing : insert(engine.query_hash_to_prepared_cache, query_hash);
-        entry.query_string   = AutoString8(query);
-        entry.bind_variables = collect_bind_variables_with_keyspace(engine, *pr.statement, current_keyspace);
-        entry.pk_index       = -1;
-        entry.schema_version = engine.schema.version;
+        auto& entry            = (existing != nullptr) ? *existing : insert(engine.query_hash_to_prepared_cache, id);
+        entry.query_string     = AutoString8(query);
+        entry.prepare_keyspace = AutoString8(current_keyspace);
+        entry.keyspace         = AutoString8("");
+        entry.table            = AutoString8("");
+        entry.bind_variables   = collect_bind_variables_with_keyspace(engine, *pr.statement, current_keyspace);
+        entry.pk_indices       = {};
+        entry.schema_version   = engine.schema.version;
 
         visit(pr.statement->value, [&, current_keyspace](const auto& stmt) {
             using T = RemoveCVRef<decltype(stmt)>;
-            if constexpr (SameAs<T, Insert>) {
-                String8 ks_name = resolve_ks_name(stmt.table.keyspace_name, current_keyspace);
-                entry.keyspace  = AutoString8(ks_name);
-                entry.table     = AutoString8(stmt.table.table_name);
-
-                auto ks = schema::read_keyspace(engine.schema, ks_name).value;
-                if (ks == nullptr) {
-                    return;
-                }
-                auto tbl = schema::read_table(*ks, stmt.table.table_name).value;
-                if (tbl == nullptr) {
-                    return;
-                }
-                for (U64 i = 0; i < entry.bind_variables.length; i++) {
-                    if (tbl->partition_key_col_indices.length > 0 && tbl->cols[tbl->partition_key_col_indices[0]].name == entry.bind_variables[i].name) {
-                        entry.pk_index = S32(i);
-                        break;
-                    }
-                }
+            const TableName* name = nullptr;
+            if constexpr (SameAs<T, Insert> || SameAs<T, Update> || SameAs<T, Delete>) {
+                name = &stmt.table;
+            } else if constexpr (SameAs<T, Select>) {
+                name = &stmt.from;
             }
+            if (name == nullptr) {
+                return;
+            }
+            String8 ks_name = resolve_ks_name(name->keyspace_name, current_keyspace);
+            entry.keyspace  = AutoString8(ks_name);
+            entry.table     = AutoString8(name->table_name);
+
+            auto ks = schema::read_keyspace(engine.schema, ks_name).value;
+            if (ks == nullptr) {
+                return;
+            }
+            auto tbl = schema::read_table(*ks, name->table_name).value;
+            if (tbl == nullptr) {
+                return;
+            }
+            entry.pk_indices = partition_key_bind_indices(*tbl, entry.bind_variables);
         });
 
-        return {.status = ExecutionStatus::Success, .id = query_hash, .entry = &entry};
+        return {.status = ExecutionStatus::Success, .id = id, .entry = &entry};
     }
 
     PreparedEntry* try_get_prepared(Engine& engine, U64 prepared_id) {
-        return find(engine.query_hash_to_prepared_cache, prepared_id);
+        if (prepared_id == 0) {
+            return nullptr;
+        }
+        PreparedEntry* entry = find(engine.query_hash_to_prepared_cache, prepared_id);
+        if (entry == nullptr || entry->schema_version != engine.schema.version) {
+            return nullptr;
+        }
+        return entry;
     }
 
     coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values) {
-        auto* entry = find(engine.query_hash_to_prepared_cache, prepared_id);
-        if (entry == nullptr) {
-            co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Prepared statement not found"};
-        }
-
-        auto pr = parsers::parse(String8(entry->query_string));
-        if (!pr.statement) {
-            co_return ExecutionResult{.status = ExecutionStatus::ServerError, .message = "Failed to re-parse prepared query"};
-        }
-
-        co_return co_await execute(engine, *pr.statement, move(bound_values));
+        co_return co_await execute(engine, prepared_id, move(bound_values), engine.current_keyspace);
     }
 
+    // @note a prepared statement resolves unqualified names against the keyspace it was
+    // prepared in, not the connection's keyspace at execution time.
     coroutine::Task<ExecutionResult> execute(Engine& engine, U64 prepared_id, DynamicArray<Term>&& bound_values, AutoString8& current_keyspace) {
-        auto* entry = find(engine.query_hash_to_prepared_cache, prepared_id);
+        auto* entry = try_get_prepared(engine, prepared_id);
         if (entry == nullptr) {
             co_return ExecutionResult{.status = ExecutionStatus::Invalid, .message = "Prepared statement not found"};
         }
@@ -4661,7 +4751,13 @@ namespace cql::engine {
         if (!pr.statement) {
             co_return ExecutionResult{.status = ExecutionStatus::ServerError, .message = "Failed to re-parse prepared query"};
         }
+        qualify_statement(*pr.statement, String8(entry->prepare_keyspace));
 
-        co_return co_await execute(engine, *pr.statement, move(bound_values), current_keyspace);
+        AutoString8 statement_keyspace = entry->prepare_keyspace;
+        auto        result             = co_await execute(engine, *pr.statement, move(bound_values), statement_keyspace);
+        if (result.status == ExecutionStatus::Success && result.kind == ResultKind::UseKeyspace) {
+            current_keyspace = statement_keyspace;
+        }
+        co_return result;
     }
 }

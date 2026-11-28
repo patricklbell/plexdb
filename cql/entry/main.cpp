@@ -28,6 +28,7 @@ static volatile sig_atomic_t g_signal_count = 0;
 static void                                         assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
 static void                                         crash_handler(int signal_number);
 static void                                         signal_handler(int);
+static Optional<String8>                            load_credentials(String8 path, native::ServerConfig& config);
 static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll, uring::IOBudgetOverride file_budget_override = {});
 
 int main(int argc, char* argv[]) {
@@ -48,6 +49,7 @@ int main(int argc, char* argv[]) {
     U64 checkpoint_interval_arg = argparse::add_option(arg_parser, "--checkpoint-interval", "-c", "Maximum number of transactions held in-memory before writing to database", "1000");
     U64 no_uring_arg            = argparse::add_flag(arg_parser, "--no-uring", "-U", "Disable io_uring and use synchronous socket I/O");
     U64 no_wal_arg              = argparse::add_flag(arg_parser, "--no-wal", "-W", "Disable write-ahead-log (WAL)");
+    U64 auth_file_arg           = argparse::add_option(arg_parser, "--auth-file", "-a", "Enable PasswordAuthenticator with credentials read from a file of 'username:password' lines", "");
 
     U64 net_buffer_size_arg   = argparse::add_option(arg_parser, "--net-buffer-size", "", "Override io_uring network ring buffer size in bytes");
     U64 net_buffer_count_arg  = argparse::add_option(arg_parser, "--net-buffer-count", "", "Override io_uring network ring buffer count");
@@ -96,6 +98,16 @@ int main(int argc, char* argv[]) {
         .buffer_count = opt_u32_option(file_buffer_count_arg),
         .queue_depth  = opt_u32_option(file_queue_depth_arg),
     };
+
+    native::ServerConfig server_config{};
+    if (String8 auth_file_path = argparse::get_option(args, auth_file_arg); auth_file_path.length > 0) {
+        Optional<String8> err = load_credentials(auth_file_path, server_config);
+        if (err) {
+            println(*err);
+            return 1;
+        }
+        println("authentication enabled for ", to_str(server_config.credentials.length), " user(s)");
+    }
 
     String8 pid_file_path = "plexdb_cql_server.pid";
     {
@@ -159,7 +171,7 @@ int main(int argc, char* argv[]) {
         auto              signal_consumer = aio::create_notifier_consumer(g_signal_notifier, io_poll);
         Optional<String8> err             = native::run(
             port, engine, on_ready, !no_uring,
-            file_io_consumer, signal_consumer, io_poll, network_budget_override
+            file_io_consumer, signal_consumer, io_poll, network_budget_override, server_config
         );
         if (err) {
             println(*err);
@@ -235,4 +247,46 @@ static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(Tagge
                                return true;
                            }}}
     };
+}
+
+// One credential per line as `username:password`; blank lines and lines starting with '#' are skipped.
+static Optional<String8> load_credentials(String8 path, native::ServerConfig& config) {
+    if (!os::file_exists(path)) {
+        return {"auth file does not exist"};
+    }
+    os::File         file{os::file_open(path, os::AccessFlags(os::READ))};
+    U64              size = os::file_get_stats(file).byte_count;
+    DynamicArray<U8> bytes{};
+    resize(bytes, size);
+    if (size > 0) {
+        os::file_read(file, {.start = 0, .end = size}, bytes.ptr);
+    }
+
+    U64 line_start = 0;
+    for (U64 i = 0; i <= size; i++) {
+        if (i < size && bytes[i] != '\n') {
+            continue;
+        }
+        U64 line_end = i;
+        if (line_end > line_start && bytes[line_end - 1] == '\r') {
+            line_end--;
+        }
+        String8 line(reinterpret_cast<const char*>(bytes.ptr + line_start), line_end - line_start);
+        line_start = i + 1;
+        if (line.length == 0 || line.data[0] == '#') {
+            continue;
+        }
+        Optional<U64> colon = find(line, ':');
+        if (!colon || *colon == 0) {
+            return {"auth file lines must be 'username:password'"};
+        }
+        push_back(config.credentials, native::AuthCredential{
+            .username = AutoString8(String8(line.data, *colon)),
+            .password = AutoString8(String8(line.data + *colon + 1, line.length - *colon - 1)),
+        });
+    }
+    if (config.credentials.length == 0) {
+        return {"auth file contains no credentials"};
+    }
+    return {};
 }

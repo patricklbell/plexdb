@@ -38,15 +38,20 @@ export namespace cql::engine {
 
     struct PreparedEntry {
         AutoString8                    query_string;
-        AutoString8                    keyspace;
+        AutoString8                    prepare_keyspace; // connection keyspace at PREPARE time
+        AutoString8                    keyspace;         // resolved keyspace of the statement's table
         AutoString8                    table;
         DynamicArray<BindVariableSpec> bind_variables;
-        S32                            pk_index       = -1;
-        U64                            schema_version = 0;
+        // Bind indices of every partition key component, in partition key order; empty unless
+        // each component is bound by exactly one marker.
+        DynamicArray<U16> pk_indices;
+        U64               schema_version = 0;
     };
 
     // @todo determine what the correct strategy is here
     constexpr U64 MAX_PREPARED_STATEMENTS = 1024;
+    // @note entries are evicted past this load factor; clients re-prepare on UNPREPARED.
+    constexpr U64 MAX_LIVE_PREPARED_STATEMENTS = MAX_PREPARED_STATEMENTS * 3 / 4;
 
     // ========================================================================
     // virtual (system/system_schema) table cache — rebuilt only when schema.version changes
@@ -68,6 +73,7 @@ export namespace cql::engine {
         U16            port        = 9042;
 
         MapFixedSentinel<U64, PreparedEntry, MAX_PREPARED_STATEMENTS> query_hash_to_prepared_cache;
+        U64                                                           prepared_count = 0;
         VirtualTableCacheEntry                                        virtual_table_cache[VIRTUAL_TABLE_CACHE_SIZE];
     };
 
@@ -104,6 +110,24 @@ export namespace cql::engine {
         return "UNKNOWN";
     }
 
+    enum class SchemaChangeTarget : U8 {
+        Keyspace = 0,
+        Table,
+        Type,
+    };
+
+    constexpr String8 to_str(SchemaChangeTarget target) {
+        switch (target) {
+            case SchemaChangeTarget::Keyspace:
+                return "KEYSPACE";
+            case SchemaChangeTarget::Table:
+                return "TABLE";
+            case SchemaChangeTarget::Type:
+                return "TYPE";
+        }
+        return "KEYSPACE";
+    }
+
     enum class ResultKind : U8 {
         Void = 0,     // No result (INSERT, UPDATE, DELETE)
         Rows,         // SELECT result
@@ -121,7 +145,10 @@ export namespace cql::engine {
         String8         message         = "";
         AutoString8     message_storage = {}; // @note owns message string when dynamic (message.data points here)
         AutoString8     keyspace        = {};
-        AutoString8     table           = {};
+        AutoString8     table           = {}; // @note holds the type name for SchemaChangeTarget::Type
+
+        // SchemaChange results: `message` is the change type (CREATED / UPDATED / DROPPED).
+        SchemaChangeTarget schema_target = SchemaChangeTarget::Keyspace;
 
         U64                   row_limit_count = MAX_U64;
         bool                  is_distinct     = false;
@@ -175,8 +202,13 @@ export namespace cql::engine {
         PreparedEntry*  entry           = nullptr;
     };
 
-    PrepareResult  prepare(Engine& engine, String8 query, String8 current_keyspace);
+    PrepareResult prepare(Engine& engine, String8 query, String8 current_keyspace);
+    // Returns nullptr when the id is unknown or was prepared against an older schema, in which
+    // case the client must re-prepare (UNPREPARED).
     PreparedEntry* try_get_prepared(Engine& engine, U64 prepared_id);
+
+    // Fills in the keyspace of every unqualified table reference in a DML statement.
+    void qualify_statement(Statement& statement, String8 keyspace);
 }
 
 export namespace cql {

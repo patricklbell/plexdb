@@ -331,7 +331,18 @@ namespace cql::test {
             U64 old_len = envelope.length;
             resize(envelope, old_len + payload_len);
             memory_copy(envelope.ptr + old_len, payload.ptr, payload_len);
-        } while (!self_contained);
+            if (self_contained) {
+                break;
+            }
+            // A large envelope spans frames that are all not self-contained; it is complete
+            // once its own header's body length has arrived.
+            if (envelope.length >= 9) {
+                S32 body_len = S32((U32(envelope[5]) << 24) | (U32(envelope[6]) << 16) | (U32(envelope[7]) << 8) | envelope[8]);
+                if (envelope.length >= 9 + U64(body_len)) {
+                    break;
+                }
+            }
+        } while (true);
 
         return parse_envelope(envelope.ptr, envelope.length);
     }
@@ -349,6 +360,18 @@ namespace cql::test {
 
     Frame recv_frame(Socket& socket) {
         return g_conn_version >= 5 ? recv_v5_frame(socket) : recv_frame_raw(socket);
+    }
+
+    void send_raw(Socket& socket, const DynamicArray<U8>& bytes) {
+        send_frame_raw(socket, bytes);
+    }
+
+    Frame recv_raw(Socket& socket) {
+        return recv_frame_raw(socket);
+    }
+
+    void set_connection_version(U8 version) {
+        g_conn_version = version;
     }
 
     Frame send_startup(Socket& socket, S16 stream, U8 version) {

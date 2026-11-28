@@ -846,72 +846,63 @@ export namespace plexdb {
             return Iterator{this, C};
         }
 
+        // @note linear probing with tombstones: a removed slot keeps probe chains intact
+        // (values never move, so pointers into the map stay valid until removal).
+        bool tombstones[C] = {};
+
         // @todo const iterator
     };
 
     template<typename K, typename V, U64 C, K S>
-    typename MapFixedSentinel<K, V, C, S>::Iterator find_it(MapFixedSentinel<K, V, C, S>& map, const K& key) {
+    U64 find_slot(const MapFixedSentinel<K, V, C, S>& map, const K& key) {
         assert_true(key != map.sentinel, "cannot find sentinel in map");
 
-        U64 slot_idx     = hash(key) % C;
-        U64 end_slot_idx = (slot_idx + C - 1) % C;
-
-        while (slot_idx != end_slot_idx) {
-            auto& kv = map.key_values[slot_idx];
+        U64 slot_idx = hash(key) % C;
+        for (U64 probe = 0; probe < C; probe++) {
+            const auto& kv = map.key_values[slot_idx];
             if (kv.first == key) {
-                return typename MapFixedSentinel<K, V, C, S>::Iterator{&map, slot_idx};
-            } else if (kv.first == map.sentinel) {
-                return map.end();
+                return slot_idx;
             }
-
+            if (kv.first == map.sentinel && !map.tombstones[slot_idx]) {
+                return C;
+            }
             slot_idx = (slot_idx + 1) % C;
         }
+        return C;
+    }
 
-        assert_true(false, "fixed sentinel map is full");
-        return map.end();
+    template<typename K, typename V, U64 C, K S>
+    typename MapFixedSentinel<K, V, C, S>::Iterator find_it(MapFixedSentinel<K, V, C, S>& map, const K& key) {
+        U64 slot_idx = find_slot(map, key);
+        return slot_idx == C ? map.end() : typename MapFixedSentinel<K, V, C, S>::Iterator{&map, slot_idx};
     }
 
     template<typename K, typename V, U64 C, K S>
     V* find(MapFixedSentinel<K, V, C, S>& map, const K& key) {
-        assert_true(key != map.sentinel, "cannot find sentinel in map");
-
-        U64 slot_idx     = hash(key) % C;
-        U64 end_slot_idx = (slot_idx + C - 1) % C;
-
-        while (slot_idx != end_slot_idx) {
-            auto& kv = map.key_values[slot_idx];
-            if (kv.first == key) {
-                return &kv.second;
-            } else if (kv.first == map.sentinel) {
-                return nullptr;
-            }
-
-            slot_idx = (slot_idx + 1) % C;
-        }
-
-        assert_true(false, "fixed sentinel map is full");
-        return nullptr;
+        U64 slot_idx = find_slot(map, key);
+        return slot_idx == C ? nullptr : &map.key_values[slot_idx].second;
     }
+
+    // @note the key must not already be present
     template<typename K, typename V, U64 C, K S>
     V& insert(MapFixedSentinel<K, V, C, S>& map, const K& key) {
         assert_true(key != map.sentinel, "cannot insert sentinel into map");
 
-        U64 slot_idx     = hash(key) % C;
-        U64 end_slot_idx = (slot_idx + C - 1) % C;
-
-        while (slot_idx != end_slot_idx) {
+        U64 slot_idx = hash(key) % C;
+        for (U64 probe = 0; probe < C; probe++) {
             auto& kv = map.key_values[slot_idx];
             if (kv.first == map.sentinel) {
-                kv.first = key;
+                kv.first                   = key;
+                map.tombstones[slot_idx]   = false;
                 return kv.second;
             }
-
             slot_idx = (slot_idx + 1) % C;
         }
 
         assert_true(false, "fixed sentinel map is full");
         return map.key_values[0].second;
     }
+
     template<typename K, typename V, U64 C, K S>
     V& find_or_insert(MapFixedSentinel<K, V, C, S>& map, const K& key) {
         if (V* value = find(map, key); value != nullptr) {
@@ -920,35 +911,27 @@ export namespace plexdb {
             return insert(map, key);
         }
     }
+
     template<typename K, typename V, U64 C, K S>
     bool try_remove(MapFixedSentinel<K, V, C, S>& map, const K& key) {
-        assert_true(key != map.sentinel, "cannot remove sentinel from map");
-
-        U64 slot_idx     = hash(key) % C;
-        U64 end_slot_idx = (slot_idx + C - 1) % C;
-
-        while (slot_idx != end_slot_idx) {
-            auto& kv = map.key_values[slot_idx];
-            if (kv.first == key) {
-                kv.first = map.sentinel;
-                return true;
-            } else if (kv.first == map.sentinel) {
-                return false;
-            }
-
-            slot_idx = (slot_idx + 1) % C;
+        U64 slot_idx = find_slot(map, key);
+        if (slot_idx == C) {
+            return false;
         }
-
-        return false;
+        map.key_values[slot_idx].first = map.sentinel;
+        map.tombstones[slot_idx]       = true;
+        return true;
     }
+
     template<typename K, typename V, U64 C, K S>
     void remove(MapFixedSentinel<K, V, C, S>& map, const K& key) {
         assert_true(try_remove(map, key) != false, "attempting to remove key which is not present");
     }
+
     template<typename K, typename V, U64 C, K S>
     void remove_it(MapFixedSentinel<K, V, C, S>& map, const typename MapFixedSentinel<K, V, C, S>::Iterator& it) {
-        assert_true(it.slot_idx >= 0 && it.slot_idx < map.key_values.length, "invalid iterator");
-        auto& kv = map.key_values[it.slot_idx];
-        kv.first = map.sentinel;
+        assert_true(it.slot_idx < map.key_values.length, "invalid iterator");
+        map.key_values[it.slot_idx].first = map.sentinel;
+        map.tombstones[it.slot_idx]       = true;
     }
 }

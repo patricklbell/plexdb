@@ -32,14 +32,13 @@ using namespace plexdb;
 using namespace cql;
 using namespace cql::column_types;
 
-namespace cql::native {
+export namespace cql::native {
     // ========================================================================
     // protocol
     // ========================================================================
-    struct NegotiatedProtocol {
-        U8   version    = 4;
-        bool compressed = false;
-    };
+    constexpr U8  MIN_PROTOCOL_VERSION         = 3;
+    constexpr U8  MAX_PROTOCOL_VERSION         = 5;
+    constexpr U64 MAX_ENVELOPE_BODY_BYTE_COUNT = 256_u64 * 1024 * 1024;
 
     constexpr U64 V4_FRAME_HEADER_BYTE_COUNT = 9;
 
@@ -50,22 +49,42 @@ namespace cql::native {
     constexpr U64 V5_PAYLOAD_CRC32_BYTE_COUNT = 4;
 
     namespace op_codes {
-        constexpr U8 ERROR         = 0x00;
-        constexpr U8 STARTUP       = 0x01;
-        constexpr U8 READY         = 0x02;
-        constexpr U8 OPTIONS       = 0x05;
-        constexpr U8 SUPPORTED     = 0x06;
-        constexpr U8 QUERY         = 0x07;
-        constexpr U8 RESULT        = 0x08;
-        constexpr U8 PREPARE       = 0x09;
-        constexpr U8 EXECUTE       = 0x0A;
-        constexpr U8 REGISTER      = 0x0B;
-        constexpr U8 BATCH         = 0x0D;
-        constexpr U8 AUTH_RESPONSE = 0x0F;
+        constexpr U8 ERROR          = 0x00;
+        constexpr U8 STARTUP        = 0x01;
+        constexpr U8 READY          = 0x02;
+        constexpr U8 AUTHENTICATE   = 0x03;
+        constexpr U8 OPTIONS        = 0x05;
+        constexpr U8 SUPPORTED      = 0x06;
+        constexpr U8 QUERY          = 0x07;
+        constexpr U8 RESULT         = 0x08;
+        constexpr U8 PREPARE        = 0x09;
+        constexpr U8 EXECUTE        = 0x0A;
+        constexpr U8 REGISTER       = 0x0B;
+        constexpr U8 EVENT          = 0x0C;
+        constexpr U8 BATCH          = 0x0D;
+        constexpr U8 AUTH_CHALLENGE = 0x0E;
+        constexpr U8 AUTH_RESPONSE  = 0x0F;
+        constexpr U8 AUTH_SUCCESS   = 0x10;
+    }
+
+    namespace envelope_flags {
+        constexpr U8 COMPRESSION    = 0x01;
+        constexpr U8 TRACING        = 0x02;
+        constexpr U8 CUSTOM_PAYLOAD = 0x04;
+        constexpr U8 WARNING        = 0x08;
+        constexpr U8 USE_BETA       = 0x10;
     }
 
     namespace error_codes {
-        constexpr S32 PROTOCOL_ERROR = 0x000A;
+        constexpr S32 SERVER_ERROR    = 0x0000;
+        constexpr S32 PROTOCOL_ERROR  = 0x000A;
+        constexpr S32 BAD_CREDENTIALS = 0x0100;
+    }
+
+    namespace event_types {
+        constexpr U8 TOPOLOGY_CHANGE = 0x01;
+        constexpr U8 STATUS_CHANGE   = 0x02;
+        constexpr U8 SCHEMA_CHANGE   = 0x04;
     }
 
     constexpr String8 op_codes_to_str(const U8& op) {
@@ -76,6 +95,8 @@ namespace cql::native {
                 return "STARTUP";
             case op_codes::READY:
                 return "READY";
+            case op_codes::AUTHENTICATE:
+                return "AUTHENTICATE";
             case op_codes::OPTIONS:
                 return "OPTIONS";
             case op_codes::SUPPORTED:
@@ -90,10 +111,16 @@ namespace cql::native {
                 return "EXECUTE";
             case op_codes::REGISTER:
                 return "REGISTER";
+            case op_codes::EVENT:
+                return "EVENT";
             case op_codes::BATCH:
                 return "BATCH";
+            case op_codes::AUTH_CHALLENGE:
+                return "AUTH_CHALLENGE";
             case op_codes::AUTH_RESPONSE:
                 return "AUTH_RESPONSE";
+            case op_codes::AUTH_SUCCESS:
+                return "AUTH_SUCCESS";
         };
         return "UNKNOWN";
     }
@@ -107,6 +134,7 @@ namespace cql::native {
     }
 
     namespace type_codes {
+        constexpr U16 Custom    = 0x0000;
         constexpr U16 Ascii     = 0x0001;
         constexpr U16 Bigint    = 0x0002;
         constexpr U16 Blob      = 0x0003;
@@ -178,52 +206,129 @@ namespace cql::native {
                 return type_codes::Varint;
             case type::Basic::timeuuid:
                 return type_codes::Timeuuid;
-            case type::Basic::hex: {
-                assert_not_implemented("native protocol type code for hex type is not implemented");
-                return 0x0000;
-            } break;
+            case type::Basic::hex:
+                // @note hex is a literal kind only, never a column or bind type
+                break;
             case type::Basic::COUNT:
                 break;
         }
 
-        assert_true(false, "invalid basic type");
+        assert_true(false, "invalid basic type for native protocol type code");
         return 0x0000;
     }
 
     // ========================================================================
-    // input
+    // server / connection state
     // ========================================================================
+    struct AuthCredential {
+        AutoString8 username;
+        AutoString8 password;
+    };
+
+    // @note an empty credential list disables authentication (AllowAllAuthenticator).
+    struct ServerConfig {
+        DynamicArray<AuthCredential> credentials;
+    };
+
+    // FIFO coroutine mutex serializing whole envelopes onto one socket.
+    struct WriteLock {
+        bool                                  held = false;
+        DynamicArray<std::coroutine_handle<>> waiters;
+    };
+
+    coroutine::Task<> lock(WriteLock& l);
+    void              unlock(WriteLock& l);
+
+    struct Server;
+
+    struct ConnectionState {
+        U64                 id     = 0;
+        const tcp::Request* req    = nullptr;
+        Server*             server = nullptr;
+
+        U8   version       = 4;
+        bool started       = false; // STARTUP accepted
+        bool framed        = false; // v5 outer framing active
+        bool compressed    = false; // lz4 negotiated
+        bool authenticated = false;
+        bool write_failed  = false;
+        U8   events        = 0; // event_types bitmask from REGISTER
+
+        AutoString8 keyspace{""};
+        WriteLock   write_lock;
+    };
+
+    struct Server {
+        Engine*                        engine = nullptr;
+        const ServerConfig*            config = nullptr;
+        DynamicArray<ConnectionState*> connections;
+        U64                            next_connection_id = 1;
+    };
+
+    coroutine::Task<void> handle_connection(Server& server, const tcp::Request& req);
+
+    // ========================================================================
+    // input
+    //   @note every read is bounds checked. Malformed framing sets
+    //   `protocol_error`, an ill-formed value sets `invalid_error`; after either,
+    //   reads return zero values and never touch memory past `end`.
+    // ========================================================================
+    struct Reader {
+        const U8*   p;
+        const U8*   end;
+        String8     protocol_error = "";
+        String8     invalid_error  = "";
+        AutoString8 error_storage  = {}; // @note backs a formatted invalid_error
+    };
+
+    bool reader_ok(const Reader& r);
+    void reader_fail_protocol(Reader& r, String8 message);
+    void reader_fail_invalid(Reader& r, String8 message);
+    bool reader_need(Reader& r, U64 n);
+
+    U8                   read_u8(Reader& r);
+    U16                  read_u16(Reader& r);
+    S32                  read_s32(Reader& r);
+    S64                  read_s64(Reader& r);
+    String8              read_string(Reader& r);
+    String8              read_long_string(Reader& r);
+    TArrayView<const U8> read_short_bytes(Reader& r);
+    // [bytes]: returns the length (-1 null, -2 unset) and sets out_data when non-negative.
+    S32 read_bytes(Reader& r, const U8*& out_data);
+
+    // [value] decoded as a bind Term of the given type. v3 has no UNSET values.
+    Term read_value_as_term(Reader& r, const type::Type& dtype, U8 version);
+
     U16 read_be_u16(const U8* p);
     S16 read_be_s16(const U8* p);
     S32 read_be_s32(const U8* p);
     S64 read_be_s64(const U8* p);
 
-    // Read [long string]: [int] n + n bytes
-    String8 read_cql_long_string(const U8*& p, const U8* end);
+    struct QueryParameters {
+        U16                consistency   = 0;
+        U32                flags         = 0;
+        DynamicArray<Term> values        = {};
+        bool               skip_metadata = false;
+        S32                page_size     = -1;
+        bool               has_paging    = false;
+        Optional<S64>      timestamp     = {};
+        Optional<String8>  keyspace      = {};
+    };
 
-    // Read [string]: [short] n + n bytes
-    String8 read_cql_string(const U8*& p, const U8* end);
-
-    // Read [short bytes]: [short] n + n bytes, returns length and sets out_data
-    U16 read_cql_short_bytes(const U8*& p, const U8* end, const U8*& out_data);
-
-    Term read_cql_value_as_term(const U8*& p, const U8* end, const type::Type& dtype);
+    // Reads <query_parameters> and checks the bound values against `bind_specs`.
+    QueryParameters read_query_parameters(Reader& r, const DynamicArray<engine::BindVariableSpec>& bind_specs, U8 version);
 
     // Acquire a TCP buffer, read data into it, append to buf, then release.
     coroutine::Task<bool> try_append_tcp_read(const tcp::Request& req, DynamicArray<U8>& buf);
 
     // ========================================================================
     // output
-    //   @note
-    //   frame requires co_await send_native_frame<V,C>(frame) which writes a
-    //   version-appropriate envelope (v4: plain 9-byte header + body;
-    //   v5: v4 envelope wrapped in outer frames with CRC24/CRC32).
     // ========================================================================
     struct Frame {
-        DynamicArray<U8>    body;
-        const tcp::Request* req;
-        U8                  op;
-        S16                 stream;
+        DynamicArray<U8> body;
+        ConnectionState* conn;
+        U8               op;
+        S16              stream;
     };
 
     void append_byte(Frame& f, U8 v);
@@ -241,246 +346,15 @@ namespace cql::native {
     void                 append_unprepared_error(Frame& f, const U8* id, U16 id_len);
     void                 append_result_void(Frame& f);
     void                 append_result_set_keyspace(Frame& f, String8 keyspace);
-    void                 append_result_schema_change(Frame& f, String8 change_type, String8 target, String8 keyspace, String8 table);
+    void                 append_schema_change_body(Frame& f, const engine::ExecutionResult& result);
     coroutine::Task<S32> append_result_rows(Frame& f, engine::ExecutionResult& result, schema::Table* tbl);
     void                 append_result_virtual_rows(Frame& f, engine::VirtualRows& vr);
 
-    // ========================================================================
-    // send helpers
-    // ========================================================================
     coroutine::Task<> send_block(const tcp::Request& req, const U8* data, U64 len);
 
-    // Wrap data in v5 outer frame(s) and send. Splits into V5_MAX_PAYLOAD chunks
-    // when needed, setting isSelfContained on the final fragment only.
-    template<bool Compressed>
-    coroutine::Task<> send_v5_outer_frames(const tcp::Request& req, const U8* data, U64 data_len) {
-        U64 offset = 0;
-        do {
-            U64  chunk          = min(data_len - offset, V5_MAX_PAYLOAD_BYTE_COUNT);
-            bool self_contained = (offset + chunk >= data_len);
-
-            if constexpr (Compressed) {
-                S32              bound = lz4::compress_bound(S32(chunk));
-                DynamicArray<U8> cbuf{};
-                resize(cbuf, U64(bound));
-                S32 comp_len = lz4::compress(data + offset, cbuf.ptr, S32(chunk), bound);
-                assert_true(comp_len > 0, "LZ4 compression failed in send_v5_outer_frames");
-
-                U32 c = U32(comp_len), u = U32(chunk);
-                U8  bits[5] = {
-                    U8(c),
-                    U8(c >> 8),
-                    U8(U8(c >> 16 & 0x01u) | U8((u & 0x7Fu) << 1)),
-                    U8(u >> 7),
-                    U8(U8(u >> 15 & 0x03u) | U8(U8(self_contained) << 2))
-                };
-                U32 hcrc                                                  = crc::crc24(bits, 5);
-                U8  hdr[V5_COMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT] = {
-                    bits[0], bits[1], bits[2], bits[3], bits[4],
-                    U8(hcrc), U8(hcrc >> 8), U8(hcrc >> 16)
-                };
-                U32 pcrc       = crc::crc32(cbuf.ptr, U64(comp_len), crc::CRC32_CQL_V5_INIT);
-                U8  trailer[4] = {U8(pcrc), U8(pcrc >> 8), U8(pcrc >> 16), U8(pcrc >> 24)};
-                co_await send_block(req, hdr, V5_COMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT);
-                co_await send_block(req, cbuf.ptr, U64(comp_len));
-                co_await send_block(req, trailer, 4);
-            } else {
-                U32 pl      = U32(chunk);
-                U8  bits[3] = {
-                    U8(pl), U8(pl >> 8),
-                    U8(U8(pl >> 16 & 0x01u) | U8(U8(self_contained) << 1))
-                };
-                U32 hcrc                                                    = crc::crc24(bits, 3);
-                U8  hdr[V5_UNCOMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT] = {
-                    bits[0], bits[1], bits[2],
-                    U8(hcrc), U8(hcrc >> 8), U8(hcrc >> 16)
-                };
-                U32 pcrc       = crc::crc32(data + offset, chunk, crc::CRC32_CQL_V5_INIT);
-                U8  trailer[4] = {U8(pcrc), U8(pcrc >> 8), U8(pcrc >> 16), U8(pcrc >> 24)};
-                co_await send_block(req, hdr, V5_UNCOMP_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT);
-                co_await send_block(req, data + offset, chunk);
-                co_await send_block(req, trailer, 4);
-            }
-
-            offset += chunk;
-        } while (offset < data_len);
-    }
-
-    // ========================================================================
-    // handler
-    // ========================================================================
-    coroutine::Task<bool> negotiate_connection(const tcp::Request& req, NegotiatedProtocol* opt_out_negotiated_protocol);
-
-    // Defined in native.cpp; explicitly instantiated for (5,true), (5,false), (4,false).
-    template<U8 Version, bool Compressed>
-    coroutine::Task<void> frame_handler(Engine& engine, const tcp::Request& req, const U8* header, const U8* body, S32 body_length, AutoString8& conn_keyspace);
-
-    extern template coroutine::Task<void> frame_handler<5u, true>(Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
-    extern template coroutine::Task<void> frame_handler<5u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
-    extern template coroutine::Task<void> frame_handler<4u, false>(Engine&, const tcp::Request&, const U8*, const U8*, S32, AutoString8&);
-
-    template<U8 Version, bool Compressed>
-    coroutine::Task<void> post_startup_loop(Engine& engine, const tcp::Request& req) {
-        AutoString8 conn_keyspace{""};
-        if constexpr (Version >= 5) {
-            DynamicArray<U8> read_buf{};
-            DynamicArray<U8> envelope_buf{};
-
-            // @todo refactor to be common
-            const auto fill_to = [&](U64 n) -> coroutine::Task<bool> {
-                while (read_buf.length < n) {
-                    if (!co_await try_append_tcp_read(req, read_buf)) {
-                        co_return false;
-                    }
-                }
-                co_return true;
-            };
-
-            // @todo @perf remove
-            const auto consume_front = [&](U64 n) {
-                U64 rem = read_buf.length - n;
-                if (rem > 0) {
-                    os::memory_move(read_buf.ptr, read_buf.ptr + n, rem);
-                }
-                resize(read_buf, rem);
-            };
-
-            constexpr U64 V5_HDR_BYTE_COUNT            = Compressed ? V5_COMP_HDR_BYTE_COUNT : V5_UNCOMP_HDR_BYTE_COUNT;
-            constexpr U64 V5_HDR_WITH_CRC24_BYTE_COUNT = V5_HDR_BYTE_COUNT + V5_HDR_CRC24_BYTE_COUNT;
-
-            while (true) {
-                envelope_buf.length = 0;
-                bool self_contained = false;
-                bool ok             = true;
-
-                {
-                    ZoneScopedN("post_startup_loop::read")
-                        // Accumulate outer frames until a self-contained message is assembled
-                        while (!self_contained) {
-                        if (!co_await fill_to(V5_HDR_WITH_CRC24_BYTE_COUNT)) {
-                            ok = false;
-                            break;
-                        }
-
-                        // Verify header CRC24
-                        U32 hdr_crc_computed = crc::crc24(read_buf.ptr, V5_HDR_BYTE_COUNT);
-                        U32 hdr_crc_stored   = U32(read_buf[V5_HDR_BYTE_COUNT]) | (U32(read_buf[V5_HDR_BYTE_COUNT + 1]) << 8) | (U32(read_buf[V5_HDR_BYTE_COUNT + 2]) << 16);
-                        if (hdr_crc_computed != hdr_crc_stored) {
-                            log::native_error("v5 frame header CRC24 mismatch, dropping connection");
-                            ok = false;
-                            break;
-                        }
-
-                        U32 payload_len = 0, uncomp_len = 0;
-                        if constexpr (Compressed) {
-                            payload_len    = U32(read_buf[0]) | (U32(read_buf[1]) << 8) | ((U32(read_buf[2]) & 0x01u) << 16);
-                            uncomp_len     = ((U32(read_buf[2]) >> 1) & 0x7Fu) | (U32(read_buf[3]) << 7) | ((U32(read_buf[4]) & 0x03u) << 15);
-                            self_contained = bool((read_buf[4] >> 2) & 1u);
-                        } else {
-                            payload_len    = U32(read_buf[0]) | (U32(read_buf[1]) << 8) | ((U32(read_buf[2]) & 0x01u) << 16);
-                            self_contained = bool((read_buf[2] >> 1) & 1u);
-                        }
-                        consume_front(V5_HDR_WITH_CRC24_BYTE_COUNT);
-
-                        if (!co_await fill_to(payload_len + V5_PAYLOAD_CRC32_BYTE_COUNT)) {
-                            ok = false;
-                            break;
-                        }
-
-                        // Verify CRC32 of payload
-                        {
-                            U32 payload_crc_computed = crc::crc32(read_buf.ptr, payload_len, crc::CRC32_CQL_V5_INIT);
-                            U32 payload_crc_stored   = U32(read_buf[payload_len]) | (U32(read_buf[payload_len + 1]) << 8) | (U32(read_buf[payload_len + 2]) << 16) | (U32(read_buf[payload_len + 3]) << 24);
-                            if (payload_crc_computed != payload_crc_stored) {
-                                log::native_error("v5 frame payload CRC32 mismatch, dropping connection");
-                                ok = false;
-                                break;
-                            }
-                        }
-
-                        if constexpr (Compressed) {
-                            U64 old_len = envelope_buf.length;
-                            resize(envelope_buf, old_len + uncomp_len);
-                            S32 result = lz4::decompress(
-                                read_buf.ptr, envelope_buf.ptr + old_len,
-                                S32(payload_len), S32(uncomp_len)
-                            );
-                            if (result != S32(uncomp_len)) {
-                                log::native_error("v5 frame LZ4 decompression failed, dropping connection");
-                                ok = false;
-                                break;
-                            }
-                        } else {
-                            U64 old_len = envelope_buf.length;
-                            resize(envelope_buf, old_len + payload_len);
-                            os::memory_copy(envelope_buf.ptr + old_len, read_buf.ptr, payload_len);
-                        }
-                        consume_front(payload_len + V5_PAYLOAD_CRC32_BYTE_COUNT);
-                    }
-                }
-
-                if (!ok) {
-                    break;
-                }
-
-                // Dispatch all inner envelopes from the assembled payload
-                const U8* p   = envelope_buf.ptr;
-                const U8* end = p + envelope_buf.length;
-                while (p + V4_FRAME_HEADER_BYTE_COUNT <= end) {
-                    S32 inner_body_len = read_be_s32(p + 5);
-                    if (inner_body_len < 0) {
-                        break;
-                    }
-                    if (p + V4_FRAME_HEADER_BYTE_COUNT + U64(inner_body_len) > end) {
-                        break;
-                    }
-                    co_await frame_handler<Version, Compressed>(engine, req, p, p + V4_FRAME_HEADER_BYTE_COUNT, inner_body_len, conn_keyspace);
-                    p += V4_FRAME_HEADER_BYTE_COUNT + inner_body_len;
-                }
-            }
-        } else {
-            // v4: plain envelope framing (no outer wrapping)
-            DynamicArray<U8> frame{};
-            S32              body_byte_count  = MAX_S32;
-            U64              frame_byte_count = MAX_U64;
-            while (true) {
-                body_byte_count  = MAX_S32;
-                frame_byte_count = MAX_U64;
-
-                {
-                    ZoneScopedN("post_startup_loop::read") while (frame.length < V4_FRAME_HEADER_BYTE_COUNT) {
-                        if (!co_await try_append_tcp_read(req, frame)) {
-                            break;
-                        }
-                    }
-                    if (frame.length < V4_FRAME_HEADER_BYTE_COUNT) {
-                        break;
-                    }
-
-                    body_byte_count  = read_be_s32(&frame[5]);
-                    frame_byte_count = V4_FRAME_HEADER_BYTE_COUNT + U64(body_byte_count);
-
-                    while (frame.length < frame_byte_count) {
-                        if (!co_await try_append_tcp_read(req, frame)) {
-                            break;
-                        }
-                    }
-                    if (frame.length < frame_byte_count) {
-                        break;
-                    }
-                }
-
-                co_await frame_handler<Version, Compressed>(engine, req, frame.ptr, &frame.ptr[V4_FRAME_HEADER_BYTE_COUNT], body_byte_count, conn_keyspace);
-
-                if (frame.length > frame_byte_count) {
-                    // Source and destination overlap when more than one frame is buffered
-                    // (pipelined requests), so this must be memmove, not memcpy.
-                    os::memory_move(frame.ptr, &frame.ptr[frame_byte_count], frame.length - frame_byte_count);
-                }
-                resize(frame, frame.length - frame_byte_count);
-            }
-        }
-    }
+    // Sends one envelope on f.conn using its negotiated version and framing. Holds the
+    // connection's write lock for the whole envelope so concurrent writers never interleave.
+    coroutine::Task<> send_frame(Frame& f);
 }
 
 export namespace cql::native {
@@ -491,26 +365,13 @@ export namespace cql::native {
         U16 port, Engine& engine,
         const OnReady auto& on_ready_callback, bool use_uring,
         aio::EventConsumer& file_io_consumer, aio::EventConsumer& signal_consumer, os::Poll& io_poll,
-        uring::IOBudgetOverride network_override = {}
+        uring::IOBudgetOverride network_override = {},
+        const ServerConfig&     config           = {}
     ) {
-        const auto connection_handler = [&engine](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> {
+        Server     server{.engine = &engine, .config = &config, .connections = {}, .next_connection_id = 1};
+        const auto connection_handler = [&server](const tcp::Request& req) -> coroutine::Task<void, coroutine::Start::Eager> {
             ZoneScopedN("request");
-            NegotiatedProtocol negotiated_protocol{};
-            bool               ok = co_await negotiate_connection(req, &negotiated_protocol);
-            if (!ok) {
-                co_return;
-            }
-
-            if (negotiated_protocol.version == 5) {
-                if (negotiated_protocol.compressed) {
-                    co_await post_startup_loop<5, true>(engine, req);
-                } else {
-                    co_await post_startup_loop<5, false>(engine, req);
-                }
-            } else {
-                co_await post_startup_loop<4, false>(engine, req);
-            }
-
+            co_await handle_connection(server, req);
             co_return;
         };
 
