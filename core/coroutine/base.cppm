@@ -13,42 +13,218 @@ import plexdb.debug;
 
 // ============================================================================
 // Tracy fiber tracking
+//
+// Tracy attributes every ZoneBegin/ZoneEnd to whichever fiber (or the bare
+// thread) is current on the emitting thread at that instant, and a ZoneEnd
+// carries no zone id: the server just pops the current context's zone stack.
+// A ScopedZone in a coroutine body stays open across suspensions, so its
+// destructor must run with the *same* context current as its constructor, and
+// that context's zones must be strictly nested. Otherwise the server stops
+// the capture with:
+//   "Zone is ended twice."                         (popped an empty stack)
+//   "Invalid order of zone begin and end events."  (popped somebody else's zone)
+//
+// That gives two rules:
+//
+//   1. One fiber per *strand*. Coroutines whose zones can interleave in time
+//      need distinct fibers. A child Task that is co_awaited shares its
+//      parent's fiber (the parent is parked until the child finishes, so their
+//      zones nest). Roots (Task::resume(), Start::Eager) and every when_all
+//      Runner get a fiber of their own, named after their frame address.
+//
+//   2. The current context is restored on every way out of a coroutine body.
+//      Resumption is an ordinary nested call, and the resumer is not
+//      necessarily the event loop: any coroutine may resume another inline,
+//      and an eager coroutine is entered directly from its creator's body.
+//      The resumer expects its own context back when that call returns. So:
+//        - entering a body after a fresh resume pushes the resumer's context
+//          and switches to the body's fiber        (fiber::enter)
+//        - suspending back to the resumer pops it   (fiber::suspend_to_resumer)
+//        - symmetric transfer (handle-returning await_suspend) hands the same
+//          resumer level to the target without push/pop
+//                                                   (fiber::suspend_by_transfer)
+//        - destroying a suspended frame runs its zone destructors, so it is
+//          done inside the frame's fiber             (fiber::destroy_frame)
+//
+// @note every awaiter must call these at each entry to and exit from a body;
+// an awaiter that skips them breaks rule 2 for every coroutine above it.
+// @profile inline in the interface: runs on every coroutine switch.
 // ============================================================================
-namespace plexdb::coroutine {
-    inline constexpr bool tracy_enabled =
+export namespace plexdb::coroutine::fiber {
+    inline constexpr bool enabled =
 #ifdef PLEXDB_ENABLE_TRACY_PROFILER
         true;
 #else
         false;
 #endif
 
-    struct TracyFiber {
+    // Tracy keys fibers by name *pointer*, so a name must stay valid while its
+    // fiber is in use: names live in the owning coroutine frame.
+    struct FrameState {
         // "0x" + hex digits for pointer + NUL
-        static constexpr int k_len             = 2 + static_cast<int>(sizeof(void*)) * 2 + 1;
-        char                 name[k_len]       = {};
-        const char*          continuation_name = nullptr;
+        static constexpr int k_len      = 2 + static_cast<int>(sizeof(void*)) * 2 + 1;
+        char                 own[k_len] = {};
+        // fiber this frame's body executes in: `own` for roots/runners/eager
+        // tasks, the awaiting parent's fiber for co_awaited lazy tasks
+        const char* runs_in = nullptr;
+        // fiber of the coroutine co_awaiting this one (Task only)
+        const char* return_to = nullptr;
     };
+    struct EmptyFrameState {};
+    using FrameStateT = Conditional<enabled, FrameState, EmptyFrameState>;
 
-    // Stub used when tracy_enabled=false. Must expose the same member names and
-    // conversions as TracyFiber / const char* so that if constexpr(tracy_enabled)
-    // branches are syntactically valid.
-    struct EmptyTracyFiber {
-        char        name[1]           = {};
-        const char* continuation_name = nullptr;
-        EmptyTracyFiber()             = default;
-        EmptyTracyFiber(const char*) noexcept {
-        }
-        EmptyTracyFiber& operator=(const char*) noexcept {
-            return *this;
-        }
-        operator const char*() const noexcept {
-            return nullptr;
-        }
-        explicit operator bool() const noexcept {
-            return false;
-        }
+    struct Saved {
+        const char* fiber = nullptr;
     };
+    struct EmptySaved {};
+    using SavedT = Conditional<enabled, Saved, EmptySaved>;
 
+    // Context Tracy currently considers active on this thread (nullptr = the
+    // thread itself). Must only be changed through switch_to().
+    inline thread_local const char* g_current = nullptr;
+
+    // Context to restore whenever the innermost h.resume() returns to its caller.
+    inline constexpr U32            k_max_resume_depth = 256;
+    inline thread_local const char* g_resumer_stack[k_max_resume_depth]{};
+    inline thread_local U32         g_resumer_depth = 0;
+
+    // Set by a symmetric-transfer await_suspend and consumed by the target's
+    // await_resume, which runs immediately afterwards on the same thread.
+    inline thread_local bool g_transfer_pending = false;
+
+    inline void switch_to(const char* f) noexcept {
+        if constexpr (enabled) {
+            if (f == g_current) {
+                return;
+            }
+            g_current = f;
+            if (f) {
+                TracyFiberEnter(f);
+            } else {
+                TracyFiberLeave;
+            }
+        }
+    }
+
+    // A coroutine body is about to run (again) in fiber `f`.
+    inline void enter(const char* f) noexcept {
+        if constexpr (enabled) {
+            if (g_transfer_pending) {
+                g_transfer_pending = false;
+            } else {
+                assert_true(g_resumer_depth < k_max_resume_depth, "tracy fiber: nested coroutine resumption too deep");
+                g_resumer_stack[g_resumer_depth++] = g_current;
+            }
+            switch_to(f);
+        }
+    }
+
+    // A coroutine body suspends and control returns to whoever resumed it.
+    inline void suspend_to_resumer() noexcept {
+        if constexpr (enabled) {
+            assert_true(g_resumer_depth > 0, "tracy fiber: coroutine suspended without a matching enter()");
+            switch_to(g_resumer_stack[--g_resumer_depth]);
+        }
+    }
+
+    // A coroutine body suspends by returning another coroutine's handle from
+    // await_suspend. The target must be resumed in one of this module's
+    // awaiters, whose await_resume calls enter().
+    inline void suspend_by_transfer() noexcept {
+        if constexpr (enabled) {
+            g_transfer_pending = true;
+        }
+    }
+
+    // Re-entry for an awaiter that may not have suspended at all (await_ready
+    // returned true): only a pending transfer means the body actually left.
+    inline void enter_if_transferred(const char* f) noexcept {
+        if constexpr (enabled) {
+            if (g_transfer_pending) {
+                enter(f);
+            }
+        }
+    }
+
+    inline void name_frame(FrameState& s, const void* frame) noexcept {
+        constexpr char k_hex[] = "0123456789abcdef";
+        auto           v       = reinterpret_cast<uintptr_t>(frame);
+        constexpr int  n       = static_cast<int>(sizeof(void*)) * 2;
+        s.own[0]               = '0';
+        s.own[1]               = 'x';
+        for (int i = n - 1; i >= 0; --i) {
+            s.own[2 + i] = k_hex[v & 0xf];
+            v >>= 4;
+        }
+        s.own[2 + n] = '\0';
+    }
+    inline void name_frame(EmptyFrameState&, const void*) noexcept {
+    }
+
+    // Root of a new strand: run in the frame's own fiber.
+    inline void run_in_own(FrameState& s) noexcept {
+        s.runs_in = s.own;
+    }
+    inline void run_in_own(EmptyFrameState&) noexcept {
+    }
+
+    // About to be co_awaited from the current context. `share` = run in the
+    // awaiter's fiber (lazy child) rather than keep an own fiber (eager task).
+    inline void awaited_from_current(FrameState& s, bool share) noexcept {
+        s.return_to = g_current;
+        if (share) {
+            s.runs_in = g_current;
+        }
+    }
+    inline void awaited_from_current(EmptyFrameState&, bool) noexcept {
+    }
+
+    inline const char* runs_in(const FrameState& s) noexcept {
+        return s.runs_in;
+    }
+    inline const char* runs_in(const EmptyFrameState&) noexcept {
+        return nullptr;
+    }
+    inline const char* return_to(const FrameState& s) noexcept {
+        return s.return_to;
+    }
+    inline const char* return_to(const EmptyFrameState&) noexcept {
+        return nullptr;
+    }
+
+    inline void save_current(Saved& s) noexcept {
+        s.fiber = g_current;
+    }
+    inline void save_current(EmptySaved&) noexcept {
+    }
+    inline const char* saved(const Saved& s) noexcept {
+        return s.fiber;
+    }
+    inline const char* saved(const EmptySaved&) noexcept {
+        return nullptr;
+    }
+
+    // Destroying a frame that is still suspended runs the destructors of its
+    // live locals, including open ScopedZones (and, recursively, those of any
+    // child frames it owns). Those must end in the fiber they began in.
+    template<typename Promise>
+    void destroy_frame(std::coroutine_handle<Promise> h) noexcept {
+        if constexpr (enabled) {
+            // runs_in is null only for a lazy task that never started (no zones)
+            const char* f = runs_in(h.promise().fiber_state);
+            if (!h.done() && f) {
+                const char* prev = g_current;
+                switch_to(f);
+                h.destroy();
+                switch_to(prev);
+                return;
+            }
+        }
+        h.destroy();
+    }
+}
+
+namespace plexdb::coroutine {
     struct EmptyManualResumeFlag {
         EmptyManualResumeFlag& operator=(bool) noexcept {
             return *this;
@@ -57,31 +233,6 @@ namespace plexdb::coroutine {
             return false;
         }
     };
-
-#ifdef PLEXDB_ENABLE_TRACY_PROFILER
-    namespace {
-        constexpr char k_hex_chars[] = "0123456789abcdef";
-    }
-
-    inline void write_hex_ptr(char* buf, const void* ptr) noexcept {
-        auto          v = reinterpret_cast<uintptr_t>(ptr);
-        constexpr int n = static_cast<int>(sizeof(void*)) * 2;
-        buf[0]          = '0';
-        buf[1]          = 'x';
-        for (int i = n - 1; i >= 0; --i) {
-            buf[2 + i] = k_hex_chars[v & 0xf];
-            v >>= 4;
-        }
-        buf[2 + n] = '\0';
-    }
-#else
-    inline void write_hex_ptr(char*, const void*) noexcept {
-    }
-#endif
-
-    // Always declared so if constexpr(tracy_enabled) branches are well-formed.
-    // In non-tracy builds the variable is never written or read at runtime.
-    inline thread_local const char* g_current_tracy_fiber = nullptr;
 }
 
 export namespace plexdb::coroutine {
@@ -111,8 +262,9 @@ export namespace plexdb::coroutine {
         // built-in api (e.g. co_await)
         // ====================================================================
         struct promise_type {
-            Optional<T>             result;
-            std::coroutine_handle<> continuation = std::noop_coroutine();
+            Optional<T> result;
+            // null until co_awaited: nobody to transfer back to on completion
+            std::coroutine_handle<> continuation{};
 #ifdef PLEXDB_EXCEPTIONS
             std::exception_ptr exception;
 #endif
@@ -121,7 +273,7 @@ export namespace plexdb::coroutine {
             Conditional<k_debug, debug::Frame, debug::EmptyFrame> debug_frame;
 
             [[no_unique_address]]
-            Conditional<tracy_enabled, TracyFiber, EmptyTracyFiber> tracy;
+            fiber::FrameStateT fiber_state;
 
             [[no_unique_address]]
             Conditional<k_debug, bool, EmptyManualResumeFlag> _manually_resumed{};
@@ -129,22 +281,30 @@ export namespace plexdb::coroutine {
             Task get_return_object() noexcept {
                 debug::capture_frame_from_stacktrace(debug_frame);
                 auto h = std::coroutine_handle<promise_type>::from_promise(*this);
-                if constexpr (tracy_enabled) {
-                    write_hex_ptr(tracy.name, h.address());
-                    if constexpr (S == Start::Eager) {
-                        g_current_tracy_fiber = tracy.name;
-                        TracyFiberEnter(tracy.name);
-                    }
+                fiber::name_frame(fiber_state, h.address());
+                // Eager tasks run concurrently with their creator from the
+                // first suspension on, so they are their own strand.
+                if constexpr (S == Start::Eager) {
+                    fiber::run_in_own(fiber_state);
                 }
                 return Task{h};
             }
 
             auto initial_suspend() noexcept {
-                if constexpr (S == Start::Lazy) {
-                    return std::suspend_always{};
-                } else {
-                    return std::suspend_never{};
-                }
+                struct Awaiter {
+                    promise_type& p;
+                    bool          await_ready() const noexcept {
+                        return S == Start::Eager;
+                    }
+                    void await_suspend(std::coroutine_handle<>) const noexcept {
+                    }
+                    // first entry into the body: fresh for Eager/resume(),
+                    // a transfer when started by co_await
+                    void await_resume() const noexcept {
+                        fiber::enter(fiber::runs_in(p.fiber_state));
+                    }
+                };
+                return Awaiter{*this};
             }
 
             auto final_suspend() noexcept {
@@ -155,15 +315,13 @@ export namespace plexdb::coroutine {
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
                         debug::pop_frame(h.promise().debug_frame);
 
-                        // Root tasks leave their fiber on completion; children share the parent's.
-                        if constexpr (tracy_enabled) {
-                            if (!h.promise().tracy.continuation_name && g_current_tracy_fiber) {
-                                g_current_tracy_fiber = nullptr;
-                                TracyFiberLeave;
-                            }
+                        if (h.promise().continuation) {
+                            fiber::suspend_by_transfer();
+                            return h.promise().continuation;
                         }
-
-                        return h.promise().continuation;
+                        // not awaited (a root): control returns to the resumer
+                        fiber::suspend_to_resumer();
+                        return std::noop_coroutine();
                     }
                     void await_resume() noexcept {
                     }
@@ -196,15 +354,16 @@ export namespace plexdb::coroutine {
 
             debug::push_frame(handle.promise().debug_frame);
 
-            if constexpr (tracy_enabled) {
-                handle.promise().tracy.continuation_name = g_current_tracy_fiber;
-            }
+            fiber::awaited_from_current(handle.promise().fiber_state, S == Start::Lazy);
 
             handle.promise().continuation = caller;
+            fiber::suspend_by_transfer();
             return handle;
         }
 
         T await_resume() {
+            // parent resumes via the child's final_suspend transfer
+            fiber::enter_if_transferred(fiber::return_to(handle.promise().fiber_state));
 #ifdef PLEXDB_EXCEPTIONS
             if (handle.promise().exception) {
                 std::rethrow_exception(handle.promise().exception);
@@ -220,10 +379,8 @@ export namespace plexdb::coroutine {
             if constexpr (k_debug) {
                 handle.promise()._manually_resumed = true;
             }
-            if constexpr (tracy_enabled) {
-                g_current_tracy_fiber = handle.promise().tracy.name;
-                TracyFiberEnter(handle.promise().tracy.name);
-            }
+            // a manually resumed task is a root: its own strand
+            fiber::run_in_own(handle.promise().fiber_state);
             // @todo manual resume() is an async-stack root: await_suspend/
             // final_suspend push/pop debug_frame in matched pairs for
             // co_await chains, but nothing pairs with a direct .resume() call
@@ -290,7 +447,7 @@ export namespace plexdb::coroutine {
         }
         void destroy() {
             if (handle) {
-                handle.destroy();
+                fiber::destroy_frame(handle);
                 handle = nullptr;
             }
         }
@@ -302,7 +459,8 @@ export namespace plexdb::coroutine {
         // built-in api (e.g. co_await)
         // ====================================================================
         struct promise_type {
-            std::coroutine_handle<> continuation = std::noop_coroutine();
+            // null until co_awaited: nobody to transfer back to on completion
+            std::coroutine_handle<> continuation{};
 #ifdef PLEXDB_EXCEPTIONS
             std::exception_ptr exception;
 #endif
@@ -310,7 +468,7 @@ export namespace plexdb::coroutine {
             Conditional<k_debug, debug::Frame, debug::EmptyFrame> debug_frame;
 
             [[no_unique_address]]
-            Conditional<tracy_enabled, TracyFiber, EmptyTracyFiber> tracy;
+            fiber::FrameStateT fiber_state;
 
             [[no_unique_address]]
             Conditional<k_debug, bool, EmptyManualResumeFlag> _manually_resumed{};
@@ -318,24 +476,30 @@ export namespace plexdb::coroutine {
             Task get_return_object() noexcept {
                 debug::capture_frame_from_stacktrace(debug_frame);
                 auto h = std::coroutine_handle<promise_type>::from_promise(*this);
-                if constexpr (tracy_enabled) {
-                    write_hex_ptr(tracy.name, h.address());
-                    // Eager tasks start executing immediately during construction with no
-                    // prior Task::resume() call, so enter the fiber here instead.
-                    if constexpr (S == Start::Eager) {
-                        g_current_tracy_fiber = tracy.name;
-                        TracyFiberEnter(tracy.name);
-                    }
+                fiber::name_frame(fiber_state, h.address());
+                // Eager tasks run concurrently with their creator from the
+                // first suspension on, so they are their own strand.
+                if constexpr (S == Start::Eager) {
+                    fiber::run_in_own(fiber_state);
                 }
                 return Task{h};
             }
 
             auto initial_suspend() noexcept {
-                if constexpr (S == Start::Lazy) {
-                    return std::suspend_always{};
-                } else {
-                    return std::suspend_never{};
-                }
+                struct Awaiter {
+                    promise_type& p;
+                    bool          await_ready() const noexcept {
+                        return S == Start::Eager;
+                    }
+                    void await_suspend(std::coroutine_handle<>) const noexcept {
+                    }
+                    // first entry into the body: fresh for Eager/resume(),
+                    // a transfer when started by co_await
+                    void await_resume() const noexcept {
+                        fiber::enter(fiber::runs_in(p.fiber_state));
+                    }
+                };
+                return Awaiter{*this};
             }
 
             auto final_suspend() noexcept {
@@ -347,15 +511,13 @@ export namespace plexdb::coroutine {
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
                         debug::pop_frame(h.promise().debug_frame);
 
-                        // Root tasks leave their fiber on completion; children share the parent's.
-                        if constexpr (tracy_enabled) {
-                            if (!h.promise().tracy.continuation_name && g_current_tracy_fiber) {
-                                g_current_tracy_fiber = nullptr;
-                                TracyFiberLeave;
-                            }
+                        if (h.promise().continuation) {
+                            fiber::suspend_by_transfer();
+                            return h.promise().continuation;
                         }
-
-                        return h.promise().continuation;
+                        // not awaited (a root): control returns to the resumer
+                        fiber::suspend_to_resumer();
+                        return std::noop_coroutine();
                     }
                     void await_resume() noexcept {
                     }
@@ -387,15 +549,16 @@ export namespace plexdb::coroutine {
 
             debug::push_frame(handle.promise().debug_frame);
 
-            if constexpr (tracy_enabled) {
-                handle.promise().tracy.continuation_name = g_current_tracy_fiber;
-            }
+            fiber::awaited_from_current(handle.promise().fiber_state, S == Start::Lazy);
 
             handle.promise().continuation = caller;
+            fiber::suspend_by_transfer();
             return handle;
         }
 
         void await_resume() {
+            // parent resumes via the child's final_suspend transfer
+            fiber::enter_if_transferred(fiber::return_to(handle.promise().fiber_state));
 #ifdef PLEXDB_EXCEPTIONS
             if (handle.promise().exception) {
                 std::rethrow_exception(handle.promise().exception);
@@ -410,10 +573,8 @@ export namespace plexdb::coroutine {
             if constexpr (k_debug) {
                 handle.promise()._manually_resumed = true;
             }
-            if constexpr (tracy_enabled) {
-                g_current_tracy_fiber = handle.promise().tracy.name;
-                TracyFiberEnter(handle.promise().tracy.name);
-            }
+            // a manually resumed task is a root: its own strand
+            fiber::run_in_own(handle.promise().fiber_state);
 
             Conditional<k_debug, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
             debug::save_frame(_saved_frame);
@@ -457,7 +618,7 @@ export namespace plexdb::coroutine {
         }
         void destroy() {
             if (handle) {
-                handle.destroy();
+                fiber::destroy_frame(handle);
                 handle = nullptr;
             }
         }
@@ -510,13 +671,11 @@ export namespace plexdb::coroutine {
         void await_suspend(std::coroutine_handle<> h) noexcept {
             debug::save_frame(_saved_frame);
 
-            if constexpr (tracy_enabled) {
-                _saved_tracy_fiber = g_current_tracy_fiber;
-                if (g_current_tracy_fiber) {
-                    g_current_tracy_fiber = nullptr;
-                    TracyFiberLeave;
-                }
-            }
+            // Hand the thread back to the resumer's context *before* on_suspend:
+            // the resumer is not necessarily the event loop (another coroutine
+            // may have resumed us inline), and on_suspend may itself resume h.
+            fiber::save_current(_saved_fiber);
+            fiber::suspend_to_resumer();
 
             on_suspend(h);
         }
@@ -526,12 +685,8 @@ export namespace plexdb::coroutine {
 
             debug::restore_frame(_saved_frame);
 
-            if constexpr (tracy_enabled) {
-                if (_saved_tracy_fiber) {
-                    g_current_tracy_fiber = _saved_tracy_fiber;
-                    TracyFiberEnter(_saved_tracy_fiber);
-                }
-            }
+            // fresh resume (event loop / another coroutine) or a transfer (Latch)
+            fiber::enter(fiber::saved(_saved_fiber));
 
             return on_resume();
         }
@@ -546,7 +701,7 @@ export namespace plexdb::coroutine {
         Conditional<k_debug, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
 
         [[no_unique_address]]
-        Conditional<tracy_enabled, const char*, EmptyTracyFiber> _saved_tracy_fiber{};
+        fiber::SavedT _saved_fiber{};
     };
 
     template<typename OnSuspend, typename OnResume>

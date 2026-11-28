@@ -354,9 +354,9 @@ namespace cql::native {
                 bool ok             = true;
 
                 {
-                    ZoneScopedN("post_startup_loop::read")
-                        // Accumulate outer frames until a self-contained message is assembled
-                        while (!self_contained) {
+                    ZoneScopedN("post_startup_loop::read");
+                    // Accumulate outer frames until a self-contained message is assembled
+                    while (!self_contained) {
                         if (!co_await fill_to(V5_HDR_WITH_CRC24_BYTE_COUNT)) {
                             ok = false;
                             break;
@@ -448,7 +448,8 @@ namespace cql::native {
                 frame_byte_count = MAX_U64;
 
                 {
-                    ZoneScopedN("post_startup_loop::read") while (frame.length < V4_FRAME_HEADER_BYTE_COUNT) {
+                    ZoneScopedN("post_startup_loop::read");
+                    while (frame.length < V4_FRAME_HEADER_BYTE_COUNT) {
                         if (!co_await try_append_tcp_read(req, frame)) {
                             break;
                         }

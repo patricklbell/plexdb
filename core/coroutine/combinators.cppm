@@ -24,6 +24,7 @@ export namespace plexdb::coroutine {
         // await_suspend), not call .resume() on it: the last arrival is
         // typically still on the call stack, and a direct resume there lets
         // the woken waiter destroy that same still-executing frame.
+        // Returns null when there is nobody to wake yet.
         std::coroutine_handle<> arrive() noexcept {
             assert_true(remaining > 0, "no remaining count in coroutine latch");
             if (--remaining == 0 && waiter) {
@@ -31,16 +32,21 @@ export namespace plexdb::coroutine {
                 waiter = {};
                 return w;
             }
-            return std::noop_coroutine();
+            return {};
         }
     };
 
     // What actually gets resumed for each fanned-out slot. Not the generic
     // Task<T, Start::Eager>: its final_suspend must arrive() the latch and
     // transfer into the waiter itself, which nobody co_awaits a Runner to set up.
+    //
+    // @note each runner is its own tracy fiber: sibling runners (and the
+    // joiner) interleave in time, so their zones cannot share one zone stack.
     struct Runner {
         struct promise_type {
             Latch* latch = nullptr;
+            [[no_unique_address]]
+            fiber::FrameStateT fiber_state;
 
             template<typename T>
             promise_type(Task<T>&, Latch& l) noexcept
@@ -48,11 +54,26 @@ export namespace plexdb::coroutine {
             }
 
             Runner get_return_object() noexcept {
-                return Runner{std::coroutine_handle<promise_type>::from_promise(*this)};
+                auto h = std::coroutine_handle<promise_type>::from_promise(*this);
+                fiber::name_frame(fiber_state, h.address());
+                fiber::run_in_own(fiber_state);
+                return Runner{h};
             }
 
-            std::suspend_never initial_suspend() noexcept {
-                return {};
+            // eager: the body is entered directly from the joiner's body
+            auto initial_suspend() noexcept {
+                struct Awaiter {
+                    promise_type& p;
+                    bool          await_ready() const noexcept {
+                        return true;
+                    }
+                    void await_suspend(std::coroutine_handle<>) const noexcept {
+                    }
+                    void await_resume() const noexcept {
+                        fiber::enter(fiber::runs_in(p.fiber_state));
+                    }
+                };
+                return Awaiter{*this};
             }
 
             struct FinalAwaiter {
@@ -60,7 +81,12 @@ export namespace plexdb::coroutine {
                     return false;
                 }
                 std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
-                    return h.promise().latch->arrive();
+                    if (std::coroutine_handle<> waiter = h.promise().latch->arrive()) {
+                        fiber::suspend_by_transfer();
+                        return waiter;
+                    }
+                    fiber::suspend_to_resumer();
+                    return std::noop_coroutine();
                 }
                 void await_resume() noexcept {
                 }
@@ -90,7 +116,7 @@ export namespace plexdb::coroutine {
         Runner(const Runner&) = delete;
         ~Runner() {
             if (handle) {
-                handle.destroy();
+                fiber::destroy_frame(handle);
                 handle = nullptr;
             }
         }
