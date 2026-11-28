@@ -5,6 +5,7 @@
 
 import plexdb.base;
 import plexdb.coroutine;
+import plexdb.debug;
 import plexdb.os;
 import plexdb.os.uring;
 import plexdb.tagged_union;
@@ -25,6 +26,7 @@ os::Notifier                 g_signal_notifier{};
 static volatile sig_atomic_t g_signal_count = 0;
 
 static void                                         assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
+static void                                         crash_handler(int signal_number);
 static void                                         signal_handler(int);
 static Pair<aio::FileIOContext, aio::EventConsumer> create_file_io_context(TaggedUnion<uring::Ring, os::AIOContext>& resource, arena::Arena& arena, os::Poll& poll, uring::IOBudgetOverride file_budget_override = {});
 
@@ -34,9 +36,10 @@ int main(int argc, char* argv[]) {
 
     set_assert_handler(assert_handler);
 
+    os::signal_register_crash(crash_handler);
+    os::signal_register_kill(signal_handler);
     os::signal_ignore_pipe();
     os::signal_ignore_reload();
-    os::signal_register_kill(signal_handler);
 
     auto arg_parser = argparse::create_parser("cql", "Object store database server");
 
@@ -171,26 +174,28 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
-// @todo
-#if PLEXDB_OS_LINUX
-#include <stdio.h>
-#include <unistd.h>
-#endif
-
 static void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-    // Write to stderr (unbuffered) so the message is visible even when the
-    // process is about to crash via PLEXDB_TRAP.
-    char buf[512];
-    int  n = snprintf(buf, sizeof(buf), "Assert failed \"%s\" at %s in %s:%u\n", msg, function_name, file_name, line_number);
-    if (n > 0) {
-        write(2, buf, static_cast<size_t>(n) < sizeof(buf) ? static_cast<size_t>(n) : sizeof(buf) - 1);
-    }
-
+    debug::write_stderr("Assert failed \"%s\" at %s in %s:%u\n", msg, function_name, file_name, line_number);
+    debug::write_stack_stderr(1);
+    debug::write_async_stack_stderr();
 #if PLEXDB_DEBUG
+    // @note the trap must reach the debugger or core dump, not the crash handler
+    os::signal_reset_crash();
     PLEXDB_TRAP;
 #else
     os::process_exit(1);
 #endif
+}
+
+static void crash_handler(int signal_number) {
+    // @note protects from deadlock if the crash is inside the handler
+    os::process_exit_after(5);
+    debug::write_stderr("Fatal signal %d\n", signal_number);
+    debug::write_stack_stderr(1);
+    debug::write_async_stack_stderr();
+    // @note the crash handler is one-shot, so this takes the default action even if the signal
+    // was sent rather than raised by a fault
+    os::signal_raise(signal_number);
 }
 
 static void signal_handler(int) {

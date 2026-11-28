@@ -50,14 +50,15 @@ namespace plexdb::os {
         ::write(handle_to_fd(notifier.write), &c, 1);
     }
 
-    static void signal_register_linux(int signal_number, SignalHandler handler) {
-        struct sigaction sa;
-        memory_zero(&sa, sizeof(sa));
-        sa.sa_handler = handler;
+    static void sigaction_linux(int signal_number, struct sigaction& sa) {
         ::sigemptyset(&sa.sa_mask);
-        sa.sa_flags = 0;
-        int res     = ::sigaction(signal_number, &sa, nullptr);
-        assert_true_always(res == 0, "sigaction failed");
+        assert_true_always(::sigaction(signal_number, &sa, nullptr) == 0, "sigaction failed");
+    }
+
+    static void signal_register_linux(int signal_number, SignalHandler handler) {
+        struct sigaction sa{};
+        sa.sa_handler = handler;
+        sigaction_linux(signal_number, sa);
     }
 
     void signal_register_kill(SignalHandler handler) {
@@ -79,6 +80,30 @@ namespace plexdb::os {
         signal_register_linux(SIGTSTP, handler);
     }
 
+    static constexpr int k_crash_signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
+
+    // @todo the alternate stack is per-thread, so only the registering thread can report a stack overflow
+    void signal_register_crash(SignalHandler handler) {
+        static U8 alt_stack[64 * 1024];
+        stack_t   ss{.ss_sp = alt_stack, .ss_flags = 0, .ss_size = sizeof(alt_stack)};
+        assert_true_always(::sigaltstack(&ss, nullptr) == 0, "sigaltstack failed");
+
+        struct sigaction sa{};
+        sa.sa_handler = handler;
+        // @note SA_RESETHAND: a fault inside the handler, or the faulting instruction re-running
+        // after it returns, takes the default action
+        sa.sa_flags = SA_ONSTACK | SA_RESETHAND;
+        for (int signal_number : k_crash_signals) {
+            sigaction_linux(signal_number, sa);
+        }
+    }
+
+    void signal_reset_crash() {
+        for (int signal_number : k_crash_signals) {
+            signal_register_linux(signal_number, SIG_DFL);
+        }
+    }
+
     void signal_ignore_pipe() {
         signal_register_linux(SIGPIPE, SIG_IGN);
     }
@@ -90,6 +115,10 @@ namespace plexdb::os {
 
     void signal_send_kill(Handle process) {
         ::kill(linux_handle_to_pid(process), SIGKILL);
+    }
+
+    void signal_raise(int signal_number) {
+        ::raise(signal_number);
     }
 
     Poll::Poll() {

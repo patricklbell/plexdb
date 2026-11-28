@@ -50,8 +50,11 @@ namespace {
         return oss.str();
     }
 
+    // @note FAIL rather than FAIL_CHECK: execution must not continue past a broken invariant.
+    // With exceptions enabled it aborts only the current test case (coroutine promises carry the
+    // exception to the awaiter); without them Catch2 terminates the process.
     void catch2_assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-        FAIL_CHECK(
+        FAIL(
             "Assert failed \"" << msg << "\" at " << function_name << " in " << file_name << ":" << line_number
         );
     }

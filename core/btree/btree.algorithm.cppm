@@ -150,7 +150,7 @@ export namespace plexdb::btree {
     // @note compiled out unless PLEXDB_DEBUG
     template<KeyPolicy KP, ValuePolicy VP>
     void assert_sorted_leaf(const Node* node, U32 ns, KP kp, VP vp) noexcept {
-        if constexpr (k_assert_enabled) {
+        if constexpr (k_debug) {
             for (CountType i = 1; i < node->key_count; i++) {
                 auto ab = leaf_get_key_bytes(node, ns, kp, vp, static_cast<CountType>(i - 1));
                 auto bb = leaf_get_key_bytes(node, ns, kp, vp, i);
@@ -163,7 +163,7 @@ export namespace plexdb::btree {
 
     template<KeyPolicy KP>
     void assert_sorted_internal(const Node* node, U32 ns, KP kp) noexcept {
-        if constexpr (k_assert_enabled) {
+        if constexpr (k_debug) {
             for (CountType i = 1; i < node->key_count; i++) {
                 auto a = internal_get_key(node, ns, kp, static_cast<CountType>(i - 1));
                 auto b = internal_get_key(node, ns, kp, i);

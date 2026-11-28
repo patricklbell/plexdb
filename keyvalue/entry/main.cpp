@@ -4,6 +4,7 @@
 #include <signal.h>
 
 import plexdb.base;
+import plexdb.debug;
 import plexdb.os;
 import plexdb.aio;
 import plexdb.argparse;
@@ -21,6 +22,7 @@ os::Notifier                 g_signal_notifier{};
 static volatile sig_atomic_t g_signal_count = 0;
 
 static void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number);
+static void crash_handler(int signal_number);
 static void signal_handler(int);
 
 int main(int argc, char* argv[]) {
@@ -28,7 +30,7 @@ int main(int argc, char* argv[]) {
     threads::equip(&main_thread_ctx);
 
     set_assert_handler(assert_handler);
-
+    os::signal_register_crash(crash_handler);
     os::signal_ignore_pipe();
     os::signal_ignore_reload();
     os::signal_register_kill(signal_handler);
@@ -88,12 +90,27 @@ int main(int argc, char* argv[]) {
 }
 
 static void assert_handler(const char* msg, const char* file_name, const char* function_name, unsigned line_number) {
-    println("Assert failed \"", msg, "\" at ", function_name, " in ", file_name, ":", to_str(line_number));
+    debug::write_stderr("Assert failed \"%s\" at %s in %s:%u\n", msg, function_name, file_name, line_number);
+    debug::write_stack_stderr(1);
+    debug::write_async_stack_stderr();
 #if PLEXDB_DEBUG
+    // @note the trap must reach the debugger or core dump, not the crash handler
+    os::signal_reset_crash();
     PLEXDB_TRAP;
 #else
     os::process_exit(1);
 #endif
+}
+
+static void crash_handler(int signal_number) {
+    // @note reporting can deadlock if the crash was inside the allocator
+    os::process_exit_after(5);
+    debug::write_stderr("Fatal signal %d\n", signal_number);
+    debug::write_stack_stderr(1);
+    debug::write_async_stack_stderr();
+    // @note the crash handler is one-shot, so this takes the default action even if the signal
+    // was sent rather than raised by a fault
+    os::signal_raise(signal_number);
 }
 
 static void signal_handler(int) {

@@ -1,3 +1,5 @@
+include(${CMAKE_CURRENT_LIST_DIR}/options.cmake)
+
 if(NOT TARGET plexdb::compiler_config)
   add_library(plexdb_compiler_config INTERFACE)
   add_library(plexdb::compiler_config ALIAS plexdb_compiler_config)
@@ -24,17 +26,18 @@ if(NOT TARGET plexdb::compiler_config)
       message(WARNING "Disabling exceptions AND compiling tests may lead to unexpected race conditions")
     endif()
     target_compile_options(plexdb_compiler_config INTERFACE
-            $<$<CXX_COMPILER_ID:GNU,Clang>:-fno-exceptions>
-            $<$<CXX_COMPILER_ID:MSVC>:/EHs-c->
-        )
+          $<$<CXX_COMPILER_ID:GNU,Clang>:-fno-exceptions>
+          $<$<CXX_COMPILER_ID:MSVC>:/EHs-c->
+    )
   endif()
 
   target_compile_definitions(plexdb_compiler_config INTERFACE
         $<$<BOOL:${PLEXDB_DEBUG}>:PLEXDB_DEBUG=1>
+        $<$<NOT:$<BOOL:${PLEXDB_DISABLE_EXCEPTIONS}>>:PLEXDB_EXCEPTIONS=1>
         $<$<BOOL:${PLEXDB_ENABLE_PLUGINS}>:PLEXDB_ENABLE_PLUGINS=1>
         $<$<BOOL:${PLEXDB_ENABLE_USER_KILL_SIGNAL}>:PLEXDB_ENABLE_USER_KILL_SIGNAL=1>
-    )
+  )
   target_link_options(plexdb_compiler_config INTERFACE
         $<$<BOOL:${PLEXDB_ENABLE_PLUGINS}>:-rdynamic>
-    )
+  )
 endif()

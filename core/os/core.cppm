@@ -212,12 +212,14 @@ export namespace plexdb::os {
     Handle           process_get_handle();
     void             process_exit(int code);
     void             process_pause();
+    void             process_exit_after(U32 seconds);
 
     // ========================================================================
     // streams
     // ========================================================================
     Handle stdin_stream();
     Handle stdout_stream();
+    Handle stderr_stream();
 
     Pair<Handle, Handle> stream_pipe();
     void                 stream_write(Handle h, const void* data, U64 length);

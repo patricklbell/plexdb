@@ -9,6 +9,7 @@ export module plexdb.coroutine.base;
 
 import plexdb.base;
 import plexdb.coroutine.debug;
+import plexdb.debug;
 
 // ============================================================================
 // Tracy fiber tracking
@@ -117,13 +118,13 @@ export namespace plexdb::coroutine {
 #endif
             // @note zero bytes in release builds via [[no_unique_address]] + empty type.
             [[no_unique_address]]
-            Conditional<debug::enabled, debug::Frame, debug::EmptyFrame> debug_frame;
+            Conditional<k_debug, debug::Frame, debug::EmptyFrame> debug_frame;
 
             [[no_unique_address]]
             Conditional<tracy_enabled, TracyFiber, EmptyTracyFiber> tracy;
 
             [[no_unique_address]]
-            Conditional<debug::enabled, bool, EmptyManualResumeFlag> _manually_resumed{};
+            Conditional<k_debug, bool, EmptyManualResumeFlag> _manually_resumed{};
 
             Task get_return_object() noexcept {
                 debug::capture_frame_from_stacktrace(debug_frame);
@@ -177,9 +178,9 @@ export namespace plexdb::coroutine {
 #ifdef PLEXDB_EXCEPTIONS
                 exception = std::current_exception();
 #endif
-                if constexpr (debug::enabled) {
-                    println("unhandled exception in coroutine, async stack:");
-                    debug::print_async_stack();
+                if constexpr (k_debug) {
+                    plexdb::debug::write_stderr("unhandled exception in coroutine\n");
+                    plexdb::debug::write_async_stack_stderr();
                 }
             }
         };
@@ -189,7 +190,7 @@ export namespace plexdb::coroutine {
         }
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
-            if constexpr (debug::enabled) {
+            if constexpr (k_debug) {
                 assert_true(!handle.promise()._manually_resumed, "Task::await_suspend: task was already manually resumed (double-resume)");
             }
 
@@ -216,7 +217,7 @@ export namespace plexdb::coroutine {
         // manual api
         // ====================================================================
         void resume() {
-            if constexpr (debug::enabled) {
+            if constexpr (k_debug) {
                 handle.promise()._manually_resumed = true;
             }
             if constexpr (tracy_enabled) {
@@ -226,10 +227,10 @@ export namespace plexdb::coroutine {
             // @todo manual resume() is an async-stack root: await_suspend/
             // final_suspend push/pop debug_frame in matched pairs for
             // co_await chains, but nothing pairs with a direct .resume() call
-            Conditional<debug::enabled, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
+            Conditional<k_debug, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
             debug::save_frame(_saved_frame);
-            if constexpr (debug::enabled) {
-                debug::g_current_frame = nullptr;
+            if constexpr (k_debug) {
+                debug::g_async_frame = nullptr;
             }
             handle.resume();
             debug::restore_frame(_saved_frame);
@@ -306,13 +307,13 @@ export namespace plexdb::coroutine {
             std::exception_ptr exception;
 #endif
             [[no_unique_address]]
-            Conditional<debug::enabled, debug::Frame, debug::EmptyFrame> debug_frame;
+            Conditional<k_debug, debug::Frame, debug::EmptyFrame> debug_frame;
 
             [[no_unique_address]]
             Conditional<tracy_enabled, TracyFiber, EmptyTracyFiber> tracy;
 
             [[no_unique_address]]
-            Conditional<debug::enabled, bool, EmptyManualResumeFlag> _manually_resumed{};
+            Conditional<k_debug, bool, EmptyManualResumeFlag> _manually_resumed{};
 
             Task get_return_object() noexcept {
                 debug::capture_frame_from_stacktrace(debug_frame);
@@ -368,9 +369,9 @@ export namespace plexdb::coroutine {
 #ifdef PLEXDB_EXCEPTIONS
                 exception = std::current_exception();
 #endif
-                if constexpr (debug::enabled) {
-                    println("unhandled exception in coroutine, async stack:");
-                    debug::print_async_stack();
+                if constexpr (k_debug) {
+                    plexdb::debug::write_stderr("unhandled exception in coroutine\n");
+                    plexdb::debug::write_async_stack_stderr();
                 }
             }
         };
@@ -380,7 +381,7 @@ export namespace plexdb::coroutine {
         }
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
-            if constexpr (debug::enabled) {
+            if constexpr (k_debug) {
                 assert_true(!handle.promise()._manually_resumed, "Task::await_suspend: task was already manually resumed (double-resume)");
             }
 
@@ -406,7 +407,7 @@ export namespace plexdb::coroutine {
         // manual api
         // ====================================================================
         void resume() {
-            if constexpr (debug::enabled) {
+            if constexpr (k_debug) {
                 handle.promise()._manually_resumed = true;
             }
             if constexpr (tracy_enabled) {
@@ -414,10 +415,10 @@ export namespace plexdb::coroutine {
                 TracyFiberEnter(handle.promise().tracy.name);
             }
 
-            Conditional<debug::enabled, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
+            Conditional<k_debug, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
             debug::save_frame(_saved_frame);
-            if constexpr (debug::enabled) {
-                debug::g_current_frame = nullptr;
+            if constexpr (k_debug) {
+                debug::g_async_frame = nullptr;
             }
             handle.resume();
             debug::restore_frame(_saved_frame);
@@ -542,7 +543,7 @@ export namespace plexdb::coroutine {
         }
 
         [[no_unique_address]]
-        Conditional<debug::enabled, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
+        Conditional<k_debug, debug::FrameLink, debug::EmptyFrame> _saved_frame{};
 
         [[no_unique_address]]
         Conditional<tracy_enabled, const char*, EmptyTracyFiber> _saved_tracy_fiber{};

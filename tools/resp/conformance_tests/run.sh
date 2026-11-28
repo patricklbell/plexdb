@@ -102,6 +102,7 @@ fi
 
 # Always refresh our local files into the test package
 cp "$SCRIPT_DIR/conftest.py"      "$TESTS_DIR/tests/conftest.py"
+cp "$SCRIPT_DIR/../../conformance_common/server_crash.py" "$TESTS_DIR/tests/server_crash.py"
 cp "$SCRIPT_DIR/test_benchmark.py" "$TESTS_DIR/tests/test_benchmark.py"
 echo "Installed shims."
 

@@ -12,10 +12,15 @@ import os
 import shlex
 import socket
 import subprocess
+import sys
 import time
 
 import pytest
 import redis as redis_lib
+
+# run.sh copies tools/conformance_common/server_crash.py next to this file.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import server_crash  # noqa: E402
 
 # ── Version-check helpers (module-level, importable by test_commands.py) ──
 # We advertise Redis 7.0.0 in INFO, so version guards behave accordingly.
@@ -94,6 +99,24 @@ def pytest_addoption(parser):
     )
 
 
+# ── Server crash attribution ──────────────────────────────────────────────
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    server_crash.on_setup(item)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    server_crash.on_report(item, outcome.get_result())
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    server_crash.terminal_summary(terminalreporter, config)
+
+
 # ── Server manager ────────────────────────────────────────────────────────
 
 
@@ -115,7 +138,7 @@ class ServerManager:
         self.binary = binary
         self.host = host
         self.port = port
-        self.log_dir = log_dir
+        self.log = server_crash.ServerLog(log_dir)
         self.plugins = plugins or []
         self.db_path = db_path  # None → --in-memory; str → persistent path
         self._proc = None
@@ -135,37 +158,23 @@ class ServerManager:
             cmd = [self.binary, self.db_path, "--port", str(self.port), "--no-uring"]
         else:
             cmd = [self.binary, "--in-memory", "--port", str(self.port), "--no-uring"]
-        if self.log_dir:
-            os.makedirs(self.log_dir, exist_ok=True)
-            log_path = os.path.join(self.log_dir, "server.log")
-            self._log_file = open(log_path, "ab", buffering=0)
-            stderr_target = self._log_file
-            stdout_target = self._log_file
-            if self.plugins:
-                plugin_preload = ":".join(self.plugins)
-                server_cmd = " ".join(shlex.quote(c) for c in cmd)
-                shell_script = (
-                    f'LD_PRELOAD="${{LD_PRELOAD:+$LD_PRELOAD:}}{plugin_preload}" '
-                    f"exec {server_cmd}"
-                )
-                cmd = ["stdbuf", "-oL", "sh", "-c", shell_script]
-            else:
-                cmd = ["stdbuf", "-oL"] + cmd
-            self._proc = subprocess.Popen(
-                cmd,
-                env=env,
-                stdout=stdout_target,
-                stderr=stderr_target,
+        self._log_file = self.log.open()
+        if self.plugins:
+            plugin_preload = ":".join(self.plugins)
+            server_cmd = " ".join(shlex.quote(c) for c in cmd)
+            shell_script = (
+                f'LD_PRELOAD="${{LD_PRELOAD:+$LD_PRELOAD:}}{plugin_preload}" '
+                f"exec {server_cmd}"
             )
+            cmd = ["stdbuf", "-oL", "sh", "-c", shell_script]
         else:
-            stdout_target = None
-            stderr_target = None
-            if self.plugins:
-                env["LD_PRELOAD"] = ":".join(self.plugins)
-            self._proc = subprocess.Popen(
-                cmd,
-                env=env,
-            )
+            cmd = ["stdbuf", "-oL"] + cmd
+        self._proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=self._log_file,
+            stderr=self._log_file,
+        )
         _wait_for_port(self.host, self.port)
 
     def start(self):
@@ -176,6 +185,15 @@ class ServerManager:
             )
         self._spawn()
         print(f"server ready on {self.host}:{self.port}")
+
+    def exited(self, timeout):
+        """Return the server's exit status if it has died (waiting up to timeout), else None."""
+        if self._proc is None:
+            return None
+        try:
+            return self._proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
 
     def restart(self):
         if self._proc is not None:
@@ -212,6 +230,7 @@ def server_manager(request):
     db_path = request.config.getoption("--db-path")
     mgr = ServerManager(binary, host, port, log_dir=log_dir, plugins=plugins, db_path=db_path)
     mgr.start()
+    server_crash.register(request.config, mgr)
     yield mgr
     mgr.stop()
 

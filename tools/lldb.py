@@ -3,7 +3,7 @@ import lldb
 
 def async_bt_command(debugger, command, exe_ctx, result, internal_dict):
     """Print the plexdb coroutine async callstack (PLEXDB_DEBUG=1 builds only).
-    Calls plexdb_async_stack() which walks g_current_frame for the selected thread."""
+    Calls plexdb_async_stack() which walks plexdb::debug::g_async_frame for the selected thread."""
     frame = exe_ctx.GetFrame()
     if not frame.IsValid():
         result.AppendMessage("<no selected frame>")

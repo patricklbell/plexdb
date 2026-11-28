@@ -183,6 +183,7 @@ else
 fi
 
 cp "$SCRIPT_DIR/conftest.py" "$TESTS_DIR/conftest.py"
+cp "$SCRIPT_DIR/../../conformance_common/server_crash.py" "$TESTS_DIR/server_crash.py"
 cp "$SCRIPT_DIR/util.py"     "$TESTS_DIR/util.py"
 cp "$SCRIPT_DIR/nodetool.py" "$TESTS_DIR/nodetool.py"
 if [ -f "$SKIPLIST_FILE" ]; then

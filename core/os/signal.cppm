@@ -31,6 +31,13 @@ export namespace plexdb::os {
     void signal_ignore_pipe();
     void signal_ignore_reload();
     void signal_send_kill(Handle process);
+    void signal_raise(int signal_number);
+
+    // Invalid memory access, illegal instruction or arithmetic fault. The handler runs once, with
+    // enough stack to report a stack overflow; when it returns the fault recurs with the default
+    // action (debugger, core dump).
+    void signal_register_crash(SignalHandler handler);
+    void signal_reset_crash();
 
     struct Poll {
         Handle handle;

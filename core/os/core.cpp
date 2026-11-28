@@ -459,6 +459,10 @@ namespace plexdb::os {
     void process_exit(int code) {
         ::_exit(code);
     }
+    void process_exit_after(U32 seconds) {
+        // @note SIGALRM's default action terminates the process
+        ::alarm(seconds);
+    }
     void process_pause() {
         ::pause();
     }
@@ -472,6 +476,10 @@ namespace plexdb::os {
 
     Handle stdout_stream() {
         return fd_to_handle(STDOUT_FILENO);
+    }
+
+    Handle stderr_stream() {
+        return fd_to_handle(STDERR_FILENO);
     }
 
     Pair<Handle, Handle> stream_pipe() {
